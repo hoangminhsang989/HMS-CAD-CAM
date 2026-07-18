@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QToolBar
 
+from model import (
+    DisplayMode,
+    InteractionMode,
+    SelectionKind,
+    SelectionSummary,
+    ViewOrientation,
+)
 from viewer import OcpViewerWidget
 
 
@@ -15,10 +22,97 @@ class SpikeWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("HMS CAD/CAM — OCP Viewer Spike 4B1")
+        self.setWindowTitle("HMS CAD/CAM — OCP Viewer Spike 4B2")
         self.viewer = OcpViewerWidget(self)
         self.setCentralWidget(self.viewer)
-        self.resize(900, 650)
+        self.resize(1100, 720)
+        self._selection_label = QLabel("Selection: 0")
+        self.statusBar().addPermanentWidget(self._selection_label, 1)
+        self.viewer.selection_changed.connect(self._show_selection)
+        self._build_camera_toolbar()
+        self._build_view_toolbar()
+        self._build_display_toolbar()
+        self._build_selection_toolbar()
+
+    def _build_camera_toolbar(self) -> None:
+        toolbar = QToolBar("Camera", self)
+        toolbar.setObjectName("CameraToolbar")
+        toolbar.addAction("Fit All", self.viewer.fit_all)
+        toolbar.addAction("Reset Iso", self.viewer.reset_isometric)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for label, mode in (
+            ("Select", InteractionMode.SELECT),
+            ("Rotate", InteractionMode.ROTATE),
+            ("Pan", InteractionMode.PAN),
+        ):
+            action = QAction(label, self, checkable=True)
+            action.setChecked(mode is InteractionMode.SELECT)
+            action.triggered.connect(
+                lambda _checked=False, selected=mode: (
+                    self.viewer.set_interaction_mode(selected)
+                )
+            )
+            group.addAction(action)
+            toolbar.addAction(action)
+        self.addToolBar(toolbar)
+
+    def _build_view_toolbar(self) -> None:
+        toolbar = QToolBar("Views", self)
+        toolbar.setObjectName("ViewToolbar")
+        for orientation in ViewOrientation:
+            action = toolbar.addAction(orientation.value.title())
+            action.triggered.connect(
+                lambda _checked=False, selected=orientation: (
+                    self.viewer.set_view_orientation(selected)
+                )
+            )
+        self.addToolBar(toolbar)
+
+    def _build_display_toolbar(self) -> None:
+        toolbar = QToolBar("Display", self)
+        toolbar.setObjectName("DisplayToolbar")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for label, mode in (
+            ("Shaded", DisplayMode.SHADED),
+            ("Wireframe", DisplayMode.WIREFRAME),
+            ("Shaded + Edges", DisplayMode.SHADED_WITH_EDGES),
+        ):
+            action = QAction(label, self, checkable=True)
+            action.setChecked(mode is DisplayMode.SHADED_WITH_EDGES)
+            action.triggered.connect(
+                lambda _checked=False, selected=mode: self.viewer.set_display_mode(selected)
+            )
+            group.addAction(action)
+            toolbar.addAction(action)
+        self.addToolBar(toolbar)
+
+    def _build_selection_toolbar(self) -> None:
+        toolbar = QToolBar("Selection", self)
+        toolbar.setObjectName("SelectionToolbar")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for kind in SelectionKind:
+            action = QAction(kind.value.title(), self, checkable=True)
+            action.setChecked(kind is SelectionKind.SOLID)
+            action.triggered.connect(
+                lambda _checked=False, selected=kind: self.viewer.set_selection_kind(selected)
+            )
+            group.addAction(action)
+            toolbar.addAction(action)
+        self.addToolBar(toolbar)
+
+    def _show_selection(self, summary: SelectionSummary) -> None:
+        if not summary.items:
+            self._selection_label.setText("Selection: 0")
+            return
+        item = summary.items[0]
+        rounded = tuple(round(value, 3) for value in item.bounds)
+        self._selection_label.setText(
+            f"Selection: {summary.count} | {item.topology.upper()} | "
+            f"{item.shape_id} | bounds={rounded}"
+        )
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Release the embedded OCCT view before closing its parent HWND."""
