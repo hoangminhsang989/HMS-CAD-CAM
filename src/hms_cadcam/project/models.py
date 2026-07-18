@@ -61,13 +61,22 @@ class SourceFileRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SourceFileRecord":
         """Create a source record from decoded manifest data."""
+        if not isinstance(data, dict):
+            raise TypeError("Source record must be an object")
+        if not all(
+            isinstance(data[field], str)
+            for field in ("source_id", "original_name", "stored_path", "sha256", "imported_at")
+        ):
+            raise TypeError("Source record text fields must be strings")
+        if type(data["size_bytes"]) is not int:
+            raise TypeError("size_bytes must be an integer")
         return cls(
-            source_id=UUID(str(data["source_id"])),
-            original_name=str(data["original_name"]),
-            stored_path=str(data["stored_path"]),
-            size_bytes=int(data["size_bytes"]),
-            sha256=str(data["sha256"]),
-            imported_at=datetime_from_json(str(data["imported_at"])),
+            source_id=UUID(data["source_id"]),
+            original_name=data["original_name"],
+            stored_path=data["stored_path"],
+            size_bytes=data["size_bytes"],
+            sha256=data["sha256"],
+            imported_at=datetime_from_json(data["imported_at"]),
         )
 
 
@@ -111,21 +120,40 @@ class ProjectManifest:
         raw_sources = data["source_files"]
         if not isinstance(raw_sources, list):
             raise TypeError("source_files must be a list")
+        if type(data["format_version"]) is not int:
+            raise TypeError("format_version must be an integer")
+        if not all(
+            isinstance(data[field], str)
+            for field in (
+                "format",
+                "application",
+                "application_version",
+                "project_id",
+                "project_name",
+                "created_at",
+                "modified_at",
+                "units",
+                "database",
+            )
+        ):
+            raise TypeError("Manifest text fields must be strings")
+        if data["active_document"] is not None and not isinstance(
+            data["active_document"], str
+        ):
+            raise TypeError("active_document must be null or a string")
         return cls(
-            format=str(data["format"]),
-            format_version=int(data["format_version"]),
-            application=str(data["application"]),
-            application_version=str(data["application_version"]),
-            project_id=UUID(str(data["project_id"])),
-            project_name=str(data["project_name"]),
-            created_at=datetime_from_json(str(data["created_at"])),
-            modified_at=datetime_from_json(str(data["modified_at"])),
-            units=UnitSystem(str(data["units"])),
+            format=data["format"],
+            format_version=data["format_version"],
+            application=data["application"],
+            application_version=data["application_version"],
+            project_id=UUID(data["project_id"]),
+            project_name=data["project_name"],
+            created_at=datetime_from_json(data["created_at"]),
+            modified_at=datetime_from_json(data["modified_at"]),
+            units=UnitSystem(data["units"]),
             source_files=tuple(SourceFileRecord.from_dict(item) for item in raw_sources),
-            active_document=(
-                None if data["active_document"] is None else str(data["active_document"])
-            ),
-            database=str(data["database"]),
+            active_document=data["active_document"],
+            database=data["database"],
         )
 
     def with_modified_time(self, value: datetime | None = None) -> "ProjectManifest":

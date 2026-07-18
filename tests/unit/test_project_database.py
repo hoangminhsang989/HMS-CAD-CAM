@@ -39,3 +39,20 @@ def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:
     corrupt.write_bytes(b"not sqlite")
     with pytest.raises(ProjectDatabaseError):
         database.validate(corrupt)
+
+
+def test_future_pragma_without_migration_table_is_not_downgraded(tmp_path) -> None:
+    path = tmp_path / "future-pragma.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA user_version = 99")
+
+    database = ProjectDatabase()
+    with pytest.raises(ProjectDatabaseError):
+        database.open_and_migrate(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 99
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='schema_migrations'"
+        ).fetchone()
+    assert table is None

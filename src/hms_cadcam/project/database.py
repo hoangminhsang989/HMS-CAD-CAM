@@ -100,6 +100,9 @@ class ProjectDatabase:
 
     def _migrate_connection(self, connection: sqlite3.Connection) -> None:
         current = self._schema_version(connection)
+        pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if current != pragma_version:
+            raise ProjectDatabaseError("Database schema versions do not match")
         if current > DATABASE_SCHEMA_VERSION:
             raise UnsupportedFormatVersionError(str(current))
         for version in range(current + 1, DATABASE_SCHEMA_VERSION + 1):

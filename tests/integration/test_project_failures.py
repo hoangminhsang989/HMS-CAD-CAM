@@ -72,6 +72,19 @@ def test_corrupt_database_is_rejected(tmp_path) -> None:
         service.open_project(session.root_path)
 
 
+@pytest.mark.parametrize("invalid_version", ["1", 1.5, True])
+def test_manifest_version_requires_a_json_integer(tmp_path, invalid_version) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Strict Manifest")
+    manifest_path = session.root_path / "project.hms.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["format_version"] = invalid_version
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ManifestDecodeError):
+        service.open_project(session.root_path)
+
+
 def test_creation_failure_removes_staging_and_final_project(tmp_path, monkeypatch) -> None:
     store = ProjectManifestStore()
     validator = ProjectValidator()
