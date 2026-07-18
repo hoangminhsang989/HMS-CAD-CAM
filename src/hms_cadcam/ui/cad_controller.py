@@ -15,6 +15,7 @@ from hms_cadcam.cad.models import (
     CadDocumentId,
     CadDocumentMetadata,
     CadFormat,
+    CadGeometryKind,
     CadImportResult,
 )
 from hms_cadcam.ui.cad_worker import CadImportTask
@@ -85,6 +86,28 @@ class CadUiController(QObject):
         )
         if path:
             self.start_import(Path(path), CadFormat.BREP)
+
+    @Slot()
+    def choose_iges(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self._window,
+            "Mở IGES/IGS",
+            "",
+            "IGES (*.iges *.igs)",
+        )
+        if path:
+            self.start_import(Path(path), CadFormat.IGES)
+
+    @Slot()
+    def choose_stl(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self._window,
+            "Mở STL",
+            "",
+            "STL (*.stl)",
+        )
+        if path:
+            self.start_import(Path(path), CadFormat.STL)
 
     def start_import(self, source_path: str | Path, cad_format: CadFormat) -> None:
         """Start or supersede one background CAD import request."""
@@ -192,6 +215,8 @@ class CadUiController(QObject):
         definitions = {
             "open_step": ("Mở STEP/STP", self.choose_step),
             "open_brep": ("Mở BREP", self.choose_brep),
+            "open_iges": ("Mở IGES/IGS", self.choose_iges),
+            "open_stl": ("Mở STL", self.choose_stl),
             "fit_all": ("Fit All", self._viewport.fit_all),
         }
         actions: dict[str, QAction] = {}
@@ -243,6 +268,13 @@ class CadUiController(QObject):
         for key, action in self.actions.items():
             if key.startswith("open_"):
                 action.setEnabled(available and not self.is_busy)
+            elif key.startswith("selection_"):
+                action.setEnabled(
+                    available
+                    and self._active_document_id is not None
+                    and self._active_metadata is not None
+                    and self._active_metadata.geometry_kind is CadGeometryKind.BREP
+                )
             else:
                 action.setEnabled(available and self._active_document_id is not None)
 
@@ -293,6 +325,10 @@ def _format_for_path(path: Path) -> CadFormat | None:
         return CadFormat.STEP
     if suffix in {".brep", ".brp"}:
         return CadFormat.BREP
+    if suffix in {".iges", ".igs"}:
+        return CadFormat.IGES
+    if suffix == ".stl":
+        return CadFormat.STL
     return None
 
 

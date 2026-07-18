@@ -52,6 +52,14 @@ class UnavailableCadKernel:
         """Return a controlled failed BREP result without loading OCP."""
         return self._failed_import(path, CadFormat.BREP)
 
+    def import_iges(self, path: str | Path) -> CadImportResult:
+        """Return a controlled failed IGES result without loading OCP."""
+        return self._failed_import(path, CadFormat.IGES)
+
+    def import_stl(self, path: str | Path) -> CadImportResult:
+        """Return a controlled failed STL result without loading OCP."""
+        return self._failed_import(path, CadFormat.STL)
+
     def release_document(self, document_id: CadDocumentId) -> None:
         """Reject document access when no backend exists."""
         del document_id

@@ -12,12 +12,14 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from OCP.BRepTools import BRepTools  # noqa: E402
+from OCP.BRepMesh import BRepMesh_IncrementalMesh  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
 from OCP.IFSelect import IFSelect_ReturnStatus  # noqa: E402
 from OCP.STEPControl import (  # noqa: E402
     STEPControl_StepModelType,
     STEPControl_Writer,
 )
+from OCP.StlAPI import StlAPI_Writer  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar, QToolButton  # noqa: E402
 
@@ -177,6 +179,12 @@ class BlockingCadKernel:
     def import_brep(self, path: str | Path) -> CadImportResult:
         return self._kernel.import_brep(path)
 
+    def import_iges(self, path: str | Path) -> CadImportResult:
+        return self._kernel.import_iges(path)
+
+    def import_stl(self, path: str | Path) -> CadImportResult:
+        return self._kernel.import_stl(path)
+
     def release_document(self, document_id: CadDocumentId) -> None:
         self.released_document_ids.append(document_id)
         self._kernel.release_document(document_id)
@@ -218,6 +226,14 @@ def _write_brep(path: Path, size: float = 25.0) -> None:
     assert BRepTools.Write_s(shape, str(path))
 
 
+def _write_stl(path: Path, *, ascii_mode: bool = True) -> None:
+    shape = BRepPrimAPI_MakeBox(18.0, 12.0, 7.0).Shape()
+    BRepMesh_IncrementalMesh(shape, 0.1)
+    writer = StlAPI_Writer()
+    writer.ASCIIMode = ascii_mode
+    assert writer.Write(shape, str(path))
+
+
 def _wait_until(application: QApplication, predicate, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate() and time.monotonic() < deadline:
@@ -245,6 +261,8 @@ def test_main_window_uses_real_viewport_and_shared_cad_actions(tmp_path: Path) -
     toolbar = window.findChild(QToolBar, "CadViewToolbar")
     assert toolbar is not None
     assert actions["open_step"] in toolbar.actions()
+    assert actions["open_iges"] in toolbar.actions()
+    assert actions["open_stl"] in toolbar.actions()
     assert actions["fit_all"] in toolbar.actions()
     menu_actions = {
         action
@@ -252,12 +270,16 @@ def test_main_window_uses_real_viewport_and_shared_cad_actions(tmp_path: Path) -
         for action in menu.actions()
     }
     assert actions["open_step"] in menu_actions
+    assert actions["open_iges"] in menu_actions
+    assert actions["open_stl"] in menu_actions
     ribbon_actions = {
         button.defaultAction()
         for button in window.findChildren(QToolButton)
         if button.objectName() == "RibbonButton" and button.defaultAction() is not None
     }
     assert actions["open_step"] in ribbon_actions
+    assert actions["open_iges"] in ribbon_actions
+    assert actions["open_stl"] in ribbon_actions
     assert actions["fit_all"] in ribbon_actions
     window.close()
 
@@ -281,6 +303,42 @@ def test_background_import_displays_step_and_brep(
     assert window.cad_controller.active_metadata is not None
     assert window.cad_controller.active_metadata.cad_format is cad_format
     assert window._import_status.text() == "CAD: Hoàn thành"
+    window.close()
+
+
+def test_mesh_disables_topology_selection_and_brep_restores_it(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    mesh = tmp_path / "box.stl"
+    brep = tmp_path / "box.brep"
+    _write_stl(mesh)
+    _write_brep(brep)
+    window, backend, _kernel = _window(tmp_path)
+    selection_actions = [
+        window.cad_controller.actions[f"selection_{mode.value}"]
+        for mode in SelectionMode
+    ]
+
+    window.cad_controller.start_import(mesh, CadFormat.STL)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    assert backend.current_document == window.cad_controller.active_document_id
+    assert all(not action.isEnabled() for action in selection_actions)
+    properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+    assert properties["Loại hình học"] == "TRIANGLE_MESH"
+    assert "không xác định" in properties["Đơn vị"].lower()
+    assert "Vertex / Triangle" in properties
+    assert "Solid / Face / Edge" not in properties
+
+    window.cad_controller.start_import(brep, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    assert all(action.isEnabled() for action in selection_actions)
+    assert window.cad_controller.actions["selection_solid"].isChecked()
     window.close()
 
 

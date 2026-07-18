@@ -44,6 +44,14 @@ class CadKernel(Protocol):
         """Import a BREP document without exposing its native shape."""
         ...
 
+    def import_iges(self, path: str | Path) -> CadImportResult:
+        """Import an IGES/IGS document without requiring a solid."""
+        ...
+
+    def import_stl(self, path: str | Path) -> CadImportResult:
+        """Import an STL triangle mesh without converting triangles to faces."""
+        ...
+
     def release_document(self, document_id: CadDocumentId) -> None:
         """Release all native references held for a document."""
         ...

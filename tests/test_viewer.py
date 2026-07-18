@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import fields, is_dataclass
+from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from OCP.BRepMesh import BRepMesh_IncrementalMesh  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
+from OCP.StlAPI import StlAPI_Writer  # noqa: E402
 from OCP.TopAbs import TopAbs_ShapeEnum  # noqa: E402
 from OCP.TopExp import TopExp  # noqa: E402
 from OCP.TopTools import TopTools_IndexedMapOfShape  # noqa: E402
@@ -169,6 +172,16 @@ class FakeLifecycle:
         self.display_modes.append(mode)
         return self.presentation
 
+    def replace_triangulation(self, triangulation, mode: DisplayMode):
+        assert triangulation.NbNodes() > 0
+        assert triangulation.NbTriangles() > 0
+        if self.presentation is not None:
+            self.removed += 1
+        self.presentation = object()
+        self.replaced += 1
+        self.display_modes.append(mode)
+        return self.presentation
+
     def apply_display_mode(self, presentation, mode: DisplayMode) -> None:
         assert presentation is self.presentation
         self.display_modes.append(mode)
@@ -257,6 +270,14 @@ def _assert_no_topods(value: object) -> None:
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _write_stl(path: Path) -> None:
+    shape = BRepPrimAPI_MakeBox(4.0, 5.0, 6.0).Shape()
+    BRepMesh_IncrementalMesh(shape, 0.1)
+    writer = StlAPI_Writer()
+    writer.ASCIIMode = True
+    assert writer.Write(shape, str(path))
 
 
 def test_viewer_models_and_protocol_are_ocp_free() -> None:
@@ -404,6 +425,32 @@ def test_ocp_backend_replaces_documents_preserves_old_on_lookup_error_and_clears
     assert lifecycle.presentation is None
     assert selection.document_id is None
     assert input_controller.reset_count == 4
+
+
+def test_ocp_backend_switches_brep_mesh_and_brep_safely(tmp_path: Path) -> None:
+    source = tmp_path / "box.stl"
+    _write_stl(source)
+    kernel = OcpCadKernel()
+    brep = kernel.create_box(1.0, 2.0, 3.0)
+    mesh_result = kernel.import_stl(source)
+    assert mesh_result.document_id is not None
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeLifecycle()
+    selection = FakeSelection()
+    input_controller = FakeInput()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = input_controller
+
+    backend.display_document(brep)
+    assert selection.document_id == brep
+    backend.display_document(mesh_result.document_id)
+    assert selection.document_id is None
+    backend.display_document(brep)
+    assert selection.document_id == brep
+    assert lifecycle.replaced == 3
+    assert lifecycle.removed == 2
+    assert input_controller.reset_count == 3
 
 
 def test_ocp_backend_camera_display_selection_and_resize_mapping() -> None:

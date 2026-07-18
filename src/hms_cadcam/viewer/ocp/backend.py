@@ -7,7 +7,7 @@ import logging
 from OCP.V3d import V3d_TypeOfOrientation
 
 from hms_cadcam.cad.kernel import CadKernel
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.cad.ocp import OcpCadKernel
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
@@ -78,14 +78,26 @@ class OcpCadViewportBackend:
 
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
-        shape = self._kernel._resolve_shape(document_id)
-        presentation = self._lifecycle.replace_shape(shape, self._display_mode)
+        metadata = self._kernel.get_document_metadata(document_id)
+        shape = None
+        if metadata.geometry_kind is CadGeometryKind.BREP:
+            shape = self._kernel._resolve_shape(document_id)
+            presentation = self._lifecycle.replace_shape(shape, self._display_mode)
+        else:
+            triangulation = self._kernel._resolve_triangulation(document_id)
+            presentation = self._lifecycle.replace_triangulation(
+                triangulation,
+                self._display_mode,
+            )
         if self._input is not None:
             self._input.reset()
         try:
             selection = self._require_selection()
-            selection.bind_document(document_id, shape, presentation)
-            selection.set_mode(self._selection_mode)
+            if shape is None:
+                selection.clear_document()
+            else:
+                selection.bind_document(document_id, shape, presentation)
+                selection.set_mode(self._selection_mode)
         except Exception:
             self._lifecycle.clear()
             self._document_id = None

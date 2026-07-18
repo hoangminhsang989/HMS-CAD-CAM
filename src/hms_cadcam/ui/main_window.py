@@ -105,6 +105,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.project_controller.actions["import"])
         file_menu.addAction(self.cad_controller.actions["open_step"])
         file_menu.addAction(self.cad_controller.actions["open_brep"])
+        file_menu.addAction(self.cad_controller.actions["open_iges"])
+        file_menu.addAction(self.cad_controller.actions["open_stl"])
         file_menu.addAction(self.project_controller.actions["open"])
         self._recent_menu = file_menu.addMenu("Dự án gần đây")
         self._recent_menu.aboutToShow.connect(
@@ -131,7 +133,14 @@ class MainWindow(QMainWindow):
         about_action.setEnabled(False)
         help_menu.addAction(about_action)
 
-        for key in ("open_step", "open_brep", "fit_all", "view_isometric"):
+        for key in (
+            "open_step",
+            "open_brep",
+            "open_iges",
+            "open_stl",
+            "fit_all",
+            "view_isometric",
+        ):
             cad_viewer_menu.addAction(self.cad_controller.actions[key])
         directions_menu = cad_viewer_menu.addMenu("Hướng nhìn")
         for direction in ("top", "bottom", "front", "back", "left", "right"):
@@ -168,6 +177,8 @@ class MainWindow(QMainWindow):
         for key in (
             "open_step",
             "open_brep",
+            "open_iges",
+            "open_stl",
             "fit_all",
             "view_isometric",
             "display_shaded_with_edges",
@@ -315,18 +326,30 @@ class MainWindow(QMainWindow):
         if metadata is None:
             self._set_properties((("CAD document", "Chưa có"),))
             return
-        counts = metadata.topology_counts
-        self._set_properties(
-            (
-                ("Document ID", str(metadata.document_id)),
-                ("Định dạng", metadata.cad_format.value.upper()),
+        rows = [
+            ("Document ID", str(metadata.document_id)),
+            ("Định dạng", metadata.cad_format.value.upper()),
+            ("Loại hình học", metadata.geometry_kind.value.upper()),
+            ("Đơn vị", _format_units(metadata)),
+        ]
+        if metadata.topology_counts is not None:
+            counts = metadata.topology_counts
+            rows.append(
                 (
                     "Solid / Face / Edge",
                     f"{counts.solids} / {counts.faces} / {counts.edges}",
-                ),
-                ("Bounding box", _format_bounds(metadata.bounding_box)),
+                )
             )
-        )
+        if metadata.mesh_statistics is not None:
+            statistics = metadata.mesh_statistics
+            rows.append(
+                (
+                    "Vertex / Triangle",
+                    f"{statistics.vertices} / {statistics.triangles}",
+                )
+            )
+        rows.append(("Bounding box", _format_bounds(metadata.bounding_box)))
+        self._set_properties(tuple(rows))
 
     def _set_properties(self, rows: tuple[tuple[str, str], ...]) -> None:
         self._properties_table.setRowCount(len(rows))
@@ -338,14 +361,29 @@ class MainWindow(QMainWindow):
         metadata = self._active_document_metadata
         if metadata is None:
             return
-        counts = metadata.topology_counts
         document = QTreeWidgetItem(["CAD document", metadata.cad_format.value.upper()])
         document.addChild(QTreeWidgetItem(["Document ID", str(metadata.document_id)]))
-        document.addChild(
-            QTreeWidgetItem(
-                ["Topology", f"S={counts.solids}, F={counts.faces}, E={counts.edges}"]
+        document.addChild(QTreeWidgetItem(["Geometry", metadata.geometry_kind.value]))
+        if metadata.topology_counts is not None:
+            counts = metadata.topology_counts
+            document.addChild(
+                QTreeWidgetItem(
+                    [
+                        "Topology",
+                        f"S={counts.solids}, F={counts.faces}, E={counts.edges}",
+                    ]
+                )
             )
-        )
+        if metadata.mesh_statistics is not None:
+            statistics = metadata.mesh_statistics
+            document.addChild(
+                QTreeWidgetItem(
+                    [
+                        "Mesh",
+                        f"V={statistics.vertices}, T={statistics.triangles}",
+                    ]
+                )
+            )
         document.addChild(
             QTreeWidgetItem(["Bounding box", _format_bounds(metadata.bounding_box)])
         )
@@ -365,7 +403,15 @@ class MainWindow(QMainWindow):
             for candidate in candidates:
                 if (
                     candidate.suffix.lower()
-                    in {".step", ".stp", ".brep", ".brp"}
+                    in {
+                        ".step",
+                        ".stp",
+                        ".brep",
+                        ".brp",
+                        ".iges",
+                        ".igs",
+                        ".stl",
+                    }
                     and candidate.is_file()
                 ):
                     return candidate
@@ -397,3 +443,9 @@ def _format_bounds(bounds) -> str:
         bounds.z_max,
     )
     return ", ".join(f"{value:.3f}" for value in values)
+
+
+def _format_units(metadata: CadDocumentMetadata) -> str:
+    if metadata.cad_format.value == "stl":
+        return "Không xác định (STL không lưu đơn vị đáng tin cậy)"
+    return metadata.units.value.upper()

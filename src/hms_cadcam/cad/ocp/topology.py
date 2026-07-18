@@ -7,6 +7,7 @@ from OCP.Bnd import Bnd_Box
 from OCP.TopAbs import TopAbs_ShapeEnum
 from OCP.TopExp import TopExp
 from OCP.TopTools import TopTools_IndexedMapOfShape
+from OCP.Poly import Poly_Triangulation
 from OCP.TopoDS import TopoDS_Shape
 
 from hms_cadcam.cad.models import BoundingBox, TopologyCounts
@@ -26,6 +27,25 @@ def get_topology_counts(shape: TopoDS_Shape) -> TopologyCounts:
         faces=_count_shapes(shape, TopAbs_ShapeEnum.TopAbs_FACE),
         edges=_count_shapes(shape, TopAbs_ShapeEnum.TopAbs_EDGE),
     )
+
+
+def get_mesh_bounding_box(triangulation: Poly_Triangulation) -> BoundingBox:
+    """Return bounds computed directly from triangle-mesh vertices."""
+    if triangulation.NbNodes() <= 0:
+        raise ValueError("Cannot bound an empty triangle mesh")
+    first = triangulation.Node(1)
+    x_min = x_max = first.X()
+    y_min = y_max = first.Y()
+    z_min = z_max = first.Z()
+    for index in range(2, triangulation.NbNodes() + 1):
+        point = triangulation.Node(index)
+        x_min = min(x_min, point.X())
+        y_min = min(y_min, point.Y())
+        z_min = min(z_min, point.Z())
+        x_max = max(x_max, point.X())
+        y_max = max(y_max, point.Y())
+        z_max = max(z_max, point.Z())
+    return BoundingBox(x_min, y_min, z_min, x_max, y_max, z_max)
 
 
 def _count_shapes(shape: TopoDS_Shape, shape_type: TopAbs_ShapeEnum) -> int:

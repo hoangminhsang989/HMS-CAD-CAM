@@ -62,10 +62,17 @@ class CadImportTask(QRunnable):
         self._report_progress("Đang đọc")
         self._report_progress("Đang chuyển đổi")
         try:
-            if self._cad_format is CadFormat.STEP:
-                result = self._kernel.import_step(self._source_path)
-            else:
-                result = self._kernel.import_brep(self._source_path)
+            method_names = {
+                CadFormat.STEP: "import_step",
+                CadFormat.BREP: "import_brep",
+                CadFormat.IGES: "import_iges",
+                CadFormat.STL: "import_stl",
+            }
+            method_name = method_names.get(self._cad_format)
+            if method_name is None:
+                raise ValueError(f"Định dạng CAD không hỗ trợ: {self._cad_format}")
+            importer = getattr(self._kernel, method_name)
+            result = importer(self._source_path)
         except Exception as error:
             with self._state_lock:
                 should_emit_error = not self._abandoned

@@ -54,6 +54,8 @@ class RibbonWidget(QTabWidget):
                         (
                             self._cad_actions.get("open_step", "Mở STEP"),
                             self._cad_actions.get("open_brep", "Mở BREP"),
+                            self._cad_actions.get("open_iges", "Mở IGES"),
+                            self._cad_actions.get("open_stl", "Mở STL"),
                             self._cad_actions.get("fit_all", "Fit All"),
                         ),
                     ),

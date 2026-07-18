@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepTools import BRepTools
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.IGESControl import IGESControl_Writer
 from OCP.IFSelect import IFSelect_ReturnStatus
 from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
+from OCP.StlAPI import StlAPI_Writer
 from OCP.TopoDS import TopoDS_Shape
+from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
 
 from hms_cadcam.cad.exceptions import (
     CadDocumentNotFoundError,
@@ -18,7 +24,12 @@ from hms_cadcam.cad.exceptions import (
 )
 from hms_cadcam.cad.factory import CadKernelFactory
 from hms_cadcam.cad.kernel import CadKernel
-from hms_cadcam.cad.models import CadFormat, CadImportResult
+from hms_cadcam.cad.models import (
+    CadFormat,
+    CadGeometryKind,
+    CadImportResult,
+    CadUnits,
+)
 from hms_cadcam.cad.ocp import OcpCadKernel
 from hms_cadcam.cad.ocp.importer import OcpImportPayload
 from hms_cadcam.cad.unavailable import UnavailableCadKernel
@@ -39,8 +50,35 @@ def _write_brep(path: Path) -> None:
     assert BRepTools.Write_s(shape, str(path))
 
 
+def _write_iges(path: Path, *, surface: bool = False) -> None:
+    if surface:
+        shape = BRepBuilderAPI_MakeFace(
+            gp_Pln(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)),
+            -20.0,
+            20.0,
+            -15.0,
+            15.0,
+        ).Shape()
+        mode = 0
+    else:
+        shape = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape()
+        mode = 1
+    writer = IGESControl_Writer("MM", mode)
+    assert writer.AddShape(shape)
+    assert writer.Write(str(path))
+
+
+def _write_stl(path: Path, *, ascii_mode: bool) -> None:
+    shape = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape()
+    BRepMesh_IncrementalMesh(shape, 0.1)
+    writer = StlAPI_Writer()
+    writer.ASCIIMode = ascii_mode
+    assert writer.Write(shape, str(path))
+
+
 def _assert_no_topods(value: object) -> None:
     assert not isinstance(value, TopoDS_Shape)
+    assert not type(value).__module__.startswith("OCP")
     if is_dataclass(value) and not isinstance(value, type):
         for field in fields(value):
             _assert_no_topods(getattr(value, field.name))
@@ -137,9 +175,64 @@ def test_brep_import_returns_valid_metadata(tmp_path: Path) -> None:
     _assert_no_topods(result)
 
 
+@pytest.mark.parametrize("surface", (False, True), ids=("solid", "surface"))
+def test_iges_import_accepts_solid_and_non_solid_and_preserves_source(
+    tmp_path: Path,
+    surface: bool,
+) -> None:
+    source = tmp_path / ("surface.igs" if surface else "solid.iges")
+    _write_iges(source, surface=surface)
+    original_hash = sha256(source.read_bytes()).digest()
+
+    result = OcpCadKernel().import_iges(source)
+
+    assert result.success
+    assert result.metadata is not None
+    assert result.detected_format is CadFormat.IGES
+    assert result.metadata.geometry_kind is CadGeometryKind.BREP
+    assert result.metadata.mesh_statistics is None
+    assert result.metadata.topology_counts is not None
+    if surface:
+        assert result.metadata.topology_counts.solids == 0
+        assert result.metadata.topology_counts.faces >= 1
+    else:
+        assert result.metadata.topology_counts.solids >= 1
+    assert sha256(source.read_bytes()).digest() == original_hash
+    _assert_no_topods(result)
+
+
+@pytest.mark.parametrize("ascii_mode", (True, False), ids=("ascii", "binary"))
+def test_stl_import_is_triangle_mesh_with_unknown_units_and_preserves_source(
+    tmp_path: Path,
+    ascii_mode: bool,
+) -> None:
+    source = tmp_path / ("box_ascii.stl" if ascii_mode else "box_binary.stl")
+    _write_stl(source, ascii_mode=ascii_mode)
+    original_hash = sha256(source.read_bytes()).digest()
+
+    result = OcpCadKernel().import_stl(source)
+
+    assert result.success
+    assert result.metadata is not None
+    assert result.detected_format is CadFormat.STL
+    assert result.metadata.geometry_kind is CadGeometryKind.TRIANGLE_MESH
+    assert result.metadata.units is CadUnits.UNKNOWN
+    assert result.metadata.topology_counts is None
+    assert result.metadata.mesh_statistics is not None
+    assert result.metadata.mesh_statistics.vertices == 8
+    assert result.metadata.mesh_statistics.triangles == 12
+    assert sha256(source.read_bytes()).digest() == original_hash
+    _assert_no_topods(result)
+
+
 @pytest.mark.parametrize(
     ("method_name", "file_name"),
-    (("import_step", "broken.step"), ("import_brep", "broken.brep")),
+    (
+        ("import_step", "broken.step"),
+        ("import_brep", "broken.brep"),
+        ("import_iges", "broken.iges"),
+        ("import_stl", "broken.stl"),
+    ),
 )
 def test_corrupt_file_returns_controlled_failure(
     tmp_path: Path,
@@ -161,6 +254,23 @@ def test_missing_file_returns_controlled_failure(tmp_path: Path) -> None:
     result = OcpCadKernel().import_step(tmp_path / "missing.step")
     assert not result.success
     assert "does not exist" in result.errors[0]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "file_name"),
+    (("import_iges", "empty.igs"), ("import_stl", "empty.stl")),
+)
+def test_empty_iges_and_stl_return_controlled_failure(
+    tmp_path: Path,
+    method_name: str,
+    file_name: str,
+) -> None:
+    source = tmp_path / file_name
+    source.write_bytes(b"")
+    result = getattr(OcpCadKernel(), method_name)(source)
+    assert not result.success
+    assert result.document_id is None
+    assert "empty" in result.errors[0].lower()
 
 
 def test_null_shape_is_rejected_as_failed_import(tmp_path: Path, monkeypatch) -> None:

@@ -6,9 +6,10 @@
 - Giai đoạn 2: hệ thống dự án thư mục `.HMS` cơ bản đã hoàn thành.
 - Giai đoạn 3: Session Lock, Autosave và Recovery đã hoàn thành.
 - Giai đoạn 4: CAD Kernel và CAD Viewer sản phẩm đã hoàn thành phạm vi được duyệt.
+- Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành phạm vi được duyệt.
 - Môi trường mục tiêu hiện tại: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
-- Commit mới nhất: `4494513`.
-- Toàn bộ kiểm thử: **105 passed**.
+- Trạng thái này được cập nhật cùng commit hoàn thành Giai đoạn 5A.
+- Toàn bộ kiểm thử: **115 passed**.
 
 ## Kiến trúc dự án hiện có
 
@@ -24,7 +25,15 @@
 
 - CAD Kernel `cadquery-ocp-novtk` / Open CASCADE đã được tích hợp.
 - `OcpCadKernel` quản lý document và shape nội bộ theo `CadDocumentId`.
-- Đã hỗ trợ import STEP/STP và BREP.
+- Đã hỗ trợ import STEP/STP, BREP, IGES/IGS và STL.
+- IGES chấp nhận BREP wire, surface, shell, solid hoặc compound được reader
+  transfer thành công; không bắt buộc phải có solid.
+- STL được giữ trực tiếp dưới dạng triangle mesh, không chuyển từng tam giác
+  thành BREP face.
+- Metadata phân biệt rõ `BREP` và `TRIANGLE_MESH`; BREP có topology counts,
+  mesh có vertex/triangle statistics và không có topology BREP giả.
+- Đơn vị STL là `unknown` vì định dạng không cung cấp đơn vị đáng tin cậy;
+  Giai đoạn 5A chưa có hộp thoại chọn hoặc hiệu chỉnh đơn vị.
 - Import lỗi không làm mất document đang hiển thị.
 - Import mới thay document cũ và giải phóng document không còn sử dụng.
 - Đóng hoặc đổi project sẽ clear viewer và release document hiện tại.
@@ -36,6 +45,8 @@
 - Lifecycle graphic driver, viewer, context, view và AIS presentation được quản lý rõ ràng.
 - Camera hỗ trợ rotate, pan, zoom, Fit All và bảy hướng nhìn chuẩn.
 - Display mode hỗ trợ Shaded, Wireframe và Shaded with edges.
+- STL được hiển thị bằng `AIS_Triangulation`; Solid/Face/Edge selection bị vô
+  hiệu hóa khi mesh đang active và được khôi phục khi chuyển lại BREP.
 - Selection hỗ trợ Solid, Face và Edge.
 - UI chỉ nhận selection ID, topology và bounding box; không nhận object OCP.
 - Resize, clear, đổi document và close đã được kiểm tra an toàn.
@@ -50,7 +61,6 @@
 
 ## Giới hạn còn lại
 
-- Chưa hỗ trợ import IGES hoặc STL.
 - Chưa triển khai measurement hoặc assembly tree.
 - Chưa triển khai CAD healing, tessellation sản phẩm hoặc lưu CAD document vào `.HMS`.
 - Chưa triển khai CAM, toolpath, mô phỏng, Post Processor hoặc Setup Sheet.

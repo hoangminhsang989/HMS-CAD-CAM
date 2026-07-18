@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import ctypes
 
-from OCP.AIS import AIS_InteractiveContext, AIS_Shape
+from OCP.AIS import (
+    AIS_InteractiveContext,
+    AIS_InteractiveObject,
+    AIS_Shape,
+    AIS_Triangulation,
+)
 from OCP.Aspect import Aspect_DisplayConnection
 from OCP.OpenGl import OpenGl_GraphicDriver
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+from OCP.Poly import Poly_Triangulation
 from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_View, V3d_Viewer
 from OCP.WNT import WNT_Window
@@ -32,7 +38,7 @@ class OcpViewportLifecycle:
         self._context: AIS_InteractiveContext | None = None
         self._view: V3d_View | None = None
         self._window: WNT_Window | None = None
-        self._presentation: AIS_Shape | None = None
+        self._presentation: AIS_InteractiveObject | None = None
         self._closed = False
 
     @property
@@ -52,7 +58,7 @@ class OcpViewportLifecycle:
         return self._view
 
     @property
-    def presentation(self) -> AIS_Shape | None:
+    def presentation(self) -> AIS_InteractiveObject | None:
         return self._presentation
 
     def initialize(self, native_window_id: int) -> None:
@@ -86,9 +92,29 @@ class OcpViewportLifecycle:
         """Transactionally replace one AIS presentation and preserve old on error."""
         if shape.IsNull():
             raise ValueError("Cannot display a null CAD shape")
+        new_presentation = AIS_Shape(shape)
+        self._replace_presentation(new_presentation, mode)
+        return new_presentation
+
+    def replace_triangulation(
+        self,
+        triangulation: Poly_Triangulation,
+        mode: DisplayMode,
+    ) -> AIS_Triangulation:
+        """Transactionally display a mesh without creating BREP faces."""
+        if triangulation.NbNodes() <= 0 or triangulation.NbTriangles() <= 0:
+            raise ValueError("Cannot display an empty triangle mesh")
+        new_presentation = AIS_Triangulation(triangulation)
+        self._replace_presentation(new_presentation, mode)
+        return new_presentation
+
+    def _replace_presentation(
+        self,
+        new_presentation: AIS_InteractiveObject,
+        mode: DisplayMode,
+    ) -> None:
         context = self.context
         old_presentation = self._presentation
-        new_presentation = AIS_Shape(shape)
         try:
             context.Display(new_presentation, False)
             self.apply_display_mode(new_presentation, mode, False)
@@ -99,19 +125,21 @@ class OcpViewportLifecycle:
             raise
         self._presentation = new_presentation
         self.view.Redraw()
-        return new_presentation
 
     def apply_display_mode(
         self,
-        presentation: AIS_Shape,
+        presentation: AIS_InteractiveObject,
         mode: DisplayMode,
         update_viewer: bool = True,
     ) -> None:
         """Apply wireframe, shaded or shaded-with-edges to one AIS object."""
-        drawer = presentation.Attributes()
-        drawer.SetFaceBoundaryDraw(mode is DisplayMode.SHADED_WITH_EDGES)
-        presentation.SynchronizeAspects()
-        display_index = 0 if mode is DisplayMode.WIREFRAME else 1
+        if isinstance(presentation, AIS_Shape):
+            drawer = presentation.Attributes()
+            drawer.SetFaceBoundaryDraw(mode is DisplayMode.SHADED_WITH_EDGES)
+            presentation.SynchronizeAspects()
+            display_index = 0 if mode is DisplayMode.WIREFRAME else 1
+        else:
+            display_index = 0
         self.context.SetDisplayMode(presentation, display_index, False)
         self.context.Redisplay(presentation, update_viewer, True)
 

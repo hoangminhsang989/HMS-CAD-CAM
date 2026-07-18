@@ -28,6 +28,21 @@ class CadFormat(str, Enum):
     GENERATED = "generated"
     STEP = "step"
     BREP = "brep"
+    IGES = "iges"
+    STL = "stl"
+
+
+class CadGeometryKind(str, Enum):
+    """Kernel-independent representation retained for one CAD document."""
+
+    BREP = "brep"
+    TRIANGLE_MESH = "triangle_mesh"
+
+
+class CadUnits(str, Enum):
+    """Unit information known at the current import boundary."""
+
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +56,18 @@ class TopologyCounts:
     def __post_init__(self) -> None:
         if min(self.solids, self.faces, self.edges) < 0:
             raise ValueError("Topology counts must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class MeshStatistics:
+    """Counts describing a triangle mesh without inventing BREP topology."""
+
+    vertices: int
+    triangles: int
+
+    def __post_init__(self) -> None:
+        if self.vertices < 0 or self.triangles < 0:
+            raise ValueError("Mesh statistics must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +106,19 @@ class CadDocumentMetadata:
 
     document_id: CadDocumentId
     cad_format: CadFormat
-    topology_counts: TopologyCounts
     bounding_box: BoundingBox
+    geometry_kind: CadGeometryKind
+    units: CadUnits
+    topology_counts: TopologyCounts | None = None
+    mesh_statistics: MeshStatistics | None = None
     source_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.geometry_kind is CadGeometryKind.BREP:
+            if self.topology_counts is None or self.mesh_statistics is not None:
+                raise ValueError("BREP metadata requires only topology counts")
+        elif self.topology_counts is not None or self.mesh_statistics is None:
+            raise ValueError("Triangle-mesh metadata requires only mesh statistics")
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,8 +7,11 @@ from hms_cadcam.cad.models import (
     CadDocumentId,
     CadDocumentMetadata,
     CadFormat,
+    CadGeometryKind,
     CadImportResult,
     CadKernelStatus,
+    CadUnits,
+    MeshStatistics,
     TopologyCounts,
 )
 
@@ -17,9 +20,12 @@ __all__ = [
     "CadDocumentId",
     "CadDocumentMetadata",
     "CadFormat",
+    "CadGeometryKind",
     "CadImportResult",
     "CadKernel",
     "CadKernelFactory",
     "CadKernelStatus",
+    "CadUnits",
+    "MeshStatistics",
     "TopologyCounts",
 ]
