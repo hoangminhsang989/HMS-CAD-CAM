@@ -379,7 +379,13 @@ def test_widget_displays_replaces_clears_and_ignores_signal_after_close() -> Non
     backend = MockViewportBackend()
     widget = CadViewportWidget(kernel, backend)
     received: list[tuple[SelectionMetadata, ...]] = []
+    contextual_received: list[
+        tuple[CadDocumentId | None, tuple[SelectionMetadata, ...]]
+    ] = []
     widget.selection_changed.connect(received.append)
+    widget.selection_context_changed.connect(
+        lambda document_id, items: contextual_received.append((document_id, items))
+    )
     widget.display_document(first)
     widget.display_document(second)
     assert backend.display_history == [first, second]
@@ -392,9 +398,11 @@ def test_widget_displays_replaces_clears_and_ignores_signal_after_close() -> Non
     )
     backend.emit_selection((item,))
     assert received == [(item,)]
+    assert contextual_received == [(second, (item,))]
     widget.clear()
     assert backend.displayed_document is None
     assert received[-1] == ()
+    assert contextual_received[-1] == (None, ())
     widget.shutdown()
     QTimer.singleShot(0, lambda: backend.emit_selection((item,)))
     application.processEvents()

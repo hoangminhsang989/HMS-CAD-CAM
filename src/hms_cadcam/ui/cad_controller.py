@@ -40,7 +40,9 @@ class CadUiController(QObject):
     progress_changed = Signal(str)
     busy_changed = Signal(bool)
     selection_changed = Signal(object)
+    selection_context_changed = Signal(object, object)
     measurement_changed = Signal(object)
+    measurement_context_changed = Signal(object, object)
 
     def __init__(
         self,
@@ -88,27 +90,54 @@ class CadUiController(QObject):
     @Slot(object)
     def handle_selection(self, items: object) -> None:
         """Measure valid selection IDs without exposing native shapes to UI."""
+        source_document_id = self._active_document_id
+        if isinstance(items, tuple) and items:
+            first_item = items[0]
+            if isinstance(first_item, SelectionMetadata):
+                source_document_id = first_item.document_id
+        self._handle_selection_event(source_document_id, items)
+
+    @Slot(object, object)
+    def handle_selection_event(
+        self,
+        source_document_id: object,
+        items: object,
+    ) -> None:
+        """Ignore queued selection emitted for a document that is no longer active."""
+        if source_document_id is not None and not isinstance(
+            source_document_id, CadDocumentId
+        ):
+            return
+        self._handle_selection_event(source_document_id, items)
+
+    def _handle_selection_event(
+        self,
+        source_document_id: CadDocumentId | None,
+        items: object,
+    ) -> None:
         if not isinstance(items, tuple) or not all(
             isinstance(item, SelectionMetadata) for item in items
         ):
             return
-        self._active_selection = items
-        self.selection_changed.emit(items)
-        if not items:
-            self._reset_vertex_pair()
-            self.measurement_changed.emit(())
-            return
         document_id = self._active_document_id
         metadata = self._active_metadata
+        if source_document_id != document_id:
+            return
+        if not items:
+            self._active_selection = ()
+            self._reset_vertex_pair()
+            self._emit_selection(())
+            self._emit_measurements(())
+            return
         if (
             document_id is None
             or metadata is None
             or metadata.geometry_kind is not CadGeometryKind.BREP
             or any(item.document_id != document_id for item in items)
         ):
-            self._reset_vertex_pair()
-            self.measurement_changed.emit(())
             return
+        self._active_selection = items
+        self._emit_selection(items)
         if all(item.topology is SelectionMode.VERTEX for item in items):
             self._vertex_pair = tuple(item.selection_id for item in items[:2])
         else:
@@ -240,8 +269,8 @@ class CadUiController(QObject):
         self._active_metadata = result.metadata
         self._active_selection = ()
         self._reset_vertex_pair()
-        self.selection_changed.emit(())
-        self.measurement_changed.emit(())
+        self._emit_selection(())
+        self._emit_measurements(())
         if old_document_id is not None and old_document_id != result.document_id:
             self._release_document(old_document_id)
         self.progress_changed.emit("Hoàn thành")
@@ -366,7 +395,7 @@ class CadUiController(QObject):
         if document_id is not None:
             self._release_document(document_id)
         self.document_changed.emit(None)
-        self.measurement_changed.emit(())
+        self._emit_measurements(())
         self.progress_changed.emit("Sẵn sàng")
         self._update_action_states()
 
@@ -407,15 +436,15 @@ class CadUiController(QObject):
             self.message.emit(
                 "Không thể đo selection BREP; selection hiện tại được giữ nguyên."
             )
-            self.measurement_changed.emit(())
+            self._emit_measurements(())
             return
-        self.measurement_changed.emit(tuple(results))
+        self._emit_measurements(tuple(results))
 
     def _set_selection_mode(self, mode: SelectionMode) -> None:
         self._active_selection = ()
         self._reset_vertex_pair()
-        self.selection_changed.emit(())
-        self.measurement_changed.emit(())
+        self._emit_selection(())
+        self._emit_measurements(())
         self._viewport.set_selection_mode(mode)
 
     def _measure_active_document(self) -> None:
@@ -426,14 +455,25 @@ class CadUiController(QObject):
             or metadata is None
             or metadata.geometry_kind is not CadGeometryKind.BREP
         ):
-            self.measurement_changed.emit(())
+            self._emit_measurements(())
             return
         try:
             result = self._measurement_service.measure_document(document_id)
         except (RuntimeError, TypeError, ValueError):
             logger.exception("Không thể đo bounding dimensions của document BREP")
             return
-        self.measurement_changed.emit((result,))
+        self._emit_measurements((result,))
+
+    def _emit_selection(self, items: tuple[SelectionMetadata, ...]) -> None:
+        self.selection_changed.emit(items)
+        self.selection_context_changed.emit(self._active_document_id, items)
+
+    def _emit_measurements(
+        self,
+        results: tuple[MeasurementResult, ...],
+    ) -> None:
+        self.measurement_changed.emit(results)
+        self.measurement_context_changed.emit(self._active_document_id, results)
 
     def _reset_vertex_pair(self) -> None:
         self._vertex_pair = ()

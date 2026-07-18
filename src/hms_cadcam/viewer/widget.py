@@ -41,6 +41,7 @@ class CadViewportWidget(QWidget):
     """Own backend lifecycle without importing or exposing native CAD objects."""
 
     selection_changed = Signal(object)
+    selection_context_changed = Signal(object, object)
     status_changed = Signal(object)
 
     def __init__(
@@ -62,6 +63,7 @@ class CadViewportWidget(QWidget):
         self._native_painting = self._status.available
         self._initialized = False
         self._closed = False
+        self._selection_document_id: CadDocumentId | None = None
         self._status_label = QLabel(self)
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -92,17 +94,25 @@ class CadViewportWidget(QWidget):
         """Display a kernel-owned document and report presentation success."""
         self.initialize_viewport()
         if self._initialized:
-            return self._invoke(
+            previous_document_id = self._selection_document_id
+            self._selection_document_id = document_id
+            displayed = self._invoke(
                 "display document",
                 self._backend.display_document,
                 document_id,
                 clear_error=True,
             )
+            if not displayed:
+                self._selection_document_id = previous_document_id
+            return displayed
         return False
 
     def clear(self) -> None:
         """Clear the presentation and all selection metadata."""
-        self._invoke("clear", self._backend.clear, clear_error=True)
+        previous_document_id = self._selection_document_id
+        self._selection_document_id = None
+        if not self._invoke("clear", self._backend.clear, clear_error=True):
+            self._selection_document_id = previous_document_id
 
     def fit_all(self) -> None:
         """Fit the displayed document into the current widget."""
@@ -140,6 +150,7 @@ class CadViewportWidget(QWidget):
         if self._closed:
             return
         self._closed = True
+        self._selection_document_id = None
         try:
             self._backend.close()
         except Exception:
@@ -227,6 +238,10 @@ class CadViewportWidget(QWidget):
     def _receive_selection(self, items: tuple[SelectionMetadata, ...]) -> None:
         if not self._closed:
             self.selection_changed.emit(items)
+            self.selection_context_changed.emit(
+                self._selection_document_id,
+                items,
+            )
 
     def _invoke(
         self,

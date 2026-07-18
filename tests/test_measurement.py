@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
-from math import pi, sqrt
+from dataclasses import FrozenInstanceError, fields, is_dataclass
+from math import inf, nan, pi, sqrt
 
 import pytest
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_Transform
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
-from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Pnt, gp_Trsf
 
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
@@ -131,16 +131,20 @@ def test_circle_arc_and_cylinder_measurements() -> None:
         cylinder, CadFormat.GENERATED
     ).document_id
     service = OcpMeasurementService(kernel)
-    circular = []
+    circular_results = []
     edge_count = kernel.get_topology_counts(cylinder_id).edges
     for index in range(1, edge_count + 1):
         result = service.measure_selection(
             cylinder_id, _selection_id(cylinder_id, "edge", index)
         )
-        circular.extend(
-            value for value in result.values if isinstance(value, CircularEdgeMeasurement)
-        )
-    assert circular
+        if any(
+            isinstance(value, CircularEdgeMeasurement) for value in result.values
+        ):
+            circular_results.append(result)
+    circular = [
+        _value(result, CircularEdgeMeasurement) for result in circular_results
+    ]
+    assert circular_results
     assert all(
         value.radius == pytest.approx(5.0, abs=MEASUREMENT_TOLERANCE)
         for value in circular
@@ -150,6 +154,11 @@ def test_circle_arc_and_cylinder_measurements() -> None:
         for value in circular
     )
     assert any(value.is_full_circle for value in circular)
+    assert all(
+        _value(result, EdgeLengthMeasurement).length
+        == pytest.approx(10.0 * pi, abs=MEASUREMENT_TOLERANCE)
+        for result in circular_results
+    )
     volume = _value(
         service.measure_selection(
             cylinder_id, _selection_id(cylinder_id, "solid", 1)
@@ -167,12 +176,19 @@ def test_circle_arc_and_cylinder_measurements() -> None:
     circle = gp_Circ(gp_Ax2(gp_Pnt(), gp_Dir(0.0, 0.0, 1.0)), 9.0)
     arc = BRepBuilderAPI_MakeEdge(circle, 0.0, pi / 2.0).Edge()
     arc_id = kernel._documents.add_brep(arc, CadFormat.GENERATED).document_id
-    arc_value = _value(
-        service.measure_selection(arc_id, _selection_id(arc_id, "edge", 1)),
-        CircularEdgeMeasurement,
+    arc_result = service.measure_selection(
+        arc_id, _selection_id(arc_id, "edge", 1)
     )
+    arc_value = _value(arc_result, CircularEdgeMeasurement)
     assert arc_value.radius == pytest.approx(9.0, abs=MEASUREMENT_TOLERANCE)
+    assert arc_value.diameter == pytest.approx(18.0, abs=MEASUREMENT_TOLERANCE)
     assert not arc_value.is_full_circle
+    assert _value(arc_result, EdgeLengthMeasurement).length == pytest.approx(
+        9.0 * pi / 2.0, abs=MEASUREMENT_TOLERANCE
+    )
+    assert service.measure_selection(
+        arc_id, _selection_id(arc_id, "edge", 1)
+    ) == arc_result
 
 
 def test_public_measurement_result_contains_no_ocp_object(box_measurement) -> None:
@@ -181,6 +197,68 @@ def test_public_measurement_result_contains_no_ocp_object(box_measurement) -> No
         document_id, _selection_id(document_id, "face", 1)
     )
     _assert_no_ocp_object(result)
+
+
+def test_measurement_models_are_immutable_and_reject_non_finite_values() -> None:
+    point = PointCoordinates(1.0, 2.0, 3.0)
+    with pytest.raises(FrozenInstanceError):
+        point.x = 4.0
+    for invalid in (nan, inf, -inf):
+        with pytest.raises(ValueError, match="finite"):
+            PointCoordinates(invalid, 0.0, 0.0)
+        with pytest.raises(ValueError, match="finite"):
+            AreaMeasurement(invalid)
+        with pytest.raises(ValueError, match="finite"):
+            VolumeMeasurement(invalid)
+
+
+def test_selection_ids_cannot_cross_documents_or_use_invalid_shapes(
+    box_measurement,
+) -> None:
+    kernel, service, document_id = box_measurement
+    other_document_id = kernel.create_box(5.0, 6.0, 7.0)
+    old_selection = _selection_id(document_id, "vertex", 1)
+    with pytest.raises(ValueError, match="does not belong"):
+        service.measure_selection(other_document_id, old_selection)
+    with pytest.raises(ValueError, match="out of range"):
+        service.measure_selection(
+            document_id, _selection_id(document_id, "face", 999)
+        )
+    with pytest.raises(ValueError, match="Invalid BREP selection ID"):
+        service.measure_selection(document_id, f"{document_id}:wire:1")
+
+
+def test_reversed_properties_are_positive_and_bounds_are_axis_aligned() -> None:
+    kernel = OcpCadKernel()
+    reversed_box = BRepPrimAPI_MakeBox(2.0, 3.0, 4.0).Shape().Reversed()
+    reversed_id = kernel._documents.add_brep(
+        reversed_box, CadFormat.GENERATED
+    ).document_id
+    service = OcpMeasurementService(kernel)
+    volume = _value(
+        service.measure_selection(
+            reversed_id, _selection_id(reversed_id, "solid", 1)
+        ),
+        VolumeMeasurement,
+    )
+    assert volume.volume == pytest.approx(24.0, abs=MEASUREMENT_TOLERANCE)
+
+    transform = gp_Trsf()
+    transform.SetRotation(
+        gp_Ax1(gp_Pnt(), gp_Dir(0.0, 0.0, 1.0)),
+        pi / 4.0,
+    )
+    rotated = BRepBuilderAPI_Transform(
+        BRepPrimAPI_MakeBox(2.0, 4.0, 1.0).Shape(), transform, True
+    ).Shape()
+    rotated_id = kernel._documents.add_brep(
+        rotated, CadFormat.GENERATED
+    ).document_id
+    bounds = _value(service.measure_document(rotated_id), BoundingDimensions)
+    expected_xy = 3.0 * sqrt(2.0)
+    assert (bounds.x, bounds.y, bounds.z) == pytest.approx(
+        (expected_xy, expected_xy, 1.0), abs=MEASUREMENT_TOLERANCE
+    )
 
 
 class _PickView:

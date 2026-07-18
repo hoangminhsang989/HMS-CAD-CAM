@@ -102,9 +102,13 @@ class MainWindow(QMainWindow):
         self.cad_controller.message.connect(self._append_output)
         self.cad_controller.progress_changed.connect(self._update_import_status)
         self.cad_controller.document_changed.connect(self._update_cad_document)
-        self.viewport.selection_changed.connect(self.cad_controller.handle_selection)
-        self.cad_controller.selection_changed.connect(self._update_selection)
-        self.cad_controller.measurement_changed.connect(self._update_measurements)
+        self.viewport.selection_context_changed.connect(
+            self.cad_controller.handle_selection_event
+        )
+        self.cad_controller.selection_context_changed.connect(self._update_selection)
+        self.cad_controller.measurement_context_changed.connect(
+            self._update_measurements
+        )
         self._handle_project_change(self.project_controller.service.current_project)
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
@@ -318,10 +322,19 @@ class MainWindow(QMainWindow):
         self._update_project_display(self.project_controller.service.current_project)
         self._show_document_properties()
 
-    def _update_selection(self, items: object) -> None:
+    def _update_selection(self, document_id: object, items: object) -> None:
         if not isinstance(items, tuple) or not all(
             isinstance(item, SelectionMetadata) for item in items
         ):
+            return
+        active_document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None
+            else None
+        )
+        if document_id != active_document_id:
+            return
+        if any(item.document_id != active_document_id for item in items):
             return
         self._active_selection = items
         if not items:
@@ -330,10 +343,31 @@ class MainWindow(QMainWindow):
         item = items[0]
         self._show_selection_properties(item)
 
-    def _update_measurements(self, results: object) -> None:
+    def _update_measurements(self, document_id: object, results: object) -> None:
         if not isinstance(results, tuple) or not all(
             isinstance(result, MeasurementResult) for result in results
         ):
+            return
+        active_document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None
+            else None
+        )
+        if document_id != active_document_id:
+            return
+        if any(result.document_id != active_document_id for result in results):
+            return
+        active_selection_ids = {
+            item.selection_id for item in self._active_selection
+        }
+        if self._active_selection:
+            if any(
+                not result.selection_ids
+                or not set(result.selection_ids).issubset(active_selection_ids)
+                for result in results
+            ):
+                return
+        elif any(result.selection_ids for result in results):
             return
         self._active_measurements = results
         if self._active_selection:

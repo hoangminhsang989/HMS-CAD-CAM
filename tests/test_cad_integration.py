@@ -20,7 +20,7 @@ from OCP.STEPControl import (  # noqa: E402
     STEPControl_Writer,
 )
 from OCP.StlAPI import StlAPI_Writer  # noqa: E402
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QTimer, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar, QToolButton  # noqa: E402
 
 from hms_cadcam.cad.exceptions import CadDocumentNotFoundError  # noqa: E402
@@ -35,6 +35,7 @@ from hms_cadcam.cad.models import (  # noqa: E402
     TopologyCounts,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
+from hms_cadcam.cad.ocp.measurement import OcpMeasurementService  # noqa: E402
 from hms_cadcam.project.models import UnitSystem  # noqa: E402
 from hms_cadcam.project.service import ProjectService  # noqa: E402
 from hms_cadcam.ui.cad_worker import CadImportTask  # noqa: E402
@@ -576,7 +577,8 @@ def test_vertex_pair_measurement_is_read_only_and_resets_at_boundaries(
     )
     backend.emit_selection((replacement_first,))
     assert window.cad_controller.vertex_pair == (replacement_first.selection_id,)
-    window.cad_controller.bind_project(None)
+    window.project_controller.close_project()
+    application.processEvents()
     assert window.cad_controller.vertex_pair == ()
     assert window.cad_controller.active_document_id is None
     window.close()
@@ -587,7 +589,10 @@ def test_measurement_error_keeps_document_and_selection(tmp_path: Path) -> None:
     application = _application()
     source = tmp_path / "box.brep"
     _write_brep(source)
-    window, backend, _kernel = _window(tmp_path)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Error", UnitSystem.MILLIMETER)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
     window.cad_controller.start_import(source, CadFormat.BREP)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     metadata = window.cad_controller.active_metadata
@@ -619,6 +624,95 @@ def test_measurement_error_keeps_document_and_selection(tmp_path: Path) -> None:
     assert window.cad_controller.active_document_id == document_id
     assert window._active_selection == (item,)
     assert backend.current_document == document_id
+    assert not session.is_dirty
+    assert list((session.root_path / "autosave").iterdir()) == []
+    window.close()
+
+
+def test_old_selection_and_measurement_cannot_replace_new_document_properties(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    first_source = tmp_path / "first.brep"
+    second_source = tmp_path / "second.brep"
+    _write_brep(first_source, 10.0)
+    _write_brep(second_source, 20.0)
+    window, backend, kernel = _window(tmp_path)
+
+    window.cad_controller.start_import(first_source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    first_metadata = window.cad_controller.active_metadata
+    assert first_metadata is not None
+    old_item = SelectionMetadata(
+        first_metadata.document_id,
+        f"{first_metadata.document_id}:face:1",
+        SelectionMode.FACE,
+        first_metadata.bounding_box,
+    )
+    old_result = OcpMeasurementService(kernel).measure_selection(
+        first_metadata.document_id,
+        old_item.selection_id,
+    )
+
+    window.cad_controller.start_import(second_source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    second_metadata = window.cad_controller.active_metadata
+    assert second_metadata is not None
+    current_item = SelectionMetadata(
+        second_metadata.document_id,
+        f"{second_metadata.document_id}:face:1",
+        SelectionMode.FACE,
+        second_metadata.bounding_box,
+    )
+    backend.emit_selection((current_item,))
+    application.processEvents()
+    expected_selection = window._active_selection
+    expected_measurements = window._active_measurements
+    expected_properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+
+    QTimer.singleShot(
+        0,
+        lambda: window.cad_controller.handle_selection_event(
+            first_metadata.document_id,
+            (old_item,),
+        ),
+    )
+    QTimer.singleShot(
+        0,
+        lambda: window.cad_controller.handle_selection_event(
+            first_metadata.document_id,
+            (),
+        ),
+    )
+    QTimer.singleShot(
+        0,
+        lambda: window.cad_controller.measurement_context_changed.emit(
+            first_metadata.document_id,
+            (old_result,),
+        ),
+    )
+    QTimer.singleShot(
+        0,
+        lambda: window.cad_controller.measurement_context_changed.emit(
+            first_metadata.document_id,
+            (),
+        ),
+    )
+    application.processEvents()
+
+    assert window._active_selection == expected_selection
+    assert window._active_measurements == expected_measurements
+    assert {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    } == expected_properties
     window.close()
 
 
