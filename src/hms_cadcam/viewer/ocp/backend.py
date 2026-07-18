@@ -78,14 +78,16 @@ class OcpCadViewportBackend:
 
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
+        old_document_id = self._document_id
+        old_presentation = self._lifecycle.presentation
         metadata = self._kernel.get_document_metadata(document_id)
         shape = None
         if metadata.geometry_kind is CadGeometryKind.BREP:
             shape = self._kernel._resolve_shape(document_id)
-            presentation = self._lifecycle.replace_shape(shape, self._display_mode)
+            presentation = self._lifecycle.prepare_shape(shape, self._display_mode)
         else:
             triangulation = self._kernel._resolve_triangulation(document_id)
-            presentation = self._lifecycle.replace_triangulation(
+            presentation = self._lifecycle.prepare_triangulation(
                 triangulation,
                 self._display_mode,
             )
@@ -98,9 +100,10 @@ class OcpCadViewportBackend:
             else:
                 selection.bind_document(document_id, shape, presentation)
                 selection.set_mode(self._selection_mode)
+            self._lifecycle.commit_presentation(presentation)
         except Exception:
-            self._lifecycle.clear()
-            self._document_id = None
+            self._lifecycle.discard_presentation(presentation)
+            self._restore_selection(old_document_id, old_presentation)
             self._emit_selection(())
             raise
         self._document_id = document_id
@@ -209,6 +212,19 @@ class OcpCadViewportBackend:
         if self._selection is None:
             raise RuntimeError("OCP selection is not initialized")
         return self._selection
+
+    def _restore_selection(self, document_id, presentation) -> None:
+        selection = self._require_selection()
+        if document_id is None or presentation is None:
+            selection.clear_document()
+            return
+        metadata = self._kernel.get_document_metadata(document_id)
+        if metadata.geometry_kind is CadGeometryKind.BREP:
+            shape = self._kernel._resolve_shape(document_id)
+            selection.bind_document(document_id, shape, presentation)
+            selection.set_mode(self._selection_mode)
+        else:
+            selection.clear_document()
 
     def _emit_selection(self, items: tuple[SelectionMetadata, ...]) -> None:
         if self._closed:

@@ -9,7 +9,7 @@
 - Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành phạm vi được duyệt.
 - Môi trường mục tiêu hiện tại: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
 - Trạng thái này được cập nhật cùng commit hoàn thành Giai đoạn 5A.
-- Toàn bộ kiểm thử: **115 passed**.
+- Toàn bộ kiểm thử: **117 passed**.
 
 ## Kiến trúc dự án hiện có
 

@@ -164,23 +164,36 @@ class FakeLifecycle:
         self.closed = False
 
     def replace_shape(self, shape, mode: DisplayMode):
+        candidate = self.prepare_shape(shape, mode)
+        self.commit_presentation(candidate)
+        return candidate
+
+    def prepare_shape(self, shape, mode: DisplayMode):
         assert not shape.IsNull()
-        if self.presentation is not None:
-            self.removed += 1
-        self.presentation = object()
-        self.replaced += 1
+        candidate = object()
         self.display_modes.append(mode)
-        return self.presentation
+        return candidate
 
     def replace_triangulation(self, triangulation, mode: DisplayMode):
+        candidate = self.prepare_triangulation(triangulation, mode)
+        self.commit_presentation(candidate)
+        return candidate
+
+    def prepare_triangulation(self, triangulation, mode: DisplayMode):
         assert triangulation.NbNodes() > 0
         assert triangulation.NbTriangles() > 0
+        candidate = object()
+        self.display_modes.append(mode)
+        return candidate
+
+    def commit_presentation(self, candidate) -> None:
         if self.presentation is not None:
             self.removed += 1
-        self.presentation = object()
+        self.presentation = candidate
         self.replaced += 1
-        self.display_modes.append(mode)
-        return self.presentation
+
+    def discard_presentation(self, candidate) -> None:
+        assert candidate is not self.presentation
 
     def apply_display_mode(self, presentation, mode: DisplayMode) -> None:
         assert presentation is self.presentation
@@ -219,6 +232,18 @@ class FakeSelection:
     def clear_document(self) -> None:
         self.document_id = None
         self.clear_count += 1
+
+
+class FailOnceSelection(FakeSelection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_bind = False
+
+    def bind_document(self, document_id, shape, presentation) -> None:
+        if self.fail_next_bind:
+            self.fail_next_bind = False
+            raise RuntimeError("simulated selection bind failure")
+        super().bind_document(document_id, shape, presentation)
 
 
 class FakeInput:
@@ -451,6 +476,28 @@ def test_ocp_backend_switches_brep_mesh_and_brep_safely(tmp_path: Path) -> None:
     assert lifecycle.replaced == 3
     assert lifecycle.removed == 2
     assert input_controller.reset_count == 3
+
+
+def test_ocp_backend_preserves_old_document_when_selection_bind_fails() -> None:
+    kernel = OcpCadKernel()
+    first = kernel.create_box(1.0, 2.0, 3.0)
+    second = kernel.create_box(4.0, 5.0, 6.0)
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeLifecycle()
+    selection = FailOnceSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+
+    backend.display_document(first)
+    old_presentation = lifecycle.presentation
+    selection.fail_next_bind = True
+    with pytest.raises(RuntimeError, match="selection bind"):
+        backend.display_document(second)
+
+    assert backend._document_id == first
+    assert lifecycle.presentation is old_presentation
+    assert selection.document_id == first
 
 
 def test_ocp_backend_camera_display_selection_and_resize_mapping() -> None:

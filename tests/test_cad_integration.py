@@ -320,6 +320,12 @@ def test_mesh_disables_topology_selection_and_brep_restores_it(
         for mode in SelectionMode
     ]
 
+    window.cad_controller.start_import(brep, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    window.cad_controller.actions["selection_face"].trigger()
+    assert window.cad_controller.actions["selection_face"].isChecked()
+    assert backend.selection_modes[-1] is SelectionMode.FACE
+
     window.cad_controller.start_import(mesh, CadFormat.STL)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     assert backend.current_document == window.cad_controller.active_document_id
@@ -338,7 +344,7 @@ def test_mesh_disables_topology_selection_and_brep_restores_it(
     window.cad_controller.start_import(brep, CadFormat.BREP)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     assert all(action.isEnabled() for action in selection_actions)
-    assert window.cad_controller.actions["selection_solid"].isChecked()
+    assert window.cad_controller.actions["selection_face"].isChecked()
     window.close()
 
 

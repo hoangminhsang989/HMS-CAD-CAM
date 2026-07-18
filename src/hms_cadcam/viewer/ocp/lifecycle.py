@@ -90,10 +90,16 @@ class OcpViewportLifecycle:
 
     def replace_shape(self, shape: TopoDS_Shape, mode: DisplayMode) -> AIS_Shape:
         """Transactionally replace one AIS presentation and preserve old on error."""
+        new_presentation = self.prepare_shape(shape, mode)
+        self.commit_presentation(new_presentation)
+        return new_presentation
+
+    def prepare_shape(self, shape: TopoDS_Shape, mode: DisplayMode) -> AIS_Shape:
+        """Display a candidate BREP while retaining the active presentation."""
         if shape.IsNull():
             raise ValueError("Cannot display a null CAD shape")
         new_presentation = AIS_Shape(shape)
-        self._replace_presentation(new_presentation, mode)
+        self._prepare_presentation(new_presentation, mode)
         return new_presentation
 
     def replace_triangulation(
@@ -102,28 +108,54 @@ class OcpViewportLifecycle:
         mode: DisplayMode,
     ) -> AIS_Triangulation:
         """Transactionally display a mesh without creating BREP faces."""
+        new_presentation = self.prepare_triangulation(triangulation, mode)
+        self.commit_presentation(new_presentation)
+        return new_presentation
+
+    def prepare_triangulation(
+        self,
+        triangulation: Poly_Triangulation,
+        mode: DisplayMode,
+    ) -> AIS_Triangulation:
+        """Display a candidate mesh while retaining the active presentation."""
         if triangulation.NbNodes() <= 0 or triangulation.NbTriangles() <= 0:
             raise ValueError("Cannot display an empty triangle mesh")
         new_presentation = AIS_Triangulation(triangulation)
-        self._replace_presentation(new_presentation, mode)
+        self._prepare_presentation(new_presentation, mode)
         return new_presentation
 
-    def _replace_presentation(
+    def _prepare_presentation(
         self,
         new_presentation: AIS_InteractiveObject,
         mode: DisplayMode,
     ) -> None:
         context = self.context
-        old_presentation = self._presentation
         try:
             context.Display(new_presentation, False)
             self.apply_display_mode(new_presentation, mode, False)
-            if old_presentation is not None:
-                context.Remove(old_presentation, False)
         except Exception:
             context.Remove(new_presentation, False)
             raise
+
+    def commit_presentation(
+        self,
+        new_presentation: AIS_InteractiveObject,
+    ) -> None:
+        """Promote a prepared candidate and remove the previous presentation."""
+        old_presentation = self._presentation
+        if old_presentation is not None and old_presentation is not new_presentation:
+            self.context.Remove(old_presentation, False)
         self._presentation = new_presentation
+        self.view.Redraw()
+
+    def discard_presentation(
+        self,
+        candidate: AIS_InteractiveObject,
+    ) -> None:
+        """Remove a failed candidate without touching the active presentation."""
+        if candidate is self._presentation:
+            return
+        self.context.Remove(candidate, False)
         self.view.Redraw()
 
     def apply_display_mode(

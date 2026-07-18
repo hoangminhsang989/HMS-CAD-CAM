@@ -151,6 +151,9 @@ def test_step_import_returns_public_result_and_preserves_source(tmp_path: Path) 
     assert result.document_id is not None
     assert result.metadata is not None
     assert result.detected_format is CadFormat.STEP
+    assert result.metadata.geometry_kind is CadGeometryKind.BREP
+    assert result.metadata.mesh_statistics is None
+    assert result.metadata.topology_counts is not None
     assert result.metadata.topology_counts.solids == 1
     assert result.metadata.topology_counts.faces == 6
     assert result.metadata.topology_counts.edges == 12
@@ -169,6 +172,9 @@ def test_brep_import_returns_valid_metadata(tmp_path: Path) -> None:
     assert result.document_id is not None
     assert result.metadata is not None
     assert result.detected_format is CadFormat.BREP
+    assert result.metadata.geometry_kind is CadGeometryKind.BREP
+    assert result.metadata.mesh_statistics is None
+    assert result.metadata.topology_counts is not None
     assert result.metadata.bounding_box.x_max == pytest.approx(40.0)
     assert result.metadata.bounding_box.y_max == pytest.approx(30.0)
     assert result.metadata.bounding_box.z_max == pytest.approx(20.0)
@@ -271,6 +277,22 @@ def test_empty_iges_and_stl_return_controlled_failure(
     assert not result.success
     assert result.document_id is None
     assert "empty" in result.errors[0].lower()
+
+
+def test_truncated_binary_stl_returns_controlled_failure(tmp_path: Path) -> None:
+    source = tmp_path / "truncated_binary.stl"
+    header_and_count = bytearray(84)
+    header_and_count[80:84] = (1).to_bytes(4, "little")
+    source.write_bytes(header_and_count)
+    original_hash = sha256(source.read_bytes()).digest()
+
+    result = OcpCadKernel().import_stl(source)
+
+    assert not result.success
+    assert result.document_id is None
+    assert result.metadata is None
+    assert result.errors
+    assert sha256(source.read_bytes()).digest() == original_hash
 
 
 def test_null_shape_is_rejected_as_failed_import(tmp_path: Path, monkeypatch) -> None:
