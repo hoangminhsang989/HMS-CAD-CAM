@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from uuid import UUID
 
-from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMainWindow, QMenu, QMessageBox, QStyle
 
@@ -37,6 +38,7 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.project_worker import ProjectTask
 
 logger = logging.getLogger(__name__)
+_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000
 
 
 class ProjectUiController(QObject):
@@ -53,6 +55,13 @@ class ProjectUiController(QObject):
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
         self._pending_operation: Callable[[], object] | None = None
+        self._autosave_task: ProjectTask | None = None
+        self._autosave_pending = False
+        self._autosave_generation = 0
+        self._autosave_project_id: UUID | None = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(_AUTOSAVE_INTERVAL_MS)
+        self._autosave_timer.timeout.connect(self.request_autosave)
         self.actions = self._create_actions()
         self._update_action_states()
 
@@ -65,6 +74,16 @@ class ProjectUiController(QObject):
     def is_busy(self) -> bool:
         """Return whether a project filesystem operation is running."""
         return self._active_task is not None
+
+    @property
+    def is_autosaving(self) -> bool:
+        """Return whether an autosave snapshot is running in a worker."""
+        return self._autosave_task is not None
+
+    @property
+    def autosave_interval_ms(self) -> int:
+        """Return the configured periodic autosave interval."""
+        return self._autosave_timer.interval()
 
     def populate_recent_menu(self, menu: QMenu) -> None:
         """Rebuild the recent menu using successfully opened projects."""
@@ -84,7 +103,7 @@ class ProjectUiController(QObject):
 
     def request_application_close(self) -> bool:
         """Return whether the window can close without losing project work."""
-        if self.is_busy:
+        if self.is_busy or self.is_autosaving:
             QMessageBox.information(
                 self._window,
                 "HMS CAD/CAM",
@@ -176,9 +195,48 @@ class ProjectUiController(QObject):
     @Slot()
     def close_project(self) -> None:
         """Close the current project after Save/Discard/Cancel handling."""
+        if self.is_autosaving:
+            return
         if self._close_current_interactively():
             self.project_changed.emit(None)
             self._update_action_states()
+
+    @Slot()
+    def request_autosave(self) -> None:
+        """Queue a snapshot for the current dirty project when it is safe."""
+        session = self._service.current_project
+        if session is None or not session.is_dirty:
+            return
+        if self.is_busy or self.is_autosaving:
+            self._autosave_pending = True
+            return
+
+        project_id = session.manifest.project_id
+        if self._autosave_project_id != project_id:
+            self._bind_autosave_session()
+        generation = self._autosave_generation
+        self._autosave_timer.stop()
+        task = ProjectTask(
+            lambda: self._service.autosave(expected_project_id=project_id)
+        )
+        self._autosave_task = task
+        task.signals.succeeded.connect(
+            lambda result: self._autosave_succeeded(
+                result, generation=generation, project_id=project_id
+            )
+        )
+        task.signals.failed.connect(
+            lambda error: self._autosave_failed(
+                error, generation=generation, project_id=project_id
+            )
+        )
+        task.signals.finished.connect(
+            lambda: self._autosave_finished(
+                task, generation=generation, project_id=project_id
+            )
+        )
+        self._update_action_states()
+        self._thread_pool.start(task)
 
     def _create_actions(self) -> dict[str, QAction]:
         style = self._window.style()
@@ -255,8 +313,9 @@ class ProjectUiController(QObject):
         return Path(selected_parent), name, units, overwrite
 
     def _start_operation(self, operation: Callable[[], object]) -> None:
-        if self.is_busy:
+        if self.is_busy or self.is_autosaving:
             return
+        self._suspend_autosave_session()
         task = ProjectTask(operation)
         self._active_task = task
         task.signals.succeeded.connect(self._operation_succeeded)
@@ -314,6 +373,85 @@ class ProjectUiController(QObject):
         self._pending_operation = None
         if pending is not None:
             self._start_operation(pending)
+            return
+        self._bind_autosave_session()
+
+    def _autosave_succeeded(
+        self,
+        result: object,
+        *,
+        generation: int,
+        project_id: UUID,
+    ) -> None:
+        if result is None or not self._autosave_context_matches(
+            generation, project_id
+        ):
+            return
+        self.message.emit("Đã tạo snapshot autosave.")
+
+    def _autosave_failed(
+        self,
+        error: object,
+        *,
+        generation: int,
+        project_id: UUID,
+    ) -> None:
+        logger.warning(
+            "Autosave dự án thất bại",
+            exc_info=(type(error), error, error.__traceback__)
+            if isinstance(error, BaseException)
+            else None,
+        )
+        if self._autosave_context_matches(generation, project_id):
+            self.message.emit(
+                "Autosave thất bại; dự án vẫn được giữ ở trạng thái chưa lưu."
+            )
+
+    def _autosave_finished(
+        self,
+        task: ProjectTask,
+        *,
+        generation: int,
+        project_id: UUID,
+    ) -> None:
+        if self._autosave_task is not task:
+            return
+        self._autosave_task = None
+        context_matches = self._autosave_context_matches(generation, project_id)
+        repeat = context_matches and self._autosave_pending
+        self._autosave_pending = False
+        self._update_action_states()
+        if repeat:
+            QTimer.singleShot(0, self.request_autosave)
+            return
+        self._bind_autosave_session()
+
+    def _autosave_context_matches(self, generation: int, project_id: UUID) -> bool:
+        session = self._service.current_project
+        return (
+            generation == self._autosave_generation
+            and project_id == self._autosave_project_id
+            and session is not None
+            and session.manifest.project_id == project_id
+        )
+
+    def _suspend_autosave_session(self) -> None:
+        self._autosave_timer.stop()
+        self._autosave_generation += 1
+        self._autosave_project_id = None
+        self._autosave_pending = False
+
+    def _bind_autosave_session(self) -> None:
+        session = self._service.current_project
+        project_id = None if session is None else session.manifest.project_id
+        if project_id != self._autosave_project_id:
+            self._autosave_generation += 1
+            self._autosave_project_id = project_id
+            self._autosave_pending = False
+        if session is not None and not self.is_busy and not self.is_autosaving:
+            self._autosave_timer.start()
+        else:
+            self._autosave_timer.stop()
 
     def _request_autosave_recovery(self, error: RecoveryRequiredError) -> None:
         response = QMessageBox.warning(
@@ -358,11 +496,12 @@ class ProjectUiController(QObject):
 
     def _update_action_states(self) -> None:
         has_project = self._service.has_project
-        self.actions["new"].setEnabled(not self.is_busy)
-        self.actions["import"].setEnabled(not self.is_busy)
-        self.actions["open"].setEnabled(not self.is_busy)
+        operation_allowed = not self.is_busy and not self.is_autosaving
+        self.actions["new"].setEnabled(operation_allowed)
+        self.actions["import"].setEnabled(operation_allowed)
+        self.actions["open"].setEnabled(operation_allowed)
         for key in ("save", "save_as", "close"):
-            self.actions[key].setEnabled(has_project and not self.is_busy)
+            self.actions[key].setEnabled(has_project and operation_allowed)
 
     def _close_current_interactively(self) -> bool:
         if not self._service.has_project:
@@ -398,4 +537,5 @@ class ProjectUiController(QObject):
         except ProjectError as error:
             self._show_error(error)
             return False
+        self._suspend_autosave_session()
         return True

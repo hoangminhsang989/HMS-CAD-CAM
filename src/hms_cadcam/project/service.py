@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from pathlib import Path
+from uuid import UUID
 
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
 from hms_cadcam.project.constants import TEMP_DIRECTORY
@@ -219,12 +220,27 @@ class ProjectService:
         """Persist the current project."""
         return self._saver.save(self._require_current())
 
-    def autosave(self) -> AutosaveSnapshot | None:
+    def autosave(
+        self, *, expected_project_id: UUID | None = None
+    ) -> AutosaveSnapshot | None:
         """Snapshot the current dirty session without changing its dirty state."""
         session = self._require_current()
+        if (
+            expected_project_id is not None
+            and session.manifest.project_id != expected_project_id
+        ):
+            return None
         if not session.is_dirty:
             return None
-        return self._autosave.create_snapshot(session, self._session_locks.session_id)
+        snapshot_session = ProjectSession(
+            root_path=session.root_path,
+            manifest=session.manifest,
+            is_dirty=True,
+        )
+        return self._autosave.create_snapshot(
+            snapshot_session,
+            self._session_locks.session_id,
+        )
 
     def save_as(
         self,

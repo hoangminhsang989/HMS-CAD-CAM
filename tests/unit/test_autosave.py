@@ -39,6 +39,16 @@ def test_clean_session_is_not_autosaved(tmp_path) -> None:
     assert list((session.root_path / "autosave").iterdir()) == []
 
 
+def test_autosave_rejects_a_different_expected_project(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Expected Project")
+    session.is_dirty = True
+
+    assert service.autosave(expected_project_id=uuid4()) is None
+    assert session.is_dirty
+    assert list((session.root_path / "autosave").iterdir()) == []
+
+
 def test_dirty_snapshot_contains_only_manifest_database_and_metadata(tmp_path) -> None:
     service = ProjectService.create_default(tmp_path / "config")
     session = service.new_project(tmp_path, "Snapshot")
