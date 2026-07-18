@@ -21,6 +21,7 @@ htmlcov/
 build/
 dist/
 *.spec
+*.egg-info/
 
 temp/
 cache/

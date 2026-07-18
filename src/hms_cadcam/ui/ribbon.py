@@ -1,0 +1,82 @@
+"""Compact ribbon used by the main window."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from PySide6.QtCore import QSize
+from PySide6.QtWidgets import (
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QSizePolicy,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class RibbonWidget(QTabWidget):
+    """A lightweight tabbed ribbon with disabled future-stage commands."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("RibbonTabs")
+        self.setDocumentMode(True)
+        self.setIconSize(QSize(24, 24))
+        self.setFixedHeight(132)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._build_tabs()
+
+    def _build_tabs(self) -> None:
+        self.addTab(
+            self._page(
+                (
+                    ("Tệp", ("Mới", "Mở", "Lưu")),
+                    ("Clipboard", ("Cắt", "Sao chép", "Dán")),
+                    ("Hiển thị", ("Fit", "Zoom", "Xoay")),
+                    ("Phân tích", ("Đo", "Thuộc tính", "Thống kê")),
+                )
+            ),
+            "Trang chủ",
+        )
+        self.addTab(self._future_page("Wireframe", ("Điểm", "Đường", "Cung", "Bo góc")), "Wireframe")
+        self.addTab(self._future_page("Surfaces", ("Tạo mặt", "Offset", "Trim", "Blend")), "Surfaces")
+        self.addTab(self._future_page("Solids", ("Khối", "Extrude", "Boolean", "Fillet")), "Solids")
+        self.addTab(self._future_page("Model Prep", ("Move", "Push", "Simplify", "Heal")), "Model Prep")
+        self.addTab(self._future_page("Mesh", ("Tạo mesh", "Sửa mesh", "Giảm lưới", "Kiểm tra")), "Mesh")
+        self.addTab(self._future_page("Drafting", ("Kích thước", "Ghi chú", "Hatch", "Layer")), "Drafting")
+        self.addTab(self._future_page("Transform", ("Di chuyển", "Xoay", "Đối xứng", "Scale")), "Transform")
+        self.addTab(self._future_page("Machine", ("Máy", "Dao", "Thiết lập", "Toolpath")), "Machine")
+        self.addTab(self._future_page("View", ("Top", "Front", "Right", "Isometric")), "View")
+
+    def _future_page(self, group_name: str, commands: Iterable[str]) -> QWidget:
+        return self._page(((group_name, commands),))
+
+    def _page(self, groups: Iterable[tuple[str, Iterable[str]]]) -> QWidget:
+        page = QFrame()
+        page.setObjectName("RibbonPage")
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(4, 3, 4, 0)
+        layout.setSpacing(0)
+        for title, commands in groups:
+            layout.addWidget(self._group(title, commands))
+        layout.addStretch(1)
+        return page
+
+    def _group(self, title: str, commands: Iterable[str]) -> QGroupBox:
+        group = QGroupBox(title)
+        group.setObjectName("RibbonGroup")
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        glyphs = ("◇", "□", "△", "○", "◎")
+        for index, command in enumerate(commands):
+            button = QToolButton()
+            button.setObjectName("RibbonButton")
+            button.setText(f"{glyphs[index % len(glyphs)]}\n{command}")
+            button.setToolTip(f"{command} — chưa khả dụng trong Giai đoạn 1")
+            button.setEnabled(False)
+            layout.addWidget(button)
+        return group

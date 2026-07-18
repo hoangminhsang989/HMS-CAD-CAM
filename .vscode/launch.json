@@ -2,16 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: Current File (Mastercam Style)",
+            "name": "HMS CAD/CAM: Run Application",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+            "program": "${workspaceFolder}\\main.py",
+            "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "env": {
-                "http_proxy": "",
-                "https_proxy": "",
-                "all_proxy": "",
-                "no_proxy": "localhost,127.0.0.1"
+                "PYTHONUTF8": "1"
             }
         }
     ]
