@@ -10,12 +10,23 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
-from hms_cadcam.project.constants import PROJECT_SUFFIX, SOURCE_DIRECTORY
+from hms_cadcam.project.constants import (
+    AUTOSAVE_DIRECTORY,
+    BACKUPS_DIRECTORY,
+    OWNED_DIRECTORY_METADATA_FILENAME,
+    PROJECT_SUFFIX,
+    SOURCE_DIRECTORY,
+    TEMP_DIRECTORY,
+)
 from hms_cadcam.project.exceptions import (
     ProjectAlreadyExistsError,
     ProjectPermissionError,
     ProjectTransactionError,
     SourceFileNotFoundError,
+)
+from hms_cadcam.project.owned_directories import (
+    OwnedDirectoryPurpose,
+    write_owned_directory_metadata,
 )
 
 
@@ -76,6 +87,7 @@ def copy_source_verified(source: Path, destination: Path) -> tuple[int, str]:
 @contextmanager
 def staging_directory(parent: Path, project_stem: str) -> Iterator[Path]:
     """Create a sibling staging directory and remove it unless published."""
+    staging: Path | None = None
     try:
         parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
@@ -85,8 +97,15 @@ def staging_directory(parent: Path, project_stem: str) -> Iterator[Path]:
                 dir=parent,
             )
         )
+        write_owned_directory_metadata(staging, OwnedDirectoryPurpose.STAGING)
     except PermissionError as error:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
         raise ProjectPermissionError(str(error)) from error
+    except OSError:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
     try:
         yield staging
     finally:
@@ -104,6 +123,7 @@ def publish_directory(staging: Path, target: Path, overwrite: bool = False) -> N
         if target.exists():
             target.rename(backup)
             moved_existing = True
+        (staging / OWNED_DIRECTORY_METADATA_FILENAME).unlink(missing_ok=True)
         staging.rename(target)
         if moved_existing:
             shutil.rmtree(backup, ignore_errors=True)
@@ -124,3 +144,12 @@ def remove_imported_source(project_root: Path, relative_path: str) -> None:
     resolved = candidate.resolve()
     if resolved.parent == source_root:
         resolved.unlink(missing_ok=True)
+
+
+def create_runtime_directories(project_root: Path) -> None:
+    """Create the Stage 3 runtime directories and identify the temp root."""
+    (project_root / AUTOSAVE_DIRECTORY).mkdir()
+    (project_root / BACKUPS_DIRECTORY).mkdir()
+    temp_root = project_root / TEMP_DIRECTORY
+    temp_root.mkdir()
+    write_owned_directory_metadata(temp_root, OwnedDirectoryPurpose.TEMP_ROOT)

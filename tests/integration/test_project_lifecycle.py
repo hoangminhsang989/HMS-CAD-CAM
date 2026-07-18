@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 
+from hms_cadcam.project.constants import OWNED_DIRECTORY_METADATA_FILENAME
 from hms_cadcam.project.service import ProjectService
 
 
@@ -17,7 +18,16 @@ def test_unicode_create_import_open_and_save_as(tmp_path) -> None:
     root = tmp_path / "Chi tiết có khoảng trắng.HMS"
 
     assert session.root_path == root
-    assert {path.name for path in root.iterdir()} == {"project.hms.json", "project.db", "source"}
+    assert {path.name for path in root.iterdir()} == {
+        "autosave",
+        "backups",
+        "project.hms.json",
+        "project.db",
+        "session.lock",
+        "source",
+        "temp",
+    }
+    assert (root / "temp" / OWNED_DIRECTORY_METADATA_FILENAME).is_file()
     source = tmp_path / "nguồn mẫu.step"
     source.write_bytes(b"original cad source\x00\x01")
     original_hash = digest(source)
@@ -64,7 +74,14 @@ def test_confirmed_overwrite_replaces_complete_project(tmp_path) -> None:
     assert replacement.root_path == first.root_path
     assert replacement.manifest.project_id != first_id
     assert {path.name for path in replacement.root_path.iterdir()} == {
+        "autosave",
+        "backups",
         "project.hms.json",
         "project.db",
+        "session.lock",
         "source",
+        "temp",
     }
+    assert (
+        replacement.root_path / "temp" / OWNED_DIRECTORY_METADATA_FILENAME
+    ).is_file()

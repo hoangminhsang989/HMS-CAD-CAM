@@ -1,5 +1,7 @@
 # Nhiệm vụ hiện tại — Giai đoạn 3
 
+Trạng thái: **3A hoàn thành; 3B và 3C chưa bắt đầu**.
+
 ## Phạm vi
 
 Xây dựng cơ chế bảo vệ phiên làm việc và phục hồi dự án `.HMS` mà không thay đổi

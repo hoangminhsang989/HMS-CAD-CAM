@@ -51,3 +51,15 @@ class ProjectTransactionError(ProjectError):
 
 class UnsavedChangesError(ProjectError):
     """The current project has unsaved changes."""
+
+
+class SessionLockError(ProjectError):
+    """A project session lock could not be read, created, or released."""
+
+
+class ProjectLockedError(SessionLockError):
+    """Another active session owns the requested project."""
+
+
+class ProjectLockUnknownError(SessionLockError):
+    """A lock exists but its owner cannot be classified safely."""

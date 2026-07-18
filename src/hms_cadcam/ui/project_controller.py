@@ -18,6 +18,8 @@ from hms_cadcam.project.exceptions import (
     ProjectAlreadyExistsError,
     ProjectDatabaseError,
     ProjectError,
+    ProjectLockedError,
+    ProjectLockUnknownError,
     ProjectPermissionError,
     SourceFileNotFoundError,
     UnsupportedFormatVersionError,
@@ -265,6 +267,11 @@ class ProjectUiController(QObject):
     def _show_error(self, error: object) -> None:
         logger.error("Tác vụ dự án thất bại", exc_info=(type(error), error, error.__traceback__) if isinstance(error, BaseException) else None)
         messages = {
+            ProjectLockedError: "Dự án đang được một phiên HMS khác sử dụng.",
+            ProjectLockUnknownError: (
+                "Không thể xác định chủ sở hữu khóa dự án; "
+                "khóa được giữ nguyên để bảo vệ dữ liệu."
+            ),
             InvalidProjectNameError: "Tên dự án không hợp lệ trên Windows.",
             SourceFileNotFoundError: "File nguồn không tồn tại hoặc không đọc được.",
             ProjectAlreadyExistsError: "Dự án đích đã tồn tại.",
@@ -319,7 +326,17 @@ class ProjectUiController(QObject):
                 except ProjectError as error:
                     self._show_error(error)
                     return False
-            self._service.close_project(discard_changes=True)
+            if not self._try_close_current(discard_changes=True):
+                return False
         else:
-            self._service.close_project()
+            if not self._try_close_current(discard_changes=False):
+                return False
+        return True
+
+    def _try_close_current(self, *, discard_changes: bool) -> bool:
+        try:
+            self._service.close_project(discard_changes=discard_changes)
+        except ProjectError as error:
+            self._show_error(error)
+            return False
         return True

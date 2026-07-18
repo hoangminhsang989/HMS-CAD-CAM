@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from pathlib import Path
 
+from hms_cadcam.project.constants import TEMP_DIRECTORY
 from hms_cadcam.project.creator import ProjectCreator
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.exceptions import ProjectError, UnsavedChangesError
@@ -12,11 +14,14 @@ from hms_cadcam.project.loader import ProjectLoader
 from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.filesystem import project_target_path
 from hms_cadcam.project.models import ProjectSession, UnitSystem
+from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.recent_projects import RecentProjectEntry, RecentProjectsService
 from hms_cadcam.project.saver import ProjectSaver
+from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
 
 logger = logging.getLogger(__name__)
+_CLEANUP_MINIMUM_AGE = timedelta(days=1)
 
 
 class ProjectService:
@@ -30,6 +35,7 @@ class ProjectService:
         validator: ProjectValidator,
         database: ProjectDatabase,
         recent_projects: RecentProjectsService,
+        session_locks: SessionLockManager,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -37,6 +43,7 @@ class ProjectService:
         self._validator = validator
         self._database = database
         self._recent_projects = recent_projects
+        self._session_locks = session_locks
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -52,6 +59,7 @@ class ProjectService:
             validator=validator,
             database=database,
             recent_projects=RecentProjectsService(config_dir),
+            session_locks=SessionLockManager(),
         )
 
     @property
@@ -77,6 +85,8 @@ class ProjectService:
         overwrite: bool = False,
     ) -> ProjectSession:
         """Create and select a new empty project."""
+        self._cleanup_staging(parent_dir)
+        self._ensure_overwrite_target_available(parent_dir, project_name, overwrite)
         session = self._creator.create(parent_dir, project_name, units, overwrite=overwrite)
         return self._activate(session)
 
@@ -89,6 +99,8 @@ class ProjectService:
         overwrite: bool = False,
     ) -> ProjectSession:
         """Create and select a project containing one verified source copy."""
+        self._cleanup_staging(parent_dir)
+        self._ensure_overwrite_target_available(parent_dir, project_name, overwrite)
         session = self._creator.create(
             parent_dir,
             project_name,
@@ -107,8 +119,23 @@ class ProjectService:
 
     def open_project(self, project_root: Path) -> ProjectSession:
         """Open a valid project without replacing current state on failure."""
-        session = self._loader.load(project_root)
-        return self._activate(session)
+        resolved = project_root.resolve()
+        if (
+            self._current_project is not None
+            and self._current_project.root_path.resolve() == resolved
+        ):
+            session = self._loader.load(project_root)
+            return self._complete_activation(session)
+        manifest = self._loader.read_manifest(project_root)
+        self._session_locks.acquire(project_root, manifest.project_id)
+        try:
+            session = self._loader.load(project_root)
+            if session.manifest.project_id != manifest.project_id:
+                raise ProjectError("Project identity changed while opening")
+            return self._complete_activation(session)
+        except Exception:
+            self._session_locks.release(project_root)
+            raise
 
     def save(self) -> ProjectSession:
         """Persist the current project."""
@@ -121,8 +148,14 @@ class ProjectService:
         overwrite: bool = False,
     ) -> ProjectSession:
         """Create and select an independent copy of the current project."""
+        current = self._require_current()
+        target = self.target_path(parent_dir, project_name)
+        if target.resolve() == current.root_path.resolve():
+            return self._saver.save(current)
+        self._cleanup_staging(parent_dir)
+        self._ensure_overwrite_target_available(parent_dir, project_name, overwrite)
         session = self._saver.save_as(
-            self._require_current(),
+            current,
             parent_dir,
             project_name,
             overwrite=overwrite,
@@ -136,6 +169,7 @@ class ProjectService:
         if self._current_project.is_dirty and not discard_changes:
             raise UnsavedChangesError("Current project contains unsaved changes")
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
+        self._session_locks.release(self._current_project.root_path)
         self._current_project = None
 
     def recent_projects(self) -> tuple[RecentProjectEntry, ...]:
@@ -156,15 +190,60 @@ class ProjectService:
         return self.target_path(parent_dir, project_name).exists()
 
     def _activate(self, session: ProjectSession) -> ProjectSession:
+        self._session_locks.acquire(session.root_path, session.manifest.project_id)
+        try:
+            return self._complete_activation(session)
+        except Exception:
+            self._session_locks.release(session.root_path)
+            raise
+
+    def _complete_activation(self, session: ProjectSession) -> ProjectSession:
         self._validator.validate_manifest(session.manifest)
         self._database.validate(session.root_path / session.manifest.database)
+        previous = self._current_project
+        if previous is not None and previous.root_path.resolve() != session.root_path.resolve():
+            try:
+                self._session_locks.release(previous.root_path)
+            except Exception:
+                self._session_locks.release(session.root_path)
+                raise
         self._current_project = session
         try:
             self._recent_projects.add(session.root_path)
         except OSError:
             logger.warning("Không thể cập nhật danh sách dự án gần đây", exc_info=True)
         logger.info("Dự án hiện hành: %s", session.root_path)
+        self._cleanup_temp(session.root_path)
         return session
+
+    def _ensure_overwrite_target_available(
+        self,
+        parent_dir: Path,
+        project_name: str,
+        overwrite: bool,
+    ) -> None:
+        if not overwrite:
+            return
+        target = self.target_path(parent_dir, project_name)
+        if target.exists():
+            self._session_locks.ensure_available(target)
+
+    @staticmethod
+    def _cleanup_staging(parent_dir: Path) -> None:
+        try:
+            cleanup_stale_owned_directories(parent_dir, _CLEANUP_MINIMUM_AGE)
+        except OSError:
+            logger.warning("Không thể dọn staging HMS cũ tại %s", parent_dir, exc_info=True)
+
+    @staticmethod
+    def _cleanup_temp(project_root: Path) -> None:
+        try:
+            cleanup_stale_owned_directories(
+                project_root / TEMP_DIRECTORY,
+                _CLEANUP_MINIMUM_AGE,
+            )
+        except OSError:
+            logger.warning("Không thể dọn temp HMS cũ tại %s", project_root, exc_info=True)
 
     def _require_current(self) -> ProjectSession:
         if self._current_project is None:

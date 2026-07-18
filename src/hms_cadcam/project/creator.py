@@ -16,6 +16,7 @@ from hms_cadcam.project.constants import (
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.filesystem import (
     copy_source_verified,
+    create_runtime_directories,
     project_target_path,
     publish_directory,
     staging_directory,
@@ -59,6 +60,7 @@ class ProjectCreator:
         with staging_directory(parent_dir, stem) as staging:
             source_dir = staging / SOURCE_DIRECTORY
             source_dir.mkdir()
+            create_runtime_directories(staging)
             records: tuple[SourceFileRecord, ...] = ()
             if source_path is not None:
                 destination = source_dir / source_path.name

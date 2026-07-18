@@ -10,6 +10,7 @@ from hms_cadcam.project.constants import DATABASE_FILENAME, SOURCE_DIRECTORY
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.filesystem import (
     copy_source_verified,
+    create_runtime_directories,
     project_target_path,
     publish_directory,
     remove_imported_source,
@@ -88,6 +89,7 @@ class ProjectSaver:
         with staging_directory(parent_dir, stem) as staging:
             source_dir = staging / SOURCE_DIRECTORY
             source_dir.mkdir()
+            create_runtime_directories(staging)
             records: list[SourceFileRecord] = []
             for old_record in session.manifest.source_files:
                 source = session.root_path / Path(old_record.stored_path)

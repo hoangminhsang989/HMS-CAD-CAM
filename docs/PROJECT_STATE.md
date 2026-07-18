@@ -5,7 +5,8 @@
 - Trạng thái được ghi nhận sau commit `3c4bda3`.
 - Giai đoạn 1: khung ứng dụng PySide6 đã hoàn thành và được ổn định.
 - Giai đoạn 2: hệ thống dự án `.HMS` cơ bản đã hoàn thành và được rà soát.
-- Bộ kiểm thử hiện tại: **35 passed**.
+- Giai đoạn 3A: session lock và cleanup an toàn đã được triển khai.
+- Bộ kiểm thử hiện tại: **43 passed**.
 
 ## Kiến trúc hiện có
 
@@ -23,11 +24,10 @@
 
 ## Giới hạn còn lại
 
-- Chưa có `session.lock` và chưa ngăn hai phiên cùng ghi một dự án.
-- Chưa phát hiện lần đóng bất thường.
+- `session.lock` đã phân loại active/stale/unknown; recovery từ lần đóng bất thường chưa có.
 - Chưa có autosave, snapshot hoặc luồng recovery.
 - Chưa xử lý `.replaced` còn sót sau khi tiến trình bị dừng đột ngột.
-- Cleanup hiện chỉ bao phủ staging của giao dịch đang chạy, chưa xử lý phần dư cũ.
-- Các thư mục mục tiêu ngoài `source/` chưa được tạo đầy đủ theo vòng đời dự án.
+- Cleanup chỉ xóa staging/temp HMS đủ tuổi, có metadata hợp lệ và PID cục bộ đã chết.
+- `autosave/`, `backups/`, `temp/` đã được tạo nhưng chưa chứa autosave/recovery.
 - Dirty state đã có nhưng chưa có cơ chế autosave theo thời gian hoặc sự kiện.
 - Chưa có CAD kernel, CAD Viewer thực, Open CASCADE hoặc chức năng CAM.

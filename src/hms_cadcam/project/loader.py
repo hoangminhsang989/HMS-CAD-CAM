@@ -7,7 +7,7 @@ from pathlib import Path
 from hms_cadcam.project.constants import DATABASE_FILENAME
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.manifest import ProjectManifestStore
-from hms_cadcam.project.models import ProjectSession
+from hms_cadcam.project.models import ProjectManifest, ProjectSession
 from hms_cadcam.project.validator import ProjectValidator
 
 
@@ -24,11 +24,16 @@ class ProjectLoader:
         self._validator = validator
         self._database = database
 
-    def load(self, project_root: Path) -> ProjectSession:
-        """Open and migrate a supported HMS project."""
+    def read_manifest(self, project_root: Path) -> ProjectManifest:
+        """Validate project identity without opening or migrating SQLite."""
         self._validator.validate_project_directory_name(project_root)
         manifest = self._manifest_store.load(project_root)
         self._validator.validate_references(project_root, manifest)
+        return manifest
+
+    def load(self, project_root: Path) -> ProjectSession:
+        """Open and migrate a supported HMS project."""
+        manifest = self.read_manifest(project_root)
         database_path = project_root / DATABASE_FILENAME
         self._database.open_and_migrate(database_path)
         self._database.validate(database_path)
