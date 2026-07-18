@@ -27,7 +27,7 @@ Một thư mục hợp lệ phải kết thúc bằng `.HMS`, có manifest với
 
 ## Môi trường phát triển
 
-Không sử dụng thư mục `venv/` cũ. Tạo môi trường riêng `.venv` bằng Python 3.14.5 64-bit:
+Không sử dụng thư mục `venv/` cũ. Tạo môi trường riêng `.venv` bằng Python 3.14.6 64-bit:
 
 ```powershell
 python -m venv .venv

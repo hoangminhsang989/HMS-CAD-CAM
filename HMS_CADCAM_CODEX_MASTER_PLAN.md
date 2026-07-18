@@ -628,7 +628,7 @@ Setup Sheet và bộ cài Windows.
 
 MÔI TRƯỜNG:
 - VS Code
-- Python 3.14.5 64-bit
+- Python 3.14.6 64-bit
 - Giao diện dự kiến: PySide6
 - CAD kernel dự kiến: Open CASCADE
 - Database: SQLite

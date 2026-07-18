@@ -22,7 +22,7 @@ Không được tuyên bố rằng một tính năng đã hoàn thành nếu ch�
 
 - Hệ điều hành: Windows 10/11 64-bit.
 - IDE: Visual Studio Code.
-- Python hiện tại: Python 3.14.5 64-bit.
+- Python hiện tại: Python 3.14.6 64-bit.
 - Ngôn ngữ giao diện chính: tiếng Việt.
 - GUI: ưu tiên PySide6.
 - CAD kernel dự kiến: Open CASCADE.
