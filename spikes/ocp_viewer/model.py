@@ -59,6 +59,21 @@ class SelectionSummary:
     items: tuple[SelectionMetadata, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ImportResult:
+    """OCP-free outcome delivered from the importer worker to the UI."""
+
+    success: bool
+    source_path: str
+    detected_format: str
+    shape_id: str | None
+    topology_counts: dict[str, int]
+    bounding_box: tuple[float, float, float, float, float, float] | None
+    warnings: tuple[str, ...]
+    errors: tuple[str, ...]
+    elapsed_seconds: float
+
+
 class SelectionModeState:
     """Small testable state holder shared by toolbar and viewer behavior."""
 

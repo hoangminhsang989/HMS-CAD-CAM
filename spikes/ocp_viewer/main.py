@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QThreadPool
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QToolBar
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QMainWindow,
+    QToolBar,
+)
 
+from importer import CadImporter
 from model import (
     DisplayMode,
+    ImportResult,
     InteractionMode,
     SelectionKind,
     SelectionSummary,
     ViewOrientation,
 )
 from viewer import OcpViewerWidget
+from worker import ImportWorker
 
 
 class SpikeWindow(QMainWindow):
@@ -22,17 +32,70 @@ class SpikeWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("HMS CAD/CAM — OCP Viewer Spike 4B2")
+        self.setWindowTitle("HMS CAD/CAM — OCP Viewer Spike 4B3")
+        self._importer = CadImporter()
+        self._thread_pool = QThreadPool.globalInstance()
+        self._import_worker: ImportWorker | None = None
         self.viewer = OcpViewerWidget(self)
         self.setCentralWidget(self.viewer)
         self.resize(1100, 720)
         self._selection_label = QLabel("Selection: 0")
+        self._import_label = QLabel("Import: sẵn sàng")
         self.statusBar().addPermanentWidget(self._selection_label, 1)
+        self.statusBar().addPermanentWidget(self._import_label, 2)
         self.viewer.selection_changed.connect(self._show_selection)
         self._build_camera_toolbar()
         self._build_view_toolbar()
         self._build_display_toolbar()
         self._build_selection_toolbar()
+        self._build_import_toolbar()
+
+    def _build_import_toolbar(self) -> None:
+        toolbar = QToolBar("Import", self)
+        toolbar.setObjectName("ImportToolbar")
+        self._import_action = toolbar.addAction("Open STEP/BREP")
+        self._import_action.triggered.connect(self._choose_import_file)
+        self.addToolBar(toolbar)
+
+    def _choose_import_file(self) -> None:
+        source_path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Mở STEP hoặc BREP",
+            "",
+            "CAD files (*.step *.stp *.brep *.brp)",
+        )
+        if source_path:
+            self.import_path(source_path)
+
+    def import_path(self, source_path: str) -> None:
+        """Start a background import without giving the worker a viewer."""
+        if self._import_worker is not None:
+            self._import_label.setText("Import: đang bận")
+            return
+        worker = ImportWorker(self._importer, source_path)
+        worker.signals.progress.connect(self._show_import_progress)
+        worker.signals.completed.connect(self._finish_import)
+        self._import_worker = worker
+        self._import_action.setEnabled(False)
+        self._thread_pool.start(worker)
+
+    def _show_import_progress(self, status: str) -> None:
+        self._import_label.setText(f"Import: {status}")
+
+    def _finish_import(self, result: ImportResult) -> None:
+        self._import_worker = None
+        self._import_action.setEnabled(True)
+        if not result.success or result.shape_id is None:
+            message = "; ".join(result.errors) or "Lỗi không xác định"
+            self._import_label.setText(f"Import: lỗi — {message}")
+            return
+        self._importer.present_shape(result.shape_id, self.viewer.replace_shape)
+        counts = result.topology_counts
+        self._import_label.setText(
+            f"Import: hoàn thành — {result.detected_format.upper()} | "
+            f"solid={counts['solid']}, face={counts['face']}, edge={counts['edge']} | "
+            f"bounds={tuple(round(value, 3) for value in result.bounding_box or ())}"
+        )
 
     def _build_camera_toolbar(self) -> None:
         toolbar = QToolBar("Camera", self)

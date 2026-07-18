@@ -9,9 +9,10 @@ from OCP.Aspect import Aspect_DisplayConnection
 from OCP.OpenGl import OpenGl_GraphicDriver
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopAbs import TopAbs_ShapeEnum
+from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_TypeOfOrientation, V3d_View, V3d_Viewer
 from OCP.WNT import WNT_Window
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QMouseEvent,
@@ -21,7 +22,7 @@ from PySide6.QtGui import (
     QShowEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from geometry import create_demo_box, selection_metadata
 from model import (
@@ -77,6 +78,7 @@ class OcpViewerWidget(QWidget):
         self._view: V3d_View | None = None
         self._window: WNT_Window | None = None
         self._presentation: AIS_Shape | None = None
+        self._display_mode = DisplayMode.SHADED_WITH_EDGES
         self._interaction_mode = InteractionMode.SELECT
         self._selection_mode = SelectionModeState()
         self._drag_origin: QPoint | None = None
@@ -129,6 +131,7 @@ class OcpViewerWidget(QWidget):
 
     def set_display_mode(self, mode: DisplayMode) -> None:
         """Switch between wireframe, shaded and shaded-with-edges."""
+        self._display_mode = mode
         if self._context is None or self._presentation is None:
             return
         drawer = self._presentation.Attributes()
@@ -137,6 +140,23 @@ class OcpViewerWidget(QWidget):
         display_index = 0 if mode is DisplayMode.WIREFRAME else 1
         self._context.SetDisplayMode(self._presentation, display_index, False)
         self._context.Redisplay(self._presentation, True, True)
+
+    def replace_shape(self, shape: TopoDS_Shape) -> None:
+        """Replace the presentation on the Qt main thread after import."""
+        application = QApplication.instance()
+        if application is not None and QThread.currentThread() is not application.thread():
+            raise RuntimeError("AIS presentation must be updated on the Qt main thread")
+        if shape.IsNull():
+            raise ValueError("Cannot display a null shape")
+        if self._context is None:
+            raise RuntimeError("OCCT display is not initialized")
+        if self._presentation is not None:
+            self._context.Remove(self._presentation, False)
+        self._presentation = AIS_Shape(shape)
+        self._context.Display(self._presentation, False)
+        self.set_display_mode(self._display_mode)
+        self.set_selection_kind(self._selection_mode.kind)
+        self.fit_all()
 
     def set_view_orientation(self, orientation: ViewOrientation) -> None:
         """Apply a named Z-up camera orientation and fit the model."""
