@@ -10,6 +10,7 @@ from pathlib import Path
 from time import perf_counter
 
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.TopoDS import TopoDS_Shape
 
 from hms_cadcam.cad.exceptions import CadImportError
 from hms_cadcam.cad.models import (
@@ -90,6 +91,10 @@ class OcpCadKernel:
     def get_bounding_box(self, document_id: CadDocumentId) -> BoundingBox:
         """Return stored bounds for a document."""
         return self.get_document_metadata(document_id).bounding_box
+
+    def _resolve_shape(self, document_id: CadDocumentId) -> TopoDS_Shape:
+        """Resolve native data only for trusted internal OCP adapters."""
+        return self._documents.resolve_shape(document_id)
 
     def _import(
         self,

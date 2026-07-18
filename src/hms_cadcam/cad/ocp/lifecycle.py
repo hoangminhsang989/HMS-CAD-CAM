@@ -56,6 +56,14 @@ class OcpDocumentStore:
             raise CadDocumentNotFoundError(f"CAD document not found: {document_id}")
         return record.metadata
 
+    def resolve_shape(self, document_id: CadDocumentId) -> TopoDS_Shape:
+        """Resolve a native shape for trusted internal OCP adapters only."""
+        with self._lock:
+            record = self._records.get(document_id)
+        if record is None:
+            raise CadDocumentNotFoundError(f"CAD document not found: {document_id}")
+        return record.shape
+
     def release(self, document_id: CadDocumentId) -> None:
         """Remove the record so its native shape can be released."""
         with self._lock:
