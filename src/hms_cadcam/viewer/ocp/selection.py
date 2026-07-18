@@ -17,6 +17,7 @@ _SELECTION_TOPOLOGY = {
     SelectionMode.SOLID: TopAbs_ShapeEnum.TopAbs_SOLID,
     SelectionMode.FACE: TopAbs_ShapeEnum.TopAbs_FACE,
     SelectionMode.EDGE: TopAbs_ShapeEnum.TopAbs_EDGE,
+    SelectionMode.VERTEX: TopAbs_ShapeEnum.TopAbs_VERTEX,
 }
 
 
@@ -50,9 +51,22 @@ class OcpSelectionController:
     def hover(self, view: V3d_View, x: int, y: int) -> None:
         self._context.MoveTo(x, y, view, True)
 
-    def pick(self, view: V3d_View, x: int, y: int) -> tuple[SelectionMetadata, ...]:
+    def pick(
+        self,
+        view: V3d_View,
+        x: int,
+        y: int,
+        extend: bool = False,
+    ) -> tuple[SelectionMetadata, ...]:
         self._context.MoveTo(x, y, view, True)
-        self._context.SelectDetected()
+        if extend and self._mode is SelectionMode.VERTEX:
+            if len(self.current_metadata()) >= 2:
+                self._context.ClearSelected(False)
+                self._context.SelectDetected()
+            else:
+                self._context.ShiftSelect(True)
+        else:
+            self._context.SelectDetected()
         view.Redraw()
         return self.current_metadata()
 

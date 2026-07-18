@@ -330,6 +330,8 @@ def test_mesh_disables_topology_selection_and_brep_restores_it(
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     assert backend.current_document == window.cad_controller.active_document_id
     assert all(not action.isEnabled() for action in selection_actions)
+    assert not window.cad_controller.actions["selection_vertex"].isEnabled()
+    assert not window.cad_controller.actions["measurement"].isEnabled()
     properties = {
         window._properties_table.item(row, 0).text(): (
             window._properties_table.item(row, 1).text()
@@ -344,6 +346,7 @@ def test_mesh_disables_topology_selection_and_brep_restores_it(
     window.cad_controller.start_import(brep, CadFormat.BREP)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     assert all(action.isEnabled() for action in selection_actions)
+    assert window.cad_controller.actions["measurement"].isEnabled()
     assert window.cad_controller.actions["selection_face"].isChecked()
     window.close()
 
@@ -475,6 +478,147 @@ def test_document_and_selection_update_tree_and_properties(tmp_path: Path) -> No
     }
     assert properties["Loại topology"] == "FACE"
     assert properties["Selection ID"] == item.selection_id
+    window.close()
+
+
+def test_vertex_pair_measurement_is_read_only_and_resets_at_boundaries(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "box.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Measurement", UnitSystem.MILLIMETER)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    window.cad_controller.start_import(source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    metadata = window.cad_controller.active_metadata
+    assert metadata is not None
+    first = SelectionMetadata(
+        metadata.document_id,
+        f"{metadata.document_id}:vertex:1",
+        SelectionMode.VERTEX,
+        metadata.bounding_box,
+    )
+    second = SelectionMetadata(
+        metadata.document_id,
+        f"{metadata.document_id}:vertex:2",
+        SelectionMode.VERTEX,
+        metadata.bounding_box,
+    )
+
+    backend.emit_selection((first, second))
+    application.processEvents()
+    properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+    assert "Khoảng cách" in properties
+    assert not properties["Khoảng cách"].startswith("-")
+    assert len(window.cad_controller.vertex_pair) == 2
+    assert not session.is_dirty
+    assert list((session.root_path / "autosave").iterdir()) == []
+
+    face = SelectionMetadata(
+        metadata.document_id,
+        f"{metadata.document_id}:face:1",
+        SelectionMode.FACE,
+        metadata.bounding_box,
+    )
+    backend.emit_selection((face,))
+    application.processEvents()
+    face_properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+    assert not face_properties["Diện tích"].startswith("-")
+
+    solid = SelectionMetadata(
+        metadata.document_id,
+        f"{metadata.document_id}:solid:1",
+        SelectionMode.SOLID,
+        metadata.bounding_box,
+    )
+    backend.emit_selection((solid,))
+    application.processEvents()
+    solid_properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+    assert not solid_properties["Thể tích"].startswith("-")
+
+    backend.emit_selection((first,))
+    application.processEvents()
+    assert window.cad_controller.vertex_pair == (first.selection_id,)
+    window.cad_controller.actions["selection_face"].trigger()
+    assert window.cad_controller.vertex_pair == ()
+    backend.emit_selection((first, second))
+    replacement = tmp_path / "replacement.brep"
+    _write_brep(replacement, 12.0)
+    window.cad_controller.start_import(replacement, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    assert window.cad_controller.vertex_pair == ()
+
+    replacement_metadata = window.cad_controller.active_metadata
+    assert replacement_metadata is not None
+    replacement_first = SelectionMetadata(
+        replacement_metadata.document_id,
+        f"{replacement_metadata.document_id}:vertex:1",
+        SelectionMode.VERTEX,
+        replacement_metadata.bounding_box,
+    )
+    backend.emit_selection((replacement_first,))
+    assert window.cad_controller.vertex_pair == (replacement_first.selection_id,)
+    window.cad_controller.bind_project(None)
+    assert window.cad_controller.vertex_pair == ()
+    assert window.cad_controller.active_document_id is None
+    window.close()
+    assert window.cad_controller.vertex_pair == ()
+
+
+def test_measurement_error_keeps_document_and_selection(tmp_path: Path) -> None:
+    application = _application()
+    source = tmp_path / "box.brep"
+    _write_brep(source)
+    window, backend, _kernel = _window(tmp_path)
+    window.cad_controller.start_import(source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    metadata = window.cad_controller.active_metadata
+    document_id = window.cad_controller.active_document_id
+    assert metadata is not None and document_id is not None
+
+    class FailingMeasurementService:
+        def measure_selection(self, document_id, selection_id):
+            del document_id, selection_id
+            raise ValueError("simulated measurement failure")
+
+        def measure_distance(self, document_id, first_selection_id, second_selection_id):
+            del document_id, first_selection_id, second_selection_id
+            raise ValueError("simulated measurement failure")
+
+        def measure_document(self, document_id):
+            del document_id
+            raise ValueError("simulated measurement failure")
+
+    window.cad_controller._measurement_service = FailingMeasurementService()
+    item = SelectionMetadata(
+        document_id,
+        f"{document_id}:face:1",
+        SelectionMode.FACE,
+        metadata.bounding_box,
+    )
+    backend.emit_selection((item,))
+    application.processEvents()
+    assert window.cad_controller.active_document_id == document_id
+    assert window._active_selection == (item,)
+    assert backend.current_document == document_id
     window.close()
 
 

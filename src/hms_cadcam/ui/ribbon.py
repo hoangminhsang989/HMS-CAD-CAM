@@ -111,6 +111,8 @@ class RibbonWidget(QTabWidget):
                                 "selection_solid",
                                 "selection_face",
                                 "selection_edge",
+                                "selection_vertex",
+                                "measurement",
                             )
                             if key in self._cad_actions
                         ),

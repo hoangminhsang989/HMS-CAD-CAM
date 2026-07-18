@@ -34,6 +34,7 @@ class SelectionMode(str, Enum):
     SOLID = "solid"
     FACE = "face"
     EDGE = "edge"
+    VERTEX = "vertex"
 
 
 class MouseButton(str, Enum):
@@ -72,3 +73,8 @@ class SelectionMetadata:
     selection_id: str
     topology: SelectionMode
     bounding_box: BoundingBox
+
+    @property
+    def topology_type(self) -> SelectionMode:
+        """Return the selected topology type without native CAD data."""
+        return self.topology

@@ -66,10 +66,14 @@ class OcpInputController:
         button: MouseButton,
         modifiers: KeyboardModifier,
     ) -> tuple[SelectionMetadata, ...] | None:
-        del modifiers
         selection = None
         if button is MouseButton.LEFT and not self._dragged:
-            selection = self._selection.pick(self._view, x, y)
+            selection = self._selection.pick(
+                self._view,
+                x,
+                y,
+                bool(modifiers & KeyboardModifier.CONTROL),
+            )
         self.reset()
         return selection
 

@@ -22,6 +22,16 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cad.kernel import CadKernel
+from hms_cadcam.cad.measurement import (
+    AreaMeasurement,
+    BoundingDimensions,
+    CircularEdgeMeasurement,
+    DistanceMeasurement,
+    EdgeLengthMeasurement,
+    MeasurementResult,
+    PointCoordinates,
+    VolumeMeasurement,
+)
 from hms_cadcam.cad.models import CadDocumentMetadata
 from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
@@ -56,6 +66,7 @@ class MainWindow(QMainWindow):
         self.cad_controller = CadUiController(self, cad_kernel, self.viewport)
         self._active_document_metadata: CadDocumentMetadata | None = None
         self._active_selection: tuple[SelectionMetadata, ...] = ()
+        self._active_measurements: tuple[MeasurementResult, ...] = ()
         self._build_menu_bar()
         self._build_quick_access_toolbar()
         self._build_cad_toolbar()
@@ -91,7 +102,9 @@ class MainWindow(QMainWindow):
         self.cad_controller.message.connect(self._append_output)
         self.cad_controller.progress_changed.connect(self._update_import_status)
         self.cad_controller.document_changed.connect(self._update_cad_document)
-        self.viewport.selection_changed.connect(self._update_selection)
+        self.viewport.selection_changed.connect(self.cad_controller.handle_selection)
+        self.cad_controller.selection_changed.connect(self._update_selection)
+        self.cad_controller.measurement_changed.connect(self._update_measurements)
         self._handle_project_change(self.project_controller.service.current_project)
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
@@ -140,6 +153,7 @@ class MainWindow(QMainWindow):
             "open_stl",
             "fit_all",
             "view_isometric",
+            "measurement",
         ):
             cad_viewer_menu.addAction(self.cad_controller.actions[key])
         directions_menu = cad_viewer_menu.addMenu("Hướng nhìn")
@@ -151,7 +165,7 @@ class MainWindow(QMainWindow):
         for mode in ("shaded", "wireframe", "shaded_with_edges"):
             display_menu.addAction(self.cad_controller.actions[f"display_{mode}"])
         selection_menu = cad_viewer_menu.addMenu("Lựa chọn")
-        for mode in ("solid", "face", "edge"):
+        for mode in ("solid", "face", "edge", "vertex"):
             selection_menu.addAction(self.cad_controller.actions[f"selection_{mode}"])
 
     def _build_quick_access_toolbar(self) -> None:
@@ -185,6 +199,8 @@ class MainWindow(QMainWindow):
             "selection_solid",
             "selection_face",
             "selection_edge",
+            "selection_vertex",
+            "measurement",
         ):
             toolbar.addAction(self.cad_controller.actions[key])
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
@@ -298,6 +314,7 @@ class MainWindow(QMainWindow):
             metadata if isinstance(metadata, CadDocumentMetadata) else None
         )
         self._active_selection = ()
+        self._active_measurements = ()
         self._update_project_display(self.project_controller.service.current_project)
         self._show_document_properties()
 
@@ -311,15 +328,29 @@ class MainWindow(QMainWindow):
             self._show_document_properties()
             return
         item = items[0]
-        self._set_properties(
-            (
-                ("Loại topology", item.topology.value.upper()),
-                ("Selection ID", item.selection_id),
-                ("Document ID", str(item.document_id)),
-                ("Bounding box", _format_bounds(item.bounding_box)),
-                ("Số lượng chọn", str(len(items))),
-            )
-        )
+        self._show_selection_properties(item)
+
+    def _update_measurements(self, results: object) -> None:
+        if not isinstance(results, tuple) or not all(
+            isinstance(result, MeasurementResult) for result in results
+        ):
+            return
+        self._active_measurements = results
+        if self._active_selection:
+            self._show_selection_properties(self._active_selection[0])
+        else:
+            self._show_document_properties()
+
+    def _show_selection_properties(self, item: SelectionMetadata) -> None:
+        rows = [
+            ("Loại topology", item.topology.value.upper()),
+            ("Selection ID", item.selection_id),
+            ("Document ID", str(item.document_id)),
+            ("Bounding box", _format_bounds(item.bounding_box)),
+            ("Số lượng chọn", str(len(self._active_selection))),
+        ]
+        rows.extend(_measurement_rows(self._active_measurements))
+        self._set_properties(tuple(rows))
 
     def _show_document_properties(self) -> None:
         metadata = self._active_document_metadata
@@ -349,6 +380,7 @@ class MainWindow(QMainWindow):
                 )
             )
         rows.append(("Bounding box", _format_bounds(metadata.bounding_box)))
+        rows.extend(_measurement_rows(self._active_measurements))
         self._set_properties(tuple(rows))
 
     def _set_properties(self, rows: tuple[tuple[str, str], ...]) -> None:
@@ -448,4 +480,54 @@ def _format_bounds(bounds) -> str:
 def _format_units(metadata: CadDocumentMetadata) -> str:
     if metadata.cad_format.value == "stl":
         return "Không xác định (STL không lưu đơn vị đáng tin cậy)"
+    if metadata.units.value == "unknown":
+        return "Đơn vị mô hình (không xác định)"
     return metadata.units.value.upper()
+
+
+def _measurement_rows(
+    results: tuple[MeasurementResult, ...],
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for result in results:
+        for value in result.values:
+            if isinstance(value, PointCoordinates):
+                rows.extend(
+                    (
+                        ("X", _format_measurement(value.x)),
+                        ("Y", _format_measurement(value.y)),
+                        ("Z", _format_measurement(value.z)),
+                    )
+                )
+            elif isinstance(value, DistanceMeasurement):
+                rows.append(("Khoảng cách", _format_measurement(value.distance)))
+            elif isinstance(value, EdgeLengthMeasurement):
+                rows.append(("Chiều dài", _format_measurement(value.length)))
+            elif isinstance(value, CircularEdgeMeasurement):
+                rows.extend(
+                    (
+                        ("Bán kính", _format_measurement(value.radius)),
+                        ("Đường kính", _format_measurement(value.diameter)),
+                        (
+                            "Loại đường tròn",
+                            "Đường tròn" if value.is_full_circle else "Cung tròn",
+                        ),
+                    )
+                )
+            elif isinstance(value, AreaMeasurement):
+                rows.append(("Diện tích", _format_measurement(value.area, "²")))
+            elif isinstance(value, VolumeMeasurement):
+                rows.append(("Thể tích", _format_measurement(value.volume, "³")))
+            elif isinstance(value, BoundingDimensions):
+                rows.extend(
+                    (
+                        ("Bounding X", _format_measurement(value.x)),
+                        ("Bounding Y", _format_measurement(value.y)),
+                        ("Bounding Z", _format_measurement(value.z)),
+                    )
+                )
+    return rows
+
+
+def _format_measurement(value: float, exponent: str = "") -> str:
+    return f"{value:.9g} đơn vị mô hình{exponent}"
