@@ -20,7 +20,14 @@ from OCP.TopoDS import TopoDS_Shape  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from hms_cadcam.cad.models import BoundingBox, CadDocumentId  # noqa: E402
+from hms_cadcam.cad.models import (  # noqa: E402
+    BoundingBox,
+    CadDocumentId,
+    CadDocumentTree,
+    CadObjectId,
+    CadObjectKind,
+    CadObjectNode,
+)
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
 from hms_cadcam.viewer.backend import CadViewportBackend  # noqa: E402
 from hms_cadcam.viewer import backend as backend_module  # noqa: E402
@@ -30,6 +37,8 @@ from hms_cadcam.viewer.models import (  # noqa: E402
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectAppearance,
+    ObjectColor,
     SelectionMetadata,
     SelectionMode,
     ViewDirection,
@@ -40,6 +49,7 @@ from hms_cadcam.viewer.ocp.backend import (  # noqa: E402
     _VIEW_DIRECTIONS,
 )
 from hms_cadcam.viewer.ocp.lifecycle import OcpViewportLifecycle  # noqa: E402
+from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry  # noqa: E402
 from hms_cadcam.viewer.ocp.selection import OcpSelectionController  # noqa: E402
 from hms_cadcam.viewer.unavailable_backend import (  # noqa: E402
     UnavailableCadViewportBackend,
@@ -282,6 +292,41 @@ class FakeSelectionContext:
         self.has_current = False
 
 
+class FakeRegistryContext:
+    def __init__(self) -> None:
+        self.displayed: set[object] = set()
+        self.erased: set[object] = set()
+        self.colors: list[tuple[object, object]] = []
+        self.transparencies: list[tuple[object, float]] = []
+        self.update_count = 0
+
+    def Display(self, presentation, update: bool) -> None:  # noqa: N802
+        del update
+        self.displayed.add(presentation)
+        self.erased.discard(presentation)
+
+    def Erase(self, presentation, update: bool) -> None:  # noqa: N802
+        del update
+        self.erased.add(presentation)
+        self.displayed.discard(presentation)
+
+    def SetColor(self, presentation, color, update: bool) -> None:  # noqa: N802
+        del update
+        self.colors.append((presentation, color))
+
+    def SetTransparency(  # noqa: N802
+        self,
+        presentation,
+        value: float,
+        update: bool,
+    ) -> None:
+        del update
+        self.transparencies.append((presentation, value))
+
+    def UpdateCurrentViewer(self) -> None:  # noqa: N802
+        self.update_count += 1
+
+
 def _assert_no_topods(value: object) -> None:
     assert not isinstance(value, TopoDS_Shape)
     if is_dataclass(value) and not isinstance(value, type):
@@ -318,6 +363,79 @@ def test_viewer_models_and_protocol_are_ocp_free() -> None:
         for value in vars(module).values():
             origin = getattr(value, "__module__", "")
             assert not origin.startswith(("OCP", "PySide6"))
+
+
+def test_object_appearance_validation_and_public_schema() -> None:
+    color = ObjectColor(0.1, 0.2, 0.3)
+    appearance = ObjectAppearance(True, color, 0.45)
+    assert color.to_hex() == "#1A334C"
+    assert appearance.transparency == pytest.approx(0.45)
+    _assert_no_topods(appearance)
+    with pytest.raises(ValueError):
+        ObjectColor(-0.1, 0.0, 0.0)
+    with pytest.raises(ValueError):
+        ObjectColor(0.0, float("nan"), 0.0)
+    with pytest.raises(ValueError):
+        ObjectAppearance(transparency=1.01)
+    with pytest.raises(TypeError):
+        ObjectAppearance(visible=1)
+
+
+def test_registry_hide_show_isolate_and_reset_restore_visibility() -> None:
+    document_id = CadDocumentId("doc:registry")
+    first_id = CadObjectId("doc:registry:object:1")
+    second_id = CadObjectId("doc:registry:object:2")
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    first = CadObjectNode(
+        document_id,
+        first_id,
+        CadObjectKind.SOLID,
+        "Solid 1",
+        bounds,
+        has_presentation=True,
+    )
+    second = CadObjectNode(
+        document_id,
+        second_id,
+        CadObjectKind.SOLID,
+        "Solid 2",
+        bounds,
+        has_presentation=True,
+    )
+    root = CadObjectNode(
+        document_id,
+        CadObjectId("doc:registry:document"),
+        CadObjectKind.DOCUMENT,
+        "CAD document",
+        bounds,
+        (first, second),
+    )
+    context = FakeRegistryContext()
+    first_presentation = object()
+    second_presentation = object()
+    registry = OcpPresentationRegistry(
+        context,
+        CadDocumentTree(document_id, root),
+        {first_id: first_presentation, second_id: second_presentation},
+    )
+
+    registry.set_visibility(second_id, False)
+    registry.isolate(first_id)
+    registry.isolate(second_id)
+    assert registry.appearances[first_id].visible is False
+    assert registry.appearances[second_id].visible is True
+    isolated_color = ObjectColor(0.2, 0.4, 0.6)
+    registry.set_color(first_id, isolated_color)
+    registry.reset_isolate()
+    assert registry.appearances[first_id].visible is True
+    assert registry.appearances[second_id].visible is False
+    assert registry.appearances[first_id].color == isolated_color
+    registry.set_visibility(second_id, True)
+    registry.set_color(root.object_id, isolated_color)
+    registry.set_transparency(first_id, 0.5)
+    assert registry.appearances[second_id].visible is True
+    assert registry.appearances[first_id].transparency == pytest.approx(0.5)
+    assert len(context.colors) == 3
 
 
 def test_factory_creates_real_backend_when_ocp_is_available() -> None:

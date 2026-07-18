@@ -8,6 +8,7 @@ from hms_cadcam.cad.exceptions import CadKernelUnavailableError
 from hms_cadcam.cad.models import (
     BoundingBox,
     CadDocumentId,
+    CadDocumentTree,
     CadDocumentMetadata,
     CadFormat,
     CadImportResult,
@@ -79,6 +80,11 @@ class UnavailableCadKernel:
         raise self._unavailable_error()
 
     def get_bounding_box(self, document_id: CadDocumentId) -> BoundingBox:
+        """Reject document access when no backend exists."""
+        del document_id
+        raise self._unavailable_error()
+
+    def get_document_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
         """Reject document access when no backend exists."""
         del document_id
         raise self._unavailable_error()

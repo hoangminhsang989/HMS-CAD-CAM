@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepTools import BRepTools
@@ -15,7 +16,7 @@ from OCP.IGESControl import IGESControl_Writer
 from OCP.IFSelect import IFSelect_ReturnStatus
 from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
 from OCP.StlAPI import StlAPI_Writer
-from OCP.TopoDS import TopoDS_Shape
+from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape
 from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
 
 from hms_cadcam.cad.exceptions import (
@@ -28,6 +29,7 @@ from hms_cadcam.cad.models import (
     CadFormat,
     CadGeometryKind,
     CadImportResult,
+    CadObjectKind,
     CadUnits,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel
@@ -48,6 +50,15 @@ def _write_step(path: Path) -> None:
 def _write_brep(path: Path) -> None:
     shape = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape()
     assert BRepTools.Write_s(shape, str(path))
+
+
+def _write_multi_solid_brep(path: Path) -> None:
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape())
+    builder.Add(compound, BRepPrimAPI_MakeBox(6.0, 7.0, 8.0).Shape())
+    assert BRepTools.Write_s(compound, str(path))
 
 
 def _write_iges(path: Path, *, surface: bool = False) -> None:
@@ -137,6 +148,46 @@ def test_create_box_returns_valid_id_metadata_counts_and_bounds() -> None:
     )
     assert kernel.get_topology_counts(document_id) == metadata.topology_counts
     assert kernel.get_bounding_box(document_id) == metadata.bounding_box
+
+
+def test_single_brep_has_one_managed_shape_without_face_edge_vertex_nodes() -> None:
+    kernel = OcpCadKernel()
+    document_id = kernel.create_box(4.0, 5.0, 6.0)
+    tree = kernel.get_document_tree(document_id)
+    nodes = tree.root.walk()
+    assert len(tree.presentation_nodes) == 1
+    assert tree.presentation_nodes[0].kind is CadObjectKind.SOLID
+    assert all(
+        node.kind.value not in {"face", "edge", "vertex"} for node in nodes
+    )
+    assert kernel.get_document_tree(document_id) == tree
+    _assert_no_topods(tree)
+
+
+def test_multi_solid_brep_builds_bounded_management_tree(tmp_path: Path) -> None:
+    source = tmp_path / "two_solids.brep"
+    _write_multi_solid_brep(source)
+    kernel = OcpCadKernel()
+    result = kernel.import_brep(source)
+    assert result.document_id is not None
+    tree = kernel.get_document_tree(result.document_id)
+    kinds = tuple(node.kind for node in tree.root.walk())
+    assert CadObjectKind.COMPOUND in kinds
+    assert kinds.count(CadObjectKind.SOLID) == 2
+    assert len(tree.presentation_nodes) == 2
+    assert len(tree.root.walk()) == 4
+
+
+def test_stl_tree_contains_exactly_one_mesh_node(tmp_path: Path) -> None:
+    source = tmp_path / "one_mesh.stl"
+    _write_stl(source, ascii_mode=True)
+    kernel = OcpCadKernel()
+    result = kernel.import_stl(source)
+    assert result.document_id is not None
+    tree = kernel.get_document_tree(result.document_id)
+    assert len(tree.root.children) == 1
+    assert tree.root.children[0].kind is CadObjectKind.MESH
+    assert tree.presentation_nodes == (tree.root.children[0],)
 
 
 def test_step_import_returns_public_result_and_preserves_source(tmp_path: Path) -> None:

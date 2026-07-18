@@ -8,8 +8,9 @@
 - Giai đoạn 4: CAD Kernel và CAD Viewer đã hoàn thành phạm vi được duyệt.
 - Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành.
 - Giai đoạn 5B: Measurement BREP đã hoàn thành và được review ổn định.
-- Commit mới nhất: `a95e17e`.
-- Toàn bộ kiểm thử: **128 passed**.
+- Giai đoạn 5C: topology tree và quản lý hiển thị session-only đã hoàn thành.
+- Commit mới nhất trước Giai đoạn 5C: `c840554`.
+- Toàn bộ kiểm thử: **137 passed**.
 - Môi trường mục tiêu: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
 
 ## Kiến trúc và dữ liệu dự án
@@ -35,6 +36,15 @@
 - STL dùng `AIS_Triangulation`; selection topology BREP bị vô hiệu hóa.
 - Import lỗi, worker cũ hoặc signal đến muộn không thay document hiện tại.
 
+## Topology tree và quản lý hiển thị
+
+- BREP có cây quản lý giới hạn ở Document, Compound, CompSolid, Solid, Shell và shape đơn lẻ.
+- Face, Edge và Vertex không được tạo hàng loạt trong tree; chúng chỉ tồn tại trong selection metadata.
+- STL có đúng một mesh node và một presentation, không có triangle/vertex tree.
+- Tree và viewport đồng bộ selection hai chiều bằng document ID và object ID có stale guard.
+- Hỗ trợ session-only Hide/Show, một isolate state, màu và transparency; không làm dirty project hoặc kích hoạt autosave.
+- Đây là topology tree, không phải assembly XCAF: chưa có component name, instance, product hierarchy hoặc assembly transform.
+
 ## Measurement BREP
 
 - Vertex: tọa độ X/Y/Z.
@@ -49,6 +59,6 @@
 
 - Session Lock, Autosave và Recovery có kiểm tra, backup và rollback an toàn.
 - CAD document hiện chưa được lưu vào dữ liệu dự án `.HMS`.
-- Chưa có assembly tree, hide/show, color hoặc transparency.
+- Chưa có assembly tree XCAF thực sự hoặc lưu appearance vào dự án `.HMS`.
 - Chưa triển khai CAD healing và tessellation sản phẩm.
 - Chưa triển khai CAM, toolpath, mô phỏng, Post Processor hoặc Setup Sheet.

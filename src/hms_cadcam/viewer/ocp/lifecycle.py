@@ -18,7 +18,9 @@ from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_View, V3d_Viewer
 from OCP.WNT import WNT_Window
 
-from hms_cadcam.viewer.models import DisplayMode
+from hms_cadcam.cad.models import CadDocumentTree, CadObjectId
+from hms_cadcam.viewer.models import DEFAULT_OBJECT_COLOR, DisplayMode
+from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
 
 
 def _void_pointer_capsule(address: int) -> object:
@@ -39,6 +41,7 @@ class OcpViewportLifecycle:
         self._view: V3d_View | None = None
         self._window: WNT_Window | None = None
         self._presentation: AIS_InteractiveObject | None = None
+        self._registry: OcpPresentationRegistry | None = None
         self._closed = False
 
     @property
@@ -59,7 +62,19 @@ class OcpViewportLifecycle:
 
     @property
     def presentation(self) -> AIS_InteractiveObject | None:
+        if self._registry is not None and len(self._registry.presentations) == 1:
+            return next(iter(self._registry.presentations.values()))
         return self._presentation
+
+    @property
+    def registry(self) -> OcpPresentationRegistry | None:
+        return self._registry
+
+    @property
+    def presentations(self) -> dict[CadObjectId, AIS_InteractiveObject]:
+        if self._registry is not None:
+            return dict(self._registry.presentations)
+        return {}
 
     def initialize(self, native_window_id: int) -> None:
         """Create display resources once and attach the OCCT view to an HWND."""
@@ -132,6 +147,16 @@ class OcpViewportLifecycle:
         context = self.context
         try:
             context.Display(new_presentation, False)
+            context.SetColor(
+                new_presentation,
+                Quantity_Color(
+                    DEFAULT_OBJECT_COLOR.red,
+                    DEFAULT_OBJECT_COLOR.green,
+                    DEFAULT_OBJECT_COLOR.blue,
+                    Quantity_TOC_RGB,
+                ),
+                False,
+            )
             self.apply_display_mode(new_presentation, mode, False)
         except Exception:
             context.Remove(new_presentation, False)
@@ -143,9 +168,66 @@ class OcpViewportLifecycle:
     ) -> None:
         """Promote a prepared candidate and remove the previous presentation."""
         old_presentation = self._presentation
+        if self._registry is not None:
+            for presentation in self._registry.presentations.values():
+                self.context.Remove(presentation, False)
+            self._registry.clear_isolate()
+            self._registry = None
         if old_presentation is not None and old_presentation is not new_presentation:
             self.context.Remove(old_presentation, False)
         self._presentation = new_presentation
+        self.view.Redraw()
+
+    def prepare_registry(
+        self,
+        tree: CadDocumentTree,
+        shapes: dict[CadObjectId, TopoDS_Shape],
+        mode: DisplayMode,
+        triangulation: Poly_Triangulation | None = None,
+    ) -> OcpPresentationRegistry:
+        """Prepare all managed presentations without replacing the active registry."""
+        candidates: dict[CadObjectId, AIS_InteractiveObject] = {}
+        try:
+            for node in tree.presentation_nodes:
+                if triangulation is not None:
+                    if len(tree.presentation_nodes) != 1:
+                        raise ValueError("A mesh document must have one presentation")
+                    candidate = self.prepare_triangulation(triangulation, mode)
+                else:
+                    shape = shapes.get(node.object_id)
+                    if shape is None:
+                        raise KeyError(f"Missing shape for CAD object: {node.object_id}")
+                    candidate = self.prepare_shape(shape, mode)
+                candidates[node.object_id] = candidate
+            return OcpPresentationRegistry(self.context, tree, candidates)
+        except Exception:
+            for candidate in candidates.values():
+                self.context.Remove(candidate, False)
+            raise
+
+    def commit_registry(self, registry: OcpPresentationRegistry) -> None:
+        """Atomically promote a prepared registry and dispose the previous one."""
+        if registry is self._registry:
+            return
+        old_registry = self._registry
+        old_presentation = self._presentation
+        if old_registry is not None:
+            old_registry.clear_isolate()
+            for presentation in old_registry.presentations.values():
+                self.context.Remove(presentation, False)
+        if old_presentation is not None:
+            self.context.Remove(old_presentation, False)
+        self._registry = registry
+        self._presentation = None
+        self.view.Redraw()
+
+    def discard_registry(self, registry: OcpPresentationRegistry) -> None:
+        """Remove candidates after a failed prepare/bind without touching active state."""
+        if registry is self._registry:
+            return
+        registry.clear_isolate()
+        for presentation in registry.presentations.values():
+            self.context.Remove(presentation, False)
         self.view.Redraw()
 
     def discard_presentation(
@@ -179,8 +261,15 @@ class OcpViewportLifecycle:
         """Remove the active presentation without affecting kernel documents."""
         if self._context is not None:
             self._context.ClearSelected(False)
+            if self._registry is not None:
+                self._registry.clear_isolate()
+                for presentation in self._registry.presentations.values():
+                    self._context.Remove(presentation, False)
             if self._presentation is not None:
                 self._context.Remove(self._presentation, True)
+            elif self._registry is not None and self._view is not None:
+                self._view.Redraw()
+        self._registry = None
         self._presentation = None
 
     def fit_all(self) -> None:
@@ -205,6 +294,9 @@ class OcpViewportLifecycle:
         if self._view is not None:
             self._view.Remove()
         self._presentation = None
+        if self._registry is not None:
+            self._registry.clear_isolate()
+        self._registry = None
         self._view = None
         self._window = None
         self._context = None

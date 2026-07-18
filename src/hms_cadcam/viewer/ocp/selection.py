@@ -9,7 +9,7 @@ from OCP.TopTools import TopTools_IndexedMapOfShape
 from OCP.TopoDS import TopoDS_Shape
 from OCP.V3d import V3d_View
 
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.models import CadDocumentId, CadObjectId
 from hms_cadcam.cad.ocp.topology import get_bounding_box
 from hms_cadcam.viewer.models import SelectionMetadata, SelectionMode
 
@@ -30,17 +30,24 @@ class OcpSelectionController:
         self._document_id: CadDocumentId | None = None
         self._document_shape: TopoDS_Shape | None = None
         self._presentation: AIS_Shape | None = None
+        self._object_shapes: dict[CadObjectId, TopoDS_Shape] = {}
+        self._presentations: dict[CadObjectId, AIS_Shape] = {}
 
     def bind_document(
         self,
         document_id: CadDocumentId,
         shape: TopoDS_Shape,
         presentation: AIS_Shape,
+        object_shapes: dict[CadObjectId, TopoDS_Shape] | None = None,
+        presentations: dict[CadObjectId, AIS_Shape] | None = None,
     ) -> None:
         self.clear_document()
         self._document_id = document_id
         self._document_shape = shape
         self._presentation = presentation
+        fallback_id = CadObjectId(f"{document_id}:object:1")
+        self._object_shapes = dict(object_shapes or {fallback_id: shape})
+        self._presentations = dict(presentations or {fallback_id: presentation})
         self._activate_mode()
 
     def set_mode(self, mode: SelectionMode) -> None:
@@ -80,6 +87,7 @@ class OcpSelectionController:
             if not selected_shape.IsNull():
                 index = self._shape_index(selected_shape)
                 if index > 0:
+                    object_id = self._object_id_for_selected_shape(selected_shape)
                     items.append(
                         SelectionMetadata(
                             document_id=self._document_id,
@@ -88,25 +96,45 @@ class OcpSelectionController:
                             ),
                             topology=self._mode,
                             bounding_box=get_bounding_box(selected_shape),
+                            object_id=object_id,
                         )
                     )
             self._context.NextSelected()
         return tuple(items)
 
+    def select_objects(self, object_ids: tuple[CadObjectId, ...]) -> None:
+        """Programmatically highlight managed AIS objects without topology expansion."""
+        if any(object_id not in self._presentations for object_id in object_ids):
+            raise KeyError("CAD object is not selectable in the active document")
+        self._context.ClearSelected(False)
+        for index, object_id in enumerate(object_ids):
+            presentation = self._presentations[object_id]
+            if index == 0:
+                self._context.SetSelected(presentation, False)
+            else:
+                self._context.AddOrRemoveSelected(presentation, False)
+        self._context.UpdateCurrentViewer()
+
+    def clear_selection(self) -> None:
+        self._context.ClearSelected(True)
+
     def clear_document(self) -> None:
         self._context.ClearSelected(False)
-        if self._presentation is not None:
-            self._context.Deactivate(self._presentation)
+        for presentation in self._presentations.values():
+            self._context.Deactivate(presentation)
         self._document_id = None
         self._document_shape = None
         self._presentation = None
+        self._object_shapes = {}
+        self._presentations = {}
 
     def _activate_mode(self) -> None:
-        if self._presentation is None:
+        if not self._presentations:
             return
-        self._context.Deactivate(self._presentation)
         selection_index = AIS_Shape.SelectionMode_s(_SELECTION_TOPOLOGY[self._mode])
-        self._context.Activate(self._presentation, selection_index)
+        for presentation in self._presentations.values():
+            self._context.Deactivate(presentation)
+            self._context.Activate(presentation, selection_index)
 
     def _shape_index(self, selected_shape: TopoDS_Shape) -> int:
         if self._document_shape is None:
@@ -118,3 +146,26 @@ class OcpSelectionController:
             shapes,
         )
         return shapes.FindIndex(selected_shape)
+
+    def _object_id_for_selected_shape(
+        self,
+        selected_shape: TopoDS_Shape,
+    ) -> CadObjectId | None:
+        try:
+            selected_presentation = self._context.SelectedInteractive()
+        except AttributeError:
+            selected_presentation = None
+        if selected_presentation is not None:
+            for object_id, presentation in self._presentations.items():
+                if selected_presentation is presentation or selected_presentation == presentation:
+                    return object_id
+        for object_id, object_shape in self._object_shapes.items():
+            shapes = TopTools_IndexedMapOfShape()
+            TopExp.MapShapes_s(
+                object_shape,
+                _SELECTION_TOPOLOGY[self._mode],
+                shapes,
+            )
+            if shapes.FindIndex(selected_shape) > 0:
+                return object_id
+        return None

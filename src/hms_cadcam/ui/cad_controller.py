@@ -15,14 +15,18 @@ from hms_cadcam.cad.measurement import MeasurementResult, MeasurementService
 from hms_cadcam.cad.measurement_factory import MeasurementServiceFactory
 from hms_cadcam.cad.models import (
     CadDocumentId,
+    CadDocumentTree,
     CadDocumentMetadata,
     CadFormat,
     CadGeometryKind,
     CadImportResult,
+    CadObjectId,
 )
 from hms_cadcam.ui.cad_worker import CadImportTask
 from hms_cadcam.viewer.models import (
     DisplayMode,
+    ObjectAppearance,
+    ObjectColor,
     SelectionMetadata,
     SelectionMode,
     ViewDirection,
@@ -43,6 +47,9 @@ class CadUiController(QObject):
     selection_context_changed = Signal(object, object)
     measurement_changed = Signal(object)
     measurement_context_changed = Signal(object, object)
+    topology_tree_changed = Signal(object)
+    object_selection_context_changed = Signal(object, object)
+    appearance_context_changed = Signal(object, object)
 
     def __init__(
         self,
@@ -66,6 +73,10 @@ class CadUiController(QObject):
         self._active_metadata: CadDocumentMetadata | None = None
         self._closing = False
         self._active_selection: tuple[SelectionMetadata, ...] = ()
+        self._active_tree: CadDocumentTree | None = None
+        self._selected_object_ids: tuple[CadObjectId, ...] = ()
+        self._appearances: dict[CadObjectId, ObjectAppearance] = {}
+        self._isolate_snapshot: dict[CadObjectId, bool] | None = None
         self._vertex_pair: tuple[str, ...] = ()
         self.actions = self._create_actions()
         self._update_action_states()
@@ -86,6 +97,14 @@ class CadUiController(QObject):
     def vertex_pair(self) -> tuple[str, ...]:
         """Return the current OCP-free vertex pair used for distance."""
         return self._vertex_pair
+
+    @property
+    def active_tree(self) -> CadDocumentTree | None:
+        return self._active_tree
+
+    @property
+    def appearances(self) -> tuple[tuple[CadObjectId, ObjectAppearance], ...]:
+        return tuple(self._appearances.items())
 
     @Slot(object)
     def handle_selection(self, items: object) -> None:
@@ -125,9 +144,11 @@ class CadUiController(QObject):
             return
         if not items:
             self._active_selection = ()
+            self._selected_object_ids = ()
             self._reset_vertex_pair()
             self._emit_selection(())
             self._emit_measurements(())
+            self.object_selection_context_changed.emit(document_id, ())
             return
         if (
             document_id is None
@@ -137,6 +158,13 @@ class CadUiController(QObject):
         ):
             return
         self._active_selection = items
+        object_ids = tuple(
+            dict.fromkeys(
+                item.object_id for item in items if item.object_id is not None
+            )
+        )
+        self._selected_object_ids = object_ids
+        self.object_selection_context_changed.emit(document_id, object_ids)
         self._emit_selection(items)
         if all(item.topology is SelectionMode.VERTEX for item in items):
             self._vertex_pair = tuple(item.selection_id for item in items[:2])
@@ -260,6 +288,14 @@ class CadUiController(QObject):
             self.message.emit(f"Lỗi nhập CAD: {error}")
             return
         old_document_id = self._active_document_id
+        try:
+            tree = self._get_document_tree(result.document_id)
+        except (RuntimeError, TypeError, ValueError):
+            logger.exception("Không thể tạo topology tree cho CAD document")
+            self._release_result(result)
+            self.progress_changed.emit("Lỗi")
+            self.message.emit("Lỗi topology tree; giữ nguyên document hiện tại.")
+            return
         if not self._viewport.display_document(result.document_id):
             self._release_result(result)
             self.progress_changed.emit("Lỗi")
@@ -267,6 +303,17 @@ class CadUiController(QObject):
             return
         self._active_document_id = result.document_id
         self._active_metadata = result.metadata
+        self._active_tree = tree
+        self._appearances = (
+            {
+                node.object_id: ObjectAppearance()
+                for node in tree.root.walk()
+            }
+            if tree is not None
+            else {}
+        )
+        self._isolate_snapshot = None
+        self._selected_object_ids = ()
         self._active_selection = ()
         self._reset_vertex_pair()
         self._emit_selection(())
@@ -276,6 +323,8 @@ class CadUiController(QObject):
         self.progress_changed.emit("Hoàn thành")
         self.message.emit(f"Đã hiển thị CAD: {result.source_path}")
         self.document_changed.emit(result.metadata)
+        self.topology_tree_changed.emit(tree)
+        self._emit_appearances()
         self._measure_active_document()
         self._update_action_states()
 
@@ -389,12 +438,19 @@ class CadUiController(QObject):
         document_id = self._active_document_id
         self._active_document_id = None
         self._active_metadata = None
+        self._active_tree = None
+        self._appearances = {}
+        self._isolate_snapshot = None
+        self._selected_object_ids = ()
         self._active_selection = ()
         self._reset_vertex_pair()
         self._viewport.clear()
         if document_id is not None:
             self._release_document(document_id)
         self.document_changed.emit(None)
+        self.topology_tree_changed.emit(None)
+        self.object_selection_context_changed.emit(None, ())
+        self.appearance_context_changed.emit(None, ())
         self._emit_measurements(())
         self.progress_changed.emit("Sẵn sàng")
         self._update_action_states()
@@ -442,10 +498,184 @@ class CadUiController(QObject):
 
     def _set_selection_mode(self, mode: SelectionMode) -> None:
         self._active_selection = ()
+        self._selected_object_ids = ()
         self._reset_vertex_pair()
         self._emit_selection(())
         self._emit_measurements(())
         self._viewport.set_selection_mode(mode)
+
+    @Slot(object, object)
+    def select_tree_objects(self, document_id: object, object_ids: object) -> None:
+        """Synchronize a guarded tree selection into the active viewport."""
+        if document_id != self._active_document_id or not isinstance(object_ids, tuple):
+            return
+        if not all(isinstance(item, CadObjectId) for item in object_ids):
+            return
+        if any(not self._has_object(item) for item in object_ids):
+            return
+        if not self._viewport.select_objects(document_id, object_ids):
+            return
+        self._selected_object_ids = object_ids
+        self._active_selection = ()
+        self._reset_vertex_pair()
+        self._emit_selection(())
+        self._emit_measurements(())
+        self.object_selection_context_changed.emit(document_id, object_ids)
+
+    def set_object_visibility(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        visible: bool,
+    ) -> bool:
+        """Apply parent-recursive visibility without dirtying the project."""
+        if not self._valid_object_request(document_id, object_id):
+            return False
+        if not self._viewport.set_object_visibility(document_id, object_id, visible):
+            return False
+        affected = set(self._descendant_ids(object_id))
+        for affected_id in affected:
+            current = self._appearances[affected_id]
+            self._appearances[affected_id] = ObjectAppearance(
+                visible=visible,
+                color=current.color,
+                transparency=current.transparency,
+            )
+        self._refresh_container_visibility()
+        selected_topology_hidden = any(
+            item.object_id in affected for item in self._active_selection
+        )
+        affected_leaf_ids = set(self._presentation_ids(object_id))
+        selected_tree_leaf_ids = {
+            leaf_id
+            for selected_id in self._selected_object_ids
+            for leaf_id in self._presentation_ids(selected_id)
+        }
+        selected_tree_hidden = bool(
+            affected_leaf_ids.intersection(selected_tree_leaf_ids)
+        )
+        if not visible and (selected_topology_hidden or selected_tree_hidden):
+            self._active_selection = ()
+            self._selected_object_ids = ()
+            self._reset_vertex_pair()
+            self._emit_selection(())
+            self._emit_measurements(())
+            self.object_selection_context_changed.emit(document_id, ())
+        self._emit_appearances()
+        return True
+
+    def isolate_object(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> bool:
+        """Keep one isolate target while preserving the pre-isolate snapshot."""
+        if not self._valid_object_request(document_id, object_id):
+            return False
+        if not self._viewport.isolate_object(document_id, object_id):
+            return False
+        if self._isolate_snapshot is None:
+            self._isolate_snapshot = {
+                item_id: appearance.visible
+                for item_id, appearance in self._appearances.items()
+            }
+        else:
+            for item_id, visible in self._isolate_snapshot.items():
+                current = self._appearances[item_id]
+                self._appearances[item_id] = ObjectAppearance(
+                    visible=visible,
+                    color=current.color,
+                    transparency=current.transparency,
+                )
+        visible_leaf_ids = set(self._presentation_ids(object_id))
+        for node_id, current in tuple(self._appearances.items()):
+            node = self._active_tree.find(node_id) if self._active_tree else None
+            if node is not None and node.has_presentation:
+                self._appearances[node_id] = ObjectAppearance(
+                    visible=node_id in visible_leaf_ids,
+                    color=current.color,
+                    transparency=current.transparency,
+                )
+        self._refresh_container_visibility()
+        selected_leaf_ids = {
+            leaf_id
+            for selected_id in self._selected_object_ids
+            for leaf_id in self._presentation_ids(selected_id)
+        }
+        if selected_leaf_ids and not selected_leaf_ids.issubset(visible_leaf_ids):
+            self._selected_object_ids = ()
+            self._active_selection = ()
+            self._emit_selection(())
+            self._emit_measurements(())
+            self.object_selection_context_changed.emit(document_id, ())
+        self._emit_appearances()
+        return True
+
+    def reset_isolate(self, document_id: CadDocumentId) -> bool:
+        if document_id != self._active_document_id or self._isolate_snapshot is None:
+            return False
+        if not self._viewport.reset_isolate(document_id):
+            return False
+        for item_id, visible in self._isolate_snapshot.items():
+            current = self._appearances[item_id]
+            self._appearances[item_id] = ObjectAppearance(
+                visible=visible,
+                color=current.color,
+                transparency=current.transparency,
+            )
+        self._isolate_snapshot = None
+        self._emit_appearances()
+        return True
+
+    def set_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        color: ObjectColor,
+    ) -> bool:
+        if not self._valid_object_request(document_id, object_id):
+            return False
+        if not isinstance(color, ObjectColor):
+            return False
+        if not self._viewport.set_object_color(document_id, object_id, color):
+            return False
+        for affected_id in self._descendant_ids(object_id):
+            current = self._appearances[affected_id]
+            self._appearances[affected_id] = ObjectAppearance(
+                visible=current.visible,
+                color=color,
+                transparency=current.transparency,
+            )
+        self._emit_appearances()
+        return True
+
+    def set_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        transparency: float,
+    ) -> bool:
+        if not self._valid_object_request(document_id, object_id):
+            return False
+        try:
+            validated = ObjectAppearance(transparency=transparency).transparency
+        except (TypeError, ValueError):
+            return False
+        if not self._viewport.set_object_transparency(
+            document_id,
+            object_id,
+            validated,
+        ):
+            return False
+        for affected_id in self._descendant_ids(object_id):
+            current = self._appearances[affected_id]
+            self._appearances[affected_id] = ObjectAppearance(
+                visible=current.visible,
+                color=current.color,
+                transparency=validated,
+            )
+        self._emit_appearances()
+        return True
 
     def _measure_active_document(self) -> None:
         document_id = self._active_document_id
@@ -477,6 +707,69 @@ class CadUiController(QObject):
 
     def _reset_vertex_pair(self) -> None:
         self._vertex_pair = ()
+
+    def _get_document_tree(
+        self,
+        document_id: CadDocumentId,
+    ) -> CadDocumentTree | None:
+        getter = getattr(self._kernel, "get_document_tree", None)
+        if getter is None:
+            return None
+        tree = getter(document_id)
+        if not isinstance(tree, CadDocumentTree) or tree.document_id != document_id:
+            raise TypeError("CAD kernel returned an invalid document tree")
+        return tree
+
+    def _has_object(self, object_id: CadObjectId) -> bool:
+        return self._active_tree is not None and self._active_tree.find(object_id) is not None
+
+    def _valid_object_request(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> bool:
+        return document_id == self._active_document_id and self._has_object(object_id)
+
+    def _descendant_ids(self, object_id: CadObjectId) -> tuple[CadObjectId, ...]:
+        if self._active_tree is None:
+            return ()
+        node = self._active_tree.find(object_id)
+        return tuple(item.object_id for item in node.walk()) if node else ()
+
+    def _presentation_ids(self, object_id: CadObjectId) -> tuple[CadObjectId, ...]:
+        if self._active_tree is None:
+            return ()
+        node = self._active_tree.find(object_id)
+        return (
+            tuple(item.object_id for item in node.walk() if item.has_presentation)
+            if node
+            else ()
+        )
+
+    def _refresh_container_visibility(self) -> None:
+        if self._active_tree is None:
+            return
+        for node in reversed(self._active_tree.root.walk()):
+            if not node.children:
+                continue
+            visible = any(
+                self._appearances[item.object_id].visible
+                for child in node.children
+                for item in child.walk()
+                if item.has_presentation
+            )
+            current = self._appearances[node.object_id]
+            self._appearances[node.object_id] = ObjectAppearance(
+                visible=visible,
+                color=current.color,
+                transparency=current.transparency,
+            )
+
+    def _emit_appearances(self) -> None:
+        self.appearance_context_changed.emit(
+            self._active_document_id,
+            tuple(self._appearances.items()),
+        )
 
 
 def _format_for_path(path: Path) -> CadFormat | None:

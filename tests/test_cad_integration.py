@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from OCP.BRep import BRep_Builder  # noqa: E402
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from OCP.BRepTools import BRepTools  # noqa: E402
@@ -20,6 +21,7 @@ from OCP.STEPControl import (  # noqa: E402
     STEPControl_Writer,
 )
 from OCP.StlAPI import StlAPI_Writer  # noqa: E402
+from OCP.TopoDS import TopoDS_Compound  # noqa: E402
 from PySide6.QtCore import QTimer, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar, QToolButton  # noqa: E402
 
@@ -32,6 +34,8 @@ from hms_cadcam.cad.models import (  # noqa: E402
     CadFormat,
     CadImportResult,
     CadKernelStatus,
+    CadObjectId,
+    CadObjectKind,
     TopologyCounts,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
@@ -44,6 +48,7 @@ from hms_cadcam.viewer.models import (  # noqa: E402
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectColor,
     SelectionMetadata,
     SelectionMode,
     ViewDirection,
@@ -58,12 +63,19 @@ class IntegrationViewportBackend:
         self.callback = lambda _items: None
         self.initialized = False
         self.closed = False
+        self.fail_display = False
         self.current_document: CadDocumentId | None = None
         self.display_history: list[CadDocumentId] = []
         self.clear_count = 0
         self.view_directions: list[ViewDirection] = []
         self.display_modes: list[DisplayMode] = []
         self.selection_modes: list[SelectionMode] = []
+        self.object_selections: list[tuple[CadDocumentId, tuple[CadObjectId, ...]]] = []
+        self.visibility_changes: list[tuple[CadDocumentId, CadObjectId, bool]] = []
+        self.isolate_changes: list[tuple[CadDocumentId, CadObjectId]] = []
+        self.reset_isolate_documents: list[CadDocumentId] = []
+        self.color_changes: list[tuple[CadDocumentId, CadObjectId, ObjectColor]] = []
+        self.transparency_changes: list[tuple[CadDocumentId, CadObjectId, float]] = []
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(True, self.initialized and not self.closed, "mock")
@@ -76,6 +88,8 @@ class IntegrationViewportBackend:
         self.initialized = True
 
     def display_document(self, document_id: CadDocumentId) -> None:
+        if self.fail_display:
+            raise RuntimeError("simulated managed registry display failure")
         self.current_document = document_id
         self.display_history.append(document_id)
 
@@ -95,6 +109,47 @@ class IntegrationViewportBackend:
 
     def set_selection_mode(self, mode: SelectionMode) -> None:
         self.selection_modes.append(mode)
+
+    def select_objects(
+        self,
+        document_id: CadDocumentId,
+        object_ids: tuple[CadObjectId, ...],
+    ) -> None:
+        self.object_selections.append((document_id, object_ids))
+
+    def set_object_visibility(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        visible: bool,
+    ) -> None:
+        self.visibility_changes.append((document_id, object_id, visible))
+
+    def isolate_object(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        self.isolate_changes.append((document_id, object_id))
+
+    def reset_isolate(self, document_id: CadDocumentId) -> None:
+        self.reset_isolate_documents.append(document_id)
+
+    def set_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        color: ObjectColor,
+    ) -> None:
+        self.color_changes.append((document_id, object_id, color))
+
+    def set_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        transparency: float,
+    ) -> None:
+        self.transparency_changes.append((document_id, object_id, transparency))
 
     def resize(self, width: int, height: int) -> None:
         del width, height
@@ -225,6 +280,15 @@ def _write_step(path: Path, size: float = 40.0) -> None:
 def _write_brep(path: Path, size: float = 25.0) -> None:
     shape = BRepPrimAPI_MakeBox(size, 15.0, 10.0).Shape()
     assert BRepTools.Write_s(shape, str(path))
+
+
+def _write_multi_solid_brep(path: Path) -> None:
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, BRepPrimAPI_MakeBox(10.0, 8.0, 6.0).Shape())
+    builder.Add(compound, BRepPrimAPI_MakeBox(5.0, 4.0, 3.0).Shape())
+    assert BRepTools.Write_s(compound, str(path))
 
 
 def _write_stl(path: Path, *, ascii_mode: bool = True) -> None:
@@ -362,11 +426,38 @@ def test_failed_import_keeps_current_document(tmp_path: Path) -> None:
     window.cad_controller.start_import(valid, CadFormat.BREP)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     current = window.cad_controller.active_document_id
+    current_tree = window.cad_controller.active_tree
     window.cad_controller.start_import(broken, CadFormat.STEP)
     _wait_until(application, lambda: not window.cad_controller.is_busy)
     assert window.cad_controller.active_document_id == current
+    assert window.cad_controller.active_tree is current_tree
     assert backend.current_document == current
     assert window._import_status.text() == "CAD: Lỗi"
+    window.close()
+
+
+def test_display_failure_keeps_document_tree_and_releases_candidate(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    first = tmp_path / "displayed.brep"
+    second = tmp_path / "candidate.brep"
+    _write_brep(first, 20.0)
+    _write_brep(second, 30.0)
+    window, backend, kernel = _window(tmp_path)
+    window.cad_controller.start_import(first, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    old_document_id = window.cad_controller.active_document_id
+    old_tree = window.cad_controller.active_tree
+    backend.fail_display = True
+
+    window.cad_controller.start_import(second, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    assert window.cad_controller.active_document_id == old_document_id
+    assert window.cad_controller.active_tree is old_tree
+    assert backend.current_document == old_document_id
+    assert len(backend.display_history) == 1
+    assert len(kernel._documents._records) == 1
     window.close()
 
 
@@ -479,6 +570,177 @@ def test_document_and_selection_update_tree_and_properties(tmp_path: Path) -> No
     }
     assert properties["Loại topology"] == "FACE"
     assert properties["Selection ID"] == item.selection_id
+    window.close()
+
+
+def test_topology_tree_selection_sync_is_loop_free_and_rejects_stale_ids(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "two_solids.brep"
+    _write_multi_solid_brep(source)
+    window, backend, _kernel = _window(tmp_path)
+    window.cad_controller.start_import(source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    solids = tuple(
+        node for node in tree.root.walk() if node.kind is CadObjectKind.SOLID
+    )
+    assert len(solids) == 2
+    assert len(tree.presentation_nodes) == 2
+
+    lazy_viewport_item = SelectionMetadata(
+        tree.document_id,
+        f"{tree.document_id}:face:1",
+        SelectionMode.FACE,
+        solids[1].bounding_box,
+        solids[1].object_id,
+    )
+    backend.emit_selection((lazy_viewport_item,))
+    application.processEvents()
+    assert backend.object_selections == []
+    assert window._selected_object_ids == (solids[1].object_id,)
+
+    window._project_tree.expandAll()
+    application.processEvents()
+    solid_items = window._project_tree.findItems(
+        "Solid *",
+        Qt.MatchFlag.MatchWildcard | Qt.MatchFlag.MatchRecursive,
+        0,
+    )
+    assert len(solid_items) == 2
+    window._tree_sync_guard = True
+    window._project_tree.clearSelection()
+    window._tree_sync_guard = False
+    solid_items[0].setSelected(True)
+    application.processEvents()
+    assert backend.object_selections[-1] == (
+        tree.document_id,
+        (solids[0].object_id,),
+    )
+
+    calls_before_viewport_event = len(backend.object_selections)
+    viewport_item = SelectionMetadata(
+        tree.document_id,
+        f"{tree.document_id}:face:1",
+        SelectionMode.FACE,
+        solids[1].bounding_box,
+        solids[1].object_id,
+    )
+    backend.emit_selection((viewport_item,))
+    application.processEvents()
+    assert len(backend.object_selections) == calls_before_viewport_event
+    assert window._selected_object_ids == (solids[1].object_id,)
+
+    window.cad_controller.select_tree_objects(
+        tree.document_id,
+        (CadObjectId(f"{tree.document_id}:object:missing"),),
+    )
+    window.cad_controller.select_tree_objects(
+        CadDocumentId("stale:document"),
+        (solids[0].object_id,),
+    )
+    assert len(backend.object_selections) == calls_before_viewport_event
+    window.close()
+
+
+def test_visibility_and_isolate_sync_clear_only_hidden_selection(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "visibility.brep"
+    _write_multi_solid_brep(source)
+    window, backend, _kernel = _window(tmp_path)
+    window.cad_controller.start_import(source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    first, second = tree.presentation_nodes
+    selected = SelectionMetadata(
+        tree.document_id,
+        f"{tree.document_id}:solid:1",
+        SelectionMode.SOLID,
+        first.bounding_box,
+        first.object_id,
+    )
+    backend.emit_selection((selected,))
+    application.processEvents()
+
+    assert window.cad_controller.set_object_visibility(
+        tree.document_id,
+        first.object_id,
+        False,
+    )
+    assert window._active_selection == ()
+    assert backend.visibility_changes[-1] == (
+        tree.document_id,
+        first.object_id,
+        False,
+    )
+    assert window.cad_controller.set_object_visibility(
+        tree.document_id,
+        first.object_id,
+        True,
+    )
+    assert window._active_selection == ()
+
+    assert window.cad_controller.set_object_visibility(
+        tree.document_id,
+        second.object_id,
+        False,
+    )
+    assert window.cad_controller.isolate_object(tree.document_id, first.object_id)
+    assert window.cad_controller.isolate_object(tree.document_id, second.object_id)
+    assert window.cad_controller.reset_isolate(tree.document_id)
+    appearance = dict(window.cad_controller.appearances)
+    assert appearance[first.object_id].visible is True
+    assert appearance[second.object_id].visible is False
+    window.close()
+
+
+def test_appearance_is_session_only_and_isolate_resets_on_document_change(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    first_source = tmp_path / "first.brep"
+    second_source = tmp_path / "second.brep"
+    _write_brep(first_source)
+    _write_brep(second_source, 12.0)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Appearance", UnitSystem.MILLIMETER)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    window.cad_controller.start_import(first_source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    first_tree = window.cad_controller.active_tree
+    assert first_tree is not None
+    object_id = first_tree.presentation_nodes[0].object_id
+    assert window.cad_controller.set_object_color(
+        first_tree.document_id,
+        object_id,
+        ObjectColor(0.2, 0.3, 0.4),
+    )
+    assert window.cad_controller.set_object_transparency(
+        first_tree.document_id,
+        object_id,
+        0.35,
+    )
+    assert window.cad_controller.isolate_object(first_tree.document_id, object_id)
+    assert not session.is_dirty
+    assert list((session.root_path / "autosave").iterdir()) == []
+
+    window.cad_controller.start_import(second_source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    second_tree = window.cad_controller.active_tree
+    assert second_tree is not None and second_tree.document_id != first_tree.document_id
+    assert not window.cad_controller.reset_isolate(second_tree.document_id)
+    assert not window.cad_controller.set_object_visibility(
+        first_tree.document_id,
+        object_id,
+        False,
+    )
+    assert not session.is_dirty
     window.close()
 
 

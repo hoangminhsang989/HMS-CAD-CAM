@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.models import CadDocumentId, CadObjectId
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectColor,
     SelectionMode,
     ViewDirection,
     ViewportStatus,
@@ -58,6 +59,47 @@ class UnavailableCadViewportBackend:
 
     def set_selection_mode(self, mode: SelectionMode) -> None:
         del mode
+
+    def select_objects(
+        self,
+        document_id: CadDocumentId,
+        object_ids: tuple[CadObjectId, ...],
+    ) -> None:
+        del document_id, object_ids
+
+    def set_object_visibility(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        visible: bool,
+    ) -> None:
+        del document_id, object_id, visible
+
+    def isolate_object(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        del document_id, object_id
+
+    def reset_isolate(self, document_id: CadDocumentId) -> None:
+        del document_id
+
+    def set_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        color: ObjectColor,
+    ) -> None:
+        del document_id, object_id, color
+
+    def set_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        transparency: float,
+    ) -> None:
+        del document_id, object_id, transparency
 
     def resize(self, width: int, height: int) -> None:
         del width, height

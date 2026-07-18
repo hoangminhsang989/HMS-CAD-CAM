@@ -7,13 +7,19 @@ import logging
 from OCP.V3d import V3d_TypeOfOrientation
 
 from hms_cadcam.cad.kernel import CadKernel
-from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
+from hms_cadcam.cad.models import (
+    CadDocumentId,
+    CadDocumentTree,
+    CadGeometryKind,
+    CadObjectId,
+)
 from hms_cadcam.cad.ocp import OcpCadKernel
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectColor,
     SelectionMetadata,
     SelectionMode,
     ViewDirection,
@@ -21,6 +27,7 @@ from hms_cadcam.viewer.models import (
 )
 from hms_cadcam.viewer.ocp.input_controller import OcpInputController
 from hms_cadcam.viewer.ocp.lifecycle import OcpViewportLifecycle
+from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
 from hms_cadcam.viewer.ocp.selection import OcpSelectionController
 
 _VIEW_DIRECTIONS = {
@@ -48,6 +55,8 @@ class OcpCadViewportBackend:
         self._input: OcpInputController | None = None
         self._selection_callback: SelectionCallback = lambda _items: None
         self._document_id: CadDocumentId | None = None
+        self._tree: CadDocumentTree | None = None
+        self._selected_object_ids: tuple[CadObjectId, ...] = ()
         self._display_mode = DisplayMode.SHADED_WITH_EDGES
         self._selection_mode = SelectionMode.SOLID
         self._view_direction = ViewDirection.ISOMETRIC
@@ -79,10 +88,36 @@ class OcpCadViewportBackend:
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
         old_document_id = self._document_id
+        old_tree = self._tree
         old_presentation = self._lifecycle.presentation
+        old_presentations = dict(getattr(self._lifecycle, "presentations", {}))
         metadata = self._kernel.get_document_metadata(document_id)
+        tree = self._kernel.get_document_tree(document_id)
         shape = None
-        if metadata.geometry_kind is CadGeometryKind.BREP:
+        registry: OcpPresentationRegistry | None = None
+        presentation = None
+        presentation_shapes = {}
+        if hasattr(self._lifecycle, "prepare_registry"):
+            if metadata.geometry_kind is CadGeometryKind.BREP:
+                shape = self._kernel._resolve_shape(document_id)
+                presentation_shapes = self._kernel._resolve_presentation_shapes(
+                    document_id
+                )
+                registry = self._lifecycle.prepare_registry(
+                    tree,
+                    presentation_shapes,
+                    self._display_mode,
+                )
+            else:
+                triangulation = self._kernel._resolve_triangulation(document_id)
+                registry = self._lifecycle.prepare_registry(
+                    tree,
+                    {},
+                    self._display_mode,
+                    triangulation,
+                )
+            presentation = next(iter(registry.presentations.values()))
+        elif metadata.geometry_kind is CadGeometryKind.BREP:
             shape = self._kernel._resolve_shape(document_id)
             presentation = self._lifecycle.prepare_shape(shape, self._display_mode)
         else:
@@ -98,15 +133,37 @@ class OcpCadViewportBackend:
             if shape is None:
                 selection.clear_document()
             else:
-                selection.bind_document(document_id, shape, presentation)
+                if registry is not None:
+                    selection.bind_document(
+                        document_id,
+                        shape,
+                        presentation,
+                        presentation_shapes,
+                        registry.presentations,
+                    )
+                else:
+                    selection.bind_document(document_id, shape, presentation)
                 selection.set_mode(self._selection_mode)
-            self._lifecycle.commit_presentation(presentation)
+            if registry is not None:
+                self._lifecycle.commit_registry(registry)
+            else:
+                self._lifecycle.commit_presentation(presentation)
         except Exception:
-            self._lifecycle.discard_presentation(presentation)
-            self._restore_selection(old_document_id, old_presentation)
+            if registry is not None:
+                self._lifecycle.discard_registry(registry)
+            elif presentation is not None:
+                self._lifecycle.discard_presentation(presentation)
+            self._restore_selection(
+                old_document_id,
+                old_tree,
+                old_presentation,
+                old_presentations,
+            )
             self._emit_selection(())
             raise
         self._document_id = document_id
+        self._tree = tree
+        self._selected_object_ids = ()
         self._emit_selection(())
         self.fit_all()
 
@@ -117,6 +174,8 @@ class OcpCadViewportBackend:
             self._input.reset()
         self._lifecycle.clear()
         self._document_id = None
+        self._tree = None
+        self._selected_object_ids = ()
         self._emit_selection(())
 
     def fit_all(self) -> None:
@@ -130,15 +189,94 @@ class OcpCadViewportBackend:
 
     def set_display_mode(self, mode: DisplayMode) -> None:
         self._display_mode = mode
-        presentation = self._lifecycle.presentation
-        if presentation is not None:
-            self._lifecycle.apply_display_mode(presentation, mode)
+        presentations = getattr(self._lifecycle, "presentations", {})
+        if presentations:
+            for presentation in presentations.values():
+                self._lifecycle.apply_display_mode(presentation, mode, False)
+            self._lifecycle.view.Redraw()
+        else:
+            presentation = self._lifecycle.presentation
+            if presentation is not None:
+                self._lifecycle.apply_display_mode(presentation, mode)
 
     def set_selection_mode(self, mode: SelectionMode) -> None:
         self._selection_mode = mode
         if self._selection is not None:
             self._selection.set_mode(mode)
             self._emit_selection(())
+
+    def select_objects(
+        self,
+        document_id: CadDocumentId,
+        object_ids: tuple[CadObjectId, ...],
+    ) -> None:
+        registry = self._require_registry(document_id)
+        leaf_ids: list[CadObjectId] = []
+        for object_id in object_ids:
+            for leaf_id in registry.presentation_ids(object_id):
+                if leaf_id not in leaf_ids:
+                    leaf_ids.append(leaf_id)
+        self._require_selection().select_objects(tuple(leaf_ids))
+        self._selected_object_ids = tuple(object_ids)
+
+    def set_object_visibility(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        visible: bool,
+    ) -> None:
+        registry = self._require_registry(document_id)
+        affected = set(registry.presentation_ids(object_id))
+        selected_leaves = {
+            leaf_id
+            for selected_id in self._selected_object_ids
+            for leaf_id in registry.presentation_ids(selected_id)
+        }
+        if not visible and affected.intersection(selected_leaves):
+            self._require_selection().clear_selection()
+            self._selected_object_ids = ()
+            self._emit_selection(())
+        registry.set_visibility(object_id, visible)
+
+    def isolate_object(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        registry = self._require_registry(document_id)
+        retained = set(registry.presentation_ids(object_id))
+        selected_leaves = {
+            leaf_id
+            for selected_id in self._selected_object_ids
+            for leaf_id in registry.presentation_ids(selected_id)
+        }
+        if selected_leaves and not selected_leaves.issubset(retained):
+            self._require_selection().clear_selection()
+            self._selected_object_ids = ()
+            self._emit_selection(())
+        registry.isolate(object_id)
+
+    def reset_isolate(self, document_id: CadDocumentId) -> None:
+        self._require_registry(document_id).reset_isolate()
+
+    def set_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        color: ObjectColor,
+    ) -> None:
+        self._require_registry(document_id).set_color(object_id, color)
+
+    def set_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        transparency: float,
+    ) -> None:
+        self._require_registry(document_id).set_transparency(
+            object_id,
+            transparency,
+        )
 
     def resize(self, width: int, height: int) -> None:
         if width < 0 or height < 0:
@@ -202,6 +340,8 @@ class OcpCadViewportBackend:
         self._input = None
         self._selection = None
         self._document_id = None
+        self._tree = None
+        self._selected_object_ids = ()
         self._lifecycle.close()
 
     def _require_initialized(self) -> None:
@@ -213,7 +353,13 @@ class OcpCadViewportBackend:
             raise RuntimeError("OCP selection is not initialized")
         return self._selection
 
-    def _restore_selection(self, document_id, presentation) -> None:
+    def _restore_selection(
+        self,
+        document_id,
+        tree,
+        presentation,
+        presentations,
+    ) -> None:
         selection = self._require_selection()
         if document_id is None or presentation is None:
             selection.clear_document()
@@ -221,7 +367,17 @@ class OcpCadViewportBackend:
         metadata = self._kernel.get_document_metadata(document_id)
         if metadata.geometry_kind is CadGeometryKind.BREP:
             shape = self._kernel._resolve_shape(document_id)
-            selection.bind_document(document_id, shape, presentation)
+            if presentations:
+                object_shapes = self._kernel._resolve_presentation_shapes(document_id)
+                selection.bind_document(
+                    document_id,
+                    shape,
+                    presentation,
+                    object_shapes,
+                    presentations,
+                )
+            else:
+                selection.bind_document(document_id, shape, presentation)
             selection.set_mode(self._selection_mode)
         else:
             selection.clear_document()
@@ -229,9 +385,25 @@ class OcpCadViewportBackend:
     def _emit_selection(self, items: tuple[SelectionMetadata, ...]) -> None:
         if self._closed:
             return
+        self._selected_object_ids = tuple(
+            dict.fromkeys(
+                item.object_id for item in items if item.object_id is not None
+            )
+        )
         try:
             self._selection_callback(items)
         except Exception:
             logging.getLogger(__name__).exception(
                 "CAD viewport selection callback failed"
             )
+
+    def _require_registry(
+        self,
+        document_id: CadDocumentId,
+    ) -> OcpPresentationRegistry:
+        if document_id != self._document_id:
+            raise KeyError(f"CAD document is not displayed: {document_id}")
+        registry = getattr(self._lifecycle, "registry", None)
+        if registry is None:
+            raise RuntimeError("Managed presentation registry is unavailable")
+        return registry

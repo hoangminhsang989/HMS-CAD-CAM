@@ -14,6 +14,8 @@ from hms_cadcam.cad.exceptions import CadDocumentNotFoundError
 from hms_cadcam.cad.models import (
     CadDocumentId,
     CadDocumentMetadata,
+    CadDocumentTree,
+    CadObjectId,
     CadFormat,
     CadGeometryKind,
     CadUnits,
@@ -21,6 +23,8 @@ from hms_cadcam.cad.models import (
 )
 from hms_cadcam.cad.ocp.topology import (
     get_bounding_box,
+    build_brep_document_tree,
+    build_mesh_document_tree,
     get_mesh_bounding_box,
     get_topology_counts,
 )
@@ -30,12 +34,15 @@ from hms_cadcam.cad.ocp.topology import (
 class _BrepDocumentRecord:
     shape: TopoDS_Shape
     metadata: CadDocumentMetadata
+    tree: CadDocumentTree
+    presentation_shapes: dict[CadObjectId, TopoDS_Shape]
 
 
 @dataclass(slots=True)
 class _MeshDocumentRecord:
     triangulation: Poly_Triangulation
     metadata: CadDocumentMetadata
+    tree: CadDocumentTree
 
 
 _DocumentRecord = _BrepDocumentRecord | _MeshDocumentRecord
@@ -76,8 +83,14 @@ class OcpDocumentStore:
             topology_counts=topology_counts,
             source_path=source_path,
         )
+        tree, presentation_shapes = build_brep_document_tree(document_id, shape)
         with self._lock:
-            self._records[document_id] = _BrepDocumentRecord(shape, metadata)
+            self._records[document_id] = _BrepDocumentRecord(
+                shape,
+                metadata,
+                tree,
+                presentation_shapes,
+            )
         return metadata
 
     def add_mesh(
@@ -105,6 +118,7 @@ class OcpDocumentStore:
             self._records[document_id] = _MeshDocumentRecord(
                 triangulation,
                 metadata,
+                build_mesh_document_tree(document_id, metadata.bounding_box),
             )
         return metadata
 
@@ -138,6 +152,27 @@ class OcpDocumentStore:
         if not isinstance(record, _MeshDocumentRecord):
             raise TypeError(f"CAD document is not a triangle mesh: {document_id}")
         return record.triangulation
+
+    def get_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
+        """Return the stored immutable topology tree."""
+        with self._lock:
+            record = self._records.get(document_id)
+        if record is None:
+            raise CadDocumentNotFoundError(f"CAD document not found: {document_id}")
+        return record.tree
+
+    def resolve_presentation_shapes(
+        self,
+        document_id: CadDocumentId,
+    ) -> dict[CadObjectId, TopoDS_Shape]:
+        """Resolve BREP leaf shapes for trusted viewer adapters only."""
+        with self._lock:
+            record = self._records.get(document_id)
+        if record is None:
+            raise CadDocumentNotFoundError(f"CAD document not found: {document_id}")
+        if not isinstance(record, _BrepDocumentRecord):
+            raise TypeError(f"CAD document is not BREP: {document_id}")
+        return dict(record.presentation_shapes)
 
     def release(self, document_id: CadDocumentId) -> None:
         """Remove the record so its native shape can be released."""

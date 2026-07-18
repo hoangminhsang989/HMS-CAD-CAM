@@ -5,12 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QDockWidget,
+    QColorDialog,
     QHeaderView,
     QLabel,
+    QInputDialog,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QStyle,
     QTableWidget,
@@ -32,7 +35,13 @@ from hms_cadcam.cad.measurement import (
     PointCoordinates,
     VolumeMeasurement,
 )
-from hms_cadcam.cad.models import CadDocumentMetadata
+from hms_cadcam.cad.models import (
+    CadDocumentId,
+    CadDocumentMetadata,
+    CadDocumentTree,
+    CadObjectId,
+    CadObjectNode,
+)
 from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_controller import CadUiController
@@ -40,8 +49,14 @@ from hms_cadcam.ui.project_controller import ProjectUiController
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
 from hms_cadcam.viewer.backend import CadViewportBackend
-from hms_cadcam.viewer.models import SelectionMetadata
+from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata
 from hms_cadcam.viewer.widget import CadViewportWidget
+
+_OBJECT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+_DOCUMENT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+_OBJECT_NODE_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+_PLACEHOLDER_ROLE = int(Qt.ItemDataRole.UserRole) + 4
+_TOPOLOGY_GROUP_ROLE = int(Qt.ItemDataRole.UserRole) + 5
 
 
 class MainWindow(QMainWindow):
@@ -65,7 +80,12 @@ class MainWindow(QMainWindow):
         self.project_controller = ProjectUiController(self, project_service)
         self.cad_controller = CadUiController(self, cad_kernel, self.viewport)
         self._active_document_metadata: CadDocumentMetadata | None = None
+        self._active_document_tree: CadDocumentTree | None = None
         self._active_selection: tuple[SelectionMetadata, ...] = ()
+        self._selected_object_ids: tuple[CadObjectId, ...] = ()
+        self._object_appearances: dict[CadObjectId, ObjectAppearance] = {}
+        self._object_items: dict[CadObjectId, QTreeWidgetItem] = {}
+        self._tree_sync_guard = False
         self._active_measurements: tuple[MeasurementResult, ...] = ()
         self._build_menu_bar()
         self._build_quick_access_toolbar()
@@ -102,10 +122,17 @@ class MainWindow(QMainWindow):
         self.cad_controller.message.connect(self._append_output)
         self.cad_controller.progress_changed.connect(self._update_import_status)
         self.cad_controller.document_changed.connect(self._update_cad_document)
+        self.cad_controller.topology_tree_changed.connect(self._update_topology_tree)
         self.viewport.selection_context_changed.connect(
             self.cad_controller.handle_selection_event
         )
         self.cad_controller.selection_context_changed.connect(self._update_selection)
+        self.cad_controller.object_selection_context_changed.connect(
+            self._update_object_selection
+        )
+        self.cad_controller.appearance_context_changed.connect(
+            self._update_object_appearances
+        )
         self.cad_controller.measurement_context_changed.connect(
             self._update_measurements
         )
@@ -210,7 +237,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _create_project_dock(self) -> QDockWidget:
-        dock = QDockWidget("Toolpaths / Quản lý dự án", self)
+        dock = QDockWidget("Topology / Quản lý dự án", self)
         dock.setObjectName("ProjectManagerDock")
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         tabs = QTabWidget()
@@ -219,11 +246,19 @@ class MainWindow(QMainWindow):
         self._project_tree = QTreeWidget()
         self._project_tree.setObjectName("ProjectTree")
         self._project_tree.setHeaderLabels(["Đối tượng", "Trạng thái"])
+        self._project_tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        self._project_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._project_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._project_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         root = QTreeWidgetItem(["Chưa mở dự án", "—"])
         root.setDisabled(True)
         self._project_tree.addTopLevelItem(root)
+        self._project_tree.itemExpanded.connect(self._populate_topology_children)
+        self._project_tree.itemSelectionChanged.connect(self._tree_selection_changed)
+        self._project_tree.itemChanged.connect(self._tree_item_changed)
+        self._project_tree.customContextMenuRequested.connect(
+            self._show_topology_context_menu
+        )
         tabs.addTab(self._project_tree, "Dự án")
 
         for title in ("Levels", "Toolpaths", "Planes"):
@@ -283,14 +318,17 @@ class MainWindow(QMainWindow):
             status.addPermanentWidget(label)
 
     def _update_project_display(self, session: object) -> None:
+        self._tree_sync_guard = True
         self._project_tree.clear()
+        self._object_items = {}
         if not isinstance(session, ProjectSession):
             root = QTreeWidgetItem(["Chưa mở dự án", "—"])
-            root.setDisabled(True)
             self._append_cad_document_node(root)
+            root.setDisabled(self._active_document_metadata is None)
             self._project_tree.addTopLevelItem(root)
             self.setWindowTitle("HMS CAD/CAM — Design")
             self._project_status.setText("KHÔNG CÓ DỰ ÁN")
+            self._tree_sync_guard = False
             return
         dirty_marker = " *" if session.is_dirty else ""
         root = QTreeWidgetItem([session.manifest.project_name, "Đã sửa" if session.is_dirty else "Đã lưu"])
@@ -305,6 +343,7 @@ class MainWindow(QMainWindow):
         sources.setExpanded(True)
         self.setWindowTitle(f"HMS CAD/CAM — {session.manifest.project_name}{dirty_marker}")
         self._project_status.setText(str(session.root_path))
+        self._tree_sync_guard = False
 
     def _handle_project_change(self, session: object) -> None:
         source_path = None
@@ -318,9 +357,77 @@ class MainWindow(QMainWindow):
             metadata if isinstance(metadata, CadDocumentMetadata) else None
         )
         self._active_selection = ()
+        self._selected_object_ids = ()
         self._active_measurements = ()
         self._update_project_display(self.project_controller.service.current_project)
         self._show_document_properties()
+
+    def _update_topology_tree(self, tree: object) -> None:
+        self._active_document_tree = (
+            tree if isinstance(tree, CadDocumentTree) else None
+        )
+        self._update_project_display(self.project_controller.service.current_project)
+
+    def _update_object_selection(self, document_id: object, items: object) -> None:
+        active_document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None
+            else None
+        )
+        if document_id != active_document_id or not isinstance(items, tuple):
+            return
+        if not all(isinstance(item, CadObjectId) for item in items):
+            return
+        if any(
+            self._active_document_tree is None
+            or self._active_document_tree.find(item) is None
+            for item in items
+        ):
+            return
+        self._selected_object_ids = items
+        self._tree_sync_guard = True
+        self._project_tree.clearSelection()
+        for object_id in items:
+            tree_item = self._ensure_object_item(object_id)
+            if tree_item is not None:
+                tree_item.setSelected(True)
+        self._tree_sync_guard = False
+        if items and not self._active_selection:
+            self._show_object_properties(items[0])
+
+    def _update_object_appearances(self, document_id: object, items: object) -> None:
+        active_document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None
+            else None
+        )
+        if document_id != active_document_id or not isinstance(items, tuple):
+            return
+        appearances: dict[CadObjectId, ObjectAppearance] = {}
+        for item in items:
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], CadObjectId)
+                or not isinstance(item[1], ObjectAppearance)
+            ):
+                return
+            appearances[item[0]] = item[1]
+        self._object_appearances = appearances
+        self._tree_sync_guard = True
+        for object_id, tree_item in self._object_items.items():
+            appearance = appearances.get(object_id)
+            if appearance is not None:
+                tree_item.setCheckState(
+                    0,
+                    Qt.CheckState.Checked
+                    if appearance.visible
+                    else Qt.CheckState.Unchecked,
+                )
+                tree_item.setText(1, "Hiện" if appearance.visible else "Ẩn")
+        self._tree_sync_guard = False
+        if self._selected_object_ids and not self._active_selection:
+            self._show_object_properties(self._selected_object_ids[0])
 
     def _update_selection(self, document_id: object, items: object) -> None:
         if not isinstance(items, tuple) or not all(
@@ -386,6 +493,26 @@ class MainWindow(QMainWindow):
         rows.extend(_measurement_rows(self._active_measurements))
         self._set_properties(tuple(rows))
 
+    def _show_object_properties(self, object_id: CadObjectId) -> None:
+        tree = self._active_document_tree
+        node = tree.find(object_id) if tree is not None else None
+        appearance = self._object_appearances.get(object_id)
+        if node is None or appearance is None:
+            self._show_document_properties()
+            return
+        self._set_properties(
+            (
+                ("Topology object", node.label),
+                ("Object ID", str(node.object_id)),
+                ("Loại", node.kind.value.upper()),
+                ("Hiển thị", "Có" if appearance.visible else "Không"),
+                ("Màu", appearance.color.to_hex()),
+                ("Transparency", f"{appearance.transparency:.2f}"),
+                ("Bounding box", _format_bounds(node.bounding_box)),
+                ("Assembly semantics", "Không có — topology tree, chưa có XCAF"),
+            )
+        )
+
     def _show_document_properties(self) -> None:
         metadata = self._active_document_metadata
         if metadata is None:
@@ -428,8 +555,19 @@ class MainWindow(QMainWindow):
         if metadata is None:
             return
         document = QTreeWidgetItem(["CAD document", metadata.cad_format.value.upper()])
+        tree = self._active_document_tree
+        if tree is not None and tree.document_id == metadata.document_id:
+            self._configure_object_item(document, tree.root)
         document.addChild(QTreeWidgetItem(["Document ID", str(metadata.document_id)]))
         document.addChild(QTreeWidgetItem(["Geometry", metadata.geometry_kind.value]))
+        document.addChild(
+            QTreeWidgetItem(
+                [
+                    "Giới hạn",
+                    "Topology only; chưa có XCAF name/instance/product/transform",
+                ]
+            )
+        )
         if metadata.topology_counts is not None:
             counts = metadata.topology_counts
             document.addChild(
@@ -453,7 +591,200 @@ class MainWindow(QMainWindow):
         document.addChild(
             QTreeWidgetItem(["Bounding box", _format_bounds(metadata.bounding_box)])
         )
+        if tree is not None and tree.document_id == metadata.document_id:
+            topology = QTreeWidgetItem(["Topology objects", "Lazy"])
+            topology.setData(0, _TOPOLOGY_GROUP_ROLE, True)
+            for node in tree.root.children:
+                topology.addChild(self._make_object_item(node))
+            document.addChild(topology)
+            topology.setExpanded(True)
+            document.setExpanded(True)
         root.addChild(document)
+
+    def _make_object_item(self, node: CadObjectNode) -> QTreeWidgetItem:
+        appearance = self._object_appearances.get(node.object_id, ObjectAppearance())
+        item = QTreeWidgetItem(
+            [node.label, "Hiện" if appearance.visible else "Ẩn"]
+        )
+        self._configure_object_item(item, node)
+        if node.children:
+            placeholder = QTreeWidgetItem(["Đang chờ mở…", ""])
+            placeholder.setData(0, _PLACEHOLDER_ROLE, True)
+            placeholder.setDisabled(True)
+            item.addChild(placeholder)
+        return item
+
+    def _configure_object_item(
+        self,
+        item: QTreeWidgetItem,
+        node: CadObjectNode,
+    ) -> None:
+        appearance = self._object_appearances.get(node.object_id, ObjectAppearance())
+        item.setData(0, _OBJECT_ID_ROLE, node.object_id)
+        item.setData(0, _DOCUMENT_ID_ROLE, node.document_id)
+        item.setData(0, _OBJECT_NODE_ROLE, node)
+        item.setFlags(
+            item.flags()
+            | Qt.ItemFlag.ItemIsUserCheckable
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsEnabled
+        )
+        item.setCheckState(
+            0,
+            Qt.CheckState.Checked if appearance.visible else Qt.CheckState.Unchecked,
+        )
+        self._object_items[node.object_id] = item
+
+    def _populate_topology_children(self, item: QTreeWidgetItem) -> None:
+        node = item.data(0, _OBJECT_NODE_ROLE)
+        if not isinstance(node, CadObjectNode) or not node.children:
+            return
+        if item.childCount() != 1 or not item.child(0).data(0, _PLACEHOLDER_ROLE):
+            return
+        previous_guard = self._tree_sync_guard
+        self._tree_sync_guard = True
+        try:
+            item.takeChild(0)
+            for child in node.children:
+                item.addChild(self._make_object_item(child))
+        finally:
+            self._tree_sync_guard = previous_guard
+
+    def _tree_selection_changed(self) -> None:
+        if self._tree_sync_guard:
+            return
+        selected = self._project_tree.selectedItems()
+        object_ids = tuple(
+            item.data(0, _OBJECT_ID_ROLE)
+            for item in selected
+            if isinstance(item.data(0, _OBJECT_ID_ROLE), CadObjectId)
+        )
+        document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None
+            else None
+        )
+        if document_id is not None:
+            self.cad_controller.select_tree_objects(document_id, object_ids)
+
+    def _tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._tree_sync_guard or column != 0:
+            return
+        object_id = item.data(0, _OBJECT_ID_ROLE)
+        document_id = item.data(0, _DOCUMENT_ID_ROLE)
+        if not isinstance(object_id, CadObjectId) or not isinstance(
+            document_id,
+            CadDocumentId,
+        ):
+            return
+        visible = item.checkState(0) is Qt.CheckState.Checked
+        self.cad_controller.set_object_visibility(document_id, object_id, visible)
+
+    def _show_topology_context_menu(self, position) -> None:
+        item = self._project_tree.itemAt(position)
+        if item is None:
+            return
+        object_id = item.data(0, _OBJECT_ID_ROLE)
+        document_id = item.data(0, _DOCUMENT_ID_ROLE)
+        if not isinstance(object_id, CadObjectId) or not isinstance(
+            document_id,
+            CadDocumentId,
+        ):
+            return
+        menu = QMenu(self)
+        menu.addAction(
+            "Show",
+            lambda: self.cad_controller.set_object_visibility(
+                document_id,
+                object_id,
+                True,
+            ),
+        )
+        menu.addAction(
+            "Hide",
+            lambda: self.cad_controller.set_object_visibility(
+                document_id,
+                object_id,
+                False,
+            ),
+        )
+        menu.addSeparator()
+        menu.addAction(
+            "Isolate",
+            lambda: self.cad_controller.isolate_object(document_id, object_id),
+        )
+        menu.addAction(
+            "Reset Isolate",
+            lambda: self.cad_controller.reset_isolate(document_id),
+        )
+        menu.addSeparator()
+        menu.addAction(
+            "Color…",
+            lambda: self._choose_object_color(document_id, object_id),
+        )
+        menu.addAction(
+            "Transparency…",
+            lambda: self._choose_object_transparency(document_id, object_id),
+        )
+        menu.exec(self._project_tree.viewport().mapToGlobal(position))
+
+    def _choose_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        current = self._object_appearances.get(object_id, ObjectAppearance()).color
+        selected = QColorDialog.getColor(
+            QColor.fromRgbF(current.red, current.green, current.blue),
+            self,
+            "Chọn màu đối tượng",
+        )
+        if selected.isValid():
+            self.cad_controller.set_object_color(
+                document_id,
+                object_id,
+                ObjectColor(selected.redF(), selected.greenF(), selected.blueF()),
+            )
+
+    def _choose_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        current = self._object_appearances.get(
+            object_id,
+            ObjectAppearance(),
+        ).transparency
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "Transparency",
+            "Giá trị (0.0–1.0):",
+            current,
+            0.0,
+            1.0,
+            2,
+        )
+        if accepted:
+            self.cad_controller.set_object_transparency(
+                document_id,
+                object_id,
+                value,
+            )
+
+    def _ensure_object_item(
+        self,
+        object_id: CadObjectId,
+    ) -> QTreeWidgetItem | None:
+        existing = self._object_items.get(object_id)
+        if existing is not None:
+            return existing
+        tree = self._active_document_tree
+        path = _object_path(tree.root, object_id) if tree is not None else ()
+        for node in path:
+            parent_item = self._object_items.get(node.object_id)
+            if parent_item is not None:
+                self._populate_topology_children(parent_item)
+        return self._object_items.get(object_id)
 
     @staticmethod
     def _find_project_cad_source(session: ProjectSession) -> Path | None:
@@ -565,3 +896,16 @@ def _measurement_rows(
 
 def _format_measurement(value: float, exponent: str = "") -> str:
     return f"{value:.9g} đơn vị mô hình{exponent}"
+
+
+def _object_path(
+    node: CadObjectNode,
+    object_id: CadObjectId,
+) -> tuple[CadObjectNode, ...]:
+    if node.object_id == object_id:
+        return (node,)
+    for child in node.children:
+        child_path = _object_path(child, object_id)
+        if child_path:
+            return (node,) + child_path
+    return ()

@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from hms_cadcam.cad.models import (
     BoundingBox,
     CadDocumentId,
+    CadDocumentTree,
     CadDocumentMetadata,
     CadImportResult,
     CadKernelStatus,
@@ -69,4 +70,8 @@ class CadKernel(Protocol):
 
     def get_bounding_box(self, document_id: CadDocumentId) -> BoundingBox:
         """Return axis-aligned bounds for a retained document."""
+        ...
+
+    def get_document_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
+        """Return the bounded topology/display tree for a retained document."""
         ...

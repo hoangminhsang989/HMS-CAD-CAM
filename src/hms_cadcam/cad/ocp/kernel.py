@@ -18,6 +18,8 @@ from hms_cadcam.cad.models import (
     BoundingBox,
     CadDocumentId,
     CadDocumentMetadata,
+    CadDocumentTree,
+    CadObjectId,
     CadFormat,
     CadGeometryKind,
     CadImportResult,
@@ -111,6 +113,10 @@ class OcpCadKernel:
         """Return stored bounds for a document."""
         return self.get_document_metadata(document_id).bounding_box
 
+    def get_document_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
+        """Return the immutable topology-only display tree."""
+        return self._documents.get_tree(document_id)
+
     def _resolve_shape(self, document_id: CadDocumentId) -> TopoDS_Shape:
         """Resolve native data only for trusted internal OCP adapters."""
         return self._documents.resolve_shape(document_id)
@@ -121,6 +127,13 @@ class OcpCadKernel:
     ) -> Poly_Triangulation:
         """Resolve native mesh only for trusted internal OCP adapters."""
         return self._documents.resolve_triangulation(document_id)
+
+    def _resolve_presentation_shapes(
+        self,
+        document_id: CadDocumentId,
+    ) -> dict[CadObjectId, TopoDS_Shape]:
+        """Resolve managed BREP leaves only for trusted viewer adapters."""
+        return self._documents.resolve_presentation_shapes(document_id)
 
     def _import(
         self,

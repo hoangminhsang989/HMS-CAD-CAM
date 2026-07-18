@@ -22,6 +22,20 @@ class CadDocumentId:
         return self.value
 
 
+@dataclass(frozen=True, slots=True)
+class CadObjectId:
+    """Opaque object identifier stable only within one retained document."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise ValueError("CAD object ID must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class CadFormat(str, Enum):
     """CAD formats currently supported by the product kernel boundary."""
 
@@ -37,6 +51,18 @@ class CadGeometryKind(str, Enum):
 
     BREP = "brep"
     TRIANGLE_MESH = "triangle_mesh"
+
+
+class CadObjectKind(str, Enum):
+    """Display-management levels exposed by the lightweight topology tree."""
+
+    DOCUMENT = "document"
+    COMPOUND = "compound"
+    COMPSOLID = "compsolid"
+    SOLID = "solid"
+    SHELL = "shell"
+    SHAPE = "shape"
+    MESH = "mesh"
 
 
 class CadUnits(str, Enum):
@@ -98,6 +124,58 @@ class BoundingBox:
             or self.z_min > self.z_max
         ):
             raise ValueError("Bounding box minimums must not exceed maximums")
+
+
+@dataclass(frozen=True, slots=True)
+class CadObjectNode:
+    """One OCP-free node in a bounded display-management topology tree."""
+
+    document_id: CadDocumentId
+    object_id: CadObjectId
+    kind: CadObjectKind
+    label: str
+    bounding_box: BoundingBox
+    children: tuple["CadObjectNode", ...] = ()
+    has_presentation: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.label.strip():
+            raise ValueError("CAD object label must not be empty")
+        if any(child.document_id != self.document_id for child in self.children):
+            raise ValueError("CAD object children must belong to the same document")
+        if self.has_presentation and self.children:
+            raise ValueError("Presentation nodes must be leaves")
+
+    def walk(self) -> tuple["CadObjectNode", ...]:
+        """Return this node and descendants in stable pre-order."""
+        return (self,) + tuple(item for child in self.children for item in child.walk())
+
+
+@dataclass(frozen=True, slots=True)
+class CadDocumentTree:
+    """Topology-only tree; it intentionally carries no XCAF assembly semantics."""
+
+    document_id: CadDocumentId
+    root: CadObjectNode
+
+    def __post_init__(self) -> None:
+        if self.root.document_id != self.document_id:
+            raise ValueError("CAD document tree root has a different document ID")
+        object_ids = tuple(node.object_id for node in self.root.walk())
+        if len(object_ids) != len(set(object_ids)):
+            raise ValueError("CAD object IDs must be unique within a document")
+
+    def find(self, object_id: CadObjectId) -> CadObjectNode | None:
+        """Resolve one public node without exposing native topology."""
+        return next(
+            (node for node in self.root.walk() if node.object_id == object_id),
+            None,
+        )
+
+    @property
+    def presentation_nodes(self) -> tuple[CadObjectNode, ...]:
+        """Return only nodes backed by AIS presentations."""
+        return tuple(node for node in self.root.walk() if node.has_presentation)
 
 
 @dataclass(frozen=True, slots=True)

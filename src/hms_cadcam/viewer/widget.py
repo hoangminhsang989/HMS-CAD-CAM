@@ -17,13 +17,14 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from hms_cadcam.cad.kernel import CadKernel
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.models import CadDocumentId, CadObjectId
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.factory import CadViewportBackendFactory
 from hms_cadcam.viewer.models import (
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectColor,
     SelectionMetadata,
     SelectionMode,
     ViewDirection,
@@ -142,6 +143,86 @@ class CadViewportWidget(QWidget):
             "set selection mode",
             self._backend.set_selection_mode,
             mode,
+            clear_error=True,
+        )
+
+    def select_objects(
+        self,
+        document_id: CadDocumentId,
+        object_ids: tuple[CadObjectId, ...],
+    ) -> bool:
+        """Highlight managed objects without synthesizing topology nodes."""
+        return self._invoke(
+            "select objects",
+            self._backend.select_objects,
+            document_id,
+            object_ids,
+            clear_error=True,
+        )
+
+    def set_object_visibility(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        visible: bool,
+    ) -> bool:
+        return self._invoke(
+            "set object visibility",
+            self._backend.set_object_visibility,
+            document_id,
+            object_id,
+            visible,
+            clear_error=True,
+        )
+
+    def isolate_object(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> bool:
+        return self._invoke(
+            "isolate object",
+            self._backend.isolate_object,
+            document_id,
+            object_id,
+            clear_error=True,
+        )
+
+    def reset_isolate(self, document_id: CadDocumentId) -> bool:
+        return self._invoke(
+            "reset isolate",
+            self._backend.reset_isolate,
+            document_id,
+            clear_error=True,
+        )
+
+    def set_object_color(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        color: ObjectColor,
+    ) -> bool:
+        return self._invoke(
+            "set object color",
+            self._backend.set_object_color,
+            document_id,
+            object_id,
+            color,
+            clear_error=True,
+        )
+
+    def set_object_transparency(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+        transparency: float,
+    ) -> bool:
+        return self._invoke(
+            "set object transparency",
+            self._backend.set_object_transparency,
+            document_id,
+            object_id,
+            transparency,
             clear_error=True,
         )
 
