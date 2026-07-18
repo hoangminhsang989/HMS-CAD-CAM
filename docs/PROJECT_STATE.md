@@ -5,62 +5,50 @@
 - Giai đoạn 1: khung ứng dụng PySide6 đã hoàn thành và ổn định.
 - Giai đoạn 2: hệ thống dự án thư mục `.HMS` cơ bản đã hoàn thành.
 - Giai đoạn 3: Session Lock, Autosave và Recovery đã hoàn thành.
-- Giai đoạn 4: CAD Kernel và CAD Viewer sản phẩm đã hoàn thành phạm vi được duyệt.
-- Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành phạm vi được duyệt.
-- Môi trường mục tiêu hiện tại: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
-- Trạng thái này được cập nhật cùng commit hoàn thành Giai đoạn 5A.
-- Toàn bộ kiểm thử: **117 passed**.
+- Giai đoạn 4: CAD Kernel và CAD Viewer đã hoàn thành phạm vi được duyệt.
+- Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành.
+- Giai đoạn 5B: Measurement BREP đã hoàn thành và được review ổn định.
+- Commit mới nhất: `a95e17e`.
+- Toàn bộ kiểm thử: **128 passed**.
+- Môi trường mục tiêu: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
 
-## Kiến trúc dự án hiện có
+## Kiến trúc và dữ liệu dự án
 
 - `ProjectService` là API dự án duy nhất được UI sử dụng.
 - Dự án là thư mục `.HMS`; manifest dùng JSON UTF-8 và dữ liệu chính dùng SQLite.
-- File CAD nguồn chỉ được sao chép vào `source/`, không bị chỉnh sửa.
+- File CAD nguồn được giữ nguyên trong `source/`, không bị chỉnh sửa.
 - Tác vụ I/O và import CAD chạy ngoài UI thread.
-- CAD API công khai chỉ trao đổi document ID và metadata thuần Python.
-- Object OCP, TopoDS và AIS được giữ bên trong adapter OCP.
-- Factory CAD Kernel và Viewer có fallback an toàn khi OCP hoặc DLL không khả dụng.
+- CAD API công khai chỉ trao đổi ID và model thuần Python, bất biến.
+- Object OCP, TopoDS và AIS chỉ tồn tại trong adapter nội bộ.
+- Measurement là read-only, không làm dirty project hoặc kích hoạt autosave.
 
-## CAD Kernel và import
+## CAD Kernel, import và Viewer
 
-- CAD Kernel `cadquery-ocp-novtk` / Open CASCADE đã được tích hợp.
-- `OcpCadKernel` quản lý document và shape nội bộ theo `CadDocumentId`.
+- Open CASCADE được tích hợp qua `cadquery-ocp-novtk`.
 - Đã hỗ trợ import STEP/STP, BREP, IGES/IGS và STL.
-- IGES chấp nhận BREP wire, surface, shell, solid hoặc compound được reader
-  transfer thành công; không bắt buộc phải có solid.
-- STL được giữ trực tiếp dưới dạng triangle mesh, không chuyển từng tam giác
-  thành BREP face.
-- Metadata phân biệt rõ `BREP` và `TRIANGLE_MESH`; BREP có topology counts,
-  mesh có vertex/triangle statistics và không có topology BREP giả.
-- Đơn vị STL là `unknown` vì định dạng không cung cấp đơn vị đáng tin cậy;
-  Giai đoạn 5A chưa có hộp thoại chọn hoặc hiệu chỉnh đơn vị.
-- Import lỗi không làm mất document đang hiển thị.
-- Import mới thay document cũ và giải phóng document không còn sử dụng.
-- Đóng hoặc đổi project sẽ clear viewer và release document hiện tại.
-- Kết quả worker cũ hoặc signal đến muộn không được thay document mới.
+- IGES chấp nhận wire, surface, shell, solid hoặc compound hợp lệ.
+- STL được giữ dạng triangle mesh, không chuyển thành BREP face giả.
+- Metadata phân biệt `BREP` và `TRIANGLE_MESH`.
+- CAD Viewer OCCT nhúng qua HWND hỗ trợ camera, Fit All và các hướng nhìn chuẩn.
+- Display mode gồm Shaded, Wireframe và Shaded with edges.
+- Selection BREP hỗ trợ Solid, Face, Edge và Vertex.
+- STL dùng `AIS_Triangulation`; selection topology BREP bị vô hiệu hóa.
+- Import lỗi, worker cũ hoặc signal đến muộn không thay document hiện tại.
 
-## CAD Viewer sản phẩm
+## Measurement BREP
 
-- `CadViewportWidget` thật đã hoạt động với OCCT Viewer nhúng qua HWND.
-- Lifecycle graphic driver, viewer, context, view và AIS presentation được quản lý rõ ràng.
-- Camera hỗ trợ rotate, pan, zoom, Fit All và bảy hướng nhìn chuẩn.
-- Display mode hỗ trợ Shaded, Wireframe và Shaded with edges.
-- STL được hiển thị bằng `AIS_Triangulation`; Solid/Face/Edge selection bị vô
-  hiệu hóa khi mesh đang active và được khôi phục khi chuyển lại BREP.
-- Selection hỗ trợ Solid, Face và Edge.
-- UI chỉ nhận selection ID, topology và bounding box; không nhận object OCP.
-- Resize, clear, đổi document và close đã được kiểm tra an toàn.
-- MainWindow, menu, toolbar, ribbon, Project Manager và Properties đã tích hợp CAD Viewer.
+- Vertex: tọa độ X/Y/Z.
+- Hai vertex: khoảng cách điểm–điểm bằng Ctrl-pair.
+- Edge: chiều dài; circle/arc có bán kính, đường kính và phân loại.
+- Face: diện tích; Solid: thể tích.
+- Document và selection: axis-aligned bounding box dimensions (AABB) X/Y/Z.
+- Kết quả không chứa TopoDS, OCP hoặc AIS object.
+- Measurement STL chưa được hỗ trợ.
 
-## Session, Autosave và Recovery
+## Session và giới hạn còn lại
 
-- Session Lock phân loại `active`, `stale` hoặc `unknown` và cleanup có kiểm soát.
-- Autosave snapshot manifest, database, metadata và checksum; không sao chép `source/`.
-- Recovery kiểm tra snapshot, dùng backup và rollback an toàn.
+- Session Lock, Autosave và Recovery có kiểm tra, backup và rollback an toàn.
 - CAD document hiện chưa được lưu vào dữ liệu dự án `.HMS`.
-
-## Giới hạn còn lại
-
-- Chưa triển khai measurement hoặc assembly tree.
-- Chưa triển khai CAD healing, tessellation sản phẩm hoặc lưu CAD document vào `.HMS`.
+- Chưa có assembly tree, hide/show, color hoặc transparency.
+- Chưa triển khai CAD healing và tessellation sản phẩm.
 - Chưa triển khai CAM, toolpath, mô phỏng, Post Processor hoặc Setup Sheet.
