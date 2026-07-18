@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from hms_cadcam.core.logging_config import configure_logging
 from hms_cadcam.core.paths import AppPaths
+from hms_cadcam.project.service import ProjectService
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -34,7 +35,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         application.setApplicationDisplayName("HMS CAD/CAM")
         application.setOrganizationName("HMS")
 
-        window = MainWindow()
+        project_service = ProjectService.create_default(paths.config_dir)
+        window = MainWindow(project_service)
         window.show()
         logger.info("Ứng dụng HMS CAD/CAM đã khởi động")
         exit_code = application.exec()

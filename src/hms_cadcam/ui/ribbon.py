@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
@@ -19,8 +20,13 @@ from PySide6.QtWidgets import (
 class RibbonWidget(QTabWidget):
     """A lightweight tabbed ribbon with disabled future-stage commands."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        project_actions: Mapping[str, QAction] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._project_actions = project_actions or {}
         self.setObjectName("RibbonTabs")
         self.setDocumentMode(True)
         self.setIconSize(QSize(24, 24))
@@ -32,7 +38,14 @@ class RibbonWidget(QTabWidget):
         self.addTab(
             self._page(
                 (
-                    ("Tệp", ("Mới", "Mở", "Lưu")),
+                    (
+                        "Tệp",
+                        (
+                            self._project_actions.get("new", "Mới"),
+                            self._project_actions.get("open", "Mở"),
+                            self._project_actions.get("save", "Lưu"),
+                        ),
+                    ),
                     ("Clipboard", ("Cắt", "Sao chép", "Dán")),
                     ("Hiển thị", ("Fit", "Zoom", "Xoay")),
                     ("Phân tích", ("Đo", "Thuộc tính", "Thống kê")),
@@ -53,7 +66,7 @@ class RibbonWidget(QTabWidget):
     def _future_page(self, group_name: str, commands: Iterable[str]) -> QWidget:
         return self._page(((group_name, commands),))
 
-    def _page(self, groups: Iterable[tuple[str, Iterable[str]]]) -> QWidget:
+    def _page(self, groups: Iterable[tuple[str, Iterable[str | QAction]]]) -> QWidget:
         page = QFrame()
         page.setObjectName("RibbonPage")
         layout = QHBoxLayout(page)
@@ -64,7 +77,7 @@ class RibbonWidget(QTabWidget):
         layout.addStretch(1)
         return page
 
-    def _group(self, title: str, commands: Iterable[str]) -> QGroupBox:
+    def _group(self, title: str, commands: Iterable[str | QAction]) -> QGroupBox:
         group = QGroupBox(title)
         group.setObjectName("RibbonGroup")
         layout = QHBoxLayout(group)
@@ -74,8 +87,12 @@ class RibbonWidget(QTabWidget):
         for index, command in enumerate(commands):
             button = QToolButton()
             button.setObjectName("RibbonButton")
-            button.setText(f"{glyphs[index % len(glyphs)]}\n{command}")
-            button.setToolTip(f"{command} — chưa khả dụng trong Giai đoạn 1")
-            button.setEnabled(False)
+            if isinstance(command, QAction):
+                button.setDefaultAction(command)
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            else:
+                button.setText(f"{glyphs[index % len(glyphs)]}\n{command}")
+                button.setToolTip(f"{command} — chưa khả dụng")
+                button.setEnabled(False)
             layout.addWidget(button)
         return group
