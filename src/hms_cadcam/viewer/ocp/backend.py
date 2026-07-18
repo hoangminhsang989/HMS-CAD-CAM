@@ -80,6 +80,8 @@ class OcpCadViewportBackend:
         self._require_initialized()
         shape = self._kernel._resolve_shape(document_id)
         presentation = self._lifecycle.replace_shape(shape, self._display_mode)
+        if self._input is not None:
+            self._input.reset()
         try:
             selection = self._require_selection()
             selection.bind_document(document_id, shape, presentation)

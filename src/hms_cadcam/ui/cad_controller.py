@@ -142,8 +142,10 @@ class CadUiController(QObject):
         if not isinstance(result, CadImportResult):
             return
         task = self._active_task
-        if task is not None and task.request_id == request_id:
-            task.acknowledge(result)
+        if task is None or task.request_id != request_id:
+            return
+        if not task.acknowledge(result):
+            return
         if self._closing or request_id != self._request_generation:
             self._release_result(result)
             return

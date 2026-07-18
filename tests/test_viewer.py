@@ -208,6 +208,14 @@ class FakeSelection:
         self.clear_count += 1
 
 
+class FakeInput:
+    def __init__(self) -> None:
+        self.reset_count = 0
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+
 class FakeSelectionContext:
     def __init__(self) -> None:
         self.selected_shape = TopoDS_Shape()
@@ -373,8 +381,10 @@ def test_ocp_backend_replaces_documents_preserves_old_on_lookup_error_and_clears
     backend = OcpCadViewportBackend(kernel)
     lifecycle = FakeLifecycle()
     selection = FakeSelection()
+    input_controller = FakeInput()
     backend._lifecycle = lifecycle
     backend._selection = selection
+    backend._input = input_controller
 
     backend.display_document(first)
     backend.display_document(second)
@@ -385,12 +395,15 @@ def test_ocp_backend_replaces_documents_preserves_old_on_lookup_error_and_clears
         backend.display_document(CadDocumentId("missing"))
     assert lifecycle.presentation is not None
     assert selection.document_id == second
+    assert input_controller.reset_count == 2
     backend.display_document(first)
     assert lifecycle.replaced == 3
     assert selection.document_id == first
+    assert input_controller.reset_count == 3
     backend.clear()
     assert lifecycle.presentation is None
     assert selection.document_id is None
+    assert input_controller.reset_count == 4
 
 
 def test_ocp_backend_camera_display_selection_and_resize_mapping() -> None:

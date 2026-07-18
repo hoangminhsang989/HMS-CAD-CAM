@@ -48,11 +48,13 @@ class CadImportTask(QRunnable):
             self._result = None
         self._release_result(result)
 
-    def acknowledge(self, result: CadImportResult) -> None:
-        """Transfer result ownership from this worker to its UI controller."""
+    def acknowledge(self, result: CadImportResult) -> bool:
+        """Atomically transfer result ownership to the UI controller."""
         with self._state_lock:
             if self._result is result:
                 self._result = None
+                return True
+        return False
 
     @Slot()
     def run(self) -> None:

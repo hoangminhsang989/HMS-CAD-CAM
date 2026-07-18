@@ -35,6 +35,7 @@ from hms_cadcam.cad.models import (  # noqa: E402
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
 from hms_cadcam.project.models import UnitSystem  # noqa: E402
 from hms_cadcam.project.service import ProjectService  # noqa: E402
+from hms_cadcam.ui.cad_worker import CadImportTask  # noqa: E402
 from hms_cadcam.ui.main_window import MainWindow  # noqa: E402
 from hms_cadcam.viewer.models import (  # noqa: E402
     DisplayMode,
@@ -149,6 +150,7 @@ class BlockingCadKernel:
         self.release = threading.Event()
         self.finished = threading.Event()
         self.first_result: CadImportResult | None = None
+        self.released_document_ids: list[CadDocumentId] = []
 
     def is_available(self) -> bool:
         return True
@@ -176,6 +178,7 @@ class BlockingCadKernel:
         return self._kernel.import_brep(path)
 
     def release_document(self, document_id: CadDocumentId) -> None:
+        self.released_document_ids.append(document_id)
         self._kernel.release_document(document_id)
 
     def get_document_metadata(
@@ -339,6 +342,28 @@ def test_old_worker_result_cannot_replace_new_request(tmp_path: Path) -> None:
     assert kernel.first_result.document_id is not None
     with pytest.raises(CadDocumentNotFoundError):
         kernel.get_document_metadata(kernel.first_result.document_id)
+    window.close()
+
+
+def test_abandoned_queued_result_is_released_exactly_once(tmp_path: Path) -> None:
+    source = tmp_path / "queued.brep"
+    _write_brep(source)
+    kernel = BlockingCadKernel(tmp_path / "not-blocked.step")
+    window, _backend, _selected_kernel = _window(tmp_path, kernel)
+    task = CadImportTask(kernel, 17, source, CadFormat.BREP)
+    completed: list[tuple[int, CadImportResult]] = []
+    task.signals.completed.connect(
+        lambda request_id, result: completed.append((request_id, result))
+    )
+    task.run()
+    assert len(completed) == 1
+    request_id, result = completed[0]
+    assert result.document_id is not None
+
+    task.abandon()
+    window.cad_controller._finish_import(request_id, result)
+
+    assert kernel.released_document_ids.count(result.document_id) == 1
     window.close()
 
 
