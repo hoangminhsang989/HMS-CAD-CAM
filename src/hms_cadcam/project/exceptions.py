@@ -75,3 +75,43 @@ class AutosaveBusyError(AutosaveError):
 
 class AutosaveSnapshotError(AutosaveError):
     """Autosave snapshot data or metadata is incomplete or invalid."""
+
+
+class RecoveryError(ProjectError):
+    """A recovery candidate could not be assessed or restored safely."""
+
+
+class RecoveryRequiredError(RecoveryError):
+    """Opening must pause until the user chooses whether to recover."""
+
+    def __init__(self, assessment: object) -> None:
+        super().__init__("A valid autosave snapshot is available for recovery")
+        self.assessment = assessment
+
+
+class RecoverySnapshotInvalidError(RecoveryError):
+    """Autosave recovery data is invalid or does not match the crashed session."""
+
+
+class RecoveryTransactionError(RecoveryError):
+    """Recovery failed and the original main files were restored."""
+
+
+class RecoveryRollbackError(RecoveryError):
+    """Recovery failed and automatic rollback could not be completed."""
+
+
+class ReplacedProjectRecoveryRequiredError(RecoveryError):
+    """A single valid .replaced project can be restored with user approval."""
+
+    def __init__(self, assessment: object) -> None:
+        super().__init__("A valid replaced project is available for restoration")
+        self.assessment = assessment
+
+
+class ReplacedProjectAmbiguousError(RecoveryError):
+    """More than one .replaced candidate exists for the missing project."""
+
+
+class ReplacedProjectInvalidError(RecoveryError):
+    """A .replaced candidate exists but cannot be validated safely."""

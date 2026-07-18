@@ -21,6 +21,13 @@ from hms_cadcam.project.exceptions import (
     ProjectLockedError,
     ProjectLockUnknownError,
     ProjectPermissionError,
+    RecoveryRequiredError,
+    RecoveryRollbackError,
+    RecoverySnapshotInvalidError,
+    RecoveryTransactionError,
+    ReplacedProjectAmbiguousError,
+    ReplacedProjectInvalidError,
+    ReplacedProjectRecoveryRequiredError,
     SourceFileNotFoundError,
     UnsupportedFormatVersionError,
     UnsupportedProjectFormatError,
@@ -45,6 +52,7 @@ class ProjectUiController(QObject):
         self._service = service
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
+        self._pending_operation: Callable[[], object] | None = None
         self.actions = self._create_actions()
         self._update_action_states()
 
@@ -265,6 +273,12 @@ class ProjectUiController(QObject):
 
     @Slot(object)
     def _show_error(self, error: object) -> None:
+        if isinstance(error, RecoveryRequiredError):
+            self._request_autosave_recovery(error)
+            return
+        if isinstance(error, ReplacedProjectRecoveryRequiredError):
+            self._request_replaced_recovery(error)
+            return
         logger.error("Tác vụ dự án thất bại", exc_info=(type(error), error, error.__traceback__) if isinstance(error, BaseException) else None)
         messages = {
             ProjectLockedError: "Dự án đang được một phiên HMS khác sử dụng.",
@@ -272,6 +286,11 @@ class ProjectUiController(QObject):
                 "Không thể xác định chủ sở hữu khóa dự án; "
                 "khóa được giữ nguyên để bảo vệ dữ liệu."
             ),
+            RecoverySnapshotInvalidError: "Snapshot autosave không hợp lệ nên không thể phục hồi.",
+            RecoveryTransactionError: "Phục hồi thất bại; dữ liệu chính ban đầu đã được khôi phục.",
+            RecoveryRollbackError: "Phục hồi và rollback đều thất bại; cần kiểm tra thư mục backups.",
+            ReplacedProjectAmbiguousError: "Có nhiều thư mục .replaced; HMS không tự chọn ứng viên.",
+            ReplacedProjectInvalidError: "Thư mục .replaced không hợp lệ và được giữ nguyên.",
             InvalidProjectNameError: "Tên dự án không hợp lệ trên Windows.",
             SourceFileNotFoundError: "File nguồn không tồn tại hoặc không đọc được.",
             ProjectAlreadyExistsError: "Dự án đích đã tồn tại.",
@@ -291,6 +310,46 @@ class ProjectUiController(QObject):
         self._active_task = None
         self._set_busy(False)
         self._update_action_states()
+        pending = self._pending_operation
+        self._pending_operation = None
+        if pending is not None:
+            self._start_operation(pending)
+
+    def _request_autosave_recovery(self, error: RecoveryRequiredError) -> None:
+        response = QMessageBox.warning(
+            self._window,
+            "Phát hiện lần đóng bất thường",
+            "Có snapshot autosave hợp lệ từ phiên bị đóng bất thường.\n\n"
+            "Chọn Yes để phục hồi, No để mở dữ liệu chính, hoặc Cancel để dừng.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if response == QMessageBox.StandardButton.Yes:
+            self._pending_operation = lambda: self._service.recover_project(error.assessment)
+        elif response == QMessageBox.StandardButton.No:
+            self._pending_operation = lambda: self._service.open_project(
+                error.assessment.project_root,
+                discard_recovery=True,
+            )
+
+    def _request_replaced_recovery(
+        self,
+        error: ReplacedProjectRecoveryRequiredError,
+    ) -> None:
+        response = QMessageBox.warning(
+            self._window,
+            "Phát hiện dự án .replaced",
+            "Dự án đích bị thiếu và có đúng một bản .replaced hợp lệ.\n\n"
+            "Khôi phục thư mục này và tiếp tục mở dự án?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if response == QMessageBox.StandardButton.Yes:
+            self._pending_operation = lambda: self._service.restore_replaced_and_open(
+                error.assessment
+            )
 
     def _set_busy(self, busy: bool) -> None:
         for action in self.actions.values():

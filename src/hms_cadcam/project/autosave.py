@@ -237,6 +237,10 @@ class AutosaveManager:
             raise AutosaveSnapshotError("Autosave pointer and snapshot identity differ")
         return snapshot
 
+    def load_snapshot(self, snapshot_path: Path) -> AutosaveSnapshot:
+        """Validate and load one explicitly selected immutable snapshot."""
+        return self._load_snapshot(snapshot_path)
+
     def _create_snapshot(
         self,
         session: ProjectSession,

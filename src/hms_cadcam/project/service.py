@@ -10,13 +10,24 @@ from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
 from hms_cadcam.project.constants import TEMP_DIRECTORY
 from hms_cadcam.project.creator import ProjectCreator
 from hms_cadcam.project.database import ProjectDatabase
-from hms_cadcam.project.exceptions import ProjectError, UnsavedChangesError
+from hms_cadcam.project.exceptions import (
+    ProjectError,
+    RecoveryRequiredError,
+    RecoverySnapshotInvalidError,
+    ReplacedProjectRecoveryRequiredError,
+    UnsavedChangesError,
+)
 from hms_cadcam.project.loader import ProjectLoader
 from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.filesystem import project_target_path
 from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.recent_projects import RecentProjectEntry, RecentProjectsService
+from hms_cadcam.project.recovery import (
+    RecoveryAssessment,
+    RecoveryManager,
+    ReplacedProjectAssessment,
+)
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
@@ -38,6 +49,7 @@ class ProjectService:
         recent_projects: RecentProjectsService,
         session_locks: SessionLockManager,
         autosave: AutosaveManager,
+        recovery: RecoveryManager,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -47,6 +59,7 @@ class ProjectService:
         self._recent_projects = recent_projects
         self._session_locks = session_locks
         self._autosave = autosave
+        self._recovery = recovery
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -55,6 +68,8 @@ class ProjectService:
         manifest_store = ProjectManifestStore()
         validator = ProjectValidator()
         database = ProjectDatabase()
+        session_locks = SessionLockManager()
+        autosave = AutosaveManager(manifest_store, validator, database)
         return cls(
             creator=ProjectCreator(manifest_store, validator, database),
             loader=ProjectLoader(manifest_store, validator, database),
@@ -62,8 +77,15 @@ class ProjectService:
             validator=validator,
             database=database,
             recent_projects=RecentProjectsService(config_dir),
-            session_locks=SessionLockManager(),
-            autosave=AutosaveManager(manifest_store, validator, database),
+            session_locks=session_locks,
+            autosave=autosave,
+            recovery=RecoveryManager(
+                autosave,
+                manifest_store,
+                validator,
+                database,
+                session_locks,
+            ),
         )
 
     @property
@@ -121,8 +143,16 @@ class ProjectService:
         logger.info("Đã sao chép file nguồn %s vào %s", source_path, session.root_path)
         return session
 
-    def open_project(self, project_root: Path) -> ProjectSession:
+    def open_project(
+        self,
+        project_root: Path,
+        *,
+        discard_recovery: bool = False,
+    ) -> ProjectSession:
         """Open a valid project without replacing current state on failure."""
+        replaced = self._recovery.inspect_replaced_for_open(project_root)
+        if replaced is not None:
+            raise ReplacedProjectRecoveryRequiredError(replaced)
         resolved = project_root.resolve()
         if (
             self._current_project is not None
@@ -131,6 +161,18 @@ class ProjectService:
             session = self._loader.load(project_root)
             return self._complete_activation(session)
         manifest = self._loader.read_manifest(project_root)
+        assessment = self._recovery.assess(
+            project_root,
+            manifest,
+            self._session_locks.inspect(project_root),
+        )
+        if assessment.snapshot is not None and not discard_recovery:
+            raise RecoveryRequiredError(assessment)
+        if assessment.abnormal_close and assessment.snapshot is None:
+            logger.warning(
+                "Phát hiện lần đóng bất thường nhưng không có snapshot phù hợp: %s",
+                project_root,
+            )
         self._session_locks.acquire(project_root, manifest.project_id)
         try:
             session = self._loader.load(project_root)
@@ -140,6 +182,38 @@ class ProjectService:
         except Exception:
             self._session_locks.release(project_root)
             raise
+
+    def recover_project(self, assessment: RecoveryAssessment) -> ProjectSession:
+        """Recover one revalidated autosave while preserving the current session on failure."""
+        manifest = self._loader.read_manifest(assessment.project_root)
+        current = self._recovery.assess(
+            assessment.project_root,
+            manifest,
+            self._session_locks.inspect(assessment.project_root),
+        )
+        if (
+            current.snapshot is None
+            or assessment.snapshot is None
+            or current.snapshot.metadata.snapshot_id
+            != assessment.snapshot.metadata.snapshot_id
+        ):
+            raise RecoverySnapshotInvalidError("Recovery candidate changed before approval")
+        self._session_locks.acquire(assessment.project_root, manifest.project_id)
+        try:
+            self._recovery.recover(current)
+            session = self._loader.load(assessment.project_root)
+            return self._complete_activation(session)
+        except Exception:
+            self._session_locks.release(assessment.project_root)
+            raise
+
+    def restore_replaced_and_open(
+        self,
+        assessment: ReplacedProjectAssessment,
+    ) -> ProjectSession:
+        """Restore one approved .replaced directory and continue normal opening."""
+        target = self._recovery.restore_replaced(assessment)
+        return self.open_project(target)
 
     def save(self) -> ProjectSession:
         """Persist the current project."""
