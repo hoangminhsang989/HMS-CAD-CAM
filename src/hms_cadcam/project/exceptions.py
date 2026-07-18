@@ -63,3 +63,15 @@ class ProjectLockedError(SessionLockError):
 
 class ProjectLockUnknownError(SessionLockError):
     """A lock exists but its owner cannot be classified safely."""
+
+
+class AutosaveError(ProjectError):
+    """An autosave snapshot could not be created or validated."""
+
+
+class AutosaveBusyError(AutosaveError):
+    """Another autosave operation is already running."""
+
+
+class AutosaveSnapshotError(AutosaveError):
+    """Autosave snapshot data or metadata is incomplete or invalid."""

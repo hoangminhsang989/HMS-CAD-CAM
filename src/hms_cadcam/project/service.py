@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 from pathlib import Path
 
+from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
 from hms_cadcam.project.constants import TEMP_DIRECTORY
 from hms_cadcam.project.creator import ProjectCreator
 from hms_cadcam.project.database import ProjectDatabase
@@ -36,6 +37,7 @@ class ProjectService:
         database: ProjectDatabase,
         recent_projects: RecentProjectsService,
         session_locks: SessionLockManager,
+        autosave: AutosaveManager,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -44,6 +46,7 @@ class ProjectService:
         self._database = database
         self._recent_projects = recent_projects
         self._session_locks = session_locks
+        self._autosave = autosave
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -60,6 +63,7 @@ class ProjectService:
             database=database,
             recent_projects=RecentProjectsService(config_dir),
             session_locks=SessionLockManager(),
+            autosave=AutosaveManager(manifest_store, validator, database),
         )
 
     @property
@@ -140,6 +144,13 @@ class ProjectService:
     def save(self) -> ProjectSession:
         """Persist the current project."""
         return self._saver.save(self._require_current())
+
+    def autosave(self) -> AutosaveSnapshot | None:
+        """Snapshot the current dirty session without changing its dirty state."""
+        session = self._require_current()
+        if not session.is_dirty:
+            return None
+        return self._autosave.create_snapshot(session, self._session_locks.session_id)
 
     def save_as(
         self,

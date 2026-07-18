@@ -1,6 +1,6 @@
 # Nhiệm vụ hiện tại — Giai đoạn 3
 
-Trạng thái: **3A hoàn thành; 3B và 3C chưa bắt đầu**.
+Trạng thái: **3A và 3B hoàn thành; 3C chưa bắt đầu**.
 
 ## Phạm vi
 
