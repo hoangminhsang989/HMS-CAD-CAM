@@ -12,9 +12,16 @@ from hms_cadcam.core.paths import AppPaths
 
 def run(argv: Sequence[str] | None = None) -> int:
     """Start HMS CAD/CAM and return its process exit code."""
-    paths = AppPaths.for_current_user()
-    configure_logging(paths.log_dir)
     logger = logging.getLogger(__name__)
+    try:
+        paths = AppPaths.for_current_user()
+        configure_logging(paths.log_dir)
+    except OSError:
+        if not logging.getLogger().handlers:
+            logging.basicConfig(level=logging.ERROR)
+        logger.exception("Không thể khởi tạo thư mục hoặc file nhật ký")
+        return 1
+
     arguments = list(argv) if argv is not None else sys.argv
 
     try:

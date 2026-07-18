@@ -16,8 +16,27 @@ def configure_logging(log_dir: Path, level: int = logging.INFO) -> Path:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    if any(getattr(handler, _HANDLER_MARKER, False) for handler in root_logger.handlers):
-        return log_path
+    managed_handlers = [
+        handler
+        for handler in root_logger.handlers
+        if getattr(handler, _HANDLER_MARKER, False)
+    ]
+    active_file_handler = next(
+        (
+            handler
+            for handler in managed_handlers
+            if isinstance(handler, RotatingFileHandler)
+        ),
+        None,
+    )
+    if active_file_handler is not None:
+        active_log_path = Path(active_file_handler.baseFilename)
+        if active_log_path == log_path:
+            return active_log_path
+
+    for handler in managed_handlers:
+        root_logger.removeHandler(handler)
+        handler.close()
 
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",

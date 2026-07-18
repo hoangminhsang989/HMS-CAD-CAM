@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTabWidget,
     QToolButton,
-    QVBoxLayout,
     QWidget,
 )
 

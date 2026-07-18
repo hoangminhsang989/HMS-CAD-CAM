@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
-    QWidget,
 )
 
 from hms_cadcam.ui.ribbon import RibbonWidget
