@@ -134,12 +134,23 @@ class OcpViewerWidget(QWidget):
         self._display_mode = mode
         if self._context is None or self._presentation is None:
             return
-        drawer = self._presentation.Attributes()
+        self._apply_display_mode(self._presentation, mode, True)
+
+    def _apply_display_mode(
+        self,
+        presentation: AIS_Shape,
+        mode: DisplayMode,
+        update_viewer: bool,
+    ) -> None:
+        """Apply presentation aspects to one AIS object."""
+        if self._context is None:
+            raise RuntimeError("OCCT display is not initialized")
+        drawer = presentation.Attributes()
         drawer.SetFaceBoundaryDraw(mode is DisplayMode.SHADED_WITH_EDGES)
-        self._presentation.SynchronizeAspects()
+        presentation.SynchronizeAspects()
         display_index = 0 if mode is DisplayMode.WIREFRAME else 1
-        self._context.SetDisplayMode(self._presentation, display_index, False)
-        self._context.Redisplay(self._presentation, True, True)
+        self._context.SetDisplayMode(presentation, display_index, False)
+        self._context.Redisplay(presentation, update_viewer, True)
 
     def replace_shape(self, shape: TopoDS_Shape) -> None:
         """Replace the presentation on the Qt main thread after import."""
@@ -150,11 +161,17 @@ class OcpViewerWidget(QWidget):
             raise ValueError("Cannot display a null shape")
         if self._context is None:
             raise RuntimeError("OCCT display is not initialized")
-        if self._presentation is not None:
-            self._context.Remove(self._presentation, False)
-        self._presentation = AIS_Shape(shape)
-        self._context.Display(self._presentation, False)
-        self.set_display_mode(self._display_mode)
+        old_presentation = self._presentation
+        new_presentation = AIS_Shape(shape)
+        try:
+            self._context.Display(new_presentation, False)
+            self._apply_display_mode(new_presentation, self._display_mode, False)
+            if old_presentation is not None:
+                self._context.Remove(old_presentation, False)
+        except Exception:
+            self._context.Remove(new_presentation, False)
+            raise
+        self._presentation = new_presentation
         self.set_selection_kind(self._selection_mode.kind)
         self.fit_all()
 

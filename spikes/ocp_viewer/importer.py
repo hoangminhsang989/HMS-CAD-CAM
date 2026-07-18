@@ -91,10 +91,20 @@ class CadImporter:
     def present_shape(self, shape_id: str, presenter: ShapePresenter) -> None:
         """Resolve and present a retained shape without exposing it to UI results."""
         with self._shape_lock:
-            shape = self._shapes.pop(shape_id, None)
+            shape = self._shapes.get(shape_id)
         if shape is None:
             raise KeyError(f"Không tìm thấy imported shape: {shape_id}")
         presenter(shape)
+        with self._shape_lock:
+            if self._shapes.get(shape_id) is shape:
+                self._shapes.pop(shape_id)
+
+    def discard_result(self, result: ImportResult) -> None:
+        """Release a retained shape when its UI consumer is closing or gone."""
+        if result.shape_id is None:
+            return
+        with self._shape_lock:
+            self._shapes.pop(result.shape_id, None)
 
     @staticmethod
     def _detect_format(path: Path) -> str:

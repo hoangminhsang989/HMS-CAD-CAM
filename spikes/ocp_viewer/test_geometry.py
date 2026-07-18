@@ -51,3 +51,11 @@ def test_selection_metadata_contains_no_topods_object() -> None:
     )
     assert isinstance(metadata.shape_id, str)
     assert isinstance(metadata.bounds, tuple)
+
+
+def test_selection_metadata_is_stable_for_same_document_shape() -> None:
+    """Repeated metadata reads of one document shape must keep the same ID."""
+    shape = create_demo_box()
+    first = selection_metadata(shape)
+    second = selection_metadata(shape)
+    assert first == second

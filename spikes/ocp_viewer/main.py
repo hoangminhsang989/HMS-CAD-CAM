@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from PySide6.QtCore import QThreadPool
@@ -36,6 +37,7 @@ class SpikeWindow(QMainWindow):
         self._importer = CadImporter()
         self._thread_pool = QThreadPool.globalInstance()
         self._import_worker: ImportWorker | None = None
+        self._closing = False
         self.viewer = OcpViewerWidget(self)
         self.setCentralWidget(self.viewer)
         self.resize(1100, 720)
@@ -80,16 +82,30 @@ class SpikeWindow(QMainWindow):
         self._thread_pool.start(worker)
 
     def _show_import_progress(self, status: str) -> None:
+        if self._closing:
+            return
         self._import_label.setText(f"Import: {status}")
 
     def _finish_import(self, result: ImportResult) -> None:
+        worker = self._import_worker
+        if worker is not None:
+            worker.acknowledge_result(result)
         self._import_worker = None
+        if self._closing:
+            self._importer.discard_result(result)
+            return
         self._import_action.setEnabled(True)
         if not result.success or result.shape_id is None:
             message = "; ".join(result.errors) or "Lỗi không xác định"
             self._import_label.setText(f"Import: lỗi — {message}")
             return
-        self._importer.present_shape(result.shape_id, self.viewer.replace_shape)
+        try:
+            self._importer.present_shape(result.shape_id, self.viewer.replace_shape)
+        except Exception as error:
+            logging.getLogger(__name__).exception("Không thể hiển thị imported shape")
+            self._importer.discard_result(result)
+            self._import_label.setText(f"Import: lỗi hiển thị — {error}")
+            return
         counts = result.topology_counts
         self._import_label.setText(
             f"Import: hoàn thành — {result.detected_format.upper()} | "
@@ -179,6 +195,13 @@ class SpikeWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Release the embedded OCCT view before closing its parent HWND."""
+        self._closing = True
+        worker = self._import_worker
+        if worker is not None:
+            worker.abandon()
+            worker.signals.completed.disconnect(self._finish_import)
+            worker.signals.progress.disconnect(self._show_import_progress)
+            self._import_worker = None
         self.viewer.close()
         super().closeEvent(event)
 

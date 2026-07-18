@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 from dataclasses import fields
 from pathlib import Path
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from OCP.BRepTools import BRepTools
 from OCP.IFSelect import IFSelect_ReturnStatus
 from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
 from OCP.TopoDS import TopoDS_Shape
+from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import QApplication
 
 from geometry import create_demo_box
 from importer import CadImporter
+from main import SpikeWindow
 from model import ImportResult
 from worker import ImportWorker
 
@@ -123,6 +131,99 @@ def test_import_result_contains_no_topods(tmp_path: Path) -> None:
         not isinstance(getattr(result, field.name), TopoDS_Shape)
         for field in fields(result)
     )
+
+
+def test_failed_presenter_keeps_shape_available_for_retry(tmp_path: Path) -> None:
+    source = tmp_path / "box.brep"
+    _write_brep(source)
+    importer = CadImporter()
+    result = importer.import_file(source)
+    assert result.shape_id is not None
+
+    def fail_presenter(_shape: TopoDS_Shape) -> None:
+        raise RuntimeError("simulated presentation failure")
+
+    with pytest.raises(RuntimeError, match="simulated presentation failure"):
+        importer.present_shape(result.shape_id, fail_presenter)
+
+    presented = []
+    importer.present_shape(result.shape_id, presented.append)
+    assert len(presented) == 1
+
+
+def test_close_detaches_active_worker_from_viewer(tmp_path: Path, monkeypatch) -> None:
+    application = QApplication.instance() or QApplication([])
+    window = SpikeWindow()
+    source = tmp_path / "box.brep"
+    _write_brep(source)
+    worker = ImportWorker(window._importer, source)
+    worker.signals.progress.connect(window._show_import_progress)
+    worker.signals.completed.connect(window._finish_import)
+    window._import_worker = worker
+    displayed = []
+    monkeypatch.setattr(window.viewer, "replace_shape", displayed.append)
+
+    event = QCloseEvent()
+    window.closeEvent(event)
+    worker.run()
+    worker.signals.progress.emit("hoàn thành")
+    application.processEvents()
+
+    assert event.isAccepted()
+    assert window._import_worker is None
+    assert window._importer._shapes == {}
+    assert displayed == []
+
+
+def test_close_discards_completed_result_before_queued_signal(
+    tmp_path: Path,
+) -> None:
+    QApplication.instance() or QApplication([])
+    window = SpikeWindow()
+    source = tmp_path / "box.brep"
+    _write_brep(source)
+    worker = ImportWorker(window._importer, source)
+    worker.signals.progress.connect(window._show_import_progress)
+    worker.signals.completed.connect(window._finish_import)
+    window._import_worker = worker
+    thread = threading.Thread(target=worker.run)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert len(window._importer._shapes) == 1
+
+    event = QCloseEvent()
+    window.closeEvent(event)
+
+    assert event.isAccepted()
+    assert window._import_worker is None
+    assert window._importer._shapes == {}
+
+
+def test_failed_import_does_not_replace_current_presentation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    QApplication.instance() or QApplication([])
+    window = SpikeWindow()
+    displayed = []
+    monkeypatch.setattr(window.viewer, "replace_shape", displayed.append)
+    result = ImportResult(
+        success=False,
+        source_path=str(tmp_path / "broken.step"),
+        detected_format="step",
+        shape_id=None,
+        topology_counts={},
+        bounding_box=None,
+        warnings=(),
+        errors=("broken STEP",),
+        elapsed_seconds=0.1,
+    )
+
+    window._finish_import(result)
+
+    assert displayed == []
+    assert "broken STEP" in window._import_label.text()
 
 
 def test_worker_runs_import_off_main_thread_without_viewer(tmp_path: Path) -> None:
