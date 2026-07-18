@@ -2,35 +2,49 @@
 
 ## Mốc hiện tại
 
-- Trạng thái được cập nhật sau khi hoàn thành phạm vi recovery Giai đoạn 3C.
-- Giai đoạn 1: khung ứng dụng PySide6 đã hoàn thành và được ổn định.
-- Giai đoạn 2: hệ thống dự án `.HMS` cơ bản đã hoàn thành và được rà soát.
-- Giai đoạn 3A: session lock và cleanup an toàn đã được triển khai.
-- Giai đoạn 3B: autosave snapshot nguyên tử và checksum đã được triển khai.
-- Giai đoạn 3C: recovery, rollback, `.replaced` và lựa chọn UI đã được triển khai.
-- Bộ kiểm thử hiện tại: **61 passed**.
+- Giai đoạn 1: khung ứng dụng PySide6 đã hoàn thành và ổn định.
+- Giai đoạn 2: hệ thống dự án thư mục `.HMS` cơ bản đã hoàn thành.
+- Giai đoạn 3A: Session Lock và cleanup an toàn đã hoàn thành.
+- Giai đoạn 3B: Autosave snapshot đã hoàn thành.
+- Giai đoạn 3C: Recovery, rollback và xử lý `.replaced` đã hoàn thành.
+- Giai đoạn 3D: Autosave định kỳ qua UI/worker đã hoàn thành.
+- Commit mã mới nhất: `15813c5`.
+- Toàn bộ kiểm thử: **69 passed**.
 
-## Kiến trúc hiện có
+## Kiến trúc dự án hiện có
 
-- `ProjectService` là API điều phối dự án duy nhất được UI sử dụng.
-- `ProjectCreator`, `ProjectLoader` và `ProjectSaver` tách các luồng tạo, mở và lưu.
-- `ProjectManifestStore` đọc/ghi manifest JSON UTF-8 theo cách thay thế nguyên tử.
-- `ProjectDatabase` khởi tạo, migrate, kiểm tra và backup SQLite.
-- `ProjectValidator` kiểm tra tên Windows, định dạng, phiên bản và tham chiếu nguồn.
-- `filesystem` quản lý staging, publish, rollback và sao chép source có kiểm tra SHA-256.
-- `ProjectSession` giữ project hiện hành và trạng thái thay đổi chưa lưu.
-- `ProjectUiController` chỉ gọi service, quản lý hộp thoại và trạng thái thao tác.
-- `ProjectTask` chạy một thao tác filesystem ngoài UI thread và trả kết quả bằng signal.
-- `AutosaveManager` tạo snapshot bất biến và chỉ cập nhật con trỏ latest sau kiểm tra.
-- `RecoveryManager` phát hiện stale session, backup và phục hồi manifest/database.
-- File CAD nguồn được sao chép vào `source/`; dữ liệu nguồn ban đầu không bị sửa.
-- Create, import, open, save, save-as, close và recent projects đã có mã chạy được.
+- `ProjectService` là API dự án duy nhất được UI sử dụng.
+- Creator, loader, saver, validator, manifest store và database adapter tách biệt.
+- Dự án là thư mục `.HMS`; manifest JSON UTF-8 và dữ liệu chính dùng SQLite.
+- File CAD nguồn chỉ được sao chép vào `source/`, không bị chỉnh sửa hoặc thay thế.
+- `ProjectUiController` điều phối thao tác; `ProjectTask` chạy I/O ngoài UI thread.
+
+## Session Lock
+
+- Mỗi project đang mở ghi `session.lock` có phiên bản, project/session ID, PID,
+  hostname, thời điểm tạo và phiên bản ứng dụng.
+- Lock được phân loại `active`, `stale` hoặc `unknown`.
+- PID chỉ được kiểm tra khi hostname trùng máy hiện tại; lock `unknown` không tự xóa.
+- Chuyển project giữ lock cũ đến khi project mới mở thành công; close nhả lock chủ động.
+- Cleanup chỉ xóa staging/temp HMS hợp lệ, đủ tuổi và không thuộc phiên còn sống.
+
+## Autosave
+
+- Snapshot chỉ gồm manifest, `project.db`, metadata và checksum; không sao chép `source/`.
+- Snapshot được publish nguyên tử; snapshot lỗi không thay thế bản hợp lệ gần nhất.
+- Autosave không chạy đồng thời và không làm project chính chuyển sang trạng thái clean.
+- UI dùng `QTimer` mặc định 5 phút, chỉ chạy khi project đang mở và dirty.
+- Worker autosave chạy nền, hỗ trợ pending và cô lập kết quả theo project/session generation.
+
+## Recovery
+
+- Phát hiện đóng bất thường dựa trên session lock và chọn snapshot hợp lệ có kiểm tra.
+- Phục hồi manifest/database dùng backup và rollback an toàn, không thay đổi `source/`.
+- `.replaced` chỉ được phục hồi khi nhận diện chắc chắn; trường hợp mơ hồ cần người dùng chọn.
+- UI yêu cầu lựa chọn rõ ràng trước recovery và không tự xử lý dữ liệu không chắc chắn.
 
 ## Giới hạn còn lại
 
-- Recovery chỉ được đề nghị khi stale lock và snapshot khớp project/session.
-- Autosave chưa được kích hoạt tự động bằng timer hoặc sự kiện UI.
-- `.replaced` mơ hồ hoặc tồn tại cạnh target hợp lệ được giữ nguyên để người dùng xử lý.
-- Cleanup chỉ xóa staging/temp HMS đủ tuổi, có metadata hợp lệ và PID cục bộ đã chết.
-- Recovery chỉ thay manifest/database; không chỉnh sửa hoặc thay thế `source/`.
-- Chưa có CAD kernel, CAD Viewer thực, Open CASCADE hoặc chức năng CAM.
+- Chưa triển khai CAD kernel hoặc tích hợp Open CASCADE.
+- Chưa có CAD Viewer thật, tessellation, topology hay thao tác chọn hình học.
+- Chưa triển khai thuật toán CAM, toolpath, mô phỏng hoặc Post Processor.
