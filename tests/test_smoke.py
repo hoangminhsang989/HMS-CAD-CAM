@@ -10,15 +10,24 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QToolBar, QToolButton  # noqa: E402
 
+from hms_cadcam.cad.unavailable import UnavailableCadKernel  # noqa: E402
 from hms_cadcam.project.service import ProjectService  # noqa: E402
 from hms_cadcam.ui.main_window import MainWindow  # noqa: E402
+from hms_cadcam.viewer.unavailable_backend import (  # noqa: E402
+    UnavailableCadViewportBackend,
+)
 
 
 def test_main_window_can_open_and_close(tmp_path: Path) -> None:
     """Construct the complete workspace, process events and close cleanly."""
     application = QApplication.instance() or QApplication([])
     service = ProjectService.create_default(tmp_path / "config")
-    window = MainWindow(service)
+    kernel = UnavailableCadKernel("test fallback")
+    window = MainWindow(
+        service,
+        kernel,
+        UnavailableCadViewportBackend("test fallback"),
+    )
 
     assert window.centralWidget() is window.viewport
     assert window.dockWidgetArea(window.project_dock) == Qt.DockWidgetArea.LeftDockWidgetArea
@@ -34,9 +43,9 @@ def test_main_window_can_open_and_close(tmp_path: Path) -> None:
     future_toolbars = {
         toolbar.objectName(): toolbar
         for toolbar in window.findChildren(QToolBar)
-        if toolbar.objectName() in {"QuickAccess", "ViewportTools", "ContextTools"}
+        if toolbar.objectName() in {"QuickAccess", "CadViewToolbar"}
     }
-    assert set(future_toolbars) == {"QuickAccess", "ViewportTools", "ContextTools"}
+    assert set(future_toolbars) == {"QuickAccess", "CadViewToolbar"}
     assert future_toolbars["QuickAccess"].actions()[0] is window.project_controller.actions["new"]
     assert future_toolbars["QuickAccess"].actions()[1] is window.project_controller.actions["open"]
     assert future_toolbars["QuickAccess"].actions()[2] is window.project_controller.actions["save"]
@@ -45,8 +54,7 @@ def test_main_window_can_open_and_close(tmp_path: Path) -> None:
     assert not window.project_controller.actions["save"].isEnabled()
     assert all(
         not action.isEnabled()
-        for name in ("ViewportTools", "ContextTools")
-        for action in future_toolbars[name].actions()
+        for action in future_toolbars["CadViewToolbar"].actions()
     )
     ribbon_buttons = [
         button

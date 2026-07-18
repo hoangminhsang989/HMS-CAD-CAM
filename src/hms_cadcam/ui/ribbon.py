@@ -23,10 +23,12 @@ class RibbonWidget(QTabWidget):
     def __init__(
         self,
         project_actions: Mapping[str, QAction] | None = None,
+        cad_actions: Mapping[str, QAction] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_actions = project_actions or {}
+        self._cad_actions = cad_actions or {}
         self.setObjectName("RibbonTabs")
         self.setDocumentMode(True)
         self.setIconSize(QSize(24, 24))
@@ -47,7 +49,14 @@ class RibbonWidget(QTabWidget):
                         ),
                     ),
                     ("Clipboard", ("Cắt", "Sao chép", "Dán")),
-                    ("Hiển thị", ("Fit", "Zoom", "Xoay")),
+                    (
+                        "CAD",
+                        (
+                            self._cad_actions.get("open_step", "Mở STEP"),
+                            self._cad_actions.get("open_brep", "Mở BREP"),
+                            self._cad_actions.get("fit_all", "Fit All"),
+                        ),
+                    ),
                     ("Phân tích", ("Đo", "Thuộc tính", "Thống kê")),
                 )
             ),
@@ -61,7 +70,53 @@ class RibbonWidget(QTabWidget):
         self.addTab(self._future_page("Drafting", ("Kích thước", "Ghi chú", "Hatch", "Layer")), "Drafting")
         self.addTab(self._future_page("Transform", ("Di chuyển", "Xoay", "Đối xứng", "Scale")), "Transform")
         self.addTab(self._future_page("Machine", ("Máy", "Dao", "Thiết lập", "Toolpath")), "Machine")
-        self.addTab(self._future_page("View", ("Top", "Front", "Right", "Isometric")), "View")
+        self.addTab(
+            self._page(
+                (
+                    (
+                        "Hướng nhìn",
+                        tuple(
+                            self._cad_actions[key]
+                            for key in (
+                                "view_top",
+                                "view_bottom",
+                                "view_front",
+                                "view_back",
+                                "view_left",
+                                "view_right",
+                                "view_isometric",
+                            )
+                            if key in self._cad_actions
+                        ),
+                    ),
+                    (
+                        "Hiển thị",
+                        tuple(
+                            self._cad_actions[key]
+                            for key in (
+                                "display_shaded",
+                                "display_wireframe",
+                                "display_shaded_with_edges",
+                            )
+                            if key in self._cad_actions
+                        ),
+                    ),
+                    (
+                        "Lựa chọn",
+                        tuple(
+                            self._cad_actions[key]
+                            for key in (
+                                "selection_solid",
+                                "selection_face",
+                                "selection_edge",
+                            )
+                            if key in self._cad_actions
+                        ),
+                    ),
+                )
+            ),
+            "View",
+        )
 
     def _future_page(self, group_name: str, commands: Iterable[str]) -> QWidget:
         return self._page(((group_name, commands),))

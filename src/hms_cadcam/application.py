@@ -6,9 +6,11 @@ import logging
 import sys
 from collections.abc import Sequence
 
+from hms_cadcam.cad.factory import CadKernelFactory
 from hms_cadcam.core.logging_config import configure_logging
 from hms_cadcam.core.paths import AppPaths
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.viewer.factory import CadViewportBackendFactory
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -36,7 +38,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         application.setOrganizationName("HMS")
 
         project_service = ProjectService.create_default(paths.config_dir)
-        window = MainWindow(project_service)
+        cad_kernel = CadKernelFactory.create()
+        viewport_backend = CadViewportBackendFactory.create(cad_kernel)
+        window = MainWindow(project_service, cad_kernel, viewport_backend)
         window.show()
         logger.info("Ứng dụng HMS CAD/CAM đã khởi động")
         exit_code = application.exec()

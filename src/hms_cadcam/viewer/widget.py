@@ -88,16 +88,17 @@ class CadViewportWidget(QWidget):
         except Exception as error:
             self._report_backend_error("initialize", error)
 
-    def display_document(self, document_id: CadDocumentId) -> None:
-        """Display a kernel-owned document by opaque ID."""
+    def display_document(self, document_id: CadDocumentId) -> bool:
+        """Display a kernel-owned document and report presentation success."""
         self.initialize_viewport()
         if self._initialized:
-            self._invoke(
+            return self._invoke(
                 "display document",
                 self._backend.display_document,
                 document_id,
                 clear_error=True,
             )
+        return False
 
     def clear(self) -> None:
         """Clear the presentation and all selection metadata."""
@@ -233,19 +234,20 @@ class CadViewportWidget(QWidget):
         operation,
         *args: object,
         clear_error: bool = False,
-    ) -> None:
+    ) -> bool:
         if self._closed:
-            return
+            return False
         try:
             operation(*args)
         except Exception as error:
             self._report_backend_error(label, error)
-            return
+            return False
         if clear_error:
             backend_status = self._backend.get_status()
             self._native_painting = backend_status.available
             if backend_status != self._status:
                 self._refresh_status(backend_status)
+        return True
 
     def _report_backend_error(self, operation: str, error: Exception) -> None:
         logging.getLogger(__name__).exception(
