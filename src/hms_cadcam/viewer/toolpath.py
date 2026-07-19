@@ -9,7 +9,9 @@ from hms_cadcam.cam.domain import ArtifactStatus, OperationId, Point3, ToolpathA
 from hms_cadcam.cam.toolpath import (
     ArcMove,
     Bounds3,
+    DwellEvent,
     LinearMove,
+    MarkerEvent,
     MotionClass,
     RapidMove,
     ToolpathArtifact,
@@ -26,6 +28,15 @@ class ToolpathSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolpathAnnotation:
+    """Zero-displacement semantic point derived from controller-neutral IR."""
+
+    position: Point3
+    semantic: str
+    duration_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolpathPresentation:
     operation_id: OperationId
     artifact_id: ToolpathArtifactId
@@ -35,6 +46,7 @@ class ToolpathPresentation:
     bounds: Bounds3
     artifact_status: ArtifactStatus
     segments: tuple[ToolpathSegment, ...]
+    annotations: tuple[ToolpathAnnotation, ...] = ()
     visible: bool = True
     highlighted: bool = False
 
@@ -43,6 +55,22 @@ class ToolpathPresentation:
         segments = tuple(ToolpathSegment(event.start.position, event.end.position,
             event.motion_class, isinstance(event, ArcMove), _semantic(event.provenance, event.motion_class)) for event in artifact.events
             if isinstance(event, (RapidMove, LinearMove, ArcMove)))
+        annotations: list[ToolpathAnnotation] = []
+        current_position = artifact.initial_pose.position
+        for event in artifact.events:
+            if isinstance(event, (RapidMove, LinearMove, ArcMove)):
+                current_position = event.end.position
+            elif isinstance(event, DwellEvent) and event.provenance.startswith("drill."):
+                annotations.append(ToolpathAnnotation(
+                    current_position, "dwell", event.duration_seconds,
+                ))
+            elif (
+                isinstance(event, MarkerEvent)
+                and event.semantic_key == "drill.hole_complete"
+            ):
+                annotations.append(ToolpathAnnotation(
+                    current_position, "hole_complete",
+                ))
         fingerprint = artifact.artifact_fingerprint
         assert fingerprint is not None
         return cls(
@@ -54,6 +82,7 @@ class ToolpathPresentation:
             artifact.bounds,
             ArtifactStatus.VALID,
             segments,
+            tuple(annotations),
         )
 
 
@@ -144,6 +173,18 @@ class ToolpathPresentationRegistry:
 
 def _semantic(provenance: str, motion_class: MotionClass) -> str:
     is_pocket = provenance.startswith("pocket.")
+    is_drilling = provenance.startswith("drill.")
+    if is_drilling:
+        if provenance.endswith(".approach"):
+            return "approach"
+        if provenance.endswith(".resume"):
+            return "peck_resume"
+        if provenance.endswith(".plunge"):
+            return "plunge"
+        if provenance.endswith(".retract"):
+            return "retract"
+        if motion_class is MotionClass.NON_CUTTING:
+            return "rapid"
     if "lead_in" in provenance:
         return "lead_in"
     if "lead_out" in provenance:
@@ -163,12 +204,23 @@ def _semantic(provenance: str, motion_class: MotionClass) -> str:
 def _strategy_key(artifact: ToolpathArtifact) -> str:
     prefixes = {event.provenance.split(".", 1)[0] for event in artifact.events
                 if getattr(event, "provenance", "")}
-    known = {"facing": "facing_2_5d", "contour": "contour_2d", "pocket": "pocket_2_5d"}
+    known = {
+        "contour": "contour_2d",
+        "drill": "drilling_v1",
+        "facing": "facing_2_5d",
+        "pocket": "pocket_2_5d",
+    }
     matches = tuple(known[prefix] for prefix in sorted(prefixes) if prefix in known)
     return matches[0] if len(matches) == 1 else "unknown"
 
 
 def _pass_count(artifact: ToolpathArtifact) -> int:
+    if any(event.provenance.startswith("drill.") for event in artifact.events):
+        return sum(
+            isinstance(event, MarkerEvent)
+            and event.semantic_key == "drill.hole_complete"
+            for event in artifact.events
+        )
     patterns = (
         re.compile(r"^pocket\.depth\.(\d+)\.loop\.(\d+)\.segment\."),
         re.compile(r"^contour\.pass\.(\d+)\."),

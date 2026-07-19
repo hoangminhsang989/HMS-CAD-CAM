@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from OCP.AIS import AIS_Shape
 from OCP.BRep import BRep_Builder
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeVertex
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopoDS import TopoDS_Compound
@@ -25,7 +25,7 @@ from hms_cadcam.cad.models import (
 )
 from hms_cadcam.cad.ocp import OcpCadKernel
 from hms_cadcam.cam.domain import OperationId
-from hms_cadcam.cam.toolpath import ArcMove, LinearMove, MotionClass, RapidMove, ToolpathArtifact
+from hms_cadcam.cam.toolpath import ArcMove, LinearMove, RapidMove, ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -230,18 +230,35 @@ class OcpCadViewportBackend:
         self._require_initialized()
         metadata = ToolpathPresentation.from_artifact(artifact)
         context = self._lifecycle.context
-        groups = {key: [] for key in ("rapid", "plunge", "plunge_link", "lead_in",
-                                      "pocket_cutting", "cutting", "lead_out", "link",
-                                      "retract")}
-        for event in artifact.events:
-            if isinstance(event, (RapidMove, LinearMove, ArcMove)):
-                semantic = _toolpath_semantic(event.provenance, event.motion_class)
-                groups[semantic].append(event)
-        colors = {"rapid": (0.2, 0.55, 1.0), "plunge": (1.0, 0.55, 0.05),
-                  "plunge_link": (1.0, 0.65, 0.1), "lead_in": (0.0, 0.85, 0.85),
-                  "pocket_cutting": (0.25, 0.95, 0.2), "cutting": (0.1, 0.9, 0.25),
-                  "lead_out": (0.0, 0.65, 0.85), "link": (1.0, 0.8, 0.2),
-                  "retract": (0.9, 0.25, 0.9)}
+        groups = {key: [] for key in (
+            "rapid", "approach", "peck_resume", "plunge", "plunge_link",
+            "lead_in", "pocket_cutting", "cutting", "lead_out", "link",
+            "retract",
+        )}
+        movements = tuple(
+            event for event in artifact.events
+            if isinstance(event, (RapidMove, LinearMove, ArcMove))
+        )
+        for event, segment in zip(movements, metadata.segments, strict=True):
+            groups[segment.semantic].append(event)
+        annotation_groups = {key: [] for key in ("dwell", "hole_complete")}
+        for annotation in metadata.annotations:
+            annotation_groups[annotation.semantic].append(annotation.position)
+        colors = {
+            "rapid": (0.2, 0.55, 1.0),
+            "approach": (1.0, 0.72, 0.15),
+            "peck_resume": (0.95, 0.8, 0.25),
+            "plunge": (1.0, 0.55, 0.05),
+            "plunge_link": (1.0, 0.65, 0.1),
+            "lead_in": (0.0, 0.85, 0.85),
+            "pocket_cutting": (0.25, 0.95, 0.2),
+            "cutting": (0.1, 0.9, 0.25),
+            "lead_out": (0.0, 0.65, 0.85),
+            "link": (1.0, 0.8, 0.2),
+            "retract": (0.9, 0.25, 0.9),
+            "dwell": (1.0, 0.2, 0.2),
+            "hole_complete": (0.25, 1.0, 0.85),
+        }
         presentations = []
         try:
             for semantic, events in groups.items():
@@ -268,6 +285,25 @@ class OcpCadViewportBackend:
                 presentations.append(presentation)
                 red, green, blue = colors[semantic]
                 context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
+                context.Display(presentation, False)
+            for semantic, points in annotation_groups.items():
+                if not points:
+                    continue
+                compound, builder = TopoDS_Compound(), BRep_Builder()
+                builder.MakeCompound(compound)
+                for point in points:
+                    vertex = BRepBuilderAPI_MakeVertex(
+                        gp_Pnt(point.x, point.y, point.z)
+                    ).Vertex()
+                    builder.Add(compound, vertex)
+                presentation = AIS_Shape(compound)
+                presentations.append(presentation)
+                red, green, blue = colors[semantic]
+                context.SetColor(
+                    presentation,
+                    Quantity_Color(red, green, blue, Quantity_TOC_RGB),
+                    False,
+                )
                 context.Display(presentation, False)
         except Exception:
             for presentation in presentations:
@@ -577,17 +613,3 @@ class OcpCadViewportBackend:
         if registry is None:
             raise RuntimeError("Managed presentation registry is unavailable")
         return registry
-
-
-def _toolpath_semantic(provenance: str, motion_class: MotionClass) -> str:
-    is_pocket = provenance.startswith("pocket.")
-    if "lead_in" in provenance:
-        return "lead_in"
-    if "lead_out" in provenance:
-        return "lead_out"
-    if "plunge" in provenance or "approach" in provenance:
-        return "plunge" if is_pocket else "plunge_link"
-    if is_pocket and motion_class is MotionClass.CUTTING:
-        return "pocket_cutting"
-    return {MotionClass.NON_CUTTING: "rapid", MotionClass.CUTTING: "cutting",
-            MotionClass.LINK: "link", MotionClass.RETRACT: "retract"}[motion_class]

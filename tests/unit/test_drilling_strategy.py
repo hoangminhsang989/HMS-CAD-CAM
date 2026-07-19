@@ -74,6 +74,7 @@ from hms_cadcam.cam.toolpath import (
 )
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cam_ui import _default_setup
+from hms_cadcam.viewer.toolpath import ToolpathPresentationRegistry
 
 
 def _pattern(*points: tuple[float, float], unit: LengthUnit = LengthUnit.MM) -> HolePattern:
@@ -462,6 +463,28 @@ def test_recompute_failure_keeps_previous_valid_artifact(tmp_path) -> None:
     )
     assert success.accepted and success.operation.artifact_state.status is ArtifactStatus.VALID
     artifact = service.load_toolpath_artifact(operation.operation_id)
+    assert artifact is not None
+    registry = ToolpathPresentationRegistry()
+    registry.bind_project(service.cam_generation)
+    assert registry.display(artifact, generation=service.cam_generation)
+
+    recomputed = service.compute_drilling(
+        operation.operation_id,
+        geometry_resolver=lambda _geometry, _depth: resolved,
+    )
+    assert recomputed.accepted and recomputed.artifact is not None
+    request = registry.request_display(
+        operation.operation_id, generation=service.cam_generation
+    )
+    assert request is not None
+    assert registry.display(
+        recomputed.artifact,
+        generation=service.cam_generation,
+        request=request,
+    )
+    artifact = recomputed.artifact
+    shown_before_failure = registry.presentations
+    assert service.load_toolpath_artifact(operation.operation_id) == artifact
     stale = ResolvedDrillingGeometry(
         GeometryResolutionStatus.STALE,
         diagnostics=(ValidationDiagnostic(
@@ -475,6 +498,7 @@ def test_recompute_failure_keeps_previous_valid_artifact(tmp_path) -> None:
     assert not failure.accepted
     assert failure.operation.artifact_state.status is ArtifactStatus.VALID
     assert service.load_toolpath_artifact(operation.operation_id) == artifact
+    assert registry.presentations == shown_before_failure
     service.save()
     service.close_project()
     service.open_project(session.root_path)
