@@ -131,6 +131,27 @@ def test_concave_scanline_produces_independent_clipped_segments() -> None:
     assert all(not (start[0] < 5.0 < end[0]) for start, end in middle)
 
 
+def test_planar_raster_keeps_nonzero_horizontal_boundary_strip() -> None:
+    unit = LengthUnit.MM
+    boundary = tuple(Point3(x, y, 0.0, unit) for x, y in (
+        (0, 0), (10, 0), (10, 10), (0, 10),
+    ))
+    from hms_cadcam.cam.domain import GeometryFingerprint
+
+    region = FacingRegion(
+        boundary, Vector3(0, 0, 1),
+        GeometryFingerprint.from_payload({"shape": "rectangle"}),
+    )
+    lanes = _raster_lanes(region, 0.0, 5.0, 0.0)
+
+    assert lanes == (
+        ((0.0, 0.0), (10.0, 0.0)),
+        ((0.0, 5.0), (10.0, 5.0)),
+        ((0.0, 10.0), (10.0, 10.0)),
+    )
+    assert all(start != end for start, end in lanes)
+
+
 def test_xcaf_repeated_occurrences_resolve_once_in_world_coordinates(tmp_path) -> None:
     source = tmp_path / "repeated.step"
     write_xcaf_step_fixture(source)

@@ -19,6 +19,7 @@ from hms_cadcam.cam.domain import (
     OperationFamily, OperationGeometryInput, OperationId, PlanarFaceBounds,
     PlanarFaceDescriptor, Point3, ResolvedFaceBoundary, FaceBoundaryCurve,
     ResolvedMachiningGeometry, Revision, SpindleSpeed, ToolAssemblyReference, Vector3,
+    WcsFrame,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
 from hms_cadcam.cam.toolpath import LinearMove, MotionClass, RapidMove, publish_toolpath
@@ -263,6 +264,32 @@ def test_planar_face_top_must_match_the_absolute_facing_top() -> None:
     assert resolved.region.boundary[0].z == 49
 
 
+def test_rotated_setup_wcs_transforms_planar_boundary_exactly_once() -> None:
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    generator, inputs = _inputs()
+    rotated_wcs = WcsFrame(
+        Point3(10, 20, 0, LengthUnit.MM),
+        Vector3(0, 1, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1),
+    )
+    setup = replace(inputs.setup, wcs=rotated_wcs)
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((10, 20), (30, 20), (30, 35), (10, 35)))
+    descriptor, geometry_input = _descriptor(points)
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters(),
+                        geometry_inputs=(geometry_input,))
+
+    resolved = generator.resolve_inputs(
+        operation, setup, assembly=inputs.assembly, tool=inputs.tool,
+        machine=inputs.machine,
+        resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor),
+    )
+
+    assert tuple((point.x, point.y, point.z) for point in resolved.region.boundary) == (
+        (0.0, 0.0, 49.0), (0.0, -20.0, 49.0),
+        (15.0, -20.0, 49.0), (15.0, 0.0, 49.0),
+    )
+
+
 def test_planar_face_accepts_opposite_normal_and_rejects_inner_loop() -> None:
     parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
     generator, inputs = _inputs()
@@ -418,6 +445,56 @@ def test_planar_reference_compute_round_trip_and_failed_recompute_keeps_valid(tm
     recovered_input = recovered.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0].geometry_inputs[0]
     assert recovered_input.reference == autosave_reference
     assert service.load_toolpath_artifact(operation_id).artifact_fingerprint == result.artifact.artifact_fingerprint
+
+
+def test_cad_release_marks_valid_planar_artifact_dirty_when_resolver_is_unavailable(tmp_path) -> None:
+    QApplication.instance() or QApplication([])
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Planar CAD Release")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (20, 0), (20, 15), (0, 15)))
+    descriptor, geometry_input = _descriptor(points)
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    node_id, operation_id = CamNodeId.new(), OperationId.new()
+    requirement = MachineRequirement(machine.machine_id, machine.revision,
+        machine.content_fingerprint, machine.unit, (OperationCapability.MILLING,))
+    operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        parameters.to_operation_parameters(), requirement)
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Planar Facing", operation)))
+    assert service.compute_facing(operation_id, face_resolver=lambda _reference:
+        ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor)).accepted
+
+    def unavailable(_reference):
+        raise RuntimeError("CAD document has been released")
+
+    workspace = CamWorkspace(service, lambda: session.manifest.source_files[0].source_id,
+                             face_resolver=unavailable)
+    workspace.cad_context_changed()
+    changed = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert changed.artifact_state.status is ArtifactStatus.DIRTY
+    assert DirtyReason.GEOMETRY_CHANGED in changed.artifact_state.dirty_reasons
+    workspace.deleteLater()
+
+
+def test_cad_context_change_after_project_close_is_a_clean_noop(tmp_path) -> None:
+    QApplication.instance() or QApplication([])
+    service = ProjectService.create_default(tmp_path / "config")
+    service.new_project(tmp_path, "CAD Close Lifecycle")
+    workspace = CamWorkspace(service, lambda: None)
+
+    service.close_project(discard_changes=True)
+    workspace.cad_context_changed()
+
+    assert not service.has_project
+    workspace.deleteLater()
 
 
 def test_facing_ui_invalid_field_does_not_mutate_and_generate_displays(tmp_path) -> None:

@@ -364,8 +364,14 @@ def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
     lanes = []
     for v in positions:
         intersections: list[float] = []
+        boundary_intervals: list[tuple[float, float]] = []
         for index, first in enumerate(transformed):
             second = transformed[(index + 1) % len(transformed)]
+            if (extension <= _TOLERANCE and
+                    abs(first[1] - v) <= _TOLERANCE and
+                    abs(second[1] - v) <= _TOLERANCE):
+                boundary_intervals.append(tuple(sorted((first[0], second[0]))))
+                continue
             if extension > _TOLERANCE and abs(first[1] - v) <= _TOLERANCE:
                 intersections.append(first[0])
             delta = second[1] - first[1]
@@ -382,7 +388,7 @@ def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
         crossings = (sorted(round(value, 12) for value in intersections)
                      if extension <= _TOLERANCE else
                      sorted({round(value, 12) for value in intersections}))
-        if not crossings:
+        if not crossings and not boundary_intervals:
             continue
         if len(crossings) % 2:
             if len(crossings) == 1 and extension > _TOLERANCE:
@@ -390,13 +396,23 @@ def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
                 crossings = [crossings[0] - epsilon, crossings[0] + epsilon]
             else:
                 continue
+        intervals = [
+            (crossings[index] - extension, crossings[index + 1] + extension)
+            for index in range(0, len(crossings), 2)
+        ]
+        intervals.extend(boundary_intervals)
+        intervals.sort()
+        merged: list[tuple[float, float]] = []
+        for start_u, end_u in intervals:
+            if end_u - start_u <= _TOLERANCE:
+                continue
+            if merged and start_u <= merged[-1][1] + _TOLERANCE:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end_u))
+            else:
+                merged.append((start_u, end_u))
         to_xy = lambda u: (u * u_axis[0] + v * v_axis[0],
                            u * u_axis[1] + v * v_axis[1])
-        for index in range(0, len(crossings), 2):
-            start_u = crossings[index] - extension
-            end_u = crossings[index + 1] + extension
-            if end_u - start_u > _TOLERANCE:
-                lanes.append((to_xy(start_u), to_xy(end_u)))
+        lanes.extend((to_xy(start_u), to_xy(end_u)) for start_u, end_u in merged)
     return tuple(lanes)
 
 

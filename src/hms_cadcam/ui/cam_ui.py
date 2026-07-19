@@ -339,6 +339,9 @@ class CamWorkspace(QWidget):
     def cad_context_changed(self, *, force_invalidate: bool = False) -> None:
         """Re-resolve displayed references after CAD reload without rebinding them."""
         self._picked_reference_resolved = self._resolve_picked_reference()
+        if not self._service.has_project:
+            self._update_generate_action()
+            return
         if self._face_resolver is not None and self._generation is not None:
             for job in self._service.cam_snapshot.jobs:
                 for setup in job.setups:
@@ -348,12 +351,21 @@ class CamWorkspace(QWidget):
                             continue
                         try:
                             parameters = FacingParameters.from_operation_parameters(operation.parameters)
-                            result = self._face_resolver(operation.geometry_inputs[0].reference)
                         except (RuntimeError, TypeError, ValueError):
                             continue
-                        if (parameters.boundary_source is FacingBoundarySource.PLANAR_FACE and
-                                (force_invalidate or getattr(result, "status", None) is not
-                                 GeometryResolutionStatus.RESOLVED)):
+                        if parameters.boundary_source is not FacingBoundarySource.PLANAR_FACE:
+                            continue
+                        if force_invalidate:
+                            self._execute(lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+                            continue
+                        try:
+                            result = self._face_resolver(operation.geometry_inputs[0].reference)
+                        except (RuntimeError, TypeError, ValueError):
+                            self._execute(lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+                            continue
+                        if getattr(result, "status", None) is not GeometryResolutionStatus.RESOLVED:
                             self._execute(lambda app, operation_id=operation.operation_id:
                                 app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
         self._update_generate_action()
