@@ -53,6 +53,15 @@ class CadGeometryKind(str, Enum):
     TRIANGLE_MESH = "triangle_mesh"
 
 
+class CadDocumentKind(str, Enum):
+    """Semantic document representation retained by the CAD kernel."""
+
+    BREP = "brep"
+    TRIANGLE_MESH = "triangle_mesh"
+    XCAF_PART = "xcaf_part"
+    XCAF_ASSEMBLY = "xcaf_assembly"
+
+
 class CadObjectKind(str, Enum):
     """Display-management levels exposed by the lightweight topology tree."""
 
@@ -69,6 +78,203 @@ class CadUnits(str, Enum):
     """Unit information known at the current import boundary."""
 
     UNKNOWN = "unknown"
+
+
+class XcafNodeRole(str, Enum):
+    """Role of one XCAF product and each occurrence referring to it."""
+
+    ASSEMBLY = "assembly"
+    PART = "part"
+
+
+class XcafNameSource(str, Enum):
+    """Source selected for a safe public occurrence display name."""
+
+    OCCURRENCE = "occurrence"
+    PRODUCT = "product"
+    GENERATED = "generated"
+
+
+@dataclass(frozen=True, slots=True)
+class XcafOccurrenceId:
+    """Runtime-scoped occurrence identifier valid while a document is retained."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise ValueError("XCAF occurrence ID must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class XcafProductId:
+    """Runtime-scoped product identifier valid while a document is retained."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value:
+            raise ValueError("XCAF product ID must not be empty")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class XcafColor:
+    """Normalized RGB source color independent from Quantity_Color."""
+
+    red: float
+    green: float
+    blue: float
+
+    def __post_init__(self) -> None:
+        values = (self.red, self.green, self.blue)
+        if not all(
+            math.isfinite(value) and 0.0 <= value <= 1.0 for value in values
+        ):
+            raise ValueError("XCAF color channels must be finite values from 0 to 1")
+
+
+@dataclass(frozen=True, slots=True)
+class XcafTransform:
+    """Immutable row-major affine 4x4 transform."""
+
+    values: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.values) != 16 or not all(
+            math.isfinite(value) for value in self.values
+        ):
+            raise ValueError("XCAF transform must contain 16 finite values")
+        if self.values[12:] != (0.0, 0.0, 0.0, 1.0):
+            raise ValueError("XCAF transform must be affine")
+
+    @classmethod
+    def identity(cls) -> "XcafTransform":
+        """Return an identity transform."""
+        return cls(
+            (
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
+        )
+
+    def compose(self, local: "XcafTransform") -> "XcafTransform":
+        """Return ``self x local`` for parent-to-child accumulation."""
+        if not isinstance(local, XcafTransform):
+            raise TypeError("local must be XcafTransform")
+        return XcafTransform(
+            tuple(
+                sum(
+                    self.values[row * 4 + inner]
+                    * local.values[inner * 4 + column]
+                    for inner in range(4)
+                )
+                for row in range(4)
+                for column in range(4)
+            )
+        )
+
+    @property
+    def translation(self) -> tuple[float, float, float]:
+        """Return translation from the affine matrix."""
+        return (self.values[3], self.values[7], self.values[11])
+
+
+@dataclass(frozen=True, slots=True)
+class XcafSourceAppearance:
+    """Colors imported from STEP, separate from every user override."""
+
+    generic_color: XcafColor | None = None
+    surface_color: XcafColor | None = None
+    curve_color: XcafColor | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class XcafSubshapeAppearance:
+    """Source appearance for an internal product subshape identifier."""
+
+    subshape_id: str
+    source_appearance: XcafSourceAppearance
+
+    def __post_init__(self) -> None:
+        if not self.subshape_id:
+            raise ValueError("XCAF subshape ID must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class XcafProductMetadata:
+    """Public OCP-free metadata for one XCAF product definition."""
+
+    document_id: CadDocumentId
+    product_id: XcafProductId
+    role: XcafNodeRole
+    name: str
+    source_appearance: XcafSourceAppearance
+    subshape_appearances: tuple[XcafSubshapeAppearance, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("XCAF product name must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class XcafOccurrenceMetadata:
+    """Public OCP-free metadata for one placed product occurrence."""
+
+    document_id: CadDocumentId
+    occurrence_id: XcafOccurrenceId
+    product_id: XcafProductId
+    parent_occurrence_id: XcafOccurrenceId | None
+    role: XcafNodeRole
+    name: str
+    name_source: XcafNameSource
+    local_transform: XcafTransform
+    absolute_transform: XcafTransform
+    source_appearance: XcafSourceAppearance
+    child_occurrence_ids: tuple[XcafOccurrenceId, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("XCAF occurrence name must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class XcafAssemblyMetadata:
+    """Immutable index summary for one retained STEP/XCAF document."""
+
+    document_id: CadDocumentId
+    root_occurrence_ids: tuple[XcafOccurrenceId, ...]
+    product_ids: tuple[XcafProductId, ...]
+    occurrence_ids: tuple[XcafOccurrenceId, ...]
+
+    def __post_init__(self) -> None:
+        if not self.root_occurrence_ids:
+            raise ValueError("XCAF metadata requires at least one root occurrence")
+        if len(self.product_ids) != len(set(self.product_ids)):
+            raise ValueError("XCAF product IDs must be unique")
+        if len(self.occurrence_ids) != len(set(self.occurrence_ids)):
+            raise ValueError("XCAF occurrence IDs must be unique")
+        if not set(self.root_occurrence_ids).issubset(self.occurrence_ids):
+            raise ValueError("XCAF root occurrence is not indexed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +392,7 @@ class CadDocumentMetadata:
     cad_format: CadFormat
     bounding_box: BoundingBox
     geometry_kind: CadGeometryKind
+    document_kind: CadDocumentKind
     units: CadUnits
     topology_counts: TopologyCounts | None = None
     mesh_statistics: MeshStatistics | None = None
@@ -195,8 +402,17 @@ class CadDocumentMetadata:
         if self.geometry_kind is CadGeometryKind.BREP:
             if self.topology_counts is None or self.mesh_statistics is not None:
                 raise ValueError("BREP metadata requires only topology counts")
+            if self.document_kind is CadDocumentKind.TRIANGLE_MESH:
+                raise ValueError("BREP metadata cannot be a triangle-mesh document")
         elif self.topology_counts is not None or self.mesh_statistics is None:
             raise ValueError("Triangle-mesh metadata requires only mesh statistics")
+        elif self.document_kind is not CadDocumentKind.TRIANGLE_MESH:
+            raise ValueError("Triangle-mesh geometry requires triangle-mesh document kind")
+        if self.document_kind in {
+            CadDocumentKind.XCAF_PART,
+            CadDocumentKind.XCAF_ASSEMBLY,
+        } and self.cad_format is not CadFormat.STEP:
+            raise ValueError("XCAF document kinds are supported only for STEP")
 
 
 @dataclass(frozen=True, slots=True)

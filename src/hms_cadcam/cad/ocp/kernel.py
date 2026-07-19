@@ -25,6 +25,13 @@ from hms_cadcam.cad.models import (
     CadImportResult,
     CadKernelStatus,
     TopologyCounts,
+    XcafAssemblyMetadata,
+    XcafOccurrenceId,
+    XcafOccurrenceMetadata,
+    XcafProductId,
+    XcafProductMetadata,
+    XcafSourceAppearance,
+    XcafTransform,
 )
 from hms_cadcam.cad.ocp.importer import (
     OcpImporter,
@@ -75,8 +82,40 @@ class OcpCadKernel:
         return metadata.document_id
 
     def import_step(self, path: str | Path) -> CadImportResult:
-        """Import STEP while retaining native data behind a document ID."""
-        return self._import(path, CadFormat.STEP, self._importer.read_step)
+        """Import STEP parts or assemblies into an owned XCAF document."""
+        started = perf_counter()
+        source_path = Path(path).resolve(strict=False)
+        try:
+            payload = self._importer.read_step(source_path)
+            metadata = self._documents.add_xcaf(payload, source_path)
+            return CadImportResult(
+                success=True,
+                source_path=source_path,
+                detected_format=CadFormat.STEP,
+                document_id=metadata.document_id,
+                metadata=metadata,
+                warnings=payload.warnings,
+                errors=(),
+                elapsed_seconds=perf_counter() - started,
+            )
+        except (CadImportError, OSError, ValueError) as error:
+            return self._failed_import(
+                source_path,
+                CadFormat.STEP,
+                str(error),
+                started,
+            )
+        except Exception as error:
+            logging.getLogger(__name__).exception(
+                "Unexpected OCP failure while importing STEP/XCAF %s",
+                source_path,
+            )
+            return self._failed_import(
+                source_path,
+                CadFormat.STEP,
+                f"Unexpected OCP import failure: {error}",
+                started,
+            )
 
     def import_brep(self, path: str | Path) -> CadImportResult:
         """Import BREP while retaining native data behind a document ID."""
@@ -117,6 +156,69 @@ class OcpCadKernel:
         """Return the immutable topology-only display tree."""
         return self._documents.get_tree(document_id)
 
+    def get_xcaf_assembly_metadata(
+        self,
+        document_id: CadDocumentId,
+    ) -> XcafAssemblyMetadata:
+        """Return the assembly index for one retained STEP/XCAF document."""
+        return self._documents.get_xcaf_assembly_metadata(document_id)
+
+    def get_xcaf_root_occurrences(
+        self,
+        document_id: CadDocumentId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Return every root product occurrence."""
+        return self._documents.get_xcaf_root_occurrences(document_id)
+
+    def get_xcaf_child_occurrences(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Return direct child occurrences."""
+        return self._documents.get_xcaf_child_occurrences(
+            document_id,
+            occurrence_id,
+        )
+
+    def get_xcaf_product_metadata(
+        self,
+        document_id: CadDocumentId,
+        product_id: XcafProductId,
+    ) -> XcafProductMetadata:
+        """Return metadata for one product definition."""
+        return self._documents.get_xcaf_product_metadata(document_id, product_id)
+
+    def get_xcaf_occurrence_metadata(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafOccurrenceMetadata:
+        """Return metadata for one placed occurrence."""
+        return self._documents.get_xcaf_occurrence_metadata(
+            document_id,
+            occurrence_id,
+        )
+
+    def get_xcaf_absolute_transform(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafTransform:
+        """Return one occurrence's absolute assembly transform."""
+        return self._documents.get_xcaf_absolute_transform(
+            document_id,
+            occurrence_id,
+        )
+
+    def get_xcaf_source_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: XcafOccurrenceId | XcafProductId,
+    ) -> XcafSourceAppearance:
+        """Return source STEP appearance, never user override state."""
+        return self._documents.get_xcaf_source_appearance(document_id, object_id)
+
     def _resolve_shape(self, document_id: CadDocumentId) -> TopoDS_Shape:
         """Resolve native data only for trusted internal OCP adapters."""
         return self._documents.resolve_shape(document_id)
@@ -134,6 +236,17 @@ class OcpCadKernel:
     ) -> dict[CadObjectId, TopoDS_Shape]:
         """Resolve managed BREP leaves only for trusted viewer adapters."""
         return self._documents.resolve_presentation_shapes(document_id)
+
+    def _resolve_xcaf_occurrence_shape(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> TopoDS_Shape:
+        """Resolve native occurrence geometry only for trusted OCP adapters."""
+        return self._documents.resolve_xcaf_occurrence_shape(
+            document_id,
+            occurrence_id,
+        )
 
     def _import(
         self,

@@ -13,6 +13,13 @@ from hms_cadcam.cad.models import (
     CadImportResult,
     CadKernelStatus,
     TopologyCounts,
+    XcafAssemblyMetadata,
+    XcafOccurrenceId,
+    XcafOccurrenceMetadata,
+    XcafProductId,
+    XcafProductMetadata,
+    XcafSourceAppearance,
+    XcafTransform,
 )
 
 
@@ -74,4 +81,58 @@ class CadKernel(Protocol):
 
     def get_document_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
         """Return the bounded topology/display tree for a retained document."""
+        ...
+
+    def get_xcaf_assembly_metadata(
+        self,
+        document_id: CadDocumentId,
+    ) -> XcafAssemblyMetadata:
+        """Return XCAF product and occurrence indexes for a STEP document."""
+        ...
+
+    def get_xcaf_root_occurrences(
+        self,
+        document_id: CadDocumentId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Return every root occurrence in stable document-lifetime order."""
+        ...
+
+    def get_xcaf_child_occurrences(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Return direct children of one occurrence."""
+        ...
+
+    def get_xcaf_product_metadata(
+        self,
+        document_id: CadDocumentId,
+        product_id: XcafProductId,
+    ) -> XcafProductMetadata:
+        """Return one XCAF product definition."""
+        ...
+
+    def get_xcaf_occurrence_metadata(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafOccurrenceMetadata:
+        """Return one XCAF occurrence."""
+        ...
+
+    def get_xcaf_absolute_transform(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafTransform:
+        """Return the accumulated transform of one occurrence."""
+        ...
+
+    def get_xcaf_source_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: XcafOccurrenceId | XcafProductId,
+    ) -> XcafSourceAppearance:
+        """Return source STEP appearance without user view-state overrides."""
         ...

@@ -14,6 +14,13 @@ from hms_cadcam.cad.models import (
     CadImportResult,
     CadKernelStatus,
     TopologyCounts,
+    XcafAssemblyMetadata,
+    XcafOccurrenceId,
+    XcafOccurrenceMetadata,
+    XcafProductId,
+    XcafProductMetadata,
+    XcafSourceAppearance,
+    XcafTransform,
 )
 
 
@@ -87,6 +94,67 @@ class UnavailableCadKernel:
     def get_document_tree(self, document_id: CadDocumentId) -> CadDocumentTree:
         """Reject document access when no backend exists."""
         del document_id
+        raise self._unavailable_error()
+
+    def get_xcaf_assembly_metadata(
+        self,
+        document_id: CadDocumentId,
+    ) -> XcafAssemblyMetadata:
+        """Reject XCAF access when no backend exists."""
+        del document_id
+        raise self._unavailable_error()
+
+    def get_xcaf_root_occurrences(
+        self,
+        document_id: CadDocumentId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Reject XCAF access when no backend exists."""
+        del document_id
+        raise self._unavailable_error()
+
+    def get_xcaf_child_occurrences(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> tuple[XcafOccurrenceMetadata, ...]:
+        """Reject XCAF access when no backend exists."""
+        del document_id, occurrence_id
+        raise self._unavailable_error()
+
+    def get_xcaf_product_metadata(
+        self,
+        document_id: CadDocumentId,
+        product_id: XcafProductId,
+    ) -> XcafProductMetadata:
+        """Reject XCAF access when no backend exists."""
+        del document_id, product_id
+        raise self._unavailable_error()
+
+    def get_xcaf_occurrence_metadata(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafOccurrenceMetadata:
+        """Reject XCAF access when no backend exists."""
+        del document_id, occurrence_id
+        raise self._unavailable_error()
+
+    def get_xcaf_absolute_transform(
+        self,
+        document_id: CadDocumentId,
+        occurrence_id: XcafOccurrenceId,
+    ) -> XcafTransform:
+        """Reject XCAF access when no backend exists."""
+        del document_id, occurrence_id
+        raise self._unavailable_error()
+
+    def get_xcaf_source_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: XcafOccurrenceId | XcafProductId,
+    ) -> XcafSourceAppearance:
+        """Reject XCAF access when no backend exists."""
+        del document_id, object_id
         raise self._unavailable_error()
 
     def _failed_import(self, path: str | Path, cad_format: CadFormat) -> CadImportResult:

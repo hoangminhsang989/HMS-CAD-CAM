@@ -11,10 +11,16 @@ from OCP.IFSelect import IFSelect_ReturnStatus
 from OCP.IGESControl import IGESControl_Reader
 from OCP.Poly import Poly_Triangulation
 from OCP.RWStl import RWStl
-from OCP.STEPControl import STEPControl_Reader
+from OCP.STEPCAFControl import STEPCAFControl_Reader
+from OCP.TCollection import TCollection_ExtendedString
+from OCP.TDF import TDF_LabelSequence
+from OCP.TDocStd import TDocStd_Document
 from OCP.TopoDS import TopoDS_Shape
+from OCP.XCAFApp import XCAFApp_Application
+from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
 from hms_cadcam.cad.exceptions import CadImportError
+from hms_cadcam.cad.ocp.xcaf import OcpXcafImportPayload
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,28 +42,39 @@ class OcpMeshImportPayload:
 class OcpImporter:
     """Validate and translate supported CAD files without mutating their source."""
 
-    def read_step(self, path: Path) -> OcpImportPayload:
-        """Read and transfer all roots from a STEP/STP file."""
+    def read_step(self, path: Path) -> OcpXcafImportPayload:
+        """Read STEP assemblies and parts into an owned XCAF document."""
         self._validate_source(path, "STEP")
-        reader = STEPControl_Reader()
+        XCAFApp_Application.GetApplication_s()
+        document = TDocStd_Document(TCollection_ExtendedString("BinXCAF"))
+        reader = STEPCAFControl_Reader()
+        reader.SetColorMode(True)
+        reader.SetNameMode(True)
+        reader.SetSHUOMode(True)
         status = reader.ReadFile(str(path))
         if status != IFSelect_ReturnStatus.IFSelect_RetDone:
             raise CadImportError(
                 f"Cannot read STEP file; ReadFile status={status.name}."
             )
-        roots = reader.NbRootsForTransfer()
-        if roots <= 0:
+        if reader.NbRootsForTransfer() <= 0:
             raise CadImportError("STEP file has no transferable roots")
-        transferred = reader.TransferRoots()
-        if transferred <= 0:
-            raise CadImportError("STEP reader did not transfer any roots")
-        shape = reader.OneShape()
+        if not reader.Transfer(document):
+            raise CadImportError("STEPCAF reader did not transfer the document")
+        shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(document.Main())
+        color_tool = XCAFDoc_DocumentTool.ColorTool_s(document.Main())
+        roots = TDF_LabelSequence()
+        shape_tool.GetFreeShapes(roots)
+        if roots.Length() <= 0:
+            raise CadImportError("STEPCAF document has no free shapes")
+        shape = shape_tool.GetOneShape()
         if shape.IsNull():
-            raise CadImportError("STEP reader returned a null shape")
-        warnings = ()
-        if transferred < roots:
-            warnings = (f"Transferred {transferred}/{roots} STEP roots",)
-        return OcpImportPayload(shape=shape, warnings=warnings)
+            raise CadImportError("STEPCAF reader returned a null aggregate shape")
+        return OcpXcafImportPayload(
+            document=document,
+            shape_tool=shape_tool,
+            color_tool=color_tool,
+            shape=shape,
+        )
 
     def read_brep(self, path: Path) -> OcpImportPayload:
         """Read one native Open CASCADE BREP file."""
