@@ -148,6 +148,17 @@ class DiagnosticCode(StrEnum):
     POCKET_SELF_INTERSECTION = "pocket.self_intersection"
     POCKET_INVALID_DEPTH = "pocket.invalid_depth"
     POCKET_UNIT_MISSING = "pocket.unit_missing"
+    POCKET_OFFSET_FAILED = "pocket.offset_failed"
+    POCKET_OFFSET_COLLAPSED = "pocket.offset_collapsed"
+    POCKET_INVALID_STEPOVER = "pocket.invalid_stepover"
+    POCKET_INVALID_STEPDOWN = "pocket.invalid_stepdown"
+    POCKET_ENTRY_UNSAFE = "pocket.entry_unsafe"
+    POCKET_TOOL_MISSING = "pocket.tool_missing"
+    POCKET_TOOL_STALE = "pocket.tool_stale"
+    POCKET_UNSUPPORTED_TOOL = "pocket.unsupported_tool"
+    POCKET_MACHINE_INCOMPATIBLE = "pocket.machine_incompatible"
+    POCKET_GENERATION_FAILED = "pocket.generation_failed"
+    POCKET_STALE_RESULT = "pocket.stale_result"
 
 
 @dataclass(frozen=True, slots=True)

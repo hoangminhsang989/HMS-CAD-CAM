@@ -35,10 +35,11 @@ from hms_cadcam.project.recovery import (
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
-from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult
+from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult, PocketComputeResult
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.domain import (
     GeometryReference, OperationId, ResolvedContourProfile, ResolvedMachiningGeometry,
+    ResolvedPocketGeometry,
 )
 from hms_cadcam.cam.application.contour import ContourComputeResult
 from hms_cadcam.cam.domain.operation import ComputationToken
@@ -368,6 +369,23 @@ class ProjectService:
         before = self._cam_application.snapshot
         result = self._cam_application.compute_contour(
             session.root_path, operation_id, profile_resolver=profile_resolver
+        )
+        session.cam_snapshot = self._cam_application.snapshot
+        if session.cam_snapshot != before:
+            session.is_dirty = True
+        return result
+
+    def compute_pocket(self, operation_id: OperationId,
+                       *, expected_generation: int | None = None,
+                       geometry_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+                       ) -> PocketComputeResult:
+        """Generate/publish one Pocket operation through the project lifecycle gateway."""
+        session = self._require_current()
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("CAM command belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        result = self._cam_application.compute_pocket(
+            session.root_path, operation_id, geometry_resolver=geometry_resolver
         )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:

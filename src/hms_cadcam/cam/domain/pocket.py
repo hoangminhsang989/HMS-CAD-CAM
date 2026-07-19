@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from hms_cadcam.cam.domain.contour import (
@@ -18,17 +19,18 @@ from hms_cadcam.cam.domain.geometry_reference import (
     GeometryRepresentationKind,
     GeometryResolutionStatus,
 )
-from hms_cadcam.cam.domain.operation import DiagnosticCode, ValidationDiagnostic
+from hms_cadcam.cam.domain.operation import DiagnosticCode, OperationParameterSet, ValidationDiagnostic
 from hms_cadcam.cam.domain.revision import ContentFingerprint, GeometryFingerprint
 from hms_cadcam.cam.domain.spatial import Point3, Vector3
-from hms_cadcam.cam.domain.units import Length, LengthUnit
+from hms_cadcam.cam.domain.units import FeedRate, FeedUnit, Length, LengthUnit, SpindleSpeed
 
-POCKET_STRATEGY_KEY = "pocket_geometry"
+POCKET_STRATEGY_KEY = "pocket_2_5d"
 POCKET_STRATEGY_VERSION = 1
 _DEPTH_FORMAT = "HMS_CAM_POCKET_DEPTH"
 _GEOMETRY_INPUT_FORMAT = "HMS_CAM_POCKET_GEOMETRY_INPUT"
 _STRATEGY_FORMAT = "HMS_CAM_POCKET_STRATEGY"
 _FORMAT_VERSION = 1
+_STRATEGY_FORMAT_VERSION = 2
 _TOLERANCE = 1.0e-8
 
 
@@ -38,6 +40,19 @@ class PocketValidationError(CamValidationError):
     def __init__(self, code: DiagnosticCode, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class PocketEntryPolicy(StrEnum):
+    """Entry policies implemented by Pocket core v1."""
+
+    VERTICAL_PLUNGE = "vertical_plunge"
+
+
+class PocketCuttingDirection(StrEnum):
+    """Cutter travel direction for a clockwise spindle viewed from +Z."""
+
+    CLIMB = "climb"
+    CONVENTIONAL = "conventional"
 
 
 def _known_unit(unit: LengthUnit) -> None:
@@ -266,56 +281,220 @@ class PocketRegion:
 
 @dataclass(frozen=True, slots=True)
 class PocketStrategy:
-    """Versioned Pocket geometry/depth aggregate without a clearing algorithm."""
+    """Versioned parameters for deterministic Pocket offset clearing v1."""
 
+    unit: LengthUnit
     geometry: PocketGeometryInput
     depth: PocketDepthDefinition
+    stepover: Length
+    stepdown: Length
+    radial_stock_allowance: Length
+    clearance_height: Length
+    retract_height: Length
+    cutting_feed_rate: FeedRate
+    plunge_feed_rate: FeedRate
+    spindle_speed: SpindleSpeed
+    entry_policy: PocketEntryPolicy = PocketEntryPolicy.VERTICAL_PLUNGE
+    cutting_direction: PocketCuttingDirection = PocketCuttingDirection.CLIMB
+    tolerance: Length | None = None
     strategy_version: int = POCKET_STRATEGY_VERSION
     schema_version: int = _FORMAT_VERSION
-    SERIALIZATION_VERSION: ClassVar[int] = _FORMAT_VERSION
+    SERIALIZATION_VERSION: ClassVar[int] = _STRATEGY_FORMAT_VERSION
 
     def __post_init__(self) -> None:
+        _known_unit(self.unit)
         if not isinstance(self.geometry, PocketGeometryInput) or not isinstance(
                 self.depth, PocketDepthDefinition):
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Pocket strategy geometry or depth is invalid")
-        if self.geometry.unit is not self.depth.unit:
+        if self.geometry.unit is not self.unit or self.depth.unit is not self.unit:
             raise PocketValidationError(DiagnosticCode.POCKET_UNIT_MISSING,
                                         "Pocket geometry and depth units must match")
+        _known_length(self.stepover, self.unit, "Pocket stepover")
+        if self.stepover.value <= 0.0:
+            raise PocketValidationError(DiagnosticCode.POCKET_INVALID_STEPOVER,
+                                        "Pocket stepover must be positive")
+        _known_length(self.stepdown, self.unit, "Pocket stepdown")
+        if self.stepdown.value <= 0.0:
+            raise PocketValidationError(DiagnosticCode.POCKET_INVALID_STEPDOWN,
+                                        "Pocket stepdown must be positive")
+        _known_length(self.radial_stock_allowance, self.unit, "Pocket radial stock allowance")
+        if self.radial_stock_allowance.value < 0.0:
+            raise PocketValidationError(DiagnosticCode.POCKET_OFFSET_FAILED,
+                                        "Pocket radial stock allowance must not be negative")
+        for value, name in ((self.clearance_height, "Pocket clearance height"),
+                            (self.retract_height, "Pocket retract height")):
+            _known_length(value, self.unit, name)
+        if (self.retract_height.value <= self.depth.top_z.value
+                or self.clearance_height.value < self.retract_height.value):
+            raise PocketValidationError(DiagnosticCode.POCKET_ENTRY_UNSAFE,
+                                        "Pocket retract must be above top Z and clearance at or above retract")
+        if not isinstance(self.entry_policy, PocketEntryPolicy) or not isinstance(
+                self.cutting_direction, PocketCuttingDirection):
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket entry policy or cutting direction is invalid")
+        tolerance = self.tolerance if self.tolerance is not None else Length(_TOLERANCE, self.unit)
+        _known_length(tolerance, self.unit, "Pocket tolerance")
+        if tolerance.value <= 0.0:
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket tolerance must be positive")
+        object.__setattr__(self, "tolerance", tolerance)
+        expected_feed = (FeedUnit.MM_PER_MINUTE if self.unit is LengthUnit.MM
+                         else FeedUnit.INCH_PER_MINUTE)
+        if (not isinstance(self.cutting_feed_rate, FeedRate)
+                or not isinstance(self.plunge_feed_rate, FeedRate)
+                or self.cutting_feed_rate.unit is not expected_feed
+                or self.plunge_feed_rate.unit is not expected_feed):
+            raise PocketValidationError(DiagnosticCode.POCKET_UNIT_MISSING,
+                                        "Pocket feeds must match the strategy length unit")
+        if not isinstance(self.spindle_speed, SpindleSpeed):
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket spindle speed is invalid")
         if (type(self.strategy_version) is not int or self.strategy_version != POCKET_STRATEGY_VERSION
                 or type(self.schema_version) is not int or self.schema_version != _FORMAT_VERSION):
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Unsupported Pocket strategy version")
 
     @property
+    def top_z(self) -> Length:
+        return self.depth.top_z
+
+    @property
+    def bottom_z(self) -> Length:
+        return self.depth.bottom_z
+
+    @property
+    def final_depth(self) -> Length:
+        return self.depth.final_bottom_z
+
+    @property
     def fingerprint(self) -> ContentFingerprint:
         return ContentFingerprint.from_payload(self.to_dict())
+
+    def to_operation_parameters(self) -> OperationParameterSet:
+        values = (
+            ("unit", self.unit.value),
+            ("top_z", self.top_z.value),
+            ("bottom_z", self.bottom_z.value),
+            ("axial_allowance", self.depth.allowance.value),
+            ("stepover", self.stepover.value),
+            ("stepdown", self.stepdown.value),
+            ("radial_stock_allowance", self.radial_stock_allowance.value),
+            ("clearance_height", self.clearance_height.value),
+            ("retract_height", self.retract_height.value),
+            ("cutting_feed_rate", self.cutting_feed_rate.value),
+            ("plunge_feed_rate", self.plunge_feed_rate.value),
+            ("spindle_speed", self.spindle_speed.value),
+            ("entry_policy", self.entry_policy.value),
+            ("cutting_direction", self.cutting_direction.value),
+            ("tolerance", self.tolerance.value),
+        )
+        return OperationParameterSet(POCKET_STRATEGY_KEY, POCKET_STRATEGY_VERSION, values)
+
+    @classmethod
+    def from_operation_parameters(
+        cls,
+        value: OperationParameterSet,
+        reference: GeometryReference,
+    ) -> "PocketStrategy":
+        if value.strategy_key != POCKET_STRATEGY_KEY:
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Operation is not a Pocket strategy")
+        data = dict(value.values)
+        fields = {"unit", "top_z", "bottom_z", "axial_allowance", "stepover", "stepdown",
+                  "radial_stock_allowance", "clearance_height", "retract_height",
+                  "cutting_feed_rate", "plunge_feed_rate", "spindle_speed", "entry_policy",
+                  "cutting_direction", "tolerance"}
+        if set(data) != fields:
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket operation parameters are malformed")
+        try:
+            unit = LengthUnit(data["unit"])
+            feed_unit = (FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM
+                         else FeedUnit.INCH_PER_MINUTE)
+            return cls(
+                unit,
+                PocketGeometryInput(reference, unit),
+                PocketDepthDefinition(unit, Length(data["top_z"], unit),
+                                      Length(data["bottom_z"], unit),
+                                      Length(data["axial_allowance"], unit)),
+                Length(data["stepover"], unit),
+                Length(data["stepdown"], unit),
+                Length(data["radial_stock_allowance"], unit),
+                Length(data["clearance_height"], unit),
+                Length(data["retract_height"], unit),
+                FeedRate(data["cutting_feed_rate"], feed_unit),
+                FeedRate(data["plunge_feed_rate"], feed_unit),
+                SpindleSpeed(data["spindle_speed"]),
+                PocketEntryPolicy(data["entry_policy"]),
+                PocketCuttingDirection(data["cutting_direction"]),
+                Length(data["tolerance"], unit),
+                value.strategy_version,
+                value.schema_version,
+            )
+        except PocketValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket operation parameters are invalid") from error
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "format": _STRATEGY_FORMAT,
-            "format_version": _FORMAT_VERSION,
+            "format_version": _STRATEGY_FORMAT_VERSION,
             "strategy_key": POCKET_STRATEGY_KEY,
             "strategy_version": self.strategy_version,
             "schema_version": self.schema_version,
             "geometry": self.geometry.to_dict(),
             "depth": self.depth.to_dict(),
+            "stepover": self.stepover.value,
+            "stepdown": self.stepdown.value,
+            "radial_stock_allowance": self.radial_stock_allowance.value,
+            "clearance_height": self.clearance_height.value,
+            "retract_height": self.retract_height.value,
+            "cutting_feed_rate": self.cutting_feed_rate.value,
+            "plunge_feed_rate": self.plunge_feed_rate.value,
+            "spindle_speed": self.spindle_speed.value,
+            "entry_policy": self.entry_policy.value,
+            "cutting_direction": self.cutting_direction.value,
+            "tolerance": self.tolerance.value,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PocketStrategy":
         fields = {"format", "format_version", "strategy_key", "strategy_version",
-                  "schema_version", "geometry", "depth"}
+                  "schema_version", "geometry", "depth", "stepover", "stepdown",
+                  "radial_stock_allowance", "clearance_height", "retract_height",
+                  "cutting_feed_rate", "plunge_feed_rate", "spindle_speed", "entry_policy",
+                  "cutting_direction", "tolerance"}
         if (not isinstance(data, dict) or set(data) != fields
                 or data.get("format") != _STRATEGY_FORMAT
                 or type(data.get("format_version")) is not int
-                or data["format_version"] != _FORMAT_VERSION
+                or data["format_version"] != _STRATEGY_FORMAT_VERSION
                 or data.get("strategy_key") != POCKET_STRATEGY_KEY):
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Pocket strategy payload is malformed")
-        return cls(PocketGeometryInput.from_dict(data["geometry"]),
-                   PocketDepthDefinition.from_dict(data["depth"]),
-                   data["strategy_version"], data["schema_version"])
+        geometry = PocketGeometryInput.from_dict(data["geometry"])
+        depth = PocketDepthDefinition.from_dict(data["depth"])
+        unit = geometry.unit
+        try:
+            feed_unit = (FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM
+                         else FeedUnit.INCH_PER_MINUTE)
+            return cls(
+                unit, geometry, depth, Length(data["stepover"], unit),
+                Length(data["stepdown"], unit), Length(data["radial_stock_allowance"], unit),
+                Length(data["clearance_height"], unit), Length(data["retract_height"], unit),
+                FeedRate(data["cutting_feed_rate"], feed_unit),
+                FeedRate(data["plunge_feed_rate"], feed_unit), SpindleSpeed(data["spindle_speed"]),
+                PocketEntryPolicy(data["entry_policy"]),
+                PocketCuttingDirection(data["cutting_direction"]), Length(data["tolerance"], unit),
+                data["strategy_version"], data["schema_version"],
+            )
+        except PocketValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket strategy payload is invalid") from error
 
 
 @dataclass(frozen=True, slots=True)

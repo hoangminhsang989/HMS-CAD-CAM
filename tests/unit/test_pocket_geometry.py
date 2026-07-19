@@ -33,18 +33,23 @@ from hms_cadcam.cam.domain import (
     GeometryReferenceKind,
     GeometryRepresentationKind,
     GeometryResolutionStatus,
+    FeedRate,
+    FeedUnit,
     Length,
     LengthUnit,
     OccurrenceTransformProvenance,
     PocketBoundary,
+    PocketCuttingDirection,
     PocketDepthDefinition,
     PocketGeometryInput,
+    PocketEntryPolicy,
     PocketStrategy,
     PocketValidationError,
     Point3,
     ProfileProvenance,
     ResolvedContourProfile,
     Revision,
+    SpindleSpeed,
     Vector3,
     HMS_GEOMETRY_REFERENCE_SCHEME,
     HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
@@ -115,6 +120,26 @@ def _resolve(descriptor: ContourProfileDescriptor, unit: LengthUnit | None = Non
     return resolver.resolve(PocketGeometryInput(descriptor.reference, unit or descriptor.unit))
 
 
+def _strategy(reference: GeometryReference) -> PocketStrategy:
+    unit = LengthUnit.MM
+    return PocketStrategy(
+        unit,
+        PocketGeometryInput(reference, unit),
+        PocketDepthDefinition(unit, Length(5, unit), Length(-2, unit), Length(0.25, unit)),
+        Length(4, unit),
+        Length(1, unit),
+        Length(0, unit),
+        Length(10, unit),
+        Length(7, unit),
+        FeedRate(500, FeedUnit.MM_PER_MINUTE),
+        FeedRate(100, FeedUnit.MM_PER_MINUTE),
+        SpindleSpeed(1000),
+        PocketEntryPolicy.VERTICAL_PLUNGE,
+        PocketCuttingDirection.CLIMB,
+        Length(1.0e-6, unit),
+    )
+
+
 def test_rectangle_boundary_and_strategy_codec_round_trip() -> None:
     reference = _reference()
     descriptor = _descriptor(_rectangle(), reference)
@@ -124,10 +149,11 @@ def test_rectangle_boundary_and_strategy_codec_round_trip() -> None:
     assert isinstance(result.region.boundary, PocketBoundary)
     assert len(result.region.boundary.outer_loop.segments) == 4
 
-    depth = PocketDepthDefinition(LengthUnit.MM, Length(5, LengthUnit.MM),
-                                  Length(-2, LengthUnit.MM), Length(0.25, LengthUnit.MM))
-    strategy = PocketStrategy(PocketGeometryInput(reference, LengthUnit.MM), depth)
+    strategy = _strategy(reference)
     assert PocketStrategy.from_dict(strategy.to_dict()) == strategy
+    assert PocketStrategy.from_operation_parameters(
+        strategy.to_operation_parameters(), reference) == strategy
+    depth = strategy.depth
     assert depth.depth == Length(7, LengthUnit.MM)
     assert depth.final_bottom_z == Length(-1.75, LengthUnit.MM)
 
@@ -231,7 +257,7 @@ def test_unit_mismatch_fails_closed() -> None:
     depth = PocketDepthDefinition(LengthUnit.INCH, Length(1, LengthUnit.INCH),
                                   Length(0, LengthUnit.INCH), Length(0, LengthUnit.INCH))
     with pytest.raises(PocketValidationError) as mismatch:
-        PocketStrategy(PocketGeometryInput(descriptor.reference, LengthUnit.MM), depth)
+        replace(_strategy(descriptor.reference), depth=depth)
     assert mismatch.value.code is DiagnosticCode.POCKET_UNIT_MISSING
 
 
@@ -293,10 +319,6 @@ def test_public_pocket_model_is_ocp_free_and_serializes_no_runtime_state() -> No
     values = (result, result.region, result.region.boundary,
               *result.region.boundary.outer_loop.segments)
     assert all(not type(value).__module__.startswith(("OCP", "PySide6")) for value in values)
-    strategy = PocketStrategy(
-        PocketGeometryInput(reference, LengthUnit.MM),
-        PocketDepthDefinition(LengthUnit.MM, Length(2, LengthUnit.MM),
-                              Length(0, LengthUnit.MM), Length(0, LengthUnit.MM)),
-    )
+    strategy = _strategy(reference)
     payload = json.dumps(strategy.to_dict(), sort_keys=True)
     assert all(marker not in payload for marker in ("CadDocumentId", "CadObjectId", "TopoDS", "OCP", "AIS"))

@@ -12,7 +12,7 @@ from hms_cadcam.cam.domain import (
     ContourParameters, DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
     FacingParameters, FixtureInstance, GeometryReference, Operation,
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
-    ResolvedContourProfile, ResolvedMachiningGeometry, SetupId, StockDefinition, ToolAssembly,
+    ResolvedContourProfile, ResolvedMachiningGeometry, ResolvedPocketGeometry, SetupId, StockDefinition, ToolAssembly,
     ToolDefinition, ValidationDiagnostic, WcsFrame, WorkOffset,
 )
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
@@ -27,6 +27,9 @@ from hms_cadcam.cam.application.facing import (
 )
 from hms_cadcam.cam.application.contour import (
     ContourComputeResult, ContourGenerationError, ContourGenerator,
+)
+from hms_cadcam.cam.application.pocket import (
+    PocketComputeResult, PocketGenerationError, PocketGenerator,
 )
 
 
@@ -470,6 +473,87 @@ class CamApplicationService:
                                  diagnostics=(*current.diagnostics, diagnostic))
                 self._snapshot = _replace_operation(self._snapshot, failed)
                 return ContourComputeResult(failed, None, False, (diagnostic,))
+
+    def compute_pocket(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        geometry_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+    ) -> PocketComputeResult:
+        """Synchronously compute/publish Pocket with the shared stale-token contract."""
+        with self._lock:
+            before_compute = _clone_snapshot(self._snapshot)
+            operation = _find_operation(self._snapshot, operation_id)
+            setup = next(setup for job in self._snapshot.jobs for setup in job.setups
+                         if setup.setup_id == operation.setup_id)
+            assembly = next((item for item in self._snapshot.tool_assemblies
+                             if item.assembly_id == operation.tool_assembly.assembly_id), None)
+            tool = None if assembly is None else next((item for item in self._snapshot.tool_definitions
+                                                       if item.tool_id == assembly.tool_id), None)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            machine = next((item for item in self._snapshot.machine_definitions
+                            if item.machine_id == machine_id), None)
+            generator = PocketGenerator()
+            try:
+                if len(operation.geometry_inputs) != 1 or geometry_resolver is None:
+                    raise PocketGenerationError(
+                        DiagnosticCode.POCKET_PROFILE_MISSING,
+                        "Pocket requires one resolvable persistent boundary reference.",
+                    )
+                try:
+                    resolved = geometry_resolver(operation.geometry_inputs[0].reference)
+                except (RuntimeError, TypeError, ValueError) as error:
+                    raise PocketGenerationError(
+                        DiagnosticCode.POCKET_PROFILE_INVALID,
+                        str(error) or "Pocket geometry resolution failed.",
+                    ) from error
+                inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
+                                                  machine=machine, resolved_geometry=resolved)
+                if operation.artifact_state.status is ArtifactStatus.VALID:
+                    operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
+                        DirtyReason.PARAMETERS_CHANGED))
+                    inputs = replace(inputs, operation=operation)
+                    self._snapshot = _replace_operation(self._snapshot, operation)
+                computing, token = generator.begin(inputs)
+                self._snapshot = _replace_operation(self._snapshot, computing.operation)
+                candidate = generator.generate(computing)
+                current = _find_operation(self._snapshot, operation_id)
+                publish = publish_toolpath(current, candidate, token, inputs.input_fingerprint)
+                if not publish.accepted or publish.artifact is None:
+                    self._snapshot = _replace_operation(self._snapshot, publish.operation)
+                    diagnostic = ValidationDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        DiagnosticCode.POCKET_STALE_RESULT,
+                        "Pocket result is stale and was not published.",
+                    )
+                    return PocketComputeResult(publish.operation, None, False, (diagnostic,))
+                metadata = self._artifact_store.publish(project_root, publish.artifact)
+                artifacts = tuple(item for item in self._snapshot.artifacts
+                                  if item.operation_id != operation_id)
+                staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
+                self._snapshot = _replace_operation(staged, publish.operation)
+                return PocketComputeResult(publish.operation, publish.artifact, True)
+            except (PocketGenerationError, ToolpathArtifactStoreError) as error:
+                diagnostic = (error.diagnostic if isinstance(error, PocketGenerationError) else
+                    ValidationDiagnostic(DiagnosticSeverity.ERROR,
+                                         DiagnosticCode.POCKET_GENERATION_FAILED,
+                                         "Pocket toolpath file could not be published safely."))
+                original = _find_operation(before_compute, operation_id)
+                if original.artifact_state.status is ArtifactStatus.VALID:
+                    self._snapshot = before_compute
+                    return PocketComputeResult(original, None, False, (diagnostic,))
+                current = _find_operation(self._snapshot, operation_id)
+                state = current.artifact_state
+                if state.status is ArtifactStatus.COMPUTING and state.token is not None:
+                    state, _ = state.fail(state.token, (diagnostic,))
+                else:
+                    state = replace(state, status=ArtifactStatus.FAILED, token=None,
+                                    diagnostics=(diagnostic,))
+                failed = replace(current, artifact_state=state,
+                                 diagnostics=(*current.diagnostics, diagnostic))
+                self._snapshot = _replace_operation(self._snapshot, failed)
+                return PocketComputeResult(failed, None, False, (diagnostic,))
 
     def _mutate_job(self, job_id: CamJobId, mutation: Callable[[CamJob], object]) -> CamProjectSnapshot:
         """Clone an aggregate first so failed validation cannot leak partial state."""
