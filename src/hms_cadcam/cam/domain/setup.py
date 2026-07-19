@@ -18,6 +18,8 @@ from hms_cadcam.cam.domain.errors import (
 )
 from hms_cadcam.cam.domain.geometry_reference import GeometryReference
 from hms_cadcam.cam.domain.ids import FixtureInstanceId, SetupId
+from hms_cadcam.cam.domain.operation_tree import OperationTree
+from hms_cadcam.cam.domain.revision import Revision
 from hms_cadcam.cam.domain.spatial import AffineTransform, WcsFrame, _strict_payload
 from hms_cadcam.cam.domain.units import Length, LengthUnit
 
@@ -27,6 +29,7 @@ _STOCK_FORMAT = "HMS_CAM_STOCK"
 _FIXTURE_FORMAT = "HMS_CAM_FIXTURE_INSTANCE"
 _SETUP_FORMAT = "HMS_CAM_SETUP"
 _VERSION = 1
+_SETUP_VERSION = 2
 _LOGICAL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
 
 
@@ -490,7 +493,9 @@ class Setup:
     source_scope: SourceScope
     fixtures: tuple[FixtureInstance, ...] = ()
     enabled: bool = True
-    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+    operation_tree: OperationTree | None = None
+    revision: Revision = Revision(0)
+    SERIALIZATION_VERSION: ClassVar[int] = _SETUP_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.setup_id, SetupId):
@@ -519,6 +524,12 @@ class Setup:
             raise DuplicateCamIdError("Fixture instance IDs must be unique in a setup")
         if type(self.enabled) is not bool:
             raise CamValidationError("Setup enabled must be boolean")
+        selected_tree = self.operation_tree or OperationTree.empty(self.setup_id)
+        if not isinstance(selected_tree, OperationTree) or selected_tree.setup_id != self.setup_id:
+            raise CamInvariantError("Operation tree must belong to this setup")
+        object.__setattr__(self, "operation_tree", selected_tree)
+        if not isinstance(self.revision, Revision):
+            raise CamValidationError("Setup revision is invalid")
         if any(
             fixture.transform.translation_unit is not self.wcs.origin.unit
             for fixture in self.fixtures
@@ -572,6 +583,14 @@ class Setup:
         fixtures = self.fixtures[:index] + self.fixtures[index + 1 :]
         return replace(self, fixtures=fixtures)
 
+    def with_operation_tree(self, operation_tree: OperationTree) -> "Setup":
+        """Replace the complete validated tree and increment setup revision once."""
+        if not isinstance(operation_tree, OperationTree) or operation_tree.setup_id != self.setup_id:
+            raise CamInvariantError("Operation tree must belong to this setup")
+        if operation_tree == self.operation_tree:
+            return self
+        return replace(self, operation_tree=operation_tree, revision=self.revision.next())
+
     def _fixture_index(self, fixture_id: FixtureInstanceId) -> int:
         if not isinstance(fixture_id, FixtureInstanceId):
             raise CamValidationError("Fixture ID is invalid")
@@ -584,7 +603,7 @@ class Setup:
         """Serialize this setup while preserving fixture order."""
         return {
             "format": _SETUP_FORMAT,
-            "format_version": _VERSION,
+            "format_version": _SETUP_VERSION,
             "setup_id": str(self.setup_id),
             "name": self.name,
             "kind": self.kind.value,
@@ -595,16 +614,21 @@ class Setup:
             "source_scope": self.source_scope.to_dict(),
             "fixtures": [fixture.to_dict() for fixture in self.fixtures],
             "enabled": self.enabled,
+            "operation_tree": self.operation_tree.to_dict(),
+            "revision": self.revision.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Setup":
         """Deserialize atomically into a fully validated setup."""
-        _strict_payload(
-            data,
-            format_name=_SETUP_FORMAT,
-            version=_VERSION,
-            fields={
+        if not isinstance(data, dict) or data.get("format") != _SETUP_FORMAT:
+            from hms_cadcam.cam.domain.errors import UnsupportedCamSchemaError
+            raise UnsupportedCamSchemaError("Unsupported setup format")
+        version = data.get("format_version")
+        if type(version) is not int or version not in {1, _SETUP_VERSION}:
+            from hms_cadcam.cam.domain.errors import UnsupportedCamSchemaError
+            raise UnsupportedCamSchemaError("Unsupported setup version")
+        base_fields = {
                 "setup_id",
                 "name",
                 "kind",
@@ -615,8 +639,10 @@ class Setup:
                 "source_scope",
                 "fixtures",
                 "enabled",
-            },
-        )
+            }
+        extra_fields = {"operation_tree", "revision"} if version == _SETUP_VERSION else set()
+        if set(data) != {"format", "format_version", *base_fields, *extra_fields}:
+            raise CamValidationError("Setup payload is malformed")
         fixtures = data["fixtures"]
         if not isinstance(fixtures, list):
             raise CamValidationError("Setup fixtures payload must be a list")
@@ -635,4 +661,6 @@ class Setup:
             source_scope=SourceScope.from_dict(data["source_scope"]),
             fixtures=tuple(FixtureInstance.from_dict(item) for item in fixtures),
             enabled=data["enabled"],
+            operation_tree=(OperationTree.from_dict(data["operation_tree"]) if version == _SETUP_VERSION else None),
+            revision=(Revision.from_dict(data["revision"]) if version == _SETUP_VERSION else Revision(0)),
         )

@@ -12,6 +12,7 @@ from hms_cadcam.cam.domain.errors import (
 )
 from hms_cadcam.cam.domain.ids import CamJobId, FixtureInstanceId, SetupId
 from hms_cadcam.cam.domain.revision import Revision
+from hms_cadcam.cam.domain.operation_tree import OperationTree
 from hms_cadcam.cam.domain.setup import (
     FixtureInstance,
     Setup,
@@ -167,6 +168,16 @@ class CamJob:
         """Remove one fixture instance from one setup."""
         self._replace_setup(
             self.get_setup(setup_id).with_fixture_removed(fixture_id)
+        )
+
+    def update_operation_tree(
+        self,
+        setup_id: SetupId,
+        operation_tree: OperationTree,
+    ) -> None:
+        """Atomically replace one setup tree and touch setup/job revisions once."""
+        self._replace_setup(
+            self.get_setup(setup_id).with_operation_tree(operation_tree)
         )
 
     def reorder_setup(self, setup_id: SetupId, new_index: int) -> None:

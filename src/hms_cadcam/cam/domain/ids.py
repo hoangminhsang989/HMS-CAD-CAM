@@ -81,6 +81,13 @@ class OperationId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class GeometryInputId(_CamUuidId):
+    """Identity of one ordered operation geometry input occurrence."""
+
+    PREFIX: ClassVar[str] = "geometry_input"
+
+
+@dataclass(frozen=True, slots=True)
 class ToolDefinitionId(_CamUuidId):
     """Identity of one tool definition."""
 
@@ -134,6 +141,7 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     SetupId,
     CamNodeId,
     OperationId,
+    GeometryInputId,
     ToolDefinitionId,
     HolderDefinitionId,
     ToolAssemblyId,
