@@ -35,7 +35,7 @@ from hms_cadcam.project.recovery import (
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
-from hms_cadcam.cam.application import CamApplicationService
+from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.domain import OperationId
 from hms_cadcam.cam.domain.operation import ComputationToken
@@ -336,6 +336,24 @@ class ProjectService:
         if result.accepted or session.cam_snapshot != session.persisted_cam_snapshot:
             session.is_dirty = True
         return result
+
+    def compute_facing(self, operation_id: OperationId,
+                       *, expected_generation: int | None = None) -> FacingComputeResult:
+        """Generate/publish one Facing operation through the project lifecycle gateway."""
+        session = self._require_current()
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("CAM command belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        result = self._cam_application.compute_facing(session.root_path, operation_id)
+        session.cam_snapshot = self._cam_application.snapshot
+        if session.cam_snapshot != before:
+            session.is_dirty = True
+        return result
+
+    def load_toolpath_artifact(self, operation_id: OperationId) -> ToolpathArtifact | None:
+        """Load one verified derived artifact for presentation; never expose its path."""
+        session = self._require_current()
+        return self._cam_application.load_artifact(session.root_path, operation_id)
 
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""

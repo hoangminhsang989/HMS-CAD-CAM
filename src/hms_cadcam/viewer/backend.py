@@ -6,6 +6,8 @@ from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from hms_cadcam.cad.models import CadDocumentId, CadObjectId
+from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.viewer.models import (
     DisplayMode,
     KeyboardModifier,
@@ -33,6 +35,12 @@ class CadViewportBackend(Protocol):
     def display_document(self, document_id: CadDocumentId) -> None: ...
 
     def clear(self) -> None: ...
+
+    def display_toolpath(self, artifact: ToolpathArtifact) -> None: ...
+
+    def clear_toolpaths(self) -> None: ...
+
+    def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None: ...
 
     def fit_all(self) -> None: ...
 

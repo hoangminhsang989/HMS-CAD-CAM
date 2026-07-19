@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import logging
 
+from OCP.AIS import AIS_Shape
+from OCP.BRep import BRep_Builder
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+from OCP.TopoDS import TopoDS_Compound
 from OCP.V3d import V3d_TypeOfOrientation
+from OCP.gp import gp_Pnt
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.models import (
@@ -15,6 +21,8 @@ from hms_cadcam.cad.models import (
     CadObjectId,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel
+from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.toolpath import ArcMove, LinearMove, MotionClass, RapidMove, ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -63,6 +71,7 @@ class OcpCadViewportBackend:
         self._view_direction = ViewDirection.ISOMETRIC
         self._pending_size = (0, 0)
         self._closed = False
+        self._toolpaths: dict[OperationId, tuple[AIS_Shape, ...]] = {}
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(
@@ -88,6 +97,7 @@ class OcpCadViewportBackend:
 
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
+        self.clear_toolpaths()
         old_document_id = self._document_id
         old_tree = self._tree
         old_presentation = self._lifecycle.presentation
@@ -199,6 +209,7 @@ class OcpCadViewportBackend:
         self.fit_all()
 
     def clear(self) -> None:
+        self.clear_toolpaths()
         if self._selection is not None:
             self._selection.clear_document()
         if self._input is not None:
@@ -208,6 +219,60 @@ class OcpCadViewportBackend:
         self._tree = None
         self._selected_object_ids = ()
         self._emit_selection(())
+
+    def display_toolpath(self, artifact: ToolpathArtifact) -> None:
+        """Render motion compounds separately from selectable CAD presentations."""
+        self._require_initialized()
+        self._remove_toolpath(artifact.source_operation_id)
+        context = self._lifecycle.context
+        groups = {MotionClass.NON_CUTTING: [], MotionClass.CUTTING: [],
+                  MotionClass.LINK: [], MotionClass.RETRACT: []}
+        for event in artifact.events:
+            if isinstance(event, (RapidMove, LinearMove, ArcMove)):
+                groups[event.motion_class].append((event.start.position, event.end.position))
+        colors = {MotionClass.NON_CUTTING: (0.2, 0.55, 1.0), MotionClass.CUTTING: (0.1, 0.9, 0.25),
+                  MotionClass.LINK: (1.0, 0.7, 0.1), MotionClass.RETRACT: (0.9, 0.25, 0.9)}
+        presentations = []
+        for motion_class, segments in groups.items():
+            if not segments:
+                continue
+            compound, builder = TopoDS_Compound(), BRep_Builder()
+            builder.MakeCompound(compound)
+            for start, end in segments:
+                edge = BRepBuilderAPI_MakeEdge(gp_Pnt(start.x, start.y, start.z),
+                                               gp_Pnt(end.x, end.y, end.z)).Edge()
+                builder.Add(compound, edge)
+            presentation = AIS_Shape(compound)
+            red, green, blue = colors[motion_class]
+            context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
+            context.Display(presentation, False)
+            presentations.append(presentation)
+        self._toolpaths[artifact.source_operation_id] = tuple(presentations)
+        context.UpdateCurrentViewer()
+
+    def clear_toolpaths(self) -> None:
+        if not self._toolpaths:
+            return
+        if not self._lifecycle.initialized:
+            self._toolpaths.clear()
+            return
+        context = self._lifecycle.context
+        for presentations in self._toolpaths.values():
+            for presentation in presentations:
+                context.Remove(presentation, False)
+        self._toolpaths.clear()
+        context.UpdateCurrentViewer()
+
+    def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None:
+        context = self._lifecycle.context
+        for presentation in self._toolpaths.get(operation_id, ()):
+            (context.Display if visible else context.Erase)(presentation, False)
+        context.UpdateCurrentViewer()
+
+    def _remove_toolpath(self, operation_id: OperationId) -> None:
+        context = self._lifecycle.context
+        for presentation in self._toolpaths.pop(operation_id, ()):
+            context.Remove(presentation, False)
 
     def fit_all(self) -> None:
         self._lifecycle.fit_all()
@@ -369,6 +434,7 @@ class OcpCadViewportBackend:
     def close(self) -> None:
         if self._closed:
             return
+        self.clear_toolpaths()
         self._closed = True
         if self._selection is not None:
             self._selection.clear_document()

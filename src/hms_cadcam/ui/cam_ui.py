@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, CamJobId, CamNodeId, ContentFingerprint,
+    DirtyReason, FacingBoundarySource, FacingCutDirection, FacingParameters,
+    FeedRate, FeedUnit,
     GeometryFingerprint, GeometryReference, GeometryReferenceId,
     GeometryReferenceKind, GeometryRepresentationKind, Length, LengthUnit,
     MachineRequirement, Operation, OperationCapability, OperationFamily,
     OperationId, OperationParameterSet, Point3,
     Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
-    ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
+    SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
 from hms_cadcam.project.models import ProjectSession, UnitSystem
@@ -42,12 +44,16 @@ class CamWorkspace(QWidget):
     def __init__(self, service: ProjectService,
                  source_provider: Callable[[], UUID | None],
                  pick_provider: Callable[[], GeometryReference] | None = None,
+                 toolpath_display: Callable[[object], object] | None = None,
+                 toolpath_clear: Callable[[], None] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
         self._source_provider = source_provider
         self._pick_provider = pick_provider
+        self._toolpath_display = toolpath_display
+        self._toolpath_clear = toolpath_clear
         self._picked_reference: GeometryReference | None = None
         self._generation: int | None = None
         self._guard = False
@@ -68,7 +74,8 @@ class CamWorkspace(QWidget):
         layout.addWidget(self.toolbar)
         layout.addWidget(splitter)
         self.actions = self._actions()
-        for key in ("job", "setup", "resources", "group", "operation", "pick", "clear_pick", "up", "down", "delete"):
+        for key in ("job", "setup", "resources", "group", "operation", "generate", "visibility",
+                    "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
 
@@ -77,7 +84,9 @@ class CamWorkspace(QWidget):
             "job": ("Tạo Job", self.create_job), "setup": ("Tạo Setup", self.create_setup),
             "resources": ("Tạo Tool/Machine cơ bản", self.create_basic_resources),
             "group": ("Thêm Group", self.add_group),
-            "operation": ("Thêm Operation chung", self.add_operation),
+            "operation": ("Thêm Facing 2.5D", self.add_operation),
+            "generate": ("Generate/Recompute", self.generate_selected),
+            "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
             "pick": ("Gắn hình học", self.pick_geometry),
             "clear_pick": ("Bỏ liên kết", self.clear_geometry_pick),
             "up": ("Lên", lambda: self.move_selected(-1)),
@@ -97,6 +106,8 @@ class CamWorkspace(QWidget):
         self._selected_key = None
         self._picked_reference = None
         self.editor.clear()
+        if self._toolpath_clear is not None:
+            self._toolpath_clear()
         if not isinstance(session, ProjectSession):
             self._generation = None
             self._render(None)
@@ -222,7 +233,16 @@ class CamWorkspace(QWidget):
                 setup.operation_tree.get_operation(node.operation_id)
                 if node.operation_id is not None else None
             )
-            self.editor.show_node(node.name, operation)
+            if operation is None:
+                self.editor.show_node(node.name, None)
+            else:
+                self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
+                                      self._service.cam_snapshot.machine_definitions)
+                artifact = self._service.load_toolpath_artifact(operation.operation_id)
+                if artifact is not None and self._toolpath_display is not None:
+                    if self._toolpath_clear is not None:
+                        self._toolpath_clear()
+                    self._toolpath_display(artifact)
         else:
             self.editor.clear()
 
@@ -303,12 +323,49 @@ class CamWorkspace(QWidget):
         machine_requirement = None if machine is None else MachineRequirement(
             machine.machine_id, machine.revision, ContentFingerprint.from_payload(machine.to_dict()),
             machine.unit, (OperationCapability.MILLING,))
-        operation = Operation(operation_id, node_id, OperationFamily.CUSTOM, setup_id,
-                              tool_reference, (), OperationParameterSet("generic.placeholder", 1), machine_requirement)
+        setup = next(value for job in snapshot.jobs for value in job.setups if value.setup_id == setup_id)
+        parameters = _default_facing_parameters(setup)
+        operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup_id,
+                              tool_reference, (), parameters.to_operation_parameters(), machine_requirement)
         changed = self._execute(lambda app: app.update_tree(job_id, setup_id,
-            lambda value: value.add_operation(parent_id, "Operation chung", operation)))
+            lambda value: value.add_operation(parent_id, "Facing 2.5D", operation)))
         if changed:
             self.refresh(("operation", str(node_id)))
+
+    def generate_selected(self) -> None:
+        item = self.tree.currentItem()
+        if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
+            self._error("Hãy chọn một operation Facing trước khi Generate.")
+            return
+        setup = self._find_setup(item, self._find_job(item))
+        node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
+        operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
+        if operation is None or operation.strategy_key != "facing_2_5d":
+            self._error("Operation đã chọn không phải Facing 2.5D.")
+            return
+        result = self._service.compute_facing(operation.operation_id,
+                                              expected_generation=self._generation)
+        if result.accepted and result.artifact is not None:
+            if self._toolpath_display is not None:
+                self._toolpath_display(result.artifact)
+            self.message.emit("Facing 2.5D đã Generate và publish artifact hợp lệ.")
+            self.editor.set_error("")
+        else:
+            self._error(result.diagnostics[0].message if result.diagnostics else "Facing generation thất bại.")
+        self.refresh(self._selected_key)
+
+    def toggle_toolpath_visibility(self) -> None:
+        item = self.tree.currentItem()
+        if item is None or item.data(0, _KIND_ROLE) != "operation":
+            return
+        setup = self._find_setup(item, self._find_job(item))
+        node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
+        operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
+        if operation is not None and hasattr(self._toolpath_display, "__self__"):
+            viewport = self._toolpath_display.__self__
+            visible = not bool(getattr(self, "_toolpath_visible", True))
+            viewport.set_toolpath_visibility(operation.operation_id, visible)
+            self._toolpath_visible = visible
 
     def move_selected(self, delta: int) -> None:
         item = self.tree.currentItem()
@@ -390,7 +447,33 @@ class CamWorkspace(QWidget):
                 result = self._execute(lambda app: app.replace_setup(job.job_id, changed))
             elif kind in {"group", "operation"} and job and setup:
                 node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
-                tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
+                node = setup.operation_tree.get_node(node_id)
+                current = setup.operation_tree.get_operation(node.operation_id) if node.operation_id else None
+                if current is not None and current.strategy_key == "facing_2_5d":
+                    unit = setup.wcs.origin.unit
+                    feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+                    parameters = FacingParameters(unit, FacingBoundarySource(str(values["boundary_source"])),
+                        Length(float(values["top"]), unit), Length(float(values["target"]), unit),
+                        Length(float(values["stepdown"]), unit), Length(float(values["stepover"]), unit),
+                        Length(float(values["allowance"]), unit), Length(float(values["clearance"]), unit),
+                        Length(float(values["retract"]), unit), FeedRate(float(values["feed"]), feed_unit),
+                        FeedRate(float(values["plunge"]), feed_unit), SpindleSpeed(float(values["spindle"])),
+                        FacingCutDirection(str(values["direction"])), float(values["angle"]),
+                        Length(float(values["overtravel"]), unit))
+                    snapshot = self._service.cam_snapshot
+                    assembly = next(value for value in snapshot.tool_assemblies
+                                    if str(value.assembly_id) == values["tool_id"])
+                    machine = next(value for value in snapshot.machine_definitions
+                                   if str(value.machine_id) == values["machine_id"])
+                    requirement = MachineRequirement(machine.machine_id, machine.revision,
+                        machine.content_fingerprint, machine.unit, (OperationCapability.MILLING,))
+                    changed_operation = replace(current, parameters=parameters.to_operation_parameters(),
+                        tool_assembly=ToolAssemblyReference.from_assembly(assembly), machine_requirement=requirement,
+                        enabled=bool(values["enabled"]), revision=current.revision.next(),
+                        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED))
+                    tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
+                else:
+                    tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
                 result = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
             else:
                 result = None
@@ -454,6 +537,12 @@ class _CamPropertiesEditor(QWidget):
         super().__init__()
         self._commit = commit
         self._fields = {key: QLineEdit() for key in ("name", "offset", "x", "y", "z", "a", "b", "c")}
+        self._facing_fields = {key: QLineEdit() for key in (
+            "top", "target", "stepdown", "stepover", "allowance", "clearance", "retract",
+            "feed", "plunge", "spindle", "angle", "overtravel")}
+        self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
+        self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
+        self.tool = QComboBox(); self.machine = QComboBox()
         self.setup_kind = QComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
         self.stock_kind = QComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
         self.enabled = QCheckBox("Được bật")
@@ -464,11 +553,19 @@ class _CamPropertiesEditor(QWidget):
             form.addRow(label, self._fields[key])
         form.addRow("Loại Setup", self.setup_kind); form.addRow("Loại Stock", self.stock_kind)
         form.addRow("Kích thước A", self._fields["a"]); form.addRow("Kích thước B", self._fields["b"]); form.addRow("Kích thước C", self._fields["c"])
+        form.addRow("Nguồn Facing", self.boundary_source); form.addRow("Tool Assembly", self.tool); form.addRow("Máy", self.machine)
+        for label, key in (("Top Z", "top"), ("Target Z", "target"), ("Stepdown", "stepdown"),
+                           ("Stepover", "stepover"), ("Allowance", "allowance"), ("Clearance Z", "clearance"),
+                           ("Retract Z", "retract"), ("Feed", "feed"), ("Plunge feed", "plunge"),
+                           ("Spindle RPM", "spindle"), ("Raster angle", "angle"), ("Overtravel", "overtravel")):
+            form.addRow(label, self._facing_fields[key])
+        form.addRow("Hướng cắt", self.direction)
         form.addRow("Trạng thái", self.status); form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
 
     def clear(self) -> None:
         for field in self._fields.values(): field.clear()
+        for field in self._facing_fields.values(): field.clear()
         self.status.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -488,9 +585,26 @@ class _CamPropertiesEditor(QWidget):
         else:
             self.status.setText(f"UNSUPPORTED — stock {setup.stock.kind.value}")
 
-    def show_node(self, name: str, operation: Operation | None) -> None:
+    def show_node(self, name: str, operation: Operation | None, assemblies=(), machines=()) -> None:
         self.clear(); self._fields["name"].setText(name); self.enabled.setChecked(True if operation is None else operation.enabled)
         self.status.setText("GROUP" if operation is None else operation.artifact_state.status.value.upper())
+        self.tool.clear(); self.machine.clear()
+        for value in assemblies: self.tool.addItem(value.name, str(value.assembly_id))
+        for value in machines: self.machine.addItem(value.name, str(value.machine_id))
+        if operation is not None and operation.strategy_key == "facing_2_5d":
+            parameters = FacingParameters.from_operation_parameters(operation.parameters)
+            values = {"top": parameters.top_height.value, "target": parameters.target_height.value,
+                      "stepdown": parameters.stepdown.value, "stepover": parameters.stepover.value,
+                      "allowance": parameters.stock_allowance.value, "clearance": parameters.clearance_height.value,
+                      "retract": parameters.retract_height.value, "feed": parameters.feed_rate.value,
+                      "plunge": parameters.plunge_feed_rate.value, "spindle": parameters.spindle_speed.value,
+                      "angle": parameters.raster_angle_degrees, "overtravel": parameters.overtravel.value}
+            for key, value in values.items(): self._facing_fields[key].setText(str(value))
+            self.boundary_source.setCurrentText(parameters.boundary_source.value)
+            self.direction.setCurrentText(parameters.direction.value)
+            self.tool.setCurrentIndex(max(0, self.tool.findData(str(operation.tool_assembly.assembly_id))))
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(max(0, self.machine.findData(str(operation.machine_requirement.machine_id))))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -504,8 +618,11 @@ class _CamPropertiesEditor(QWidget):
 
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
+                      **{key: field.text() for key, field in self._facing_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
-                      "enabled": self.enabled.isChecked()})
+                      "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
+                      "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
+                      "machine_id": self.machine.currentData()})
 
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:
@@ -519,6 +636,20 @@ def _default_setup(source_id: UUID, unit: LengthUnit, number: int) -> Setup:
         GeometryRepresentationKind.BREP, GeometryFingerprint.from_payload({"source_id": str(source_id)}), Revision(0))
     return Setup(SetupId.new(), f"Setup {number}", SetupKind.MILL, wcs, WorkOffset("G54", 1),
                  BoxStock(Length(100, unit), Length(100, unit), Length(50, unit), wcs), reference, SourceScope(source_id))
+
+
+def _default_facing_parameters(setup: Setup) -> FacingParameters:
+    if not isinstance(setup.stock, BoxStock):
+        raise ValueError("Facing mặc định yêu cầu Stock BOX.")
+    unit = setup.wcs.origin.unit
+    feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+    top = setup.stock.size_z.value
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    return FacingParameters(unit, FacingBoundarySource.STOCK_BOX, Length(top, unit),
+        Length(top - scale, unit), Length(scale, unit), Length(5 * scale, unit), Length(0, unit),
+        Length(top + 5 * scale, unit), Length(top + 2 * scale, unit),
+        FeedRate(500 * scale, feed_unit), FeedRate(100 * scale, feed_unit), SpindleSpeed(1000),
+        FacingCutDirection.BIDIRECTIONAL, 0.0, Length(scale, unit))
 
 
 def _active_job(snapshot):

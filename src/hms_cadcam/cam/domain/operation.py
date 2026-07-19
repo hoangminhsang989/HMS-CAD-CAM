@@ -98,6 +98,19 @@ class DiagnosticCode(StrEnum):
     ARTIFACT_MISSING = "artifact_missing"
     ARTIFACT_CORRUPT = "artifact_corrupt"
     COMPUTATION_INTERRUPTED = "computation_interrupted"
+    FACING_INVALID_PARAMETERS = "facing.invalid_parameters"
+    FACING_UNSUPPORTED_STOCK = "facing.unsupported_stock"
+    FACING_NON_PLANAR_FACE = "facing.non_planar_face"
+    FACING_AXIS_MISMATCH = "facing.axis_mismatch"
+    FACING_GEOMETRY_UNRESOLVED = "facing.geometry_unresolved"
+    FACING_GEOMETRY_STALE = "facing.geometry_stale"
+    FACING_TOOL_MISSING = "facing.tool_missing"
+    FACING_TOOL_STALE = "facing.tool_stale"
+    FACING_UNSUPPORTED_TOOL = "facing.unsupported_tool"
+    FACING_MACHINE_INCOMPATIBLE = "facing.machine_incompatible"
+    FACING_UNSAFE_CLEARANCE = "facing.unsafe_clearance"
+    FACING_GENERATION_FAILED = "facing.generation_failed"
+    FACING_STALE_RESULT = "facing.stale_result"
 
 
 @dataclass(frozen=True, slots=True)

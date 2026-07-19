@@ -21,6 +21,9 @@ from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.cam.toolpath.validation import ToolpathPublishResult, publish_toolpath
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
+from hms_cadcam.cam.application.facing import (
+    FacingComputeResult, FacingGenerationError, FacingGenerator,
+)
 
 
 class CamApplicationService:
@@ -266,6 +269,18 @@ class CamApplicationService:
             self._snapshot = _replace_operation(staged, result.operation)
             return result
 
+    def load_artifact(self, project_root: Path, operation_id: OperationId) -> ToolpathArtifact | None:
+        """Load one verified published artifact for a read-only consumer."""
+        with self._lock:
+            metadata = next((item for item in self._snapshot.artifacts
+                             if item.operation_id == operation_id), None)
+            if metadata is None:
+                return None
+            try:
+                return self._artifact_store.load(project_root, metadata)
+            except ToolpathArtifactStoreError:
+                return None
+
     def invalidate_operation(self, operation_id: OperationId,
                              reason: DirtyReason) -> CamProjectSnapshot:
         with self._lock:
@@ -273,6 +288,61 @@ class CamApplicationService:
             changed = replace(operation, artifact_state=operation.artifact_state.mark_dirty(reason))
             self._snapshot = _replace_operation(self._snapshot, changed)
             return _clone_snapshot(self._snapshot)
+
+    def compute_facing(self, project_root: Path, operation_id: OperationId) -> FacingComputeResult:
+        """Synchronously compute and publish Facing while retaining stale-token contracts."""
+        with self._lock:
+            operation = _find_operation(self._snapshot, operation_id)
+            setup = next(setup for job in self._snapshot.jobs for setup in job.setups
+                         if setup.setup_id == operation.setup_id)
+            assembly = next((item for item in self._snapshot.tool_assemblies
+                             if item.assembly_id == operation.tool_assembly.assembly_id), None)
+            tool = None if assembly is None else next((item for item in self._snapshot.tool_definitions
+                                                       if item.tool_id == assembly.tool_id), None)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            machine = next((item for item in self._snapshot.machine_definitions
+                            if item.machine_id == machine_id), None)
+            generator = FacingGenerator()
+            try:
+                if operation.artifact_state.status is ArtifactStatus.VALID:
+                    operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
+                        DirtyReason.PARAMETERS_CHANGED))
+                    self._snapshot = _replace_operation(self._snapshot, operation)
+                inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
+                                                  machine=machine)
+                computing, token = generator.begin(inputs)
+                self._snapshot = _replace_operation(self._snapshot, computing.operation)
+                candidate = generator.generate(computing)
+                current = _find_operation(self._snapshot, operation_id)
+                publish = publish_toolpath(current, candidate, token, inputs.input_fingerprint)
+                if not publish.accepted or publish.artifact is None:
+                    self._snapshot = _replace_operation(self._snapshot, publish.operation)
+                    diagnostic = ValidationDiagnostic(DiagnosticSeverity.ERROR,
+                        DiagnosticCode.FACING_STALE_RESULT, "Kết quả Facing đã stale và không được publish.")
+                    return FacingComputeResult(publish.operation, None, False, (diagnostic,))
+                metadata = self._artifact_store.publish(project_root, publish.artifact)
+                artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
+                staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
+                self._snapshot = _replace_operation(staged, publish.operation)
+                return FacingComputeResult(publish.operation, publish.artifact, True)
+            except (FacingGenerationError, ToolpathArtifactStoreError) as error:
+                if isinstance(error, FacingGenerationError):
+                    diagnostic = error.diagnostic
+                else:
+                    diagnostic = ValidationDiagnostic(DiagnosticSeverity.ERROR,
+                        DiagnosticCode.FACING_GENERATION_FAILED,
+                        "Không thể publish file toolpath Facing an toàn.")
+                current = _find_operation(self._snapshot, operation_id)
+                state = current.artifact_state
+                if state.status is ArtifactStatus.COMPUTING and state.token is not None:
+                    state, _ = state.fail(state.token, (diagnostic,))
+                else:
+                    state = replace(state, status=ArtifactStatus.FAILED, token=None,
+                                    diagnostics=(diagnostic,))
+                failed = replace(current, artifact_state=state,
+                                 diagnostics=(*current.diagnostics, diagnostic))
+                self._snapshot = _replace_operation(self._snapshot, failed)
+                return FacingComputeResult(failed, None, False, (diagnostic,))
 
     def _mutate_job(self, job_id: CamJobId, mutation: Callable[[CamJob], object]) -> CamProjectSnapshot:
         """Clone an aggregate first so failed validation cannot leak partial state."""

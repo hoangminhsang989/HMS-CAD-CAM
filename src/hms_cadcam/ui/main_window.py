@@ -122,6 +122,8 @@ class MainWindow(QMainWindow):
             project_service,
             lambda: self.cad_controller.active_source_id,
             self._current_geometry_reference,
+            self.viewport.display_toolpath,
+            self.viewport.clear_toolpaths,
             self,
         )
         self.cam_workspace.message.connect(self._append_output)

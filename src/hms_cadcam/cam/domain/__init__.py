@@ -24,6 +24,16 @@ from hms_cadcam.cam.domain.geometry_reference import (
     GeometryResolutionStatus,
     assess_geometry_resolution,
 )
+from hms_cadcam.cam.domain.facing import (
+    FACING_STRATEGY_KEY,
+    FACING_STRATEGY_VERSION,
+    FacingBoundarySource,
+    FacingCutDirection,
+    FacingParameters,
+    FacingRegion,
+    PlanarFaceDescriptor,
+    ResolvedMachiningGeometry,
+)
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
     KinematicChain,
@@ -191,6 +201,12 @@ __all__ = [
     "FixtureInstance",
     "FixtureInstanceId",
     "FixtureRole",
+    "FACING_STRATEGY_KEY",
+    "FACING_STRATEGY_VERSION",
+    "FacingBoundarySource",
+    "FacingCutDirection",
+    "FacingParameters",
+    "FacingRegion",
     "GeometryFingerprint",
     "GeometryInputId",
     "GeometryInputRole",
@@ -233,6 +249,8 @@ __all__ = [
     "OperationTree",
     "OperationCapability",
     "Point3",
+    "PlanarFaceDescriptor",
+    "ResolvedMachiningGeometry",
     "Revision",
     "Setup",
     "SetupId",

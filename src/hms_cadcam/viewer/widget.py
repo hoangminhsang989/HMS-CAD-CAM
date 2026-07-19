@@ -18,6 +18,8 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.models import CadDocumentId, CadObjectId
+from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.factory import CadViewportBackendFactory
 from hms_cadcam.viewer.models import (
@@ -114,6 +116,23 @@ class CadViewportWidget(QWidget):
         self._selection_document_id = None
         if not self._invoke("clear", self._backend.clear, clear_error=True):
             self._selection_document_id = previous_document_id
+
+    def display_toolpath(self, artifact: ToolpathArtifact) -> bool:
+        """Display derived CAM geometry without entering CAD selection state."""
+        self.initialize_viewport()
+        callback = getattr(self._backend, "display_toolpath", None)
+        return bool(self._initialized and callable(callback) and self._invoke(
+            "display toolpath", callback, artifact, clear_error=True))
+
+    def clear_toolpaths(self) -> None:
+        callback = getattr(self._backend, "clear_toolpaths", None)
+        if callable(callback):
+            self._invoke("clear toolpaths", callback, clear_error=True)
+
+    def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> bool:
+        callback = getattr(self._backend, "set_toolpath_visibility", None)
+        return bool(callable(callback) and self._invoke("toolpath visibility", callback,
+                                                        operation_id, visible, clear_error=True))
 
     def fit_all(self) -> None:
         """Fit the displayed document into the current widget."""

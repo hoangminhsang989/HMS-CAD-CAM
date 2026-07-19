@@ -265,6 +265,22 @@ class OperationTree:
             operations = tuple(item.with_enabled(enabled) if item.operation_id == node.operation_id else item for item in operations)
         return self._replace(operations=operations, updates={node_id: replace(node, enabled=enabled, revision=node.revision.next())})
 
+    def replace_operation(self, operation: Operation) -> "OperationTree":
+        """Replace one complete operation snapshot without changing its tree identity."""
+        if not isinstance(operation, Operation) or operation.setup_id != self.setup_id:
+            raise CamValidationError("Replacement operation is invalid for this setup")
+        current = self.get_operation(operation.operation_id)
+        if current.node_id != operation.node_id:
+            raise CamInvariantError("Replacement operation cannot change its node identity")
+        if current == operation:
+            return self
+        node = self.get_node(operation.node_id)
+        operations = tuple(operation if item.operation_id == operation.operation_id else item
+                           for item in self.operations)
+        return self._replace(operations=operations,
+            updates={node.node_id: replace(node, enabled=operation.enabled,
+                                           revision=node.revision.next())})
+
     def move_node(self, node_id: CamNodeId, new_parent_id: CamNodeId, new_index: int | None = None) -> "OperationTree":
         if node_id == self.root_id:
             raise CamInvariantError("Operation tree root cannot be moved")

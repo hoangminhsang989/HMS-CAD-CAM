@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from hms_cadcam.cad.models import CadDocumentId, CadObjectId
+from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -47,6 +49,15 @@ class UnavailableCadViewportBackend:
     def clear(self) -> None:
         if not self._closed:
             self._selection_callback(())
+
+    def display_toolpath(self, artifact: ToolpathArtifact) -> None:
+        del artifact
+
+    def clear_toolpaths(self) -> None:
+        return None
+
+    def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None:
+        del operation_id, visible
 
     def fit_all(self) -> None:
         return None
