@@ -1,6 +1,7 @@
 """Unit and failure tests for atomic HMS autosave snapshots."""
 
 import json
+import sqlite3
 import threading
 from dataclasses import replace
 from datetime import timedelta
@@ -8,7 +9,14 @@ from uuid import uuid4
 
 import pytest
 
+from hms_cadcam.cad.models import CadGeometryKind
+from hms_cadcam.cad.persistent_keys import (
+    PersistentCadObjectKey,
+    TopologyPath,
+    TopologyPathVersion,
+)
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveMetadata
+from hms_cadcam.project.cad_state import CadViewState, PersistentObjectAppearance
 from hms_cadcam.project.constants import (
     AUTOSAVE_LATEST_FILENAME,
     AUTOSAVE_METADATA_FILENAME,
@@ -25,6 +33,7 @@ from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.models import utc_now
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.viewer.models import ObjectAppearance
 
 
 def _manager() -> AutosaveManager:
@@ -98,6 +107,72 @@ def test_latest_snapshot_validates_checksums(tmp_path) -> None:
     (snapshot.path / DATABASE_FILENAME).write_bytes(b"tampered")
     with pytest.raises(AutosaveSnapshotError):
         manager.load_latest(session.root_path)
+
+
+def test_autosave_database_contains_pending_cad_state_without_cleaning_main(tmp_path) -> None:
+    source = tmp_path / "autosave.brep"
+    source.write_bytes(b"autosave CAD source")
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Autosave CAD", source)
+    source_id = session.manifest.source_files[0].source_id
+    key = PersistentCadObjectKey(
+        source_id,
+        CadGeometryKind.BREP,
+        TopologyPathVersion.V1,
+        TopologyPath("solid:" + "d" * 32),
+    )
+    service.stage_cad_view_state(
+        CadViewState(
+            source_id,
+            object_appearances=(
+                PersistentObjectAppearance(key, ObjectAppearance(visible=False)),
+            ),
+        )
+    )
+
+    snapshot = service.autosave()
+
+    assert snapshot is not None
+    assert session.is_dirty
+    with sqlite3.connect(snapshot.path / DATABASE_FILENAME) as connection:
+        assert connection.execute(
+            "SELECT visible FROM cad_object_appearance"
+        ).fetchone()[0] == 0
+    with sqlite3.connect(session.root_path / DATABASE_FILENAME) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cad_object_appearance"
+        ).fetchone()[0] == 0
+
+
+def test_autosave_failure_preserves_pending_cad_state(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "autosave-failure.brep"
+    source.write_bytes(b"autosave failure CAD source")
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Autosave Failure", source)
+    source_id = session.manifest.source_files[0].source_id
+    key = PersistentCadObjectKey(
+        source_id,
+        CadGeometryKind.BREP,
+        TopologyPathVersion.V1,
+        TopologyPath("solid:" + "9" * 32),
+    )
+    state = CadViewState(
+        source_id,
+        object_appearances=(
+            PersistentObjectAppearance(key, ObjectAppearance(visible=False)),
+        ),
+    )
+    service.stage_cad_view_state(state)
+
+    def fail_snapshot_state(*_args, **_kwargs):
+        raise ProjectDatabaseError("simulated pending-state snapshot failure")
+
+    monkeypatch.setattr(service._autosave._cad_state_store, "replace_all", fail_snapshot_state)
+    with pytest.raises(ProjectDatabaseError, match="simulated"):
+        service.autosave()
+
+    assert session.is_dirty
+    assert service.cad_view_state(source_id) == state
 
 
 def test_new_complete_snapshot_atomically_becomes_latest(tmp_path) -> None:

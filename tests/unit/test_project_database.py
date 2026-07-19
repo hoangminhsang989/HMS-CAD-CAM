@@ -1,4 +1,4 @@
-"""Unit tests for SQLite schema version 1."""
+"""Unit tests for versioned SQLite project schemas."""
 
 import sqlite3
 
@@ -15,14 +15,42 @@ def test_database_initialization_is_idempotent_and_has_no_cam_tables(tmp_path) -
     database.open_and_migrate(path)
     database.validate(path)
 
-    assert database.current_schema_version(path) == 1
+    assert database.current_schema_version(path) == 2
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-    assert tables == {"schema_migrations"}
+    assert tables == {
+        "schema_migrations",
+        "cad_view_state",
+        "cad_object_appearance",
+    }
+
+
+def test_database_migrates_schema_v1_to_v2_transactionally(tmp_path) -> None:
+    path = tmp_path / "legacy-v1.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO schema_migrations VALUES (1, 'legacy')")
+        connection.execute("PRAGMA user_version = 1")
+
+    database = ProjectDatabase()
+    database.open_and_migrate(path)
+
+    assert database.current_schema_version(path) == 2
+    with sqlite3.connect(path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert {"cad_view_state", "cad_object_appearance"}.issubset(tables)
 
 
 def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:

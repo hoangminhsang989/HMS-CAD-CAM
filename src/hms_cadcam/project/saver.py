@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from hms_cadcam.project.constants import DATABASE_FILENAME, SOURCE_DIRECTORY
 from hms_cadcam.project.database import ProjectDatabase
+from hms_cadcam.project.cad_state_store import CadViewStateStore
 from hms_cadcam.project.filesystem import (
     copy_source_verified,
     create_runtime_directories,
@@ -30,18 +31,28 @@ class ProjectSaver:
         manifest_store: ProjectManifestStore,
         validator: ProjectValidator,
         database: ProjectDatabase,
+        cad_state_store: CadViewStateStore,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
         self._database = database
+        self._cad_state_store = cad_state_store
 
     def save(self, session: ProjectSession) -> ProjectSession:
         """Validate and atomically save the current manifest."""
         manifest = session.manifest.with_modified_time()
         self._validator.validate_manifest(manifest)
-        self._database.validate(session.root_path / DATABASE_FILENAME)
-        self._manifest_store.save(session.root_path, manifest)
+        database_path = session.root_path / DATABASE_FILENAME
+        self._database.validate(database_path)
+        with self._cad_state_store.transaction(database_path) as connection:
+            self._cad_state_store.replace_all(
+                connection,
+                session.cad_view_states.values(),
+                (record.source_id for record in manifest.source_files),
+            )
+            self._manifest_store.save(session.root_path, manifest)
         session.manifest = manifest
+        session.persisted_cad_view_states = dict(session.cad_view_states)
         session.is_dirty = False
         return session
 
@@ -70,7 +81,9 @@ class ProjectSaver:
             remove_imported_source(session.root_path, record.stored_path)
             raise
         session.manifest = manifest
-        session.is_dirty = False
+        session.is_dirty = (
+            session.cad_view_states != session.persisted_cad_view_states
+        )
         return session
 
     def save_as(
@@ -97,7 +110,7 @@ class ProjectSaver:
                 size, digest = copy_source_verified(source, destination)
                 records.append(
                     SourceFileRecord(
-                        source_id=uuid4(),
+                        source_id=old_record.source_id,
                         original_name=old_record.original_name,
                         stored_path=f"{SOURCE_DIRECTORY}/{destination.name}",
                         size_bytes=size,
@@ -119,8 +132,22 @@ class ProjectSaver:
                 session.root_path / DATABASE_FILENAME,
                 staging / DATABASE_FILENAME,
             )
+            with self._cad_state_store.transaction(
+                staging / DATABASE_FILENAME
+            ) as connection:
+                self._cad_state_store.replace_all(
+                    connection,
+                    session.cad_view_states.values(),
+                    (record.source_id for record in records),
+                )
             self._manifest_store.save(staging, manifest)
             self._validator.validate_references(staging, manifest)
             self._database.validate(staging / DATABASE_FILENAME)
             publish_directory(staging, target, overwrite=overwrite)
-        return ProjectSession(root_path=target, manifest=manifest, is_dirty=False)
+        return ProjectSession(
+            root_path=target,
+            manifest=manifest,
+            is_dirty=False,
+            cad_view_states=dict(session.cad_view_states),
+            persisted_cad_view_states=dict(session.cad_view_states),
+        )

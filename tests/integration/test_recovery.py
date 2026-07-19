@@ -10,6 +10,13 @@ from uuid import uuid4
 
 import pytest
 
+from hms_cadcam.cad.models import CadGeometryKind
+from hms_cadcam.cad.persistent_keys import (
+    PersistentCadObjectKey,
+    TopologyPath,
+    TopologyPathVersion,
+)
+from hms_cadcam.project.cad_state import CadViewState, PersistentObjectAppearance
 from hms_cadcam.project.constants import (
     AUTOSAVE_METADATA_FILENAME,
     DATABASE_FILENAME,
@@ -27,6 +34,7 @@ from hms_cadcam.project.exceptions import (
 )
 from hms_cadcam.project.models import utc_now
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.viewer.models import ObjectAppearance
 
 
 def _digest(path: Path) -> str:
@@ -81,6 +89,39 @@ def test_stale_lock_offers_valid_snapshot_and_recovers_without_source_changes(tm
     assert (backup / MANIFEST_FILENAME).read_bytes() == main_manifest_before
     assert (backup / DATABASE_FILENAME).read_bytes() == main_database_before
     assert not (backup / "source").exists()
+
+
+def test_recovery_restores_pending_cad_view_state_from_snapshot(tmp_path) -> None:
+    owner = ProjectService.create_default(tmp_path / "owner-cad-config")
+    source = tmp_path / "recovery.brep"
+    source.write_bytes(b"recovery CAD source")
+    session = owner.create_project_from_source(tmp_path, "CAD Recovery", source)
+    source_id = session.manifest.source_files[0].source_id
+    key = PersistentCadObjectKey(
+        source_id,
+        CadGeometryKind.BREP,
+        TopologyPathVersion.V1,
+        TopologyPath("solid:" + "e" * 32),
+    )
+    state = CadViewState(
+        source_id,
+        object_appearances=(
+            PersistentObjectAppearance(key, ObjectAppearance(visible=False)),
+        ),
+    )
+    owner.stage_cad_view_state(state)
+    snapshot = owner.autosave()
+    assert snapshot is not None and session.is_dirty
+
+    opener = ProjectService.create_default(tmp_path / "opener-cad-config")
+    opener._session_locks._pid_checker = lambda _pid: False
+    with pytest.raises(RecoveryRequiredError) as raised:
+        opener.open_project(session.root_path)
+
+    recovered = opener.recover_project(raised.value.assessment)
+
+    assert not recovered.is_dirty
+    assert opener.cad_view_state(source_id) == state
 
 
 def test_corrupt_snapshot_is_rejected_before_stale_lock_is_replaced(tmp_path) -> None:

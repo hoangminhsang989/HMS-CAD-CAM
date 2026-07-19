@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -48,6 +50,7 @@ from hms_cadcam.viewer.models import (  # noqa: E402
     DisplayMode,
     KeyboardModifier,
     MouseButton,
+    ObjectAppearance,
     ObjectColor,
     SelectionMetadata,
     SelectionMode,
@@ -1104,3 +1107,205 @@ def test_closing_main_window_during_import_detaches_worker(tmp_path: Path) -> No
     _wait_until(application, lambda: window.cad_controller.active_document_id is None)
     assert not window.isVisible()
     assert backend.current_document is None
+
+
+def test_project_cad_view_state_save_open_round_trip(tmp_path: Path) -> None:
+    application = _application()
+    source = tmp_path / "persistent.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Persistent View", source)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    object_id = tree.presentation_nodes[0].object_id
+    color = ObjectColor(0.15, 0.35, 0.55)
+
+    assert window.cad_controller.set_object_visibility(tree.document_id, object_id, False)
+    assert window.cad_controller.set_object_color(tree.document_id, object_id, color)
+    assert window.cad_controller.set_object_transparency(tree.document_id, object_id, 0.4)
+    assert window.cad_controller.set_display_mode(DisplayMode.WIREFRAME)
+    assert window.cad_controller.set_view_direction(ViewDirection.TOP)
+    assert session.is_dirty
+    service.save()
+    project_root = session.root_path
+    window.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    reopened = MainWindow(
+        reopened_service, OcpCadKernel(), IntegrationViewportBackend()
+    )
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+    reopened_tree = reopened.cad_controller.active_tree
+    assert reopened_tree is not None
+    reopened_id = reopened_tree.presentation_nodes[0].object_id
+    appearance = dict(reopened.cad_controller.appearances)[reopened_id]
+    assert appearance == ObjectAppearance(False, color, 0.4)
+    assert reopened.cad_controller.display_mode is DisplayMode.WIREFRAME
+    assert reopened.cad_controller.view_direction is ViewDirection.TOP
+    assert not reopened_service.is_dirty
+    reopened.close()
+
+
+def test_bound_project_dirty_changes_only_after_successful_viewer_apply(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "dirty.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Dirty Apply", source)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    object_id = tree.presentation_nodes[0].object_id
+    before = window.cad_controller.appearances
+
+    backend.fail_appearance = "color"
+    assert not window.cad_controller.set_object_color(
+        tree.document_id, object_id, ObjectColor(0.2, 0.4, 0.6)
+    )
+    assert window.cad_controller.appearances == before
+    assert not session.is_dirty
+    assert session.cad_view_states == {}
+
+    assert window.cad_controller.set_object_color(
+        tree.document_id, object_id, ObjectColor(0.2, 0.4, 0.6)
+    )
+    assert session.is_dirty
+    assert session.cad_view_states
+    service.save()
+    assert not session.is_dirty
+    assert window.cad_controller.set_object_transparency(
+        tree.document_id, object_id, 0.2
+    )
+    assert session.is_dirty
+    service.save()
+    assert window.cad_controller.set_object_visibility(
+        tree.document_id, object_id, False
+    )
+    assert session.is_dirty
+    service.save()
+    assert window.cad_controller.set_display_mode(DisplayMode.WIREFRAME)
+    assert session.is_dirty
+    service.save()
+    assert window.cad_controller.set_view_direction(ViewDirection.TOP)
+    assert session.is_dirty
+    window.cad_controller.shutdown()
+    service.close_project(discard_changes=True)
+
+
+def test_save_during_isolate_uses_pre_isolate_visibility(tmp_path: Path) -> None:
+    application = _application()
+    source = tmp_path / "isolate.brep"
+    _write_multi_solid_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Isolate Save", source)
+    window = MainWindow(service, OcpCadKernel(), IntegrationViewportBackend())
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None and len(tree.presentation_nodes) == 2
+    first, second = tree.presentation_nodes
+
+    assert window.cad_controller.set_object_color(
+        tree.document_id, first.object_id, ObjectColor(0.3, 0.4, 0.5)
+    )
+    assert window.cad_controller.isolate_object(tree.document_id, first.object_id)
+    assert not dict(window.cad_controller.appearances)[second.object_id].visible
+    service.save()
+    project_root = session.root_path
+    window.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    reopened = MainWindow(
+        reopened_service, OcpCadKernel(), IntegrationViewportBackend()
+    )
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+    reopened_tree = reopened.cad_controller.active_tree
+    assert reopened_tree is not None
+    appearances = dict(reopened.cad_controller.appearances)
+    assert all(appearances[node.object_id].visible for node in reopened_tree.presentation_nodes)
+    reopened.close()
+
+
+def test_stale_kind_and_foreign_source_rows_are_never_applied(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    application = _application()
+    source = tmp_path / "stale.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Stale State", source)
+    source_id = session.manifest.source_files[0].source_id
+    project_root = session.root_path
+    service.close_project()
+    timestamp = "2026-01-01T00:00:00Z"
+    row = (1, "solid:" + "f" * 32, 0, 0.1, 0.2, 0.3, 0.4, timestamp)
+    with sqlite3.connect(project_root / "project.db") as connection:
+        for stored_source, geometry_kind in (
+            (source_id, "brep"),
+            (source_id, "triangle_mesh"),
+            (uuid4(), "brep"),
+        ):
+            connection.execute(
+                "INSERT INTO cad_object_appearance VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(stored_source), row[0], row[1], geometry_kind, *row[2:]),
+            )
+
+    caplog.set_level("WARNING")
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(reopened_service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+
+    assert backend.visibility_changes == []
+    assert backend.color_changes == []
+    assert backend.transparency_changes == []
+    assert "source_id không hợp lệ" in caplog.text
+    assert "geometry_kind không khớp" in caplog.text
+    assert "topology path stale/missing" in caplog.text
+    window.close()
+
+
+def test_restore_apply_failure_rolls_back_without_partial_state(tmp_path: Path) -> None:
+    application = _application()
+    source = tmp_path / "restore-failure.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Restore Failure", source)
+    first_window = MainWindow(service, OcpCadKernel(), IntegrationViewportBackend())
+    _wait_until(application, lambda: not first_window.cad_controller.is_busy)
+    tree = first_window.cad_controller.active_tree
+    assert tree is not None
+    object_id = tree.presentation_nodes[0].object_id
+    assert first_window.cad_controller.set_object_color(
+        tree.document_id, object_id, ObjectColor(0.1, 0.2, 0.3)
+    )
+    service.save()
+    project_root = session.root_path
+    first_window.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    backend = IntegrationViewportBackend()
+    backend.fail_appearance = "color"
+    reopened = MainWindow(reopened_service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+
+    assert all(
+        appearance == ObjectAppearance()
+        for _object_id, appearance in reopened.cad_controller.appearances
+    )
+    assert not reopened_service.is_dirty
+    reopened.close()

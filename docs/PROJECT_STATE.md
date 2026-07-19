@@ -7,8 +7,9 @@
 - Giai đoạn 5A: import IGES/IGS và STL đã hoàn thành.
 - Giai đoạn 5B: Measurement BREP đã hoàn thành và được review ổn định.
 - Giai đoạn 5C: topology tree và quản lý hiển thị session-only đã hoàn thành.
-- Commit mới nhất: `959702d`.
-- Toàn bộ pytest: **150 passed**.
+- Giai đoạn 5D: trạng thái hiển thị CAD đã được lưu trong dự án `.HMS`.
+- Commit nền trước Giai đoạn 5D: `959702d`.
+- Toàn bộ pytest: **166 passed**.
 - Môi trường mục tiêu: Windows 10/11 64-bit, Python 3.14.6 và PySide6.
 
 ## Kiến trúc và dữ liệu dự án
@@ -38,7 +39,9 @@
 - Face, Edge và Vertex không được tạo hàng loạt trong tree; chúng chỉ tồn tại trong selection metadata.
 - STL có đúng một mesh node và một presentation, không có triangle/vertex tree.
 - Topology Tree và viewport đã đồng bộ selection hai chiều bằng document ID và object ID có stale guard.
-- Hide/Show, Isolate, Color và Transparency session-only đã hoàn thành; không làm dirty project hoặc kích hoạt autosave.
+- Hide/Show, Color, Transparency, display mode và hướng nhìn chuẩn được lưu theo source logic trong `project.db`.
+- Persistent object key dùng topology path có phiên bản; không lưu CadDocumentId, CadObjectId runtime, TopoDS hoặc AIS.
+- Isolate vẫn chỉ tồn tại trong session; Save trong isolate dùng visibility trước isolate.
 - Đây là topology tree, không phải assembly XCAF: chưa có component name, instance, product hierarchy hoặc assembly transform.
 
 ## Measurement BREP
@@ -53,7 +56,7 @@
 ## Session và giới hạn còn lại
 
 - Session Lock, Autosave và Recovery có kiểm tra, backup và rollback an toàn.
-- CAD document hiện chưa được lưu vào dữ liệu dự án `.HMS`.
-- Chưa có assembly tree XCAF thực sự hoặc lưu appearance vào dự án `.HMS`.
+- Hình học CAD chuẩn hóa chưa được lưu vào `model/`; ứng dụng vẫn import lại bản nguồn bất biến khi mở dự án.
+- Chưa có assembly tree XCAF thực sự hoặc appearance theo Face/Edge/Vertex.
 - Chưa triển khai CAD healing và tessellation sản phẩm.
 - Chưa triển khai CAM, toolpath, mô phỏng, Post Processor hoặc Setup Sheet.

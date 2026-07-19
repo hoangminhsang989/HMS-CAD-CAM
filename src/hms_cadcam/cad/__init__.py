@@ -14,6 +14,11 @@ from hms_cadcam.cad.models import (
     MeshStatistics,
     TopologyCounts,
 )
+from hms_cadcam.cad.persistent_keys import (
+    PersistentCadObjectKey,
+    TopologyPath,
+    TopologyPathVersion,
+)
 
 __all__ = [
     "BoundingBox",
@@ -27,5 +32,8 @@ __all__ = [
     "CadKernelStatus",
     "CadUnits",
     "MeshStatistics",
+    "PersistentCadObjectKey",
+    "TopologyPath",
+    "TopologyPathVersion",
     "TopologyCounts",
 ]

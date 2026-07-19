@@ -27,6 +27,7 @@ from hms_cadcam.project.constants import (
     OWNED_DIRECTORY_METADATA_FILENAME,
 )
 from hms_cadcam.project.database import ProjectDatabase
+from hms_cadcam.project.cad_state_store import CadViewStateStore
 from hms_cadcam.project.exceptions import (
     AutosaveBusyError,
     AutosaveSnapshotError,
@@ -197,10 +198,12 @@ class AutosaveManager:
         manifest_store: ProjectManifestStore,
         validator: ProjectValidator,
         database: ProjectDatabase,
+        cad_state_store: CadViewStateStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
         self._database = database
+        self._cad_state_store = cad_state_store or CadViewStateStore()
         self._operation_lock = threading.Lock()
 
     def create_snapshot(
@@ -259,6 +262,14 @@ class AutosaveManager:
                     session.root_path / DATABASE_FILENAME,
                     staging / DATABASE_FILENAME,
                 )
+                with self._cad_state_store.transaction(
+                    staging / DATABASE_FILENAME
+                ) as connection:
+                    self._cad_state_store.replace_all(
+                        connection,
+                        session.cad_view_states.values(),
+                        (record.source_id for record in session.manifest.source_files),
+                    )
                 metadata = AutosaveMetadata(
                     format=AUTOSAVE_FORMAT,
                     format_version=AUTOSAVE_FORMAT_VERSION,

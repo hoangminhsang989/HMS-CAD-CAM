@@ -119,18 +119,18 @@ class CadViewportWidget(QWidget):
         """Fit the displayed document into the current widget."""
         self._invoke("fit all", self._backend.fit_all, clear_error=True)
 
-    def set_view_direction(self, direction: ViewDirection) -> None:
+    def set_view_direction(self, direction: ViewDirection) -> bool:
         """Apply one standard camera direction."""
-        self._invoke(
+        return self._invoke(
             "set view direction",
             self._backend.set_view_direction,
             direction,
             clear_error=True,
         )
 
-    def set_display_mode(self, mode: DisplayMode) -> None:
+    def set_display_mode(self, mode: DisplayMode) -> bool:
         """Apply one product presentation style."""
-        self._invoke(
+        return self._invoke(
             "set display mode",
             self._backend.set_display_mode,
             mode,

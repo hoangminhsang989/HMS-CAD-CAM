@@ -8,6 +8,8 @@ from pathlib import Path
 from uuid import UUID
 
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
+from hms_cadcam.project.cad_state import CadViewState, default_cad_view_state
+from hms_cadcam.project.cad_state_store import CadViewStateStore
 from hms_cadcam.project.constants import TEMP_DIRECTORY
 from hms_cadcam.project.creator import ProjectCreator
 from hms_cadcam.project.database import ProjectDatabase
@@ -69,12 +71,28 @@ class ProjectService:
         manifest_store = ProjectManifestStore()
         validator = ProjectValidator()
         database = ProjectDatabase()
+        cad_state_store = CadViewStateStore()
         session_locks = SessionLockManager()
-        autosave = AutosaveManager(manifest_store, validator, database)
+        autosave = AutosaveManager(
+            manifest_store,
+            validator,
+            database,
+            cad_state_store,
+        )
         return cls(
             creator=ProjectCreator(manifest_store, validator, database),
-            loader=ProjectLoader(manifest_store, validator, database),
-            saver=ProjectSaver(manifest_store, validator, database),
+            loader=ProjectLoader(
+                manifest_store,
+                validator,
+                database,
+                cad_state_store,
+            ),
+            saver=ProjectSaver(
+                manifest_store,
+                validator,
+                database,
+                cad_state_store,
+            ),
             validator=validator,
             database=database,
             recent_projects=RecentProjectsService(config_dir),
@@ -220,6 +238,27 @@ class ProjectService:
         """Persist the current project."""
         return self._saver.save(self._require_current())
 
+    def cad_view_state(self, source_id: UUID) -> CadViewState:
+        """Return effective pending-or-persisted state for one project source."""
+        session = self._require_current()
+        self._require_source(session, source_id)
+        return session.cad_view_states.get(source_id, default_cad_view_state(source_id))
+
+    def stage_cad_view_state(self, state: CadViewState) -> ProjectSession:
+        """Stage validated CAD state in memory without writing project.db."""
+        if not isinstance(state, CadViewState):
+            raise TypeError("CAD view state is invalid")
+        session = self._require_current()
+        self._require_source(session, state.source_id)
+        normalized = state.normalized()
+        if normalized.is_default:
+            session.cad_view_states.pop(state.source_id, None)
+        else:
+            session.cad_view_states[state.source_id] = normalized
+        if session.cad_view_states != session.persisted_cad_view_states:
+            session.is_dirty = True
+        return session
+
     def autosave(
         self, *, expected_project_id: UUID | None = None
     ) -> AutosaveSnapshot | None:
@@ -236,6 +275,8 @@ class ProjectService:
             root_path=session.root_path,
             manifest=session.manifest,
             is_dirty=True,
+            cad_view_states=dict(session.cad_view_states),
+            persisted_cad_view_states=dict(session.persisted_cad_view_states),
         )
         return self._autosave.create_snapshot(
             snapshot_session,
@@ -350,3 +391,10 @@ class ProjectService:
         if self._current_project is None:
             raise ProjectError("No HMS project is currently open")
         return self._current_project
+
+    @staticmethod
+    def _require_source(session: ProjectSession, source_id: UUID) -> None:
+        if not isinstance(source_id, UUID) or all(
+            record.source_id != source_id for record in session.manifest.source_files
+        ):
+            raise ProjectError(f"CAD source is not part of the current project: {source_id}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QColor
@@ -78,7 +79,12 @@ class MainWindow(QMainWindow):
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self.project_controller = ProjectUiController(self, project_service)
-        self.cad_controller = CadUiController(self, cad_kernel, self.viewport)
+        self.cad_controller = CadUiController(
+            self,
+            cad_kernel,
+            self.viewport,
+            project_service=project_service,
+        )
         self._active_document_metadata: CadDocumentMetadata | None = None
         self._active_document_tree: CadDocumentTree | None = None
         self._active_selection: tuple[SelectionMetadata, ...] = ()
@@ -132,6 +138,11 @@ class MainWindow(QMainWindow):
         )
         self.cad_controller.appearance_context_changed.connect(
             self._update_object_appearances
+        )
+        self.cad_controller.project_state_changed.connect(
+            lambda: self._update_project_display(
+                self.project_controller.service.current_project
+            )
         )
         self.cad_controller.measurement_context_changed.connect(
             self._update_measurements
@@ -346,10 +357,14 @@ class MainWindow(QMainWindow):
         self._tree_sync_guard = False
 
     def _handle_project_change(self, session: object) -> None:
-        source_path = None
+        source_binding = None
         if isinstance(session, ProjectSession):
-            source_path = self._find_project_cad_source(session)
-        self.cad_controller.bind_project(source_path)
+            source_binding = self._find_project_cad_source(session)
+        if source_binding is None:
+            self.cad_controller.bind_project(None)
+        else:
+            source_id, source_path = source_binding
+            self.cad_controller.bind_project(source_path, source_id=source_id)
         self._update_project_display(session)
 
     def _update_cad_document(self, metadata: object) -> None:
@@ -787,9 +802,11 @@ class MainWindow(QMainWindow):
         return self._object_items.get(object_id)
 
     @staticmethod
-    def _find_project_cad_source(session: ProjectSession) -> Path | None:
+    def _find_project_cad_source(
+        session: ProjectSession,
+    ) -> tuple[UUID, Path] | None:
         for record in reversed(session.manifest.source_files):
-            candidates: list[Path] = []
+            candidates: list[Path] = [session.root_path / Path(record.stored_path)]
             relative_path = getattr(record, "relative_path", None)
             if relative_path:
                 candidates.append(session.root_path / str(relative_path))
@@ -811,7 +828,7 @@ class MainWindow(QMainWindow):
                     }
                     and candidate.is_file()
                 ):
-                    return candidate
+                    return record.source_id, candidate
         return None
 
     def _update_import_status(self, status: str) -> None:

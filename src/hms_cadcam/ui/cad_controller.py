@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from uuid import UUID
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
 from PySide6.QtGui import QAction, QActionGroup
@@ -22,6 +24,17 @@ from hms_cadcam.cad.models import (
     CadImportResult,
     CadObjectId,
 )
+from hms_cadcam.cad.persistent_keys import (
+    PersistentCadObjectMap,
+    build_persistent_object_map,
+)
+from hms_cadcam.project.cad_state import (
+    CadViewState,
+    PersistentObjectAppearance,
+    default_cad_view_state,
+)
+from hms_cadcam.project.exceptions import ProjectError
+from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_worker import CadImportTask
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -50,6 +63,7 @@ class CadUiController(QObject):
     topology_tree_changed = Signal(object)
     object_selection_context_changed = Signal(object, object)
     appearance_context_changed = Signal(object, object)
+    project_state_changed = Signal()
 
     def __init__(
         self,
@@ -57,6 +71,7 @@ class CadUiController(QObject):
         kernel: CadKernel,
         viewport: CadViewportWidget,
         measurement_service: MeasurementService | None = None,
+        project_service: ProjectService | None = None,
     ) -> None:
         super().__init__(window)
         self._window = window
@@ -65,9 +80,11 @@ class CadUiController(QObject):
         self._measurement_service = (
             measurement_service or MeasurementServiceFactory.create(kernel)
         )
+        self._project_service = project_service
         self._thread_pool = QThreadPool(self)
         self._thread_pool.setMaxThreadCount(1)
         self._active_task: CadImportTask | None = None
+        self._active_task_source_id: UUID | None = None
         self._request_generation = 0
         self._active_document_id: CadDocumentId | None = None
         self._active_metadata: CadDocumentMetadata | None = None
@@ -77,6 +94,10 @@ class CadUiController(QObject):
         self._selected_object_ids: tuple[CadObjectId, ...] = ()
         self._appearances: dict[CadObjectId, ObjectAppearance] = {}
         self._isolate_snapshot: dict[CadObjectId, bool] | None = None
+        self._active_source_id: UUID | None = None
+        self._persistent_map: PersistentCadObjectMap | None = None
+        self._display_mode = DisplayMode.SHADED_WITH_EDGES
+        self._view_direction = ViewDirection.ISOMETRIC
         self._vertex_pair: tuple[str, ...] = ()
         self.actions = self._create_actions()
         self._update_action_states()
@@ -105,6 +126,14 @@ class CadUiController(QObject):
     @property
     def appearances(self) -> tuple[tuple[CadObjectId, ObjectAppearance], ...]:
         return tuple(self._appearances.items())
+
+    @property
+    def display_mode(self) -> DisplayMode:
+        return self._display_mode
+
+    @property
+    def view_direction(self) -> ViewDirection:
+        return self._view_direction
 
     @Slot(object)
     def handle_selection(self, items: object) -> None:
@@ -216,7 +245,13 @@ class CadUiController(QObject):
         if path:
             self.start_import(Path(path), CadFormat.STL)
 
-    def start_import(self, source_path: str | Path, cad_format: CadFormat) -> None:
+    def start_import(
+        self,
+        source_path: str | Path,
+        cad_format: CadFormat,
+        *,
+        source_id: UUID | None = None,
+    ) -> None:
         """Start or supersede one background CAD import request."""
         if self._closing or not self._kernel.is_available():
             return
@@ -233,13 +268,19 @@ class CadUiController(QObject):
         task.signals.completed.connect(self._finish_import)
         task.signals.failed.connect(self._import_failed)
         self._active_task = task
+        self._active_task_source_id = source_id
         self.progress_changed.emit("Đang đọc")
         self.message.emit(f"Đang nhập CAD: {Path(source_path)}")
         self._update_action_states()
         self.busy_changed.emit(True)
         self._thread_pool.start(task)
 
-    def bind_project(self, source_path: Path | None) -> None:
+    def bind_project(
+        self,
+        source_path: Path | None,
+        *,
+        source_id: UUID | None = None,
+    ) -> None:
         """Invalidate old work, clear the document and optionally load project CAD."""
         if self._closing:
             return
@@ -249,7 +290,7 @@ class CadUiController(QObject):
         if source_path is not None:
             cad_format = _format_for_path(source_path)
             if cad_format is not None:
-                self.start_import(source_path, cad_format)
+                self.start_import(source_path, cad_format, source_id=source_id)
 
     def shutdown(self) -> None:
         """Detach workers and release the active document before window teardown."""
@@ -279,7 +320,9 @@ class CadUiController(QObject):
         if self._closing or request_id != self._request_generation:
             self._release_result(result)
             return
+        candidate_source_id = self._active_task_source_id
         self._active_task = None
+        self._active_task_source_id = None
         self.busy_changed.emit(False)
         self._update_action_states()
         if not result.success or result.document_id is None or result.metadata is None:
@@ -290,7 +333,7 @@ class CadUiController(QObject):
         old_document_id = self._active_document_id
         try:
             tree = self._get_document_tree(result.document_id)
-        except (RuntimeError, TypeError, ValueError):
+        except (ProjectError, TypeError, ValueError):
             logger.exception("Không thể tạo topology tree cho CAD document")
             self._release_result(result)
             self.progress_changed.emit("Lỗi")
@@ -313,6 +356,26 @@ class CadUiController(QObject):
             else {}
         )
         self._isolate_snapshot = None
+        self._active_source_id = candidate_source_id
+        self._persistent_map = (
+            build_persistent_object_map(
+                candidate_source_id,
+                result.metadata.geometry_kind,
+                tree,
+            )
+            if candidate_source_id is not None and tree is not None
+            else None
+        )
+        if self._persistent_map is not None and self._persistent_map.ambiguous_nodes:
+            logger.warning(
+                "Bỏ qua %d topology node mơ hồ, không đủ chắc chắn để persistence",
+                self._persistent_map.ambiguous_nodes,
+            )
+        restored = self._load_project_view_state(result.metadata.geometry_kind)
+        if not self._apply_persisted_state(restored):
+            self.message.emit(
+                "Không thể khôi phục trọn vẹn CAD view state; giữ trạng thái viewer trước khi apply."
+            )
         self._selected_object_ids = ()
         self._active_selection = ()
         self._reset_vertex_pair()
@@ -333,6 +396,7 @@ class CadUiController(QObject):
         if self._closing or request_id != self._request_generation:
             return
         self._active_task = None
+        self._active_task_source_id = None
         self.busy_changed.emit(False)
         self._update_action_states()
         logger.error(
@@ -364,9 +428,7 @@ class CadUiController(QObject):
             action = QAction(direction.value.title(), self)
             action.setObjectName(f"CadView{direction.value.title()}Action")
             action.triggered.connect(
-                lambda _checked=False, value=direction: (
-                    self._viewport.set_view_direction(value)
-                )
+                lambda _checked=False, value=direction: self.set_view_direction(value)
             )
             actions[key] = action
         display_group = QActionGroup(self)
@@ -377,7 +439,7 @@ class CadUiController(QObject):
             action.setChecked(mode is DisplayMode.SHADED_WITH_EDGES)
             action.setObjectName(f"CadDisplay{mode.name.title()}Action")
             action.triggered.connect(
-                lambda _checked=False, value=mode: self._viewport.set_display_mode(value)
+                lambda _checked=False, value=mode: self.set_display_mode(value)
             )
             display_group.addAction(action)
             actions[key] = action
@@ -420,6 +482,7 @@ class CadUiController(QObject):
     def _invalidate_active_task(self) -> None:
         task = self._active_task
         self._active_task = None
+        self._active_task_source_id = None
         if task is None:
             return
         task.abandon()
@@ -441,6 +504,8 @@ class CadUiController(QObject):
         self._active_tree = None
         self._appearances = {}
         self._isolate_snapshot = None
+        self._active_source_id = None
+        self._persistent_map = None
         self._selected_object_ids = ()
         self._active_selection = ()
         self._reset_vertex_pair()
@@ -504,6 +569,43 @@ class CadUiController(QObject):
         self._emit_measurements(())
         self._viewport.set_selection_mode(mode)
 
+    def set_view_direction(self, direction: ViewDirection) -> bool:
+        """Apply and stage one standard view direction after viewer success."""
+        if self._active_document_id is None or not isinstance(direction, ViewDirection):
+            return False
+        previous = self._view_direction
+        if direction is previous:
+            return True
+        if not self._viewport.set_view_direction(direction):
+            self._viewport.set_view_direction(previous)
+            return False
+        self._view_direction = direction
+        if not self._stage_current_state():
+            self._viewport.set_view_direction(previous)
+            self._view_direction = previous
+            return False
+        return True
+
+    def set_display_mode(self, mode: DisplayMode) -> bool:
+        """Apply and stage one display mode after viewer success."""
+        if self._active_document_id is None or not isinstance(mode, DisplayMode):
+            return False
+        previous = self._display_mode
+        if mode is previous:
+            return True
+        if not self._viewport.set_display_mode(mode):
+            self._viewport.set_display_mode(previous)
+            self.actions[f"display_{previous.value}"].setChecked(True)
+            return False
+        self._display_mode = mode
+        if not self._stage_current_state():
+            self._viewport.set_display_mode(previous)
+            self._display_mode = previous
+            self.actions[f"display_{previous.value}"].setChecked(True)
+            return False
+        self.actions[f"display_{mode.value}"].setChecked(True)
+        return True
+
     @Slot(object, object)
     def select_tree_objects(self, document_id: object, object_ids: object) -> None:
         """Synchronize a guarded tree selection into the active viewport."""
@@ -531,6 +633,7 @@ class CadUiController(QObject):
         """Apply parent-recursive visibility without dirtying the project."""
         if not self._valid_object_request(document_id, object_id):
             return False
+        previous_appearances = dict(self._appearances)
         if not self._viewport.set_object_visibility(document_id, object_id, visible):
             return False
         affected = set(self._descendant_ids(object_id))
@@ -561,6 +664,10 @@ class CadUiController(QObject):
             self._emit_selection(())
             self._emit_measurements(())
             self.object_selection_context_changed.emit(document_id, ())
+        if not self._stage_current_state():
+            self._restore_runtime_appearances(previous_appearances, affected)
+            self._appearances = previous_appearances
+            return False
         self._emit_appearances()
         return True
 
@@ -637,6 +744,7 @@ class CadUiController(QObject):
             return False
         if not isinstance(color, ObjectColor):
             return False
+        previous_appearances = dict(self._appearances)
         if not self._viewport.set_object_color(document_id, object_id, color):
             return False
         for affected_id in self._descendant_ids(object_id):
@@ -646,6 +754,13 @@ class CadUiController(QObject):
                 color=color,
                 transparency=current.transparency,
             )
+        if not self._stage_current_state():
+            self._restore_runtime_appearances(
+                previous_appearances,
+                set(self._descendant_ids(object_id)),
+            )
+            self._appearances = previous_appearances
+            return False
         self._emit_appearances()
         return True
 
@@ -661,6 +776,7 @@ class CadUiController(QObject):
             validated = ObjectAppearance(transparency=transparency).transparency
         except (TypeError, ValueError):
             return False
+        previous_appearances = dict(self._appearances)
         if not self._viewport.set_object_transparency(
             document_id,
             object_id,
@@ -674,6 +790,13 @@ class CadUiController(QObject):
                 color=current.color,
                 transparency=validated,
             )
+        if not self._stage_current_state():
+            self._restore_runtime_appearances(
+                previous_appearances,
+                set(self._descendant_ids(object_id)),
+            )
+            self._appearances = previous_appearances
+            return False
         self._emit_appearances()
         return True
 
@@ -770,6 +893,177 @@ class CadUiController(QObject):
             self._active_document_id,
             tuple(self._appearances.items()),
         )
+
+    def _load_project_view_state(
+        self,
+        geometry_kind: CadGeometryKind,
+    ) -> CadViewState | None:
+        source_id = self._active_source_id
+        if source_id is None or self._project_service is None:
+            return None
+        try:
+            state = self._project_service.cad_view_state(source_id)
+        except (RuntimeError, TypeError, ValueError):
+            logger.exception("Không thể đọc CAD view state từ project service")
+            return None
+        if any(
+            item.key.geometry_kind is not geometry_kind
+            for item in state.object_appearances
+        ):
+            logger.warning(
+                "CAD view state chứa geometry_kind không khớp; các row đó sẽ bị bỏ qua"
+            )
+        return state
+
+    def _apply_persisted_state(self, state: CadViewState | None) -> bool:
+        document_id = self._active_document_id
+        metadata = self._active_metadata
+        tree = self._active_tree
+        if document_id is None or metadata is None or tree is None:
+            return state is None
+        desired_mode = state.display_mode if state is not None else DisplayMode.SHADED_WITH_EDGES
+        desired_direction = (
+            state.view_direction if state is not None else ViewDirection.ISOMETRIC
+        )
+        desired = {node.object_id: ObjectAppearance() for node in tree.root.walk()}
+        mapping = self._persistent_map
+        if state is not None:
+            for item in state.object_appearances:
+                key = item.key
+                if key.source_id != self._active_source_id:
+                    logger.warning("Bỏ qua CAD appearance do source_id không khớp")
+                    continue
+                if key.geometry_kind is not metadata.geometry_kind:
+                    logger.warning("Bỏ qua CAD appearance do geometry_kind không khớp")
+                    continue
+                object_id = mapping.by_persistent.get(key) if mapping is not None else None
+                if object_id is None:
+                    logger.warning(
+                        "Bỏ qua CAD appearance do topology path stale/missing: %s",
+                        key.topology_path,
+                    )
+                    continue
+                desired[object_id] = item.appearance
+        operations: list[tuple[Callable[[], bool], Callable[[], bool]]] = [
+            (
+                lambda: self._viewport.set_display_mode(desired_mode),
+                lambda: self._viewport.set_display_mode(self._display_mode),
+            ),
+            (
+                lambda: self._viewport.set_view_direction(desired_direction),
+                lambda: self._viewport.set_view_direction(self._view_direction),
+            ),
+        ]
+        default = ObjectAppearance()
+        for object_id, appearance in desired.items():
+            node = tree.find(object_id)
+            if node is None or not node.has_presentation or appearance == default:
+                continue
+            if appearance.color != default.color:
+                operations.append(
+                    (
+                        lambda oid=object_id, value=appearance.color: self._viewport.set_object_color(
+                            document_id, oid, value
+                        ),
+                        lambda oid=object_id: self._viewport.set_object_color(
+                            document_id, oid, default.color
+                        ),
+                    )
+                )
+            if appearance.transparency != default.transparency:
+                operations.append(
+                    (
+                        lambda oid=object_id, value=appearance.transparency: self._viewport.set_object_transparency(
+                            document_id, oid, value
+                        ),
+                        lambda oid=object_id: self._viewport.set_object_transparency(
+                            document_id, oid, default.transparency
+                        ),
+                    )
+                )
+            if appearance.visible is not default.visible:
+                operations.append(
+                    (
+                        lambda oid=object_id, value=appearance.visible: self._viewport.set_object_visibility(
+                            document_id, oid, value
+                        ),
+                        lambda oid=object_id: self._viewport.set_object_visibility(
+                            document_id, oid, default.visible
+                        ),
+                    )
+                )
+        applied: list[Callable[[], bool]] = []
+        for apply, rollback in operations:
+            if not apply():
+                if not rollback():
+                    logger.error("Rollback thao tác CAD view state hiện tại thất bại")
+                for undo in reversed(applied):
+                    if not undo():
+                        logger.error("Rollback CAD view state không hoàn tất")
+                return False
+            applied.append(rollback)
+        self._display_mode = desired_mode
+        self._view_direction = desired_direction
+        self._appearances = desired
+        self._refresh_container_visibility()
+        self.actions[f"display_{desired_mode.value}"].setChecked(True)
+        return True
+
+    def _stage_current_state(self) -> bool:
+        source_id = self._active_source_id
+        metadata = self._active_metadata
+        mapping = self._persistent_map
+        if source_id is None or self._project_service is None:
+            return True
+        if metadata is None or mapping is None:
+            return False
+        persisted: list[PersistentObjectAppearance] = []
+        for object_id, key in mapping.by_runtime.items():
+            appearance = self._appearances.get(object_id, ObjectAppearance())
+            if self._isolate_snapshot is not None:
+                appearance = ObjectAppearance(
+                    visible=self._isolate_snapshot.get(object_id, appearance.visible),
+                    color=appearance.color,
+                    transparency=appearance.transparency,
+                )
+            if appearance != ObjectAppearance():
+                persisted.append(PersistentObjectAppearance(key, appearance))
+        try:
+            self._project_service.stage_cad_view_state(
+                CadViewState(
+                    source_id=source_id,
+                    display_mode=self._display_mode,
+                    view_direction=self._view_direction,
+                    object_appearances=tuple(persisted),
+                )
+            )
+        except (ProjectError, TypeError, ValueError):
+            logger.exception("Không thể stage CAD view state")
+            return False
+        self.project_state_changed.emit()
+        return True
+
+    def _restore_runtime_appearances(
+        self,
+        previous: dict[CadObjectId, ObjectAppearance],
+        affected: set[CadObjectId],
+    ) -> None:
+        document_id = self._active_document_id
+        tree = self._active_tree
+        if document_id is None or tree is None:
+            return
+        for object_id in affected:
+            node = tree.find(object_id)
+            appearance = previous.get(object_id)
+            if node is None or not node.has_presentation or appearance is None:
+                continue
+            self._viewport.set_object_color(document_id, object_id, appearance.color)
+            self._viewport.set_object_transparency(
+                document_id, object_id, appearance.transparency
+            )
+            self._viewport.set_object_visibility(
+                document_id, object_id, appearance.visible
+            )
 
 
 def _format_for_path(path: Path) -> CadFormat | None:
