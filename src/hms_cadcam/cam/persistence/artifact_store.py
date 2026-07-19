@@ -83,8 +83,10 @@ class ToolpathArtifactStore:
                     artifact.source_operation_id != metadata.operation_id or
                     artifact.artifact_fingerprint != metadata.artifact_fingerprint or
                     artifact.input_fingerprint != metadata.input_fingerprint or
+                    artifact.schema_version != metadata.schema_version or
                     artifact.operation_revision != metadata.expected_operation_revision or
-                    artifact.computation_token.generation != metadata.computation_generation):
+                    artifact.computation_token.generation != metadata.computation_generation or
+                    artifact.completion_status.value != metadata.completion_status):
                 raise ToolpathArtifactStoreError("Toolpath artifact metadata does not match content")
             return artifact
         except ToolpathArtifactStoreError:
@@ -131,7 +133,9 @@ class ToolpathArtifactStore:
             raise ToolpathArtifactStoreError("Artifact relative path is unsafe")
         parts = PurePosixPath(relative).parts
         expected_name = f"{metadata.artifact_id.value.hex}{_SUFFIX}"
-        if len(parts) != 2 or parts[0] != TOOLPATHS_DIRECTORY or parts[1] != expected_name or ".." in parts:
+        expected_relative = f"{TOOLPATHS_DIRECTORY}/{expected_name}"
+        if (relative != expected_relative or len(parts) != 2 or
+                parts[0] != TOOLPATHS_DIRECTORY or parts[1] != expected_name or ".." in parts):
             raise ToolpathArtifactStoreError("Artifact relative path is not canonical")
         root = project_root / TOOLPATHS_DIRECTORY
         self._require_real_root(root)

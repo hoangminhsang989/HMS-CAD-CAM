@@ -199,16 +199,37 @@ def test_malformed_editable_payload_fails_atomically(tmp_path):
         repository.load(path)
 
 
-@pytest.mark.parametrize("unsafe", ("../evil.json", "/absolute.json", "C:/evil.json", r"C:\evil.json", "//server/share.json", r"toolpaths\evil.json"))
+@pytest.mark.parametrize("unsafe", (
+    "../evil.json", "/absolute.json", "C:/evil.json", r"C:\evil.json",
+    "//server/share.json", r"toolpaths\evil.json", "./{valid}",
+    "toolpaths//{filename}", "toolpaths/./{filename}",
+))
 def test_artifact_store_rejects_traversal_absolute_drive_unc_and_separator(tmp_path, unsafe):
     root = tmp_path / "Project.HMS"
     (root / "toolpaths").mkdir(parents=True)
     snapshot, operation = _snapshot()
     artifact, *_ = _artifact(operation)
     valid = ToolpathArtifactStore().publish(root, artifact)
-    forged = dataclasses.replace(valid, relative_path=unsafe)
+    forged_path = unsafe.format(valid=valid.relative_path, filename=Path(valid.relative_path).name)
+    forged = dataclasses.replace(valid, relative_path=forged_path)
     with pytest.raises(ToolpathArtifactStoreError):
         ToolpathArtifactStore().load(root, forged)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    ({"schema_version": 2}, {"completion_status": "tampered"}),
+)
+def test_artifact_store_rejects_metadata_content_mismatch(tmp_path, changes):
+    root = tmp_path / "Project.HMS"
+    (root / "toolpaths").mkdir(parents=True)
+    _, operation = _snapshot()
+    artifact, *_ = _artifact(operation)
+    store = ToolpathArtifactStore()
+    metadata = store.publish(root, artifact)
+
+    with pytest.raises(ToolpathArtifactStoreError):
+        store.load(root, dataclasses.replace(metadata, **changes))
 
 
 def test_artifact_atomic_publish_checksum_tamper_missing_and_cleanup_safety(tmp_path):
