@@ -418,8 +418,9 @@ class CamWorkspace(QWidget):
                                       DirtyReason.GEOMETRY_CHANGED))
                 updated = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id,
                     lambda tree: tree.replace_operation(changed)))
-                if updated is not None:
-                    self.refresh(self._selected_key)
+                if updated is None:
+                    return
+                self.refresh(self._selected_key)
         self._picked_reference = None
         self._picked_reference_resolved = False
         self.editor.show_reference(None)

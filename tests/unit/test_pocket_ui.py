@@ -353,3 +353,29 @@ def test_pocket_generation_failure_keeps_diagnostic_and_failed_status(tmp_path) 
     pocket_item = _find_item(workspace.tree.topLevelItem(0), "Pocket 2.5D")
     assert pocket_item is not None and "FAILED" in pocket_item.text(1)
     workspace.deleteLater()
+
+
+def test_clear_profile_mutation_failure_restores_committed_ui(
+    tmp_path, monkeypatch,
+) -> None:
+    service, _session, workspace, _viewer, selected = _workspace(tmp_path)
+    workspace.pick_geometry()
+    workspace.editor._submit()
+    before = service.cam_snapshot
+
+    monkeypatch.setattr(
+        service,
+        "execute_cam_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("injected clear failure")
+        ),
+    )
+    workspace.clear_geometry_pick()
+
+    assert service.cam_snapshot == before
+    assert workspace._picked_reference == selected["reference"]
+    assert workspace._picked_reference_resolved
+    assert "RESOLVED" in workspace.editor.status.text()
+    assert workspace.actions["generate"].isEnabled()
+    assert "injected clear failure" in workspace.editor.error.text()
+    workspace.deleteLater()

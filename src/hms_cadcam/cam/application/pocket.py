@@ -101,16 +101,21 @@ def build_pocket_offset_loops(
     initial_offset: float,
     stepover: float,
     tolerance: float,
+    *,
+    terminal_coverage_radius: float | None = None,
 ) -> tuple[ContourLoop, ...]:
-    """Build deterministic inward loops until the next offset collapses naturally."""
+    """Build inward loops until the remaining core is proven tool-covered."""
+    coverage_radius = (initial_offset if terminal_coverage_radius is None
+                       else terminal_coverage_radius)
     if (not isinstance(boundary, ContourLoop)
             or any(isinstance(value, bool) or not isinstance(value, (int, float))
-                   or not math.isfinite(value) for value in (initial_offset, stepover, tolerance))):
+                   or not math.isfinite(value)
+                   for value in (initial_offset, stepover, tolerance, coverage_radius))):
         raise PocketGenerationError(DiagnosticCode.POCKET_OFFSET_FAILED,
                                     "Pocket offset input is invalid")
-    if initial_offset <= 0.0 or tolerance <= 0.0:
+    if initial_offset <= 0.0 or tolerance <= 0.0 or coverage_radius <= 0.0:
         raise PocketGenerationError(DiagnosticCode.POCKET_OFFSET_FAILED,
-                                    "Pocket initial offset and tolerance must be positive")
+                                    "Pocket offset, coverage radius, and tolerance must be positive")
     if stepover <= 0.0:
         raise PocketGenerationError(DiagnosticCode.POCKET_INVALID_STEPOVER,
                                     "Pocket stepover must be positive")
@@ -128,7 +133,7 @@ def build_pocket_offset_loops(
             candidate = offset_contour(_merge_canonical_split(current, tolerance),
                                        ContourSide.INSIDE, stepover)
         except ContourGenerationError as error:
-            exhausted = _offset_is_proven_exhausted(current, stepover, tolerance)
+            exhausted = _offset_is_proven_exhausted(current, coverage_radius, tolerance)
             if error.code is DiagnosticCode.CONTOUR_OFFSET_COLLAPSED and exhausted:
                 return tuple(loops)
             if (error.code is DiagnosticCode.CONTOUR_OFFSET_FAILED
@@ -180,10 +185,10 @@ def _merge_canonical_split(loop: ContourLoop, tolerance: float) -> ContourLoop:
 
 def _offset_is_proven_exhausted(
     loop: ContourLoop,
-    stepover: float,
+    coverage_radius: float,
     tolerance: float,
 ) -> bool:
-    """Prove a convex loop cannot contain another offset; never generate from bounds."""
+    """Prove the cutter sweep covers a convex residual core; never use bounds."""
     points = _sample_loop(loop)
     signs = []
     for index in range(len(points) - 1):
@@ -206,7 +211,7 @@ def _offset_is_proven_exhausted(
         projections = tuple(point[0] * normal[0] + point[1] * normal[1]
                             for point in points[:-1])
         widths.append(max(projections) - min(projections))
-    return bool(widths) and min(widths) <= 2.0 * stepover + tolerance
+    return bool(widths) and min(widths) <= 2.0 * coverage_radius + tolerance
 
 
 def pocket_depth_levels(
@@ -258,6 +263,16 @@ class PocketGenerator:
         if len(geometry_inputs) != 1:
             raise PocketGenerationError(DiagnosticCode.POCKET_PROFILE_MISSING,
                                         "Pocket requires one persistent boundary reference")
+        if len(operation.geometry_inputs) != 1:
+            raise PocketGenerationError(
+                DiagnosticCode.POCKET_PROFILE_INVALID,
+                "Pocket v1 does not support additional geometry inputs",
+            )
+        if geometry_inputs[0].reference.source_id not in setup.source_scope.allowed_source_ids:
+            raise PocketGenerationError(
+                DiagnosticCode.POCKET_PROFILE_INVALID,
+                "Pocket boundary reference is outside the Setup source scope",
+            )
         try:
             strategy = PocketStrategy.from_operation_parameters(
                 operation.parameters, geometry_inputs[0].reference)
@@ -355,8 +370,13 @@ class PocketGenerator:
                                         "Pocket entry policy is not supported safely")
 
         initial_offset = diameter.value / 2.0 + strategy.radial_stock_allowance.value
-        loops = build_pocket_offset_loops(path.loop, initial_offset, strategy.stepover.value,
-                                          strategy.tolerance.value)
+        loops = build_pocket_offset_loops(
+            path.loop,
+            initial_offset,
+            strategy.stepover.value,
+            strategy.tolerance.value,
+            terminal_coverage_radius=diameter.value / 2.0,
+        )
         if strategy.cutting_direction is PocketCuttingDirection.CONVENTIONAL:
             loops = tuple(loop.reversed() for loop in loops)
         elif any(loop.orientation is not ContourOrientation.COUNTERCLOCKWISE for loop in loops):

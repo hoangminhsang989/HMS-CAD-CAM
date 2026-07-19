@@ -217,6 +217,16 @@ def test_offset_collapse_and_invalid_geometry_fail_closed() -> None:
         build_pocket_offset_loops(bowtie, 1, 2, 1.0e-7)
 
 
+def test_offset_collapse_does_not_leave_an_uncut_center_strip() -> None:
+    with pytest.raises(PocketGenerationError) as collapse:
+        _inputs(
+            _rectangle(40, 22),
+            {"stepover": Length(9, LengthUnit.MM)},
+        )
+
+    assert collapse.value.code is DiagnosticCode.POCKET_OFFSET_COLLAPSED
+
+
 def test_rotated_and_arc_boundaries_generate_without_bounding_box_fallback() -> None:
     rotated = _rectangle()
     angle = math.radians(31)
@@ -343,6 +353,65 @@ def test_invalid_tool_and_stepover_fail_before_token() -> None:
         generator.resolve_inputs(operation, inputs.setup, assembly=inputs.assembly, tool=inputs.tool,
                                  machine=inputs.machine, resolved_geometry=resolved)
     assert stepover.value.code is DiagnosticCode.POCKET_INVALID_STEPOVER
+
+
+def test_foreign_source_boundary_fails_before_token() -> None:
+    generator, inputs, _, _ = _inputs()
+    foreign_reference = _reference(uuid4())
+    foreign_strategy = replace(
+        inputs.strategy,
+        geometry=PocketGeometryInput(foreign_reference, inputs.strategy.unit),
+    )
+    operation = replace(
+        inputs.operation,
+        geometry_inputs=(replace(
+            inputs.operation.geometry_inputs[0],
+            reference=foreign_reference,
+        ),),
+        parameters=foreign_strategy.to_operation_parameters(),
+    )
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED,
+        _region(_rectangle(), foreign_reference),
+    )
+
+    with pytest.raises(PocketGenerationError) as mismatch:
+        generator.resolve_inputs(
+            operation,
+            inputs.setup,
+            assembly=inputs.assembly,
+            tool=inputs.tool,
+            machine=inputs.machine,
+            resolved_geometry=resolved,
+        )
+
+    assert mismatch.value.code is DiagnosticCode.POCKET_PROFILE_INVALID
+
+
+def test_additional_geometry_input_is_not_silently_ignored() -> None:
+    generator, inputs, _, resolved = _inputs()
+    boundary = inputs.operation.geometry_inputs[0]
+    extra = OperationGeometryInput(
+        GeometryInputId.new(),
+        GeometryInputRole.PROFILE,
+        boundary.reference,
+        True,
+        boundary.reference.kind,
+        1,
+    )
+    operation = replace(inputs.operation, geometry_inputs=(boundary, extra))
+
+    with pytest.raises(PocketGenerationError) as unsupported:
+        generator.resolve_inputs(
+            operation,
+            inputs.setup,
+            assembly=inputs.assembly,
+            tool=inputs.tool,
+            machine=inputs.machine,
+            resolved_geometry=resolved,
+        )
+
+    assert unsupported.value.code is DiagnosticCode.POCKET_PROFILE_INVALID
 
 
 def test_recompute_publish_keeps_previous_valid_artifact_on_resolution_failure(tmp_path) -> None:
