@@ -116,6 +116,13 @@ class GeometryReferenceId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class FixtureInstanceId(_CamUuidId):
+    """Identity of one placed fixture instance."""
+
+    PREFIX: ClassVar[str] = "fixture_instance"
+
+
+@dataclass(frozen=True, slots=True)
 class ToolpathArtifactId(_CamUuidId):
     """Identity of one future toolpath artifact."""
 
@@ -132,5 +139,6 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     ToolAssemblyId,
     MachineDefinitionId,
     GeometryReferenceId,
+    FixtureInstanceId,
     ToolpathArtifactId,
 )

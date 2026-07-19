@@ -17,5 +17,21 @@ class GeometryReferenceError(CamValidationError):
     """A geometry reference is malformed or internally inconsistent."""
 
 
+class CamInvariantError(CamValidationError):
+    """A change conflicts with an aggregate invariant."""
+
+
+class DuplicateCamIdError(CamInvariantError):
+    """A child identity is already present in its aggregate."""
+
+
+class CamChildNotFoundError(CamInvariantError):
+    """A requested aggregate child does not exist."""
+
+
+class CamSourceScopeError(CamInvariantError):
+    """A geometry reference uses an undeclared project source."""
+
+
 class UnsupportedCamSchemaError(CamValidationError):
     """Serialized CAM data uses an unsupported format or version."""
