@@ -9,10 +9,11 @@ from typing import Callable
 
 from hms_cadcam.cam.domain import (
     ArtifactStatus, CamChildNotFoundError, CamJob, CamJobId, CamNodeId,
-    DiagnosticCode, DiagnosticSeverity, DirtyReason, FixtureInstance, Operation,
+    DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
+    FacingParameters, FixtureInstance, GeometryReference, Operation,
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
-    SetupId, StockDefinition, ToolAssembly, ToolDefinition, ValidationDiagnostic,
-    WcsFrame, WorkOffset,
+    ResolvedMachiningGeometry, SetupId, StockDefinition, ToolAssembly,
+    ToolDefinition, ValidationDiagnostic, WcsFrame, WorkOffset,
 )
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
@@ -303,7 +304,13 @@ class CamApplicationService:
             self._snapshot = _replace_operation(self._snapshot, changed)
             return _clone_snapshot(self._snapshot)
 
-    def compute_facing(self, project_root: Path, operation_id: OperationId) -> FacingComputeResult:
+    def compute_facing(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
+    ) -> FacingComputeResult:
         """Synchronously compute and publish Facing while retaining stale-token contracts."""
         with self._lock:
             before_compute = _clone_snapshot(self._snapshot)
@@ -318,15 +325,34 @@ class CamApplicationService:
             machine = next((item for item in self._snapshot.machine_definitions
                             if item.machine_id == machine_id), None)
             generator = FacingGenerator()
-            inputs_resolved = False
             try:
+                try:
+                    parameters = FacingParameters.from_operation_parameters(operation.parameters)
+                except (TypeError, ValueError) as error:
+                    raise FacingGenerationError(
+                        DiagnosticCode.FACING_INVALID_PARAMETERS, str(error)
+                    ) from error
+                resolved_face = None
+                if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
+                    if len(operation.geometry_inputs) != 1 or face_resolver is None:
+                        raise FacingGenerationError(
+                            DiagnosticCode.FACING_FACE_REFERENCE_MISSING,
+                            "Planar Facing requires one resolvable persistent FACE reference.",
+                        )
+                    try:
+                        resolved_face = face_resolver(operation.geometry_inputs[0].reference)
+                    except (RuntimeError, TypeError, ValueError) as error:
+                        raise FacingGenerationError(
+                            DiagnosticCode.FACING_GEOMETRY_RESOLUTION_FAILED,
+                            str(error) or "Planar FACE resolution failed.",
+                        ) from error
+                inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
+                                                  machine=machine, resolved_face=resolved_face)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
                         DirtyReason.PARAMETERS_CHANGED))
+                    inputs = replace(inputs, operation=operation)
                     self._snapshot = _replace_operation(self._snapshot, operation)
-                inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
-                                                  machine=machine)
-                inputs_resolved = True
                 computing, token = generator.begin(inputs)
                 self._snapshot = _replace_operation(self._snapshot, computing.operation)
                 candidate = generator.generate(computing)
@@ -350,7 +376,7 @@ class CamApplicationService:
                         DiagnosticCode.FACING_GENERATION_FAILED,
                         "Không thể publish file toolpath Facing an toàn.")
                 original = _find_operation(before_compute, operation_id)
-                if inputs_resolved and original.artifact_state.status is ArtifactStatus.VALID:
+                if original.artifact_state.status is ArtifactStatus.VALID:
                     self._snapshot = before_compute
                     return FacingComputeResult(original, None, False, (diagnostic,))
                 current = _find_operation(self._snapshot, operation_id)

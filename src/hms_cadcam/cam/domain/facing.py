@@ -6,9 +6,11 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
+from uuid import UUID
 
 from hms_cadcam.cam.domain.errors import CamInvariantError, CamUnitError, CamValidationError, UnsupportedCamSchemaError
-from hms_cadcam.cam.domain.operation import OperationParameterSet
+from hms_cadcam.cam.domain.ids import GeometryReferenceId
+from hms_cadcam.cam.domain.operation import DiagnosticCode, OperationParameterSet
 from hms_cadcam.cam.domain.geometry_reference import GeometryResolutionStatus
 from hms_cadcam.cam.domain.revision import ContentFingerprint, GeometryFingerprint
 from hms_cadcam.cam.domain.spatial import Point3, Vector3
@@ -28,6 +30,73 @@ class FacingCutDirection(StrEnum):
     CLIMB = "climb"
     CONVENTIONAL = "conventional"
     BIDIRECTIONAL = "bidirectional"
+
+
+class FaceBoundaryCurve(StrEnum):
+    LINE = "line"
+    ARC = "arc"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedFaceBoundary:
+    """One deterministic closed polyline derived only from supported face edges."""
+
+    points: tuple[Point3, ...]
+    source_curves: tuple[FaceBoundaryCurve, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.points, tuple) or len(self.points) < 4:
+            raise CamValidationError("Resolved face boundary requires a closed loop")
+        if any(not isinstance(point, Point3) for point in self.points):
+            raise CamValidationError("Resolved face boundary points are invalid")
+        if len({point.unit for point in self.points}) != 1 or self.points[0].unit is LengthUnit.UNKNOWN:
+            raise CamUnitError("Resolved face boundary requires one known unit")
+        if self.points[0] != self.points[-1]:
+            raise CamInvariantError("Resolved face boundary must be explicitly closed")
+        if not isinstance(self.source_curves, tuple) or not self.source_curves or any(
+            not isinstance(curve, FaceBoundaryCurve) for curve in self.source_curves
+        ):
+            raise CamValidationError("Resolved face boundary curve provenance is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarFaceBounds:
+    minimum: Point3
+    maximum: Point3
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.minimum, Point3) or not isinstance(self.maximum, Point3):
+            raise CamValidationError("Planar face bounds are invalid")
+        if self.minimum.unit is not self.maximum.unit or any(
+            lower > upper for lower, upper in zip(
+                (self.minimum.x, self.minimum.y, self.minimum.z),
+                (self.maximum.x, self.maximum.y, self.maximum.z), strict=True
+            )
+        ):
+            raise CamInvariantError("Planar face bounds are inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class OccurrenceTransformProvenance:
+    occurrence_path: str | None
+    absolute_transform: tuple[float, ...]
+    source_normal_reversed: bool = False
+
+    def __post_init__(self) -> None:
+        if self.occurrence_path is not None and (
+            not isinstance(self.occurrence_path, str) or not self.occurrence_path.strip()
+        ):
+            raise CamValidationError("Occurrence path provenance is invalid")
+        if not isinstance(self.absolute_transform, tuple) or len(self.absolute_transform) != 16 or any(
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+            for value in self.absolute_transform
+        ):
+            raise CamValidationError("Occurrence transform provenance is invalid")
+        if tuple(float(value) for value in self.absolute_transform[12:]) != (0.0, 0.0, 0.0, 1.0):
+            raise CamInvariantError("Occurrence transform provenance must be affine")
+        if type(self.source_normal_reversed) is not bool:
+            raise CamValidationError("Source normal provenance flag is invalid")
+        object.__setattr__(self, "absolute_transform", tuple(float(value) for value in self.absolute_transform))
 
 
 def _positive(value: Length, name: str, unit: LengthUnit) -> None:
@@ -178,20 +247,49 @@ class FacingRegion:
 
 @dataclass(frozen=True, slots=True)
 class PlanarFaceDescriptor:
-    """Native-free result supplied by a fail-closed CAD resolver."""
+    """Complete OCP-free planar face resolved in model/world coordinates."""
 
-    boundary: tuple[Point3, ...]
+    reference_id: GeometryReferenceId
+    source_id: UUID
+    plane_origin: Point3
+    x_axis: Vector3
+    y_axis: Vector3
     normal: Vector3
+    outer_boundary: ResolvedFaceBoundary
+    inner_boundaries: tuple[ResolvedFaceBoundary, ...]
+    bounds: PlanarFaceBounds
+    unit: LengthUnit
     geometry_fingerprint: GeometryFingerprint
-    planar: bool = True
+    transform_provenance: OccurrenceTransformProvenance
 
-    def to_region(self) -> FacingRegion:
-        if not self.planar:
-            raise CamInvariantError("Facing face is not planar")
-        magnitude = self.normal.magnitude
-        if magnitude <= 1e-12 or self.normal.z / magnitude < 1.0 - 1e-8:
-            raise CamInvariantError("Facing face normal is not aligned with Setup WCS +Z")
-        return FacingRegion(self.boundary, self.normal, self.geometry_fingerprint)
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference_id, GeometryReferenceId) or not isinstance(self.source_id, UUID):
+            raise CamValidationError("Planar face reference identity is invalid")
+        if not isinstance(self.unit, LengthUnit) or self.unit is LengthUnit.UNKNOWN:
+            raise CamUnitError("Planar face descriptor requires a known unit")
+        if not isinstance(self.plane_origin, Point3) or self.plane_origin.unit is not self.unit:
+            raise CamUnitError("Planar face origin unit is invalid")
+        if any(not isinstance(axis, Vector3) for axis in (self.x_axis, self.y_axis, self.normal)):
+            raise CamValidationError("Planar face basis is invalid")
+        if any(abs(axis.magnitude - 1.0) > 1.0e-9 for axis in (self.x_axis, self.y_axis, self.normal)):
+            raise CamInvariantError("Planar face basis must use unit vectors")
+        if any(abs(first.dot(second)) > 1.0e-9 for first, second in (
+            (self.x_axis, self.y_axis), (self.x_axis, self.normal), (self.y_axis, self.normal)
+        )) or self.x_axis.cross(self.y_axis).dot(self.normal) < 1.0 - 1.0e-9:
+            raise CamInvariantError("Planar face basis must be orthonormal and right-handed")
+        if not isinstance(self.outer_boundary, ResolvedFaceBoundary) or any(
+            not isinstance(loop, ResolvedFaceBoundary) for loop in self.inner_boundaries
+        ):
+            raise CamValidationError("Planar face boundaries are invalid")
+        if not isinstance(self.inner_boundaries, tuple) or not isinstance(self.bounds, PlanarFaceBounds):
+            raise CamValidationError("Planar face boundary metadata is invalid")
+        points = (*self.outer_boundary.points, *(point for loop in self.inner_boundaries for point in loop.points))
+        if any(point.unit is not self.unit for point in points) or self.bounds.minimum.unit is not self.unit:
+            raise CamUnitError("Planar face geometry must use the descriptor unit")
+        if not isinstance(self.geometry_fingerprint, GeometryFingerprint) or not isinstance(
+            self.transform_provenance, OccurrenceTransformProvenance
+        ):
+            raise CamValidationError("Planar face fingerprint or transform provenance is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +299,7 @@ class ResolvedMachiningGeometry:
     status: GeometryResolutionStatus
     planar_face: PlanarFaceDescriptor | None = None
     message: str | None = None
+    diagnostic_code: DiagnosticCode | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, GeometryResolutionStatus):
@@ -209,3 +308,5 @@ class ResolvedMachiningGeometry:
             raise CamInvariantError("Only resolved machining geometry carries a face descriptor")
         if self.message is not None and (not isinstance(self.message, str) or not self.message.strip()):
             raise CamValidationError("Machining geometry diagnostic message is invalid")
+        if self.diagnostic_code is not None and not isinstance(self.diagnostic_code, DiagnosticCode):
+            raise CamValidationError("Machining geometry diagnostic code is invalid")

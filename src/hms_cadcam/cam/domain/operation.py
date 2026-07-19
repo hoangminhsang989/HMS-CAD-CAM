@@ -111,6 +111,16 @@ class DiagnosticCode(StrEnum):
     FACING_UNSAFE_CLEARANCE = "facing.unsafe_clearance"
     FACING_GENERATION_FAILED = "facing.generation_failed"
     FACING_STALE_RESULT = "facing.stale_result"
+    FACING_FACE_REFERENCE_MISSING = "facing.face_reference_missing"
+    FACING_FACE_REFERENCE_STALE = "facing.face_reference_stale"
+    FACING_FACE_REFERENCE_AMBIGUOUS = "facing.face_reference_ambiguous"
+    FACING_FACE_SOURCE_MISMATCH = "facing.face_source_mismatch"
+    FACING_FACE_TOPOLOGY_CHANGED = "facing.face_topology_changed"
+    FACING_INVALID_FACE_BOUNDARY = "facing.invalid_face_boundary"
+    FACING_UNSUPPORTED_INNER_LOOPS = "facing.unsupported_inner_loops"
+    FACING_UNSUPPORTED_FACE_SHAPE = "facing.unsupported_face_shape"
+    FACING_TARGET_ABOVE_STOCK = "facing.target_above_stock"
+    FACING_GEOMETRY_RESOLUTION_FAILED = "facing.geometry_resolution_failed"
 
 
 @dataclass(frozen=True, slots=True)

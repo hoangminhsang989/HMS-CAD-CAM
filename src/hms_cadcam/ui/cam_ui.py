@@ -18,11 +18,14 @@ from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, CamJobId, CamNodeId, ContentFingerprint,
     DirtyReason, FacingBoundarySource, FacingCutDirection, FacingParameters,
     FeedRate, FeedUnit,
-    GeometryFingerprint, GeometryReference, GeometryReferenceId,
-    GeometryReferenceKind, GeometryRepresentationKind, Length, LengthUnit,
+    GeometryFingerprint, GeometryInputId, GeometryInputRole,
+    GeometryReference, GeometryReferenceId,
+    GeometryReferenceKind, GeometryRepresentationKind, GeometryResolutionStatus,
+    Length, LengthUnit,
     MachineRequirement, Operation, OperationCapability, OperationFamily,
+    OperationGeometryInput,
     OperationId, OperationParameterSet, Point3,
-    Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
+    ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
     SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
@@ -46,7 +49,8 @@ class CamWorkspace(QWidget):
                  pick_provider: Callable[[], GeometryReference] | None = None,
                  toolpath_display: Callable[[object], object] | None = None,
                  toolpath_clear: Callable[[], None] | None = None,
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None,
+                 face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
@@ -54,7 +58,9 @@ class CamWorkspace(QWidget):
         self._pick_provider = pick_provider
         self._toolpath_display = toolpath_display
         self._toolpath_clear = toolpath_clear
+        self._face_resolver = face_resolver
         self._picked_reference: GeometryReference | None = None
+        self._picked_reference_resolved = False
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -88,8 +94,8 @@ class CamWorkspace(QWidget):
             "operation": ("Thêm Facing 2.5D", self.add_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
-            "pick": ("Gắn hình học", self.pick_geometry),
-            "clear_pick": ("Bỏ liên kết", self.clear_geometry_pick),
+            "pick": ("Bind/Rebind FACE", self.pick_geometry),
+            "clear_pick": ("Clear FACE", self.clear_geometry_pick),
             "up": ("Lên", lambda: self.move_selected(-1)),
             "down": ("Xuống", lambda: self.move_selected(1)),
             "delete": ("Xóa", self.delete_selected),
@@ -106,6 +112,7 @@ class CamWorkspace(QWidget):
         """Clear old identities before rendering a new project snapshot."""
         self._selected_key = None
         self._picked_reference = None
+        self._picked_reference_resolved = False
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
@@ -235,10 +242,17 @@ class CamWorkspace(QWidget):
                 if node.operation_id is not None else None
             )
             if operation is None:
+                self._picked_reference = None
                 self.editor.show_node(node.name, None)
             else:
+                self._picked_reference = (
+                    operation.geometry_inputs[0].reference
+                    if len(operation.geometry_inputs) == 1 else None
+                )
+                self._picked_reference_resolved = self._resolve_picked_reference()
                 self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
                                       self._service.cam_snapshot.machine_definitions)
+                self.editor.show_reference(self._picked_reference)
                 artifact = (self._service.load_toolpath_artifact(operation.operation_id)
                             if operation.artifact_state.status is ArtifactStatus.VALID else None)
                 if artifact is not None and self._toolpath_display is not None:
@@ -246,6 +260,7 @@ class CamWorkspace(QWidget):
                 elif self._toolpath_clear is not None:
                     self._toolpath_clear()
         else:
+            self._picked_reference = None
             self.editor.clear()
         self._update_generate_action()
 
@@ -303,14 +318,56 @@ class CamWorkspace(QWidget):
         if generation is None or generation != self._service.cam_generation:
             self._error("Phiên chọn hình học đã bị hủy vì dự án đã thay đổi.")
             return
+        previous = self._picked_reference
+        previous_status = self._picked_reference_resolved
         self._picked_reference = reference
+        self._picked_reference_resolved = self._resolve_picked_reference()
+        if not self._picked_reference_resolved:
+            self._picked_reference = previous
+            self._picked_reference_resolved = previous_status
+            self._error("Persistent FACE could not be resolved unambiguously.")
+            return
         self.editor.show_reference(self._picked_reference)
         self.message.emit("Đã tạo GeometryReference; dùng Rebind để thay thế rõ ràng.")
 
     def clear_geometry_pick(self) -> None:
         """Clear an explicit binding; never choose a replacement automatically."""
         self._picked_reference = None
+        self._picked_reference_resolved = False
         self.editor.show_reference(None)
+
+    def cad_context_changed(self, *, force_invalidate: bool = False) -> None:
+        """Re-resolve displayed references after CAD reload without rebinding them."""
+        self._picked_reference_resolved = self._resolve_picked_reference()
+        if self._face_resolver is not None and self._generation is not None:
+            for job in self._service.cam_snapshot.jobs:
+                for setup in job.setups:
+                    for operation in setup.operation_tree.operations:
+                        if (operation.artifact_state.status is not ArtifactStatus.VALID or
+                                len(operation.geometry_inputs) != 1):
+                            continue
+                        try:
+                            parameters = FacingParameters.from_operation_parameters(operation.parameters)
+                            result = self._face_resolver(operation.geometry_inputs[0].reference)
+                        except (RuntimeError, TypeError, ValueError):
+                            continue
+                        if (parameters.boundary_source is FacingBoundarySource.PLANAR_FACE and
+                                (force_invalidate or getattr(result, "status", None) is not
+                                 GeometryResolutionStatus.RESOLVED)):
+                            self._execute(lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+        self._update_generate_action()
+
+    def _resolve_picked_reference(self) -> bool:
+        if self._picked_reference is None:
+            return False
+        if self._face_resolver is None:
+            return True
+        try:
+            result = self._face_resolver(self._picked_reference)
+        except (RuntimeError, TypeError, ValueError):
+            return False
+        return getattr(result, "status", None) is GeometryResolutionStatus.RESOLVED
 
     def add_operation(self) -> None:
         context = self._tree_context()
@@ -354,8 +411,11 @@ class CamWorkspace(QWidget):
                 not operation.enabled):
             self._error("Draft Facing chưa hợp lệ hoặc chưa được Áp dụng.")
             return
-        result = self._service.compute_facing(operation.operation_id,
-                                              expected_generation=self._generation)
+        result = self._service.compute_facing(
+            operation.operation_id,
+            expected_generation=self._generation,
+            face_resolver=self._face_resolver,
+        )
         if result.accepted and result.artifact is not None:
             if self._toolpath_display is not None:
                 self._toolpath_display(result.artifact)
@@ -482,10 +542,22 @@ class CamWorkspace(QWidget):
                         machine.content_fingerprint, machine.unit, (OperationCapability.MILLING,))
                     parameter_set = parameters.to_operation_parameters()
                     tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    geometry_inputs = ()
+                    if (parameters.boundary_source is FacingBoundarySource.PLANAR_FACE and
+                            self._picked_reference is not None):
+                        existing = current.geometry_inputs[0] if len(current.geometry_inputs) == 1 else None
+                        input_id = (existing.input_id if existing is not None and
+                                    existing.reference.reference_id == self._picked_reference.reference_id
+                                    else GeometryInputId.new())
+                        geometry_inputs = (OperationGeometryInput(
+                            input_id, GeometryInputRole.BOUNDARY, self._picked_reference,
+                            True, GeometryReferenceKind.FACE, 0,
+                        ),)
                     enabled = bool(values["enabled"])
                     inputs_changed = (parameter_set != current.parameters or
                                       tool_reference != current.tool_assembly or
-                                      requirement != current.machine_requirement)
+                                      requirement != current.machine_requirement or
+                                      geometry_inputs != current.geometry_inputs)
                     enabled_changed = enabled != current.enabled
                     changed_operation = current
                     if inputs_changed or enabled_changed:
@@ -493,6 +565,7 @@ class CamWorkspace(QWidget):
                                   else DirtyReason.UPSTREAM_CHANGED)
                         changed_operation = replace(current, parameters=parameter_set,
                             tool_assembly=tool_reference, machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs,
                             enabled=enabled, revision=current.revision.next(),
                             artifact_state=current.artifact_state.mark_dirty(reason))
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
@@ -573,6 +646,10 @@ class CamWorkspace(QWidget):
             machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
+                (draft.boundary_source is FacingBoundarySource.STOCK_BOX or
+                 (len(operation.geometry_inputs) == 1 and
+                  self._picked_reference == operation.geometry_inputs[0].reference and
+                  self._picked_reference_resolved)) and
                 self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
                 self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
         except (TypeError, ValueError):

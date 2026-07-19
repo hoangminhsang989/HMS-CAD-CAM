@@ -37,7 +37,7 @@ from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
-from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.domain import GeometryReference, OperationId, ResolvedMachiningGeometry
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.toolpath import ToolpathArtifact, ToolpathPublishResult
@@ -338,13 +338,17 @@ class ProjectService:
         return result
 
     def compute_facing(self, operation_id: OperationId,
-                       *, expected_generation: int | None = None) -> FacingComputeResult:
+                       *, expected_generation: int | None = None,
+                       face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
+                       ) -> FacingComputeResult:
         """Generate/publish one Facing operation through the project lifecycle gateway."""
         session = self._require_current()
         if expected_generation is not None and expected_generation != self._cam_application.generation:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_facing(session.root_path, operation_id)
+        result = self._cam_application.compute_facing(
+            session.root_path, operation_id, face_resolver=face_resolver
+        )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True

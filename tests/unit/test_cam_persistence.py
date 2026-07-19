@@ -41,7 +41,8 @@ def _fp(name):
     return ContentFingerprint.from_payload({"name": name})
 
 
-def _reference(source_id, selector="face:1", occurrence="assembly:1/part:1"):
+def _reference(source_id, selector=None, occurrence="assembly:1/part:1"):
+    selector = selector or f"hms_face_v1:{'a' * 64}:{'b' * 64}"
     return GeometryReference(GeometryReferenceId.new(), "hms_persistent_geometry", 1,
         source_id, GeometryReferenceKind.FACE, GeometryRepresentationKind.BREP,
         GeometryFingerprint.from_payload({"selector": selector, "occurrence": occurrence}),

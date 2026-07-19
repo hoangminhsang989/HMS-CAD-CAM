@@ -26,6 +26,9 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cad.kernel import CadKernel
+from hms_cadcam.cad.ocp.kernel import OcpCadKernel
+from hms_cadcam.cam.adapters import OcpPlanarFaceResolver
+from hms_cadcam.cam.domain import GeometryReference, LengthUnit, ResolvedMachiningGeometry
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
     BoundingDimensions,
@@ -49,13 +52,12 @@ from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
-    geometry_reference_from_selection,
 )
 from hms_cadcam.ui.project_controller import ProjectUiController
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
 from hms_cadcam.viewer.backend import CadViewportBackend
-from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata
+from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
 
 _OBJECT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -81,6 +83,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 680)
         self.setDockNestingEnabled(True)
         self.setStyleSheet(APP_STYLE)
+        self._cad_kernel = cad_kernel
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self.project_controller = ProjectUiController(self, project_service)
@@ -125,6 +128,7 @@ class MainWindow(QMainWindow):
             self.viewport.display_toolpath,
             self.viewport.clear_toolpaths,
             self,
+            face_resolver=self._resolve_planar_face_reference,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_dock = QDockWidget("CAM Workspace", self)
@@ -263,9 +267,26 @@ class MainWindow(QMainWindow):
         mapping = self.cad_controller.persistent_object_map
         if len(selections) != 1 or source_id is None or mapping is None:
             raise GeometryPickError("Hãy chọn đúng một đối tượng CAD có persistent mapping.")
-        return geometry_reference_from_selection(
-            selections[0], source_id=source_id, persistent_map=mapping
-        )
+        selection = selections[0]
+        if selection.topology is SelectionMode.FACE:
+            return self._planar_face_resolver().bind_selection(selection)
+        raise GeometryPickError("Planar Facing requires exactly one FACE selection.")
+
+    def _planar_face_resolver(self) -> OcpPlanarFaceResolver:
+        session = self.project_controller.service.current_project
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        mapping = self.cad_controller.persistent_object_map
+        if (not isinstance(self._cad_kernel, OcpCadKernel) or session is None or
+                document_id is None or source_id is None or mapping is None):
+            raise GeometryPickError("No active OCP CAD source is available for planar FACE resolution.")
+        unit = (LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM)
+        return OcpPlanarFaceResolver(self._cad_kernel, document_id, source_id, mapping, unit)
+
+    def _resolve_planar_face_reference(
+        self, reference: GeometryReference
+    ) -> ResolvedMachiningGeometry:
+        return self._planar_face_resolver().resolve(reference)
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)
@@ -410,6 +431,10 @@ class MainWindow(QMainWindow):
         self.cam_workspace.bind_project(session)
 
     def _update_cad_document(self, metadata: object) -> None:
+        previous_document_id = (
+            self._active_document_metadata.document_id
+            if self._active_document_metadata is not None else None
+        )
         self._active_document_metadata = (
             metadata if isinstance(metadata, CadDocumentMetadata) else None
         )
@@ -417,6 +442,16 @@ class MainWindow(QMainWindow):
         self._selected_object_ids = ()
         self._active_measurements = ()
         self._update_project_display(self.project_controller.service.current_project)
+        if hasattr(self, "cam_workspace"):
+            current_document_id = (
+                self._active_document_metadata.document_id
+                if self._active_document_metadata is not None else None
+            )
+            self.cam_workspace.cad_context_changed(
+                force_invalidate=(previous_document_id is not None and
+                                  current_document_id is not None and
+                                  previous_document_id != current_document_id)
+            )
         self._show_document_properties()
 
     def _update_topology_tree(self, tree: object) -> None:

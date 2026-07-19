@@ -24,14 +24,19 @@ from hms_cadcam.cam.domain.geometry_reference import (
     GeometryResolutionStatus,
     assess_geometry_resolution,
 )
+from hms_cadcam.cam.domain.face_selector import PersistentFaceSelectorV1
 from hms_cadcam.cam.domain.facing import (
     FACING_STRATEGY_KEY,
     FACING_STRATEGY_VERSION,
     FacingBoundarySource,
     FacingCutDirection,
+    FaceBoundaryCurve,
     FacingParameters,
     FacingRegion,
+    OccurrenceTransformProvenance,
+    PlanarFaceBounds,
     PlanarFaceDescriptor,
+    ResolvedFaceBoundary,
     ResolvedMachiningGeometry,
 )
 from hms_cadcam.cam.domain.job import CamJob
@@ -205,6 +210,7 @@ __all__ = [
     "FACING_STRATEGY_VERSION",
     "FacingBoundarySource",
     "FacingCutDirection",
+    "FaceBoundaryCurve",
     "FacingParameters",
     "FacingRegion",
     "GeometryFingerprint",
@@ -249,7 +255,11 @@ __all__ = [
     "OperationTree",
     "OperationCapability",
     "Point3",
+    "OccurrenceTransformProvenance",
+    "PlanarFaceBounds",
     "PlanarFaceDescriptor",
+    "PersistentFaceSelectorV1",
+    "ResolvedFaceBoundary",
     "ResolvedMachiningGeometry",
     "Revision",
     "Setup",

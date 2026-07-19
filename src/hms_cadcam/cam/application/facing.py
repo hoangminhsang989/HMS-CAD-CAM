@@ -9,8 +9,9 @@ from uuid import UUID, uuid5
 from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, CamInvariantError, ComputationToken, ContentFingerprint, DependencyFingerprint,
     DiagnosticCode, DiagnosticSeverity, FacingBoundarySource, FacingCutDirection,
-    FacingParameters, FacingRegion, GeometryFingerprint, GeometryResolutionStatus, LengthUnit, MachineDefinition,
-    MachineKind, Operation, OperationCapability, OperationInputSnapshot, Point3, Setup,
+    FacingParameters, FacingRegion, GeometryFingerprint, GeometryInputRole,
+    GeometryReferenceKind, GeometryResolutionStatus, LengthUnit, MachineDefinition,
+    MachineKind, Operation, OperationCapability, OperationInputSnapshot, PlanarFaceDescriptor, Point3, Setup,
     ToolAssembly, ToolDefinition, ToolFamily, ToolReferenceStatus, ToolpathArtifactId,
     ResolvedMachiningGeometry, ValidationDiagnostic, Vector3,
 )
@@ -47,6 +48,7 @@ class FacingInputs:
     machine: MachineDefinition
     tool_diameter: float
     input_fingerprint: DependencyFingerprint
+    planar_boundary: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,47 @@ def resolve_box_facing_region(setup: Setup) -> FacingRegion:
     fingerprint = GeometryFingerprint.from_payload({"source": "stock_box", "stock": stock.to_dict(),
                                                      "setup_wcs": setup.wcs.to_dict()})
     return FacingRegion(boundary, Vector3(0.0, 0.0, 1.0), fingerprint)
+
+
+def resolve_planar_face_region(descriptor: PlanarFaceDescriptor, setup: Setup) -> FacingRegion:
+    """Transform a verified world/model descriptor into Setup WCS."""
+    if descriptor.unit is not setup.wcs.origin.unit:
+        raise FacingGenerationError(
+            DiagnosticCode.FACING_GEOMETRY_RESOLUTION_FAILED,
+            "Planar FACE and Setup WCS must use the same declared unit.",
+        )
+    if descriptor.inner_boundaries:
+        raise FacingGenerationError(
+            DiagnosticCode.FACING_UNSUPPORTED_INNER_LOOPS,
+            "Planar Facing v1 does not support inner loops.",
+        )
+
+    def setup_point(value: Point3) -> Point3:
+        delta = Vector3(value.x - setup.wcs.origin.x, value.y - setup.wcs.origin.y,
+                        value.z - setup.wcs.origin.z)
+        return Point3(delta.dot(setup.wcs.x_axis), delta.dot(setup.wcs.y_axis),
+                      delta.dot(setup.wcs.z_axis), value.unit)
+
+    normal = Vector3(descriptor.normal.dot(setup.wcs.x_axis),
+                     descriptor.normal.dot(setup.wcs.y_axis),
+                     descriptor.normal.dot(setup.wcs.z_axis))
+    magnitude = normal.magnitude
+    if magnitude <= _TOLERANCE or abs(normal.z / magnitude) < 1.0 - _TOLERANCE:
+        raise FacingGenerationError(
+            DiagnosticCode.FACING_AXIS_MISMATCH,
+            "Planar FACE normal must be parallel or opposite to the Setup tool axis.",
+        )
+    points = tuple(setup_point(point) for point in descriptor.outer_boundary.points[:-1])
+    if normal.z < 0.0:
+        normal = Vector3(-normal.x, -normal.y, -normal.z)
+        points = tuple(reversed(points))
+    fingerprint = GeometryFingerprint.from_payload({
+        "descriptor": descriptor.geometry_fingerprint.to_dict(),
+        "reference_id": str(descriptor.reference_id),
+        "setup_wcs": setup.wcs.to_dict(),
+        "boundary": [point.to_dict() for point in points],
+    })
+    return FacingRegion(points, normal, fingerprint)
 
 
 class FacingGenerator:
@@ -148,15 +191,37 @@ class FacingGenerator:
         else:
             if isinstance(resolved_face, ResolvedMachiningGeometry):
                 if resolved_face.status is not GeometryResolutionStatus.RESOLVED:
-                    code = (DiagnosticCode.FACING_GEOMETRY_STALE
-                            if resolved_face.status in {GeometryResolutionStatus.STALE,
-                                                       GeometryResolutionStatus.TOPOLOGY_CHANGED}
-                            else DiagnosticCode.FACING_GEOMETRY_UNRESOLVED)
+                    code = resolved_face.diagnostic_code or (
+                        DiagnosticCode.FACING_GEOMETRY_STALE
+                        if resolved_face.status in {GeometryResolutionStatus.STALE,
+                                                   GeometryResolutionStatus.TOPOLOGY_CHANGED}
+                        else DiagnosticCode.FACING_GEOMETRY_UNRESOLVED
+                    )
                     raise FacingGenerationError(code, resolved_face.message or
                                                 f"Face resolution failed: {resolved_face.status.value}")
                 try:
                     assert resolved_face.planar_face is not None
-                    region = resolved_face.planar_face.to_region()
+                    geometry_inputs = tuple(
+                        item for item in operation.geometry_inputs
+                        if item.role is GeometryInputRole.BOUNDARY
+                    )
+                    if len(geometry_inputs) != 1 or (
+                        geometry_inputs[0].expected_kind is not GeometryReferenceKind.FACE
+                    ):
+                        raise FacingGenerationError(
+                            DiagnosticCode.FACING_FACE_REFERENCE_MISSING,
+                            "Planar Facing requires exactly one persistent FACE boundary reference.",
+                        )
+                    reference = geometry_inputs[0].reference
+                    descriptor = resolved_face.planar_face
+                    if descriptor.reference_id != reference.reference_id or descriptor.source_id != reference.source_id:
+                        raise FacingGenerationError(
+                            DiagnosticCode.FACING_FACE_SOURCE_MISMATCH,
+                            "Resolved planar FACE does not match the operation reference.",
+                        )
+                    region = resolve_planar_face_region(descriptor, setup)
+                except FacingGenerationError:
+                    raise
                 except CamInvariantError as error:
                     code = (DiagnosticCode.FACING_NON_PLANAR_FACE if "not planar" in str(error)
                             else DiagnosticCode.FACING_AXIS_MISMATCH)
@@ -166,14 +231,19 @@ class FacingGenerator:
             else:
                 raise FacingGenerationError(DiagnosticCode.FACING_GEOMETRY_UNRESOLVED,
                                             "Face resolver returned an invalid descriptor.")
-            magnitude = region.normal.magnitude
-            if magnitude <= _TOLERANCE or region.normal.z / magnitude < 1.0 - _TOLERANCE:
-                raise FacingGenerationError(DiagnosticCode.FACING_AXIS_MISMATCH,
-                                            "Normal của mặt không cùng hướng +Z Setup WCS.")
+        stock_region = resolve_box_facing_region(setup)
+        stock_top = stock_region.boundary[0].z
         region_z = region.boundary[0].z
-        if abs(region_z - parameters.top_height.value) > _TOLERANCE:
+        if abs(stock_top - parameters.top_height.value) > _TOLERANCE:
             raise FacingGenerationError(DiagnosticCode.FACING_INVALID_PARAMETERS,
-                                        "Top height phải trùng mặt Facing trong Setup WCS.")
+                                        "Top height must equal Stock BOX top in Setup WCS.")
+        if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
+            if region_z > stock_top + _TOLERANCE:
+                raise FacingGenerationError(DiagnosticCode.FACING_TARGET_ABOVE_STOCK,
+                                            "Selected planar FACE is above Stock BOX top.")
+            if abs(region_z - parameters.target_height.value) > _TOLERANCE:
+                raise FacingGenerationError(DiagnosticCode.FACING_INVALID_PARAMETERS,
+                                            "Target height must equal the selected planar FACE plane.")
         depth_ratio = ((parameters.top_height.value - parameters.final_cut_height) /
                        parameters.stepdown.value)
         lane_count = _estimated_raster_lane_count(
@@ -191,7 +261,8 @@ class FacingGenerator:
              ("wcs", ContentFingerprint.from_payload(setup.wcs.to_dict()))),
             tool_fp, machine_fp)
         return FacingInputs(operation, setup, parameters, region, assembly, tool, machine,
-                            diameter.value, snapshot.fingerprint)
+                            diameter.value, snapshot.fingerprint,
+                            parameters.boundary_source is FacingBoundarySource.PLANAR_FACE)
 
     def begin(self, inputs: FacingInputs) -> tuple[FacingInputs, ComputationToken]:
         state, token = inputs.operation.artifact_state.begin(inputs.input_fingerprint)
@@ -214,12 +285,17 @@ class FacingGenerator:
             tool_assembly_fingerprint=ContentFingerprint.from_payload(inputs.assembly.to_dict()),
             machine_id=inputs.machine.machine_id, machine_fingerprint=inputs.machine.content_fingerprint)
         try:
+            extension = (0.0 if inputs.planar_boundary else
+                         inputs.tool_diameter / 2.0 + parameters.overtravel.value)
             lanes = _raster_lanes(inputs.region, parameters.raster_angle_degrees,
-                                  parameters.stepover.value, inputs.tool_diameter / 2.0 + parameters.overtravel.value)
+                                  parameters.stepover.value, extension)
             if not lanes:
                 raise CamInvariantError("Facing boundary does not produce any cutting lanes")
             levels = _depth_levels(parameters.top_height.value, parameters.final_cut_height,
                                    parameters.stepdown.value)
+            if len(lanes) * len(levels) > _MAX_CUTTING_PASSES:
+                raise FacingGenerationError(DiagnosticCode.FACING_INVALID_PARAMETERS,
+                                            "Facing exceeds the 20,000 cutting-pass limit.")
             first = _oriented_lane(lanes[0], parameters.direction, 0)
             initial = Pose(Point3(first[0][0], first[0][1], parameters.clearance_height.value, parameters.unit),
                            Vector3(0.0, 0.0, 1.0))
@@ -290,17 +366,37 @@ def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
         intersections: list[float] = []
         for index, first in enumerate(transformed):
             second = transformed[(index + 1) % len(transformed)]
-            if abs(first[1] - v) <= _TOLERANCE:
+            if extension > _TOLERANCE and abs(first[1] - v) <= _TOLERANCE:
                 intersections.append(first[0])
             delta = second[1] - first[1]
-            if abs(delta) > _TOLERANCE and -_TOLERANCE <= (v - first[1]) / delta <= 1.0 + _TOLERANCE:
-                intersections.append(first[0] + (v - first[1]) / delta * (second[0] - first[0]))
-        unique = sorted({round(value, 12) for value in intersections})
-        if not unique:
+            if extension <= _TOLERANCE and abs(delta) > _TOLERANCE and (
+                (first[1] <= v < second[1]) or (second[1] <= v < first[1])
+            ):
+                ratio = (v - first[1]) / delta
+                intersections.append(first[0] + ratio * (second[0] - first[0]))
+            elif extension > _TOLERANCE and abs(delta) > _TOLERANCE and (
+                -_TOLERANCE <= (v - first[1]) / delta <= 1.0 + _TOLERANCE
+            ):
+                ratio = (v - first[1]) / delta
+                intersections.append(first[0] + ratio * (second[0] - first[0]))
+        crossings = (sorted(round(value, 12) for value in intersections)
+                     if extension <= _TOLERANCE else
+                     sorted({round(value, 12) for value in intersections}))
+        if not crossings:
             continue
-        start_u, end_u = unique[0] - extension, unique[-1] + extension
-        to_xy = lambda u: (u * u_axis[0] + v * v_axis[0], u * u_axis[1] + v * v_axis[1])
-        lanes.append((to_xy(start_u), to_xy(end_u)))
+        if len(crossings) % 2:
+            if len(crossings) == 1 and extension > _TOLERANCE:
+                epsilon = max(_TOLERANCE, extension)
+                crossings = [crossings[0] - epsilon, crossings[0] + epsilon]
+            else:
+                continue
+        to_xy = lambda u: (u * u_axis[0] + v * v_axis[0],
+                           u * u_axis[1] + v * v_axis[1])
+        for index in range(0, len(crossings), 2):
+            start_u = crossings[index] - extension
+            end_u = crossings[index + 1] + extension
+            if end_u - start_u > _TOLERANCE:
+                lanes.append((to_xy(start_u), to_xy(end_u)))
     return tuple(lanes)
 
 

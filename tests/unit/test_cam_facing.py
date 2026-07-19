@@ -10,14 +10,20 @@ from PySide6.QtWidgets import QApplication
 
 from hms_cadcam.cam.application import FacingGenerationError, FacingGenerator, basic_mill_resources
 from hms_cadcam.cam.domain import (
-    ArtifactStatus, BoxStock, CamInvariantError, CamNodeId, DirtyReason,
+    ArtifactStatus, BoxStock, CamInvariantError, CamNodeId, DiagnosticCode, DirtyReason,
     FacingBoundarySource, FacingCutDirection,
     FacingParameters, FeedRate, FeedUnit, GeometryFingerprint, Length, LengthUnit,
-    GeometryResolutionStatus, MachineRequirement, Operation, OperationCapability, OperationFamily, OperationId,
-    PlanarFaceDescriptor, Point3, ResolvedMachiningGeometry, SpindleSpeed, ToolAssemblyReference, Vector3,
+    GeometryInputId, GeometryInputRole, GeometryReference, GeometryReferenceId,
+    GeometryReferenceKind, GeometryRepresentationKind, GeometryResolutionStatus,
+    MachineRequirement, OccurrenceTransformProvenance, Operation, OperationCapability,
+    OperationFamily, OperationGeometryInput, OperationId, PlanarFaceBounds,
+    PlanarFaceDescriptor, Point3, ResolvedFaceBoundary, FaceBoundaryCurve,
+    ResolvedMachiningGeometry, Revision, SpindleSpeed, ToolAssemblyReference, Vector3,
+    HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
 from hms_cadcam.cam.toolpath import LinearMove, MotionClass, RapidMove, publish_toolpath
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.project.exceptions import RecoveryRequiredError
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
 from hms_cadcam.ui.cam_ui import _default_setup
 from hms_cadcam.ui.cam_ui import CamWorkspace
@@ -55,6 +61,34 @@ def _artifact(parameters: FacingParameters | None = None):
     return generator, inputs, computing, token, generator.generate(computing)
 
 
+def _descriptor(points: tuple[Point3, ...], normal: Vector3 = Vector3(0, 0, 1)):
+    source_id = uuid4()
+    reference_id = GeometryReferenceId.new()
+    closed = (*points, points[0])
+    fingerprint = GeometryFingerprint.from_payload({"face": [point.to_dict() for point in points]})
+    descriptor = PlanarFaceDescriptor(
+        reference_id, source_id, points[0], Vector3(1, 0, 0), Vector3(0, 1, 0), normal,
+        ResolvedFaceBoundary(closed, (FaceBoundaryCurve.LINE,) * len(points)), (),
+        PlanarFaceBounds(
+            Point3(min(point.x for point in points), min(point.y for point in points),
+                   min(point.z for point in points), LengthUnit.MM),
+            Point3(max(point.x for point in points), max(point.y for point in points),
+                   max(point.z for point in points), LengthUnit.MM),
+        ), LengthUnit.MM, fingerprint,
+        OccurrenceTransformProvenance(None, (1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)),
+    )
+    reference = GeometryReference(
+        reference_id, HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
+        source_id, GeometryReferenceKind.FACE, GeometryRepresentationKind.BREP,
+        fingerprint, Revision(0), subshape_selector="hms_face_v1:" + "a" * 64 + ":" + "b" * 64,
+    )
+    return descriptor, OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+
+
 def test_parameters_are_versioned_round_trip_and_deterministic() -> None:
     value = _parameters(angle=217.0)
     decoded = FacingParameters.from_operation_parameters(value.to_operation_parameters())
@@ -84,12 +118,10 @@ def test_unknown_unit_and_future_strategy_version_are_rejected() -> None:
 
 def test_planar_descriptor_accepts_aligned_face_and_rejects_other_geometry() -> None:
     points = tuple(Point3(x, y, 5, LengthUnit.MM) for x, y in ((0, 0), (5, 0), (5, 4), (0, 4)))
-    fingerprint = GeometryFingerprint.from_payload({"face": 1})
-    assert PlanarFaceDescriptor(points, Vector3(0, 0, 1), fingerprint).to_region().boundary == points
+    descriptor, _ = _descriptor(points)
+    assert descriptor.outer_boundary.points[:-1] == points
     with pytest.raises(CamInvariantError):
-        PlanarFaceDescriptor(points, Vector3(0, 0, 1), fingerprint, planar=False).to_region()
-    with pytest.raises(CamInvariantError):
-        PlanarFaceDescriptor(points, Vector3(1, 0, 0), fingerprint).to_region()
+        replace(descriptor, x_axis=Vector3(0, 1, 0))
     stale = ResolvedMachiningGeometry(GeometryResolutionStatus.STALE, message="stale face")
     assert stale.planar_face is None
     with pytest.raises(CamInvariantError):
@@ -206,7 +238,7 @@ def test_excessive_pass_count_is_rejected_before_generation() -> None:
 
 
 def test_face_resolution_stale_fails_closed() -> None:
-    parameters = replace(_parameters(), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
     generator, inputs = _inputs()
     operation = replace(inputs.operation, parameters=parameters.to_operation_parameters())
     with pytest.raises(FacingGenerationError) as captured:
@@ -218,18 +250,66 @@ def test_face_resolution_stale_fails_closed() -> None:
 
 
 def test_planar_face_top_must_match_the_absolute_facing_top() -> None:
-    parameters = replace(_parameters(), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
     generator, inputs = _inputs()
-    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters())
     points = tuple(Point3(x, y, 49, LengthUnit.MM)
                    for x, y in ((0, 0), (10, 0), (10, 10), (0, 10)))
-    descriptor = PlanarFaceDescriptor(points, Vector3(0, 0, 1),
-        GeometryFingerprint.from_payload({"face": "wrong-height"}))
-    with pytest.raises(FacingGenerationError) as captured:
-        generator.resolve_inputs(operation, inputs.setup, assembly=inputs.assembly,
+    descriptor, geometry_input = _descriptor(points)
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters(),
+                        geometry_inputs=(geometry_input,))
+    resolved = generator.resolve_inputs(operation, inputs.setup, assembly=inputs.assembly,
             tool=inputs.tool, machine=inputs.machine,
             resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor))
-    assert captured.value.code.value == "facing.invalid_parameters"
+    assert resolved.region.boundary[0].z == 49
+
+
+def test_planar_face_accepts_opposite_normal_and_rejects_inner_loop() -> None:
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    generator, inputs = _inputs()
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (10, 0), (10, 10), (0, 10)))
+    descriptor, geometry_input = _descriptor(points)
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters(),
+                        geometry_inputs=(geometry_input,))
+    opposite = replace(descriptor, y_axis=Vector3(0, -1, 0), normal=Vector3(0, 0, -1))
+    resolved = generator.resolve_inputs(
+        operation, inputs.setup, assembly=inputs.assembly, tool=inputs.tool,
+        machine=inputs.machine,
+        resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, opposite),
+    )
+    assert resolved.region.normal.z > 0
+
+    inner_points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                         for x, y in ((2, 2), (3, 2), (3, 3), (2, 3)))
+    inner = ResolvedFaceBoundary((*inner_points, inner_points[0]),
+                                 (FaceBoundaryCurve.LINE,) * 4)
+    with pytest.raises(FacingGenerationError) as captured:
+        generator.resolve_inputs(
+            operation, inputs.setup, assembly=inputs.assembly, tool=inputs.tool,
+            machine=inputs.machine,
+            resolved_face=ResolvedMachiningGeometry(
+                GeometryResolutionStatus.RESOLVED,
+                replace(descriptor, inner_boundaries=(inner,)),
+            ),
+        )
+    assert captured.value.code is DiagnosticCode.FACING_UNSUPPORTED_INNER_LOOPS
+
+
+def test_planar_face_above_stock_top_is_rejected() -> None:
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    generator, inputs = _inputs()
+    points = tuple(Point3(x, y, 51, LengthUnit.MM)
+                   for x, y in ((0, 0), (10, 0), (10, 10), (0, 10)))
+    descriptor, geometry_input = _descriptor(points)
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters(),
+                        geometry_inputs=(geometry_input,))
+    with pytest.raises(FacingGenerationError) as captured:
+        generator.resolve_inputs(
+            operation, inputs.setup, assembly=inputs.assembly, tool=inputs.tool,
+            machine=inputs.machine,
+            resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor),
+        )
+    assert captured.value.code is DiagnosticCode.FACING_TARGET_ABOVE_STOCK
 
 
 def test_project_compute_save_open_and_artifact_round_trip(tmp_path) -> None:
@@ -258,6 +338,85 @@ def test_project_compute_save_open_and_artifact_round_trip(tmp_path) -> None:
                     for operation in setup.operation_tree.operations)
     assert FacingParameters.from_operation_parameters(restored.parameters) == _parameters(target=49.0)
     assert restored.artifact_state.status is ArtifactStatus.VALID
+
+
+def test_planar_reference_compute_round_trip_and_failed_recompute_keeps_valid(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config-planar")
+    session = service.new_project(tmp_path, "Planar Round Trip")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (20, 0), (20, 15), (0, 15)))
+    descriptor, geometry_input = _descriptor(points)
+    parameters = replace(_parameters(target=49.0), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    node_id, operation_id = CamNodeId.new(), OperationId.new()
+    requirement = MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                                     machine.unit, (OperationCapability.MILLING,))
+    operation = Operation(
+        operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        parameters.to_operation_parameters(), requirement,
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Planar Facing", operation),
+    ))
+    result = service.compute_facing(
+        operation_id,
+        face_resolver=lambda _reference: ResolvedMachiningGeometry(
+            GeometryResolutionStatus.RESOLVED, descriptor
+        ),
+    )
+    assert result.accepted and result.operation.artifact_state.status is ArtifactStatus.VALID
+    artifact = service.load_toolpath_artifact(operation_id)
+    failed = service.compute_facing(
+        operation_id,
+        face_resolver=lambda _reference: ResolvedMachiningGeometry(
+            GeometryResolutionStatus.STALE,
+            message="stale",
+            diagnostic_code=DiagnosticCode.FACING_FACE_REFERENCE_STALE,
+        ),
+    )
+    assert not failed.accepted
+    assert failed.operation.artifact_state.status is ArtifactStatus.VALID
+    assert service.load_toolpath_artifact(operation_id) == artifact
+    service.save()
+    root = session.root_path
+    service.close_project()
+    service.open_project(root)
+    restored = next(operation for job in service.cam_snapshot.jobs for setup in job.setups
+                    for operation in setup.operation_tree.operations)
+    assert restored.geometry_inputs == (geometry_input,)
+    copied = service.save_as(tmp_path, "Planar Round Trip Copy")
+    assert copied.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0].geometry_inputs == (geometry_input,)
+    copied_job = copied.cam_snapshot.jobs[0]
+    copied_setup = copied_job.setups[0]
+    copied_operation = copied_setup.operation_tree.operations[0]
+    autosave_reference = replace(copied_operation.geometry_inputs[0].reference,
+                                 hint="autosave persistent FACE")
+    autosave_input = replace(copied_operation.geometry_inputs[0], reference=autosave_reference)
+    autosave_operation = replace(
+        copied_operation,
+        geometry_inputs=(autosave_input,),
+        revision=copied_operation.revision.next(),
+        artifact_state=copied_operation.artifact_state.mark_dirty(DirtyReason.GEOMETRY_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        copied_job.job_id, copied_setup.setup_id,
+        lambda tree: tree.replace_operation(autosave_operation),
+    ))
+    assert service.autosave() is not None
+    opener = ProjectService.create_default(tmp_path / "config-recovery")
+    opener._session_locks._pid_checker = lambda _pid: False
+    with pytest.raises(RecoveryRequiredError) as recovery:
+        opener.open_project(copied.root_path)
+    recovered = opener.recover_project(recovery.value.assessment)
+    recovered_input = recovered.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0].geometry_inputs[0]
+    assert recovered_input.reference == autosave_reference
     assert service.load_toolpath_artifact(operation_id).artifact_fingerprint == result.artifact.artifact_fingerprint
 
 
