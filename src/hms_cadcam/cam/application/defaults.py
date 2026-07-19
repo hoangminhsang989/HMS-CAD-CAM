@@ -7,8 +7,9 @@ from hms_cadcam.cam.domain import (
     KinematicNode, KinematicSide, Length, LengthUnit, MachineAxis,
     MachineAxisType, MachineCapabilities, MachineDefinition, MachineDefinitionId,
     MachineKind, OperationCapability, ShankGeometry, SpindleCapability,
-    SpindleSpeed, ToolAssembly, ToolAssemblyId, ToolDefinition, ToolDefinitionId,
-    ToolFamily, Vector3, WorkEnvelope,
+    SpindleDirection, SpindleSpeed, TapGeometry, TappingMode, ToolAssembly,
+    ToolAssemblyId, ToolDefinition, ToolDefinitionId, ToolFamily, ToolHand,
+    Vector3, WorkEnvelope,
 )
 
 
@@ -103,3 +104,130 @@ def basic_drilling_resources(unit: LengthUnit) -> tuple[
         Length(18.0 * scale, unit), Length(55.0 * scale, unit), holder,
     )
     return drill, center_drill, holder, drill_assembly, center_assembly
+
+
+def basic_tapping_resources(unit: LengthUnit) -> tuple[
+    ToolDefinition,
+    ToolDefinition,
+    HolderDefinition,
+    ToolAssembly,
+    ToolAssembly,
+    MachineDefinition,
+]:
+    """Create RH/LH M8-style taps and a controller-neutral tapping machine."""
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    diameter = Length(8.0 * scale, unit)
+    pitch = Length(1.25 * scale, unit)
+    threaded_length = Length(20.0 * scale, unit)
+
+    def tap(name: str, hand: ToolHand) -> ToolDefinition:
+        return ToolDefinition(
+            ToolDefinitionId.new(),
+            name,
+            ToolFamily.TAP,
+            unit,
+            TapGeometry(diameter, threaded_length, pitch, hand),
+            Length(80.0 * scale, unit),
+            Length(30.0 * scale, unit),
+            ShankGeometry(diameter, Length(50.0 * scale, unit)),
+        )
+
+    right_tap = tap("Tap M8 x 1.25 RH", ToolHand.RIGHT)
+    left_tap = tap("Tap M8 x 1.25 LH", ToolHand.LEFT)
+    holder = HolderDefinition(
+        HolderDefinitionId.new(),
+        "Holder tapping cơ bản",
+        unit,
+        (HolderSection(
+            Length(0, unit),
+            Length(35.0 * scale, unit),
+            Length(30.0 * scale, unit),
+            Length(40.0 * scale, unit),
+        ),),
+        Length(0, unit),
+        interface="generic_tapping_holder",
+    )
+    right_assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "Cụm Tap M8 RH",
+        right_tap,
+        Length(25.0 * scale, unit),
+        Length(65.0 * scale, unit),
+        holder,
+    )
+    left_assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "Cụm Tap M8 LH",
+        left_tap,
+        Length(25.0 * scale, unit),
+        Length(65.0 * scale, unit),
+        holder,
+    )
+    axis = MachineAxis(
+        "axis_x",
+        "longitudinal_motion",
+        MachineAxisType.LINEAR,
+        Vector3(1, 0, 0),
+        Length(-500, unit),
+        Length(500, unit),
+        Length(0, unit),
+    )
+    chain = KinematicChain((
+        KinematicNode(
+            "base", None, None, KinematicSide.FIXED, KinematicMount.NONE,
+            AffineTransform.identity(unit),
+        ),
+        KinematicNode(
+            "slide", "base", "axis_x", KinematicSide.TOOL,
+            KinematicMount.TOOL, AffineTransform.identity(unit),
+        ),
+    ))
+    feed_unit = (
+        FeedUnit.INCH_PER_MINUTE
+        if unit is LengthUnit.INCH else FeedUnit.MM_PER_MINUTE
+    )
+    capabilities = MachineCapabilities(
+        milling=True,
+        turning=False,
+        live_tooling=False,
+        probing=False,
+        tapping=True,
+        threading=False,
+        spindle_count=1,
+        maximum_feed=FeedRate(5000.0 * scale, feed_unit),
+        maximum_rapid=FeedRate(10000.0 * scale, feed_unit),
+        tool_capacity=12,
+        coolant=(),
+        operations=(OperationCapability.MILLING, OperationCapability.TAPPING),
+        tapping_modes=(TappingMode.RIGID, TappingMode.FLOATING),
+    )
+    machine = MachineDefinition(
+        MachineDefinitionId.new(),
+        "Máy phay tapping cơ bản",
+        MachineKind.MILL,
+        unit,
+        (axis,),
+        (SpindleCapability(
+            "main",
+            SpindleSpeed(100),
+            SpindleSpeed(10000),
+            directions=(
+                SpindleDirection.CLOCKWISE,
+                SpindleDirection.COUNTERCLOCKWISE,
+            ),
+            synchronized_feed=True,
+        ),),
+        capabilities,
+        chain,
+        WorkEnvelope(
+            Length(1000, unit), Length(500, unit), Length(500, unit),
+        ),
+    )
+    return (
+        right_tap,
+        left_tap,
+        holder,
+        right_assembly,
+        left_assembly,
+        machine,
+    )

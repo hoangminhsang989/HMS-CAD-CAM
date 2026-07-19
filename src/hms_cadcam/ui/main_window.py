@@ -34,7 +34,8 @@ from hms_cadcam.cam.adapters import (
 )
 from hms_cadcam.cam.application import DrillingGeometryResolver, PocketGeometryResolver
 from hms_cadcam.cam.domain import (
-    DrillDepthDefinition, DrillGeometryInput, GeometryReference, HoleReference,
+    DrillDepthDefinition, DrillGeometryInput, GeometryReference,
+    GeometryResolutionStatus, HolePattern, HoleReference,
     LengthUnit, PocketGeometryInput, ResolvedContourProfile,
     ResolvedDrillingGeometry, ResolvedMachiningGeometry, ResolvedPocketGeometry,
     Vector3,
@@ -340,17 +341,45 @@ class MainWindow(QMainWindow):
         resolver = PocketGeometryResolver(self._contour_profile_resolver())
         return resolver.resolve(PocketGeometryInput(reference, unit))
 
-    def _current_drilling_reference(self, axis: Vector3) -> HoleReference:
+    def _current_drilling_reference(
+        self,
+        axis: Vector3,
+    ) -> HoleReference | HolePattern:
         selections = self.cad_controller.active_selection
         if (
-            len(selections) != 1
-            or selections[0].topology not in {SelectionMode.VERTEX, SelectionMode.EDGE}
+            not selections
+            or any(
+                selection.topology not in {
+                    SelectionMode.VERTEX, SelectionMode.EDGE,
+                }
+                for selection in selections
+            )
         ):
             raise GeometryPickError(
-                "Drilling requires exactly one BREP VERTEX or circular EDGE selection."
+                "Drilling/Tapping requires BREP VERTEX or circular EDGE selections."
             )
-        return self._drilling_geometry_resolver().bind_selection(
-            selections[0], axis=axis,
+        resolver = self._drilling_geometry_resolver()
+        references = tuple(
+            resolver.bind_selection(selection, axis=axis)
+            for selection in selections
+        )
+        if len(references) == 1:
+            return references[0]
+        resolved = tuple(resolver.resolve(reference) for reference in references)
+        failed = next((
+            item for item in resolved
+            if item.status is not GeometryResolutionStatus.RESOLVED
+            or item.location is None
+        ), None)
+        if failed is not None:
+            raise GeometryPickError(
+                failed.diagnostics[0].message
+                if failed.diagnostics
+                else "Hole selection pattern could not be resolved."
+            )
+        return HolePattern(
+            tuple(item.location for item in resolved if item.location is not None),
+            references[0].unit,
         )
 
     def _drilling_geometry_resolver(self) -> OcpDrillingGeometryResolver:
