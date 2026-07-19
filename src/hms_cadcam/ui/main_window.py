@@ -28,8 +28,10 @@ from PySide6.QtWidgets import (
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
 from hms_cadcam.cam.adapters import OcpContourProfileResolver, OcpPlanarFaceResolver
+from hms_cadcam.cam.application import PocketGeometryResolver
 from hms_cadcam.cam.domain import (
-    GeometryReference, LengthUnit, ResolvedContourProfile, ResolvedMachiningGeometry,
+    GeometryReference, LengthUnit, PocketGeometryInput, ResolvedContourProfile,
+    ResolvedMachiningGeometry, ResolvedPocketGeometry,
 )
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
@@ -134,6 +136,7 @@ class MainWindow(QMainWindow):
             face_resolver=self._resolve_planar_face_reference,
             contour_pick_provider=self._current_contour_reference,
             profile_resolver=self._resolve_contour_profile_reference,
+            pocket_resolver=self._resolve_pocket_geometry_reference,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_dock = QDockWidget("CAM Workspace", self)
@@ -291,7 +294,9 @@ class MainWindow(QMainWindow):
     def _current_contour_reference(self) -> GeometryReference:
         selections = self.cad_controller.active_selection
         if len(selections) != 1 or selections[0].topology not in {SelectionMode.FACE, SelectionMode.WIRE}:
-            raise GeometryPickError("2D Contour requires exactly one planar FACE or closed WIRE selection.")
+            raise GeometryPickError(
+                "2D Contour/Pocket requires exactly one planar FACE or closed WIRE selection."
+            )
         return self._contour_profile_resolver().bind_selection(selections[0])
 
     def _contour_profile_resolver(self) -> OcpContourProfileResolver:
@@ -301,7 +306,9 @@ class MainWindow(QMainWindow):
         mapping = self.cad_controller.persistent_object_map
         if (not isinstance(self._cad_kernel, OcpCadKernel) or session is None or
                 document_id is None or source_id is None or mapping is None):
-            raise GeometryPickError("No active OCP CAD source is available for Contour profile resolution.")
+            raise GeometryPickError(
+                "No active OCP CAD source is available for Contour/Pocket profile resolution."
+            )
         unit = LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM
         return OcpContourProfileResolver(self._cad_kernel, document_id, source_id, mapping, unit)
 
@@ -314,6 +321,16 @@ class MainWindow(QMainWindow):
         self, reference: GeometryReference
     ) -> ResolvedContourProfile:
         return self._contour_profile_resolver().resolve(reference)
+
+    def _resolve_pocket_geometry_reference(
+        self, reference: GeometryReference
+    ) -> ResolvedPocketGeometry:
+        session = self.project_controller.service.current_project
+        if session is None:
+            raise GeometryPickError("No active project is available for Pocket resolution.")
+        unit = LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM
+        resolver = PocketGeometryResolver(self._contour_profile_resolver())
+        return resolver.resolve(PocketGeometryInput(reference, unit))
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)

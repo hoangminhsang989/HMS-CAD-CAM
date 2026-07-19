@@ -26,11 +26,15 @@ from hms_cadcam.cam.domain import (
     MachineRequirement, Operation, OperationCapability, OperationFamily,
     OperationGeometryInput,
     OperationId, OperationParameterSet, Point3,
+    PocketCuttingDirection, PocketDepthDefinition, PocketEntryPolicy,
+    PocketGeometryInput, PocketStrategy,
     ResolvedContourProfile, ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
+    ResolvedPocketGeometry,
     SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
 from hms_cadcam.project.models import ProjectSession, UnitSystem
+from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import basic_mill_resources
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
@@ -55,7 +59,8 @@ class CamWorkspace(QWidget):
                  toolpath_remove: Callable[[OperationId], None] | None = None,
                  face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
                  contour_pick_provider: Callable[[], GeometryReference] | None = None,
-                 profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None) -> None:
+                 profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
+                 pocket_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
@@ -65,11 +70,17 @@ class CamWorkspace(QWidget):
         self._toolpath_clear = toolpath_clear
         self._toolpath_remove = toolpath_remove
         self._displayed_operation_id: OperationId | None = None
+        self._toolpath_visibility: dict[OperationId, bool] = {}
         self._face_resolver = face_resolver
         self._contour_pick_provider = contour_pick_provider
         self._profile_resolver = profile_resolver
+        self._pocket_resolver = pocket_resolver
         self._picked_reference: GeometryReference | None = None
         self._picked_reference_resolved = False
+        self._pocket_drafts: dict[
+            OperationId, tuple[dict[str, object], GeometryReference | None]
+        ] = {}
+        self._active_editor_operation_id: OperationId | None = None
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -90,7 +101,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
-        for key in ("job", "setup", "resources", "group", "operation", "contour_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "group", "operation", "contour_operation", "pocket_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -102,6 +113,7 @@ class CamWorkspace(QWidget):
             "group": ("Thêm Group", self.add_group),
             "operation": ("Thêm Facing 2.5D", self.add_operation),
             "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
+            "pocket_operation": ("Thêm Pocket 2.5D", self.add_pocket_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
             "pick": ("Bind/Rebind profile", self.pick_geometry),
@@ -123,6 +135,9 @@ class CamWorkspace(QWidget):
         self._selected_key = None
         self._picked_reference = None
         self._picked_reference_resolved = False
+        self._pocket_drafts.clear()
+        self._toolpath_visibility.clear()
+        self._active_editor_operation_id = None
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
@@ -140,6 +155,7 @@ class CamWorkspace(QWidget):
         self._render(preserve or self._selected_key)
 
     def _render(self, preserve: tuple[str, str] | None) -> None:
+        self._stash_active_pocket_draft()
         self._guard = True
         self.tree.clear()
         matches: list[QTreeWidgetItem] = []
@@ -184,6 +200,7 @@ class CamWorkspace(QWidget):
             self._show_properties(matches[0])
         else:
             self._selected_key = None
+            self._active_editor_operation_id = None
             self.editor.clear()
             self._remove_displayed_toolpath()
 
@@ -212,7 +229,9 @@ class CamWorkspace(QWidget):
                     if machine is None:
                         status += " · MACHINE MISSING"
                 if operation.geometry_inputs:
-                    status += " · GEOMETRY UNRESOLVED"
+                    status += " · PROFILE BOUND"
+                elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
+                    status += " · PROFILE MISSING"
             item = self._item(child.name, child.kind.value, str(child.node_id), job_id, setup_id, status)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             parent.addChild(item)
@@ -233,6 +252,8 @@ class CamWorkspace(QWidget):
             return
         item = self.tree.currentItem()
         if item is None:
+            self._stash_active_pocket_draft()
+            self._active_editor_operation_id = None
             self._selected_key = None
             self.editor.clear()
             self._remove_displayed_toolpath()
@@ -241,6 +262,8 @@ class CamWorkspace(QWidget):
         self._show_properties(item)
 
     def _show_properties(self, item: QTreeWidgetItem) -> None:
+        self._stash_active_pocket_draft()
+        self._active_editor_operation_id = None
         kind = item.data(0, _KIND_ROLE)
         job = self._find_job(item)
         setup = self._find_setup(item, job)
@@ -268,7 +291,14 @@ class CamWorkspace(QWidget):
                 self._picked_reference_resolved = self._resolve_picked_reference()
                 self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
                                       self._service.cam_snapshot.machine_definitions)
-                self.editor.show_reference(self._picked_reference)
+                if operation.strategy_key == "pocket_2_5d":
+                    saved = self._pocket_drafts.get(operation.operation_id)
+                    if saved is not None:
+                        self.editor.restore_pocket_state(saved[0])
+                        self._picked_reference = saved[1]
+                        self._picked_reference_resolved = self._resolve_picked_reference()
+                    self._active_editor_operation_id = operation.operation_id
+                self.editor.show_reference(self._picked_reference, self._picked_reference_resolved)
                 artifact = (self._service.load_toolpath_artifact(operation.operation_id)
                             if operation.artifact_state.status is ArtifactStatus.VALID else None)
                 if artifact is not None and self._toolpath_display is not None:
@@ -279,6 +309,7 @@ class CamWorkspace(QWidget):
                         )
                         previous = self._displayed_operation_id
                         self._displayed_operation_id = operation.operation_id
+                        self._toolpath_visibility[operation.operation_id] = True
                         if previous is not None and previous != operation.operation_id:
                             self._remove_toolpath(previous)
                 else:
@@ -344,7 +375,8 @@ class CamWorkspace(QWidget):
         """Explicitly bind the current unambiguous CAD selection."""
         operation = self._selected_operation()
         provider = (self._contour_pick_provider if operation is not None and
-                    operation.strategy_key == "contour_2d" else self._pick_provider)
+                    operation.strategy_key in {"contour_2d", "pocket_2_5d"}
+                    else self._pick_provider)
         if provider is None:
             self._error("Geometry picking adapter chưa sẵn sàng.")
             return
@@ -366,13 +398,17 @@ class CamWorkspace(QWidget):
             self._picked_reference_resolved = previous_status
             self._error("Persistent profile could not be resolved unambiguously.")
             return
-        self.editor.show_reference(self._picked_reference)
+        self.editor.show_reference(self._picked_reference, True)
+        self._stash_active_pocket_draft()
+        self._update_generate_action()
         self.message.emit("Đã tạo GeometryReference; dùng Rebind để thay thế rõ ràng.")
 
     def clear_geometry_pick(self) -> None:
         """Clear an explicit binding; never choose a replacement automatically."""
         operation = self._selected_operation()
-        if operation is not None and operation.strategy_key == "contour_2d" and operation.geometry_inputs:
+        if (operation is not None
+                and operation.strategy_key in {"contour_2d", "pocket_2_5d"}
+                and operation.geometry_inputs):
             item = self.tree.currentItem()
             job = self._find_job(item)
             setup = self._find_setup(item, job)
@@ -380,16 +416,20 @@ class CamWorkspace(QWidget):
                 changed = replace(operation, geometry_inputs=(), revision=operation.revision.next(),
                                   artifact_state=operation.artifact_state.mark_dirty(
                                       DirtyReason.GEOMETRY_CHANGED))
-                self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id,
+                updated = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id,
                     lambda tree: tree.replace_operation(changed)))
+                if updated is not None:
+                    self.refresh(self._selected_key)
         self._picked_reference = None
         self._picked_reference_resolved = False
         self.editor.show_reference(None)
+        self._stash_active_pocket_draft()
         self._update_generate_action()
 
     def cad_context_changed(self, *, force_invalidate: bool = False) -> None:
         """Re-resolve displayed references after CAD reload without rebinding them."""
         self._picked_reference_resolved = self._resolve_picked_reference()
+        invalidated = False
         if not self._service.has_project:
             self._update_generate_action()
             return
@@ -413,18 +453,32 @@ class CamWorkspace(QWidget):
                         if resolver is None:
                             continue
                         if force_invalidate:
-                            self._execute(lambda app, operation_id=operation.operation_id:
-                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+                            invalidated = self._execute(
+                                lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(
+                                    operation_id, DirtyReason.GEOMETRY_CHANGED,
+                                )
+                            ) is not None or invalidated
                             continue
                         try:
                             result = resolver(operation.geometry_inputs[0].reference)
                         except (RuntimeError, TypeError, ValueError):
-                            self._execute(lambda app, operation_id=operation.operation_id:
-                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+                            invalidated = self._execute(
+                                lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(
+                                    operation_id, DirtyReason.GEOMETRY_CHANGED,
+                                )
+                            ) is not None or invalidated
                             continue
                         if getattr(result, "status", None) is not GeometryResolutionStatus.RESOLVED:
-                            self._execute(lambda app, operation_id=operation.operation_id:
-                                app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
+                            invalidated = self._execute(
+                                lambda app, operation_id=operation.operation_id:
+                                app.invalidate_operation(
+                                    operation_id, DirtyReason.GEOMETRY_CHANGED,
+                                )
+                            ) is not None or invalidated
+        if invalidated:
+            self.refresh(self._selected_key)
         self._update_generate_action()
 
     def _resolve_picked_reference(self) -> bool:
@@ -449,6 +503,16 @@ class CamWorkspace(QWidget):
             return None
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
         return setup.operation_tree.get_operation(node.operation_id) if node.operation_id else None
+
+    def _stash_active_pocket_draft(self) -> None:
+        """Keep unapplied Pocket editor state by stable operation identity only."""
+        operation_id = self._active_editor_operation_id
+        if operation_id is None:
+            return
+        self._pocket_drafts[operation_id] = (
+            self.editor.pocket_state(),
+            self._picked_reference,
+        )
 
     def add_operation(self) -> None:
         context = self._tree_context()
@@ -498,16 +562,84 @@ class CamWorkspace(QWidget):
         if changed:
             self.refresh(("operation", str(node_id)))
 
+    def add_pocket_operation(self) -> None:
+        """Add one unbound Pocket operation without guessing its boundary."""
+        context = self._tree_context()
+        if context is None:
+            return
+        job_id, setup_id, _tree, parent_id = context
+        node_id, operation_id = CamNodeId.new(), OperationId.new()
+        snapshot = self._service.cam_snapshot
+        assembly = snapshot.tool_assemblies[0] if snapshot.tool_assemblies else None
+        tool_reference = ToolAssemblyReference.from_assembly(assembly) if assembly else ToolAssemblyReference(
+            ToolAssemblyId.new(), Revision(0), ContentFingerprint.from_payload({"missing": True}),
+            _length_unit(self._service.current_project))
+        machine = snapshot.machine_definitions[0] if snapshot.machine_definitions else None
+        machine_requirement = None if machine is None else MachineRequirement(
+            machine.machine_id, machine.revision, ContentFingerprint.from_payload(machine.to_dict()),
+            machine.unit, (OperationCapability.MILLING,))
+        setup = next(value for job in snapshot.jobs for value in job.setups
+                     if value.setup_id == setup_id)
+        operation = Operation(
+            operation_id, node_id, OperationFamily.MILLING, setup_id,
+            tool_reference, (), _default_pocket_parameters(setup), machine_requirement,
+        )
+        changed = self._execute(lambda app: app.update_tree(
+            job_id, setup_id,
+            lambda value: value.add_operation(parent_id, "Pocket 2.5D", operation),
+        ))
+        if changed:
+            self.refresh(("operation", str(node_id)))
+
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
-            self._error("Hãy chọn một operation Facing trước khi Generate.")
+            self._error("Hãy chọn một operation CAM trước khi Generate.")
             return
         setup = self._find_setup(item, self._find_job(item))
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
-        if operation is None or operation.strategy_key not in {"facing_2_5d", "contour_2d"}:
+        if operation is None or operation.strategy_key not in {
+            "facing_2_5d", "contour_2d", "pocket_2_5d",
+        }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "pocket_2_5d":
+            generation = self._generation
+            draft = self.editor.pocket_draft(setup.wcs.origin.unit, self._picked_reference)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            if (draft is None or draft.to_operation_parameters() != operation.parameters or
+                    self.editor.tool.currentData() != str(operation.tool_assembly.assembly_id) or
+                    self.editor.machine.currentData() != (str(machine_id) if machine_id else None) or
+                    len(operation.geometry_inputs) != 1 or
+                    self._picked_reference != operation.geometry_inputs[0].reference or
+                    not self._picked_reference_resolved or not operation.enabled):
+                self._error("Draft Pocket chưa hợp lệ hoặc chưa được Áp dụng.")
+                return
+            result = self._service.compute_pocket(
+                operation.operation_id,
+                expected_generation=generation,
+                geometry_resolver=self._pocket_resolver,
+            )
+            current = self._selected_operation()
+            try:
+                service_generation = self._service.cam_generation
+            except (ProjectError, RuntimeError):
+                service_generation = None
+            if (generation != self._generation or generation != service_generation
+                    or current is None or current.operation_id != operation.operation_id):
+                self._error("Kết quả Pocket đã stale và không được hiển thị.")
+                return
+            if result.accepted and result.artifact is not None:
+                self.message.emit("Pocket 2.5D đã Generate và publish artifact hợp lệ.")
+                self.editor.set_error("")
+                failure_message = None
+            else:
+                failure_message = (result.diagnostics[0].message if result.diagnostics
+                                   else "Pocket generation thất bại.")
+            self.refresh(self._selected_key)
+            if failure_message is not None:
+                self._error(failure_message)
             return
         if operation.strategy_key == "contour_2d":
             draft = self.editor.contour_draft(setup.wcs.origin.unit)
@@ -564,9 +696,9 @@ class CamWorkspace(QWidget):
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is not None and hasattr(self._toolpath_display, "__self__"):
             viewport = self._toolpath_display.__self__
-            visible = not bool(getattr(self, "_toolpath_visible", True))
+            visible = not self._toolpath_visibility.get(operation.operation_id, True)
             viewport.set_toolpath_visibility(operation.operation_id, visible)
-            self._toolpath_visible = visible
+            self._toolpath_visibility[operation.operation_id] = visible
 
     def move_selected(self, delta: int) -> None:
         item = self.tree.currentItem()
@@ -609,6 +741,7 @@ class CamWorkspace(QWidget):
         if changed is not None:
             if removed_operation_id is not None:
                 self._remove_toolpath(removed_operation_id)
+                self._toolpath_visibility.pop(removed_operation_id, None)
                 if self._displayed_operation_id == removed_operation_id:
                     self._displayed_operation_id = None
             elif self._toolpath_clear is not None:
@@ -751,6 +884,70 @@ class CamWorkspace(QWidget):
                             revision=current.revision.next(),
                             artifact_state=current.artifact_state.mark_dirty(reason))
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
+                elif current is not None and current.strategy_key == "pocket_2_5d":
+                    unit = setup.wcs.origin.unit
+                    if self._picked_reference is None:
+                        raise ValueError("Pocket thiếu profile. Hãy Bind profile trước khi Áp dụng.")
+                    if not self._picked_reference_resolved:
+                        raise ValueError("Pocket profile đã stale hoặc không còn hợp lệ.")
+                    parameters = self.editor.pocket_draft(unit, self._picked_reference)
+                    if parameters is None:
+                        raise ValueError("Thông số Pocket chưa hợp lệ.")
+                    snapshot = self._service.cam_snapshot
+                    assembly = next((value for value in snapshot.tool_assemblies
+                                     if str(value.assembly_id) == values["tool_id"]), None)
+                    if assembly is None:
+                        raise ValueError("Pocket thiếu Tool Assembly hợp lệ.")
+                    machine = next((value for value in snapshot.machine_definitions
+                                    if str(value.machine_id) == values["machine_id"]), None)
+                    if machine is None:
+                        raise ValueError("Pocket thiếu máy phay hợp lệ.")
+                    requirement = MachineRequirement(
+                        machine.machine_id, machine.revision, machine.content_fingerprint,
+                        machine.unit, (OperationCapability.MILLING,),
+                    )
+                    existing = current.geometry_inputs[0] if len(current.geometry_inputs) == 1 else None
+                    input_id = (existing.input_id if existing is not None and
+                                existing.reference.reference_id == self._picked_reference.reference_id
+                                else GeometryInputId.new())
+                    geometry_inputs = (OperationGeometryInput(
+                        input_id, GeometryInputRole.BOUNDARY, self._picked_reference,
+                        True, self._picked_reference.kind, 0,
+                    ),)
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    parameter_changed = parameter_set != current.parameters
+                    geometry_changed = geometry_inputs != current.geometry_inputs
+                    tool_changed = tool_reference != current.tool_assembly
+                    machine_changed = requirement != current.machine_requirement
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if any((parameter_changed, geometry_changed, tool_changed,
+                            machine_changed, enabled_changed)):
+                        if geometry_changed:
+                            reason = DirtyReason.GEOMETRY_CHANGED
+                        elif tool_changed:
+                            reason = DirtyReason.TOOL_CHANGED
+                        elif machine_changed:
+                            reason = DirtyReason.MACHINE_CHANGED
+                        elif parameter_changed:
+                            reason = DirtyReason.PARAMETERS_CHANGED
+                        else:
+                            reason = DirtyReason.UPSTREAM_CHANGED
+                        changed_operation = replace(
+                            current,
+                            parameters=parameter_set,
+                            tool_assembly=tool_reference,
+                            machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs,
+                            enabled=enabled,
+                            revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason),
+                        )
+                    tree_mutation = lambda tree: tree.rename_node(
+                        node_id, str(values["name"])
+                    ).replace_operation(changed_operation)
                 else:
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
                 result = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
@@ -834,6 +1031,17 @@ class CamWorkspace(QWidget):
                     self._picked_reference_resolved and
                     self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
                     self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
+            if operation.strategy_key == "pocket_2_5d":
+                draft = self.editor.pocket_draft(
+                    setup.wcs.origin.unit, self._picked_reference,
+                )
+                return bool(operation.enabled and draft is not None and
+                    draft.to_operation_parameters() == operation.parameters and
+                    len(operation.geometry_inputs) == 1 and
+                    self._picked_reference == operation.geometry_inputs[0].reference and
+                    self._picked_reference_resolved and
+                    self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
+                    self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
             draft = self.editor.facing_draft(setup.wcs.origin.unit)
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
@@ -860,11 +1068,16 @@ class _CamPropertiesEditor(QWidget):
         self._contour_fields = {key: QLineEdit() for key in (
             "top", "final", "stepdown", "radial", "axial", "clearance", "retract",
             "feed", "plunge", "spindle", "lead")}
+        self._pocket_fields = {key: QLineEdit() for key in (
+            "top", "bottom", "stepdown", "stepover", "allowance", "axial", "clearance",
+            "retract", "feed", "plunge", "spindle", "tolerance")}
         self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
         self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
         self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
         self.contour_side = QComboBox(); self.contour_side.addItems([item.value for item in ContourSide])
         self.contour_direction = QComboBox(); self.contour_direction.addItems([item.value for item in ContourCutDirection])
+        self.pocket_entry = QComboBox(); self.pocket_entry.addItems([item.value for item in PocketEntryPolicy])
+        self.pocket_direction = QComboBox(); self.pocket_direction.addItems([item.value for item in PocketCuttingDirection])
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
@@ -897,6 +1110,17 @@ class _CamPropertiesEditor(QWidget):
             form.addRow(label, self._contour_fields[key])
         form.addRow("Contour direction", self.contour_direction)
         form.addRow("", self.multiple_depth_passes); form.addRow("", self.finishing_pass)
+        for label, key in (("Pocket Top Z", "top"), ("Pocket Bottom Z", "bottom"),
+                           ("Pocket stepdown", "stepdown"), ("Pocket stepover", "stepover"),
+                           ("Pocket radial allowance", "allowance"),
+                           ("Pocket floor allowance", "axial"),
+                           ("Pocket clearance Z", "clearance"),
+                           ("Pocket retract Z", "retract"), ("Pocket feed", "feed"),
+                           ("Pocket plunge", "plunge"), ("Pocket spindle", "spindle"),
+                           ("Pocket tolerance", "tolerance")):
+            form.addRow(label, self._pocket_fields[key])
+        form.addRow("Pocket entry", self.pocket_entry)
+        form.addRow("Pocket direction", self.pocket_direction)
         form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
         form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
@@ -904,8 +1128,11 @@ class _CamPropertiesEditor(QWidget):
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for field in self._contour_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
+        for field in self._pocket_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for combo in (self.boundary_source, self.direction, self.profile_source, self.contour_side,
-                      self.contour_direction, self.tool, self.machine):
+                      self.contour_direction, self.pocket_entry, self.pocket_direction,
+                      self.tool, self.machine):
             combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
         self.finishing_pass.toggled.connect(lambda _checked: self.draft_changed.emit())
         self.multiple_depth_passes.toggled.connect(lambda _checked: self.draft_changed.emit())
@@ -914,6 +1141,7 @@ class _CamPropertiesEditor(QWidget):
         for field in self._fields.values(): field.clear()
         for field in self._facing_fields.values(): field.clear()
         for field in self._contour_fields.values(): field.clear()
+        for field in self._pocket_fields.values(): field.clear()
         self.status.setText("—"); self.toolpath_metadata.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -971,6 +1199,23 @@ class _CamPropertiesEditor(QWidget):
             self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
             if operation.machine_requirement:
                 self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
+        elif operation is not None and operation.strategy_key == "pocket_2_5d":
+            values = dict(operation.parameters.values)
+            mapping = {
+                "top": "top_z", "bottom": "bottom_z", "stepdown": "stepdown",
+                "stepover": "stepover", "allowance": "radial_stock_allowance",
+                "axial": "axial_allowance",
+                "clearance": "clearance_height", "retract": "retract_height",
+                "feed": "cutting_feed_rate", "plunge": "plunge_feed_rate",
+                "spindle": "spindle_speed", "tolerance": "tolerance",
+            }
+            for field, parameter in mapping.items():
+                self._pocket_fields[field].setText(str(values.get(parameter, "")))
+            self.pocket_entry.setCurrentText(str(values.get("entry_policy", "")))
+            self.pocket_direction.setCurrentText(str(values.get("cutting_direction", "")))
+            self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -985,24 +1230,59 @@ class _CamPropertiesEditor(QWidget):
             f"{value.artifact_status.value.upper()}"
         )
 
-    def show_reference(self, reference: GeometryReference | None) -> None:
+    def show_reference(
+        self,
+        reference: GeometryReference | None,
+        resolved: bool | None = None,
+    ) -> None:
         if reference is None:
-            self.status.setText("Geometry: chưa liên kết")
+            self.status.setText("PROFILE MISSING — chưa Bind profile")
         else:
+            state = "RESOLVED" if resolved else "STALE/INVALID"
             self.status.setText(
-                f"Geometry: {reference.kind.value} · {reference.hint or reference.reference_id}"
+                f"Geometry: {state} · {reference.kind.value} · "
+                f"{reference.hint or reference.reference_id}"
             )
+
+    def pocket_state(self) -> dict[str, object]:
+        """Capture only transient editor primitives; this state is never persisted."""
+        return {
+            "name": self._fields["name"].text(),
+            "fields": {key: field.text() for key, field in self._pocket_fields.items()},
+            "entry": self.pocket_entry.currentText(),
+            "direction": self.pocket_direction.currentText(),
+            "tool_id": self.tool.currentData(),
+            "machine_id": self.machine.currentData(),
+            "enabled": self.enabled.isChecked(),
+        }
+
+    def restore_pocket_state(self, state: dict[str, object]) -> None:
+        """Restore a Pocket draft by operation ID after tree selection changes."""
+        fields = state.get("fields")
+        if not isinstance(fields, dict):
+            return
+        self._fields["name"].setText(str(state.get("name", "")))
+        for key, field in self._pocket_fields.items():
+            field.setText(str(fields.get(key, "")))
+        self.pocket_entry.setCurrentText(str(state.get("entry", "")))
+        self.pocket_direction.setCurrentText(str(state.get("direction", "")))
+        self.tool.setCurrentIndex(self.tool.findData(state.get("tool_id")))
+        self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
+        self.enabled.setChecked(bool(state.get("enabled", False)))
 
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
                       **{key: field.text() for key, field in self._facing_fields.items()},
                       **{f"contour_{key}": field.text() for key, field in self._contour_fields.items()},
+                      **{f"pocket_{key}": field.text() for key, field in self._pocket_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
                       "machine_id": self.machine.currentData(), "profile_source": self.profile_source.currentText(),
                       "contour_side": self.contour_side.currentText(),
                       "contour_direction": self.contour_direction.currentText(),
+                      "pocket_entry": self.pocket_entry.currentText(),
+                      "pocket_direction": self.pocket_direction.currentText(),
                       "finishing_pass": self.finishing_pass.isChecked(),
                       "multiple_depth_passes": self.multiple_depth_passes.isChecked()})
 
@@ -1055,6 +1335,40 @@ class _CamPropertiesEditor(QWidget):
         except (TypeError, ValueError):
             return None
 
+    def pocket_draft(
+        self,
+        unit: LengthUnit,
+        reference: GeometryReference | None,
+    ) -> PocketStrategy | None:
+        try:
+            if reference is None:
+                return None
+            feed_unit = (FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM
+                         else FeedUnit.INCH_PER_MINUTE)
+            return PocketStrategy(
+                unit,
+                PocketGeometryInput(reference, unit),
+                PocketDepthDefinition(
+                    unit,
+                    Length(float(self._pocket_fields["top"].text()), unit),
+                    Length(float(self._pocket_fields["bottom"].text()), unit),
+                    Length(float(self._pocket_fields["axial"].text()), unit),
+                ),
+                Length(float(self._pocket_fields["stepover"].text()), unit),
+                Length(float(self._pocket_fields["stepdown"].text()), unit),
+                Length(float(self._pocket_fields["allowance"].text()), unit),
+                Length(float(self._pocket_fields["clearance"].text()), unit),
+                Length(float(self._pocket_fields["retract"].text()), unit),
+                FeedRate(float(self._pocket_fields["feed"].text()), feed_unit),
+                FeedRate(float(self._pocket_fields["plunge"].text()), feed_unit),
+                SpindleSpeed(float(self._pocket_fields["spindle"].text())),
+                PocketEntryPolicy(self.pocket_entry.currentText()),
+                PocketCuttingDirection(self.pocket_direction.currentText()),
+                Length(float(self._pocket_fields["tolerance"].text()), unit),
+            )
+        except (TypeError, ValueError):
+            return None
+
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:
     return LengthUnit.INCH if session and session.manifest.units is UnitSystem.INCH else LengthUnit.MM
@@ -1097,6 +1411,36 @@ def _default_contour_parameters(setup: Setup) -> ContourParameters:
         Length(top + 2 * scale, unit), FeedRate(500 * scale, feed_unit),
         FeedRate(100 * scale, feed_unit), SpindleSpeed(1000),
         ContourCutDirection.CLIMB, lead_length=Length(scale, unit),
+    )
+
+
+def _default_pocket_parameters(setup: Setup) -> OperationParameterSet:
+    """Create an unbound but schema-complete Pocket draft parameter set."""
+    if not isinstance(setup.stock, BoxStock):
+        raise ValueError("Pocket mặc định yêu cầu Stock BOX.")
+    unit = setup.wcs.origin.unit
+    top = setup.stock.size_z.value
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    return OperationParameterSet(
+        "pocket_2_5d",
+        1,
+        (
+            ("unit", unit.value),
+            ("top_z", top),
+            ("bottom_z", top - scale),
+            ("axial_allowance", 0.0),
+            ("stepover", 4.0 * scale),
+            ("stepdown", scale),
+            ("radial_stock_allowance", 0.0),
+            ("clearance_height", top + 5.0 * scale),
+            ("retract_height", top + 2.0 * scale),
+            ("cutting_feed_rate", 500.0 * scale),
+            ("plunge_feed_rate", 100.0 * scale),
+            ("spindle_speed", 1000.0),
+            ("entry_policy", PocketEntryPolicy.VERTICAL_PLUNGE.value),
+            ("cutting_direction", PocketCuttingDirection.CLIMB.value),
+            ("tolerance", 1.0e-7 * scale),
+        ),
     )
 
 
