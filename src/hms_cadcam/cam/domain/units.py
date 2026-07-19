@@ -27,10 +27,12 @@ class AngleUnit(StrEnum):
 
 
 class FeedUnit(StrEnum):
-    """Linear feed units with explicit time semantics."""
+    """Linear feed units with explicit time or revolution semantics."""
 
     MM_PER_MINUTE = "mm_per_minute"
     INCH_PER_MINUTE = "inch_per_minute"
+    MM_PER_REVOLUTION = "mm_per_revolution"
+    INCH_PER_REVOLUTION = "inch_per_revolution"
 
 
 class SpindleSpeedUnit(StrEnum):
@@ -94,7 +96,7 @@ class Angle:
 
 @dataclass(frozen=True, slots=True)
 class FeedRate:
-    """A positive linear distance per minute."""
+    """A positive linear distance per explicit minute or revolution basis."""
 
     value: float
     unit: FeedUnit
@@ -108,14 +110,27 @@ class FeedRate:
             raise CamUnitError("Feed unit is invalid")
 
     def to(self, unit: FeedUnit) -> "FeedRate":
-        """Convert to another distance-per-minute unit."""
+        """Convert length units without changing the feed basis."""
         if not isinstance(unit, FeedUnit):
             raise CamUnitError("Feed unit is invalid")
         if unit is self.unit:
             return self
+        source_per_minute = self.unit in {
+            FeedUnit.MM_PER_MINUTE,
+            FeedUnit.INCH_PER_MINUTE,
+        }
+        target_per_minute = unit in {
+            FeedUnit.MM_PER_MINUTE,
+            FeedUnit.INCH_PER_MINUTE,
+        }
+        if source_per_minute != target_per_minute:
+            raise CamUnitError("Feed basis conversion requires an explicit process rate")
         factor = (
             _MM_PER_INCH
-            if self.unit is FeedUnit.INCH_PER_MINUTE
+            if self.unit in {
+                FeedUnit.INCH_PER_MINUTE,
+                FeedUnit.INCH_PER_REVOLUTION,
+            }
             else 1.0 / _MM_PER_INCH
         )
         return FeedRate(self.value * factor, unit)

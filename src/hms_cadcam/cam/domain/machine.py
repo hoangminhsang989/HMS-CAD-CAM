@@ -170,6 +170,20 @@ class OperationCapability(StrEnum):
     PROBING = "probing"
 
 
+class SpindleDirection(StrEnum):
+    """Controller-neutral spindle rotation directions."""
+
+    CLOCKWISE = "clockwise"
+    COUNTERCLOCKWISE = "counterclockwise"
+
+
+class TappingMode(StrEnum):
+    """Controller-neutral tapping synchronization policies."""
+
+    RIGID = "rigid"
+    FLOATING = "floating"
+
+
 AxisPosition = Length | Angle
 
 
@@ -273,6 +287,8 @@ class SpindleCapability:
     minimum_speed: SpindleSpeed
     maximum_speed: SpindleSpeed
     indexable: bool = False
+    directions: tuple[SpindleDirection, ...] = ()
+    synchronized_feed: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _logical(self.name, "Spindle name"))
@@ -284,29 +300,56 @@ class SpindleCapability:
             raise CamInvariantError("Spindle minimum must be less than maximum")
         if type(self.indexable) is not bool:
             raise CamValidationError("Spindle indexable must be boolean")
+        if not isinstance(self.directions, tuple) or any(
+            not isinstance(item, SpindleDirection) for item in self.directions
+        ):
+            raise CamValidationError("Spindle directions are invalid")
+        if len(set(self.directions)) != len(self.directions):
+            raise CamInvariantError("Spindle directions must be unique")
+        object.__setattr__(self, "directions", tuple(sorted(self.directions, key=str)))
+        if type(self.synchronized_feed) is not bool:
+            raise CamValidationError("Spindle synchronized-feed flag must be boolean")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "name": self.name,
             "minimum_speed": _spindle_dict(self.minimum_speed),
             "maximum_speed": _spindle_dict(self.maximum_speed),
             "indexable": self.indexable,
         }
+        if self.directions or self.synchronized_feed:
+            data.update(
+                directions=[item.value for item in self.directions],
+                synchronized_feed=self.synchronized_feed,
+            )
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SpindleCapability":
-        if not isinstance(data, dict) or set(data) != {
+        legacy_fields = {
             "name",
             "minimum_speed",
             "maximum_speed",
             "indexable",
-        }:
+        }
+        extended_fields = legacy_fields | {"directions", "synchronized_feed"}
+        if not isinstance(data, dict) or set(data) not in (
+            legacy_fields, extended_fields
+        ):
             raise CamValidationError("Spindle capability payload is malformed")
+        try:
+            directions = tuple(
+                SpindleDirection(item) for item in data.get("directions", [])
+            )
+        except (TypeError, ValueError) as error:
+            raise CamValidationError("Spindle direction payload is invalid") from error
         return cls(
             data["name"],
             _spindle_from_dict(data["minimum_speed"]),
             _spindle_from_dict(data["maximum_speed"]),
             data["indexable"],
+            directions,
+            data.get("synchronized_feed", False),
         )
 
 
@@ -369,6 +412,7 @@ class MachineCapabilities:
     tool_capacity: int | None
     coolant: tuple[MachineCoolantCapability, ...]
     operations: tuple[OperationCapability, ...]
+    tapping_modes: tuple[TappingMode, ...] = ()
     SERIALIZATION_VERSION: ClassVar[int] = _VERSION
 
     def __post_init__(self) -> None:
@@ -408,8 +452,19 @@ class MachineCapabilities:
             self.operations
         ):
             raise CamInvariantError("Machine capabilities must be unique")
+        if not isinstance(self.tapping_modes, tuple) or any(
+            not isinstance(item, TappingMode) for item in self.tapping_modes
+        ):
+            raise CamValidationError("Machine tapping modes are invalid")
+        if len(set(self.tapping_modes)) != len(self.tapping_modes):
+            raise CamInvariantError("Machine tapping modes must be unique")
+        if self.tapping_modes and not self.tapping:
+            raise CamInvariantError("Tapping modes require the tapping capability")
         object.__setattr__(self, "coolant", tuple(sorted(self.coolant, key=str)))
         object.__setattr__(self, "operations", tuple(sorted(self.operations, key=str)))
+        object.__setattr__(
+            self, "tapping_modes", tuple(sorted(self.tapping_modes, key=str))
+        )
         required = {
             OperationCapability.MILLING: self.milling,
             OperationCapability.TURNING: self.turning,
@@ -424,7 +479,7 @@ class MachineCapabilities:
             raise CamInvariantError("Operation capability conflicts with feature flags")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "format": _CAPABILITY_FORMAT,
             "format_version": _VERSION,
             "milling": self.milling,
@@ -440,14 +495,13 @@ class MachineCapabilities:
             "coolant": [item.value for item in self.coolant],
             "operations": [item.value for item in self.operations],
         }
+        if self.tapping_modes:
+            data["tapping_modes"] = [item.value for item in self.tapping_modes]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MachineCapabilities":
-        _strict_payload(
-            data,
-            format_name=_CAPABILITY_FORMAT,
-            version=_VERSION,
-            fields={
+        legacy_fields = {
                 "milling",
                 "turning",
                 "live_tooling",
@@ -460,7 +514,17 @@ class MachineCapabilities:
                 "tool_capacity",
                 "coolant",
                 "operations",
-            },
+        }
+        if not isinstance(data, dict):
+            raise CamValidationError("Machine capability payload is malformed")
+        fields = set(data) - {"format", "format_version"}
+        if fields not in (legacy_fields, legacy_fields | {"tapping_modes"}):
+            raise CamValidationError("Machine capability payload is malformed")
+        _strict_payload(
+            {key: value for key, value in data.items() if key != "tapping_modes"},
+            format_name=_CAPABILITY_FORMAT,
+            version=_VERSION,
+            fields=legacy_fields,
         )
         if not isinstance(data["coolant"], list) or not isinstance(
             data["operations"], list
@@ -469,6 +533,9 @@ class MachineCapabilities:
         try:
             coolant = tuple(MachineCoolantCapability(item) for item in data["coolant"])
             operations = tuple(OperationCapability(item) for item in data["operations"])
+            tapping_modes = tuple(
+                TappingMode(item) for item in data.get("tapping_modes", [])
+            )
         except (TypeError, ValueError) as error:
             raise CamValidationError("Machine capability enum payload is invalid") from error
         return cls(
@@ -484,6 +551,7 @@ class MachineCapabilities:
             data["tool_capacity"],
             coolant,
             operations,
+            tapping_modes,
         )
 
 

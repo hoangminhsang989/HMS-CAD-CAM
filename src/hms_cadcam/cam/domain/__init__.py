@@ -90,6 +90,14 @@ from hms_cadcam.cam.domain.drilling import (
     ResolvedDrillingGeometry,
     ResolvedHoleLocation,
 )
+from hms_cadcam.cam.domain.tapping import (
+    TAPPING_STRATEGY_KEY,
+    TAPPING_STRATEGY_VERSION,
+    TappingHand,
+    TappingStrategy,
+    TappingSynchronizationPolicy,
+    TappingValidationError,
+)
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
     KinematicChain,
@@ -106,7 +114,9 @@ from hms_cadcam.cam.domain.machine import (
     MachineKind,
     MachineRequirement,
     OperationCapability,
+    SpindleDirection,
     SpindleCapability,
+    TappingMode,
     WorkEnvelope,
     assess_machine_compatibility,
 )
@@ -276,6 +286,12 @@ __all__ = [
     "DrillingRegion",
     "DrillingStrategy",
     "DrillValidationError",
+    "TAPPING_STRATEGY_KEY",
+    "TAPPING_STRATEGY_VERSION",
+    "TappingHand",
+    "TappingStrategy",
+    "TappingSynchronizationPolicy",
+    "TappingValidationError",
     "FeedRate",
     "FeedUnit",
     "FixtureInstance",
@@ -364,12 +380,14 @@ __all__ = [
     "SourceScope",
     "ShankGeometry",
     "SpindleCapability",
+    "SpindleDirection",
     "SpindleSpeed",
     "SpindleSpeedUnit",
     "ToolAssemblyId",
     "ToolAssemblyReference",
     "ToolReferenceStatus",
     "TapGeometry",
+    "TappingMode",
     "ToolAssembly",
     "ToolAssemblyEvidence",
     "ToolAssemblyStatus",

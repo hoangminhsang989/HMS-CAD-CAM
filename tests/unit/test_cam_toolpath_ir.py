@@ -264,6 +264,34 @@ def test_statistics_lengths_dwell_duration_partial_and_bounds():
     assert artifact.bounds.maximum == Point3(13, 9, 0, LengthUnit.MM)
 
 
+def test_per_revolution_duration_requires_known_running_spindle_state():
+    partial_builder, *_ = _builder()
+    partial_builder.set_initial_pose(_pose(0))
+    partial_builder.set_initial_process_state(
+        feed_mode=FeedMode.UNITS_PER_REVOLUTION
+    )
+    partial_builder.linear_to(
+        _pose(10), FeedRate(1, FeedUnit.MM_PER_REVOLUTION)
+    )
+    partial = partial_builder.finalize()
+    assert partial.statistics.duration_is_partial
+    assert partial.statistics.estimated_duration_seconds == 0.0
+
+    known_builder, *_ = _builder()
+    known_builder.set_initial_pose(_pose(0))
+    known_builder.set_initial_process_state(
+        feed_mode=FeedMode.UNITS_PER_REVOLUTION
+    )
+    known_builder.set_spindle(SpindleState.CLOCKWISE, SpindleSpeed(600))
+    known_builder.linear_to(
+        _pose(10), FeedRate(1, FeedUnit.MM_PER_REVOLUTION)
+    )
+    known = known_builder.finalize()
+    assert not known.statistics.duration_is_partial
+    assert math.isclose(known.statistics.estimated_duration_seconds, 1.0)
+    assert artifact_from_dict(artifact_to_dict(known)) == known
+
+
 def _candidate_for_operation(operation, computing, token, fingerprint, *, created_at=None):
     builder = ToolpathBuilder(artifact_id=ToolpathArtifactId.new(), operation_id=operation.operation_id,
         operation_revision=operation.revision, computation_token=token, input_fingerprint=fingerprint,

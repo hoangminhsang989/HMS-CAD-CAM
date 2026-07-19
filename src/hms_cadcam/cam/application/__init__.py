@@ -24,6 +24,13 @@ from hms_cadcam.cam.application.drilling import (
     DrillingInputs,
     drilling_peck_levels,
 )
+from hms_cadcam.cam.application.tapping import (
+    TappingComputeResult,
+    TappingGenerationError,
+    TappingGenerator,
+    TappingHole,
+    TappingInputs,
+)
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult,
     PocketGenerationError,
@@ -39,6 +46,8 @@ __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "Con
            "offset_contour", "reconcile_artifacts",
            "DrillingComputeResult", "DrillingGenerationError", "DrillingGenerator",
            "DrillingGeometryResolver", "DrillingHole", "DrillingInputs",
-           "drilling_peck_levels", "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
+           "drilling_peck_levels", "TappingComputeResult", "TappingGenerationError",
+           "TappingGenerator", "TappingHole", "TappingInputs",
+           "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels", "resolve_box_facing_region",
            "resolve_profile_in_setup"]

@@ -172,10 +172,19 @@ class ToolpathBuilder:
         self._ensure_position()
         self._append(ToolContextEvent(**self._common(provenance), tool_assembly_id=self._tool_id))
 
-    def marker(self, semantic_key: str, message: str | None = None,
-               *, provenance: str = "semantic.marker") -> None:
+    def marker(
+        self,
+        semantic_key: str,
+        message: str | None = None,
+        *,
+        metadata: tuple[tuple[str, str], ...] = (),
+        provenance: str = "semantic.marker",
+    ) -> None:
         self._ensure_position()
-        self._append(MarkerEvent(**self._common(provenance), semantic_key=semantic_key, message=message))
+        self._append(MarkerEvent(
+            **self._common(provenance), semantic_key=semantic_key,
+            message=message, metadata=metadata,
+        ))
 
     def append_event(self, event: AnyToolpathEvent) -> None:
         """Append a prebuilt event after enforcing builder identity and continuity."""

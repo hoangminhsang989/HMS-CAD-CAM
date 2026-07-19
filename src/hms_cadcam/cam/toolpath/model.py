@@ -22,9 +22,13 @@ from hms_cadcam.cam.toolpath.events import (
     AnyToolpathEvent,
     ArcMove,
     DwellEvent,
+    FeedMode,
+    FeedModeEvent,
     LinearMove,
     MotionClass,
     RapidMove,
+    SpindleState,
+    SpindleStateEvent,
     ToolpathEventKind,
 )
 from hms_cadcam.cam.toolpath.geometry import Bounds3, CoordinateSpace, Pose, same_pose
@@ -109,10 +113,24 @@ class ToolpathStatistics:
         rapid = cutting = link = retract = arc = duration = 0.0
         partial = False
         counts: dict[ToolpathEventKind, int] = {}
-        expected_feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+        expected_feed_unit = (
+            FeedUnit.MM_PER_MINUTE
+            if unit is LengthUnit.MM
+            else FeedUnit.INCH_PER_MINUTE
+        )
+        expected_revolution_unit = (
+            FeedUnit.MM_PER_REVOLUTION
+            if unit is LengthUnit.MM
+            else FeedUnit.INCH_PER_REVOLUTION
+        )
+        spindle_speed = None
         for event in events:
             counts[event.kind] = counts.get(event.kind, 0) + 1
-            if isinstance(event, RapidMove):
+            if isinstance(event, SpindleStateEvent):
+                spindle_speed = (
+                    None if event.state is SpindleState.OFF else event.speed
+                )
+            elif isinstance(event, RapidMove):
                 rapid += event.length
                 if event.rapid_rate is None:
                     partial = True
@@ -128,7 +146,24 @@ class ToolpathStatistics:
                     retract += length
                 if isinstance(event, ArcMove):
                     arc += length
-                duration += length / event.feed_rate.to(expected_feed_unit).value * 60.0
+                if event.feed_rate.unit in {
+                    FeedUnit.MM_PER_REVOLUTION,
+                    FeedUnit.INCH_PER_REVOLUTION,
+                }:
+                    if spindle_speed is None:
+                        partial = True
+                    else:
+                        feed_per_revolution = event.feed_rate.to(
+                            expected_revolution_unit
+                        ).value
+                        duration += (
+                            length / feed_per_revolution
+                            / spindle_speed.value * 60.0
+                        )
+                else:
+                    duration += (
+                        length / event.feed_rate.to(expected_feed_unit).value * 60.0
+                    )
             elif isinstance(event, DwellEvent):
                 duration += event.duration_seconds
         return cls(rapid, cutting, link, retract, arc, duration, partial,
@@ -221,6 +256,7 @@ class ToolpathArtifact:
         if len(set(ids)) != len(ids):
             raise CamInvariantError("Toolpath event IDs must be unique")
         current = self.initial_pose
+        feed_mode = None
         for index, event in enumerate(self.events):
             if event.sequence_index != index:
                 raise CamInvariantError("Toolpath sequence must be contiguous and monotonic")
@@ -231,7 +267,29 @@ class ToolpathArtifact:
                     raise CamInvariantError("Toolpath movement is discontinuous")
                 if event.start.position.unit is not self.unit or event.end.position.unit is not self.unit:
                     raise CamUnitError("Toolpath movement unit differs from artifact")
+                if isinstance(event, (LinearMove, ArcMove)):
+                    per_revolution = event.feed_rate.unit in {
+                        FeedUnit.MM_PER_REVOLUTION,
+                        FeedUnit.INCH_PER_REVOLUTION,
+                    }
+                    expected_mode = (
+                        FeedMode.UNITS_PER_REVOLUTION
+                        if per_revolution
+                        else FeedMode.UNITS_PER_MINUTE
+                    )
+                    if (
+                        (per_revolution and feed_mode is not expected_mode)
+                        or (
+                            not per_revolution
+                            and feed_mode is FeedMode.UNITS_PER_REVOLUTION
+                        )
+                    ):
+                        raise CamInvariantError(
+                            "Toolpath feed unit conflicts with active feed mode"
+                        )
                 current = event.end
+            elif isinstance(event, FeedModeEvent):
+                feed_mode = event.mode
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize with the strict versioned Toolpath IR codec."""

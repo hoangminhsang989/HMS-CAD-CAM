@@ -175,6 +175,23 @@ class DiagnosticCode(StrEnum):
     DRILL_DEPTH_INVALID = "drill.depth_invalid"
     DRILL_GENERATION_FAILED = "drill.generation_failed"
     DRILL_STALE_RESULT = "drill.stale_result"
+    TAP_INVALID_PARAMETERS = "tap.invalid_parameters"
+    TAP_GEOMETRY_MISSING = "tap.geometry_missing"
+    TAP_GEOMETRY_STALE = "tap.geometry_stale"
+    TAP_GEOMETRY_AMBIGUOUS = "tap.geometry_ambiguous"
+    TAP_SOURCE_MISMATCH = "tap.source_mismatch"
+    TAP_TOOL_MISSING = "tap.tool_missing"
+    TAP_TOOL_STALE = "tap.tool_stale"
+    TAP_UNSUPPORTED_TOOL = "tap.unsupported_tool"
+    TAP_DIAMETER_MISMATCH = "tap.diameter_mismatch"
+    TAP_PITCH_MISMATCH = "tap.pitch_mismatch"
+    TAP_HAND_MISMATCH = "tap.hand_mismatch"
+    TAP_MACHINE_INCOMPATIBLE = "tap.machine_incompatible"
+    TAP_SYNC_UNSUPPORTED = "tap.sync_unsupported"
+    TAP_DEPTH_INVALID = "tap.depth_invalid"
+    TAP_UNSAFE_CLEARANCE = "tap.unsafe_clearance"
+    TAP_GENERATION_FAILED = "tap.generation_failed"
+    TAP_STALE_RESULT = "tap.stale_result"
 
 
 @dataclass(frozen=True, slots=True)
