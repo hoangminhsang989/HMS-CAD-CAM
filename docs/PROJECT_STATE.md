@@ -6,9 +6,9 @@
 - Giai đoạn 3–4: Session Lock, Autosave, Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
 - Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state đã hoàn thành.
 - Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và persistence đã hoàn thành.
-- Giai đoạn 7A.1–7A.7: CAM Foundation, persistence và hardening đã hoàn thành.
-- Commit mới nhất: `0de9d02`.
-- Toàn bộ pytest: **424 passed**.
+- Giai đoạn 7A.1–7B.3: CAM Foundation và planar-face Facing đã hoàn thành.
+- Commit mới nhất: `4ed93a4`.
+- Toàn bộ pytest: **479 passed**.
 
 ## Kiến trúc và dữ liệu dự án
 
@@ -32,14 +32,14 @@
 
 ## CAM Foundation
 
-- Strongly typed CAM IDs, units tường minh và `GeometryReference` bền vững đã hoàn thành.
-- `CamJob`, Setup, WCS, Stock và Fixture có invariant, revision và mutation nguyên tử.
-- Tooling, holder, tool assembly và machine model độc lập controller đã hoàn thành.
-- Operation Tree bất biến và Dependency DAG hỗ trợ topo order, dirty propagation và stale-token policy.
-- Toolpath IR controller-neutral hỗ trợ motion/event, arc, bounds, statistics và fingerprint xác định.
-- CAM editable state là dữ liệu chính; tooling/machine snapshot và aggregate được lưu trong SQLite v4.
-- Save, Open, Save As, Autosave và Recovery đã hỗ trợ đầy đủ CAM editable state.
-- Toolpath artifact là derived data dưới `toolpaths/`; thiếu hoặc hỏng chỉ làm operation chuyển `DIRTY`/`MISSING`, không làm mất aggregate.
+- CAM có ID mạnh, unit tường minh, `GeometryReference` bền vững, Job, Setup, WCS, Stock, tooling và machine model.
+- Operation Tree, Dependency DAG và Toolpath IR hỗ trợ dirty propagation, stale-token policy và fingerprint xác định.
+- CAM editable state là dữ liệu chính trong SQLite v4; artifact là derived data dưới `toolpaths/`.
+- Facing 2.5D hỗ trợ biên Stock BOX và persistent planar FACE; selected face là target plane, top lấy từ Stock BOX.
+- OCP planar-face resolver hỗ trợ repeated/nested XCAF occurrence và fail-closed khi reference không còn hợp lệ.
+- Boundary v1 hỗ trợ outer loop LINE/ARC, polygon lõm đơn giản và raster clipping theo boundary thật.
+- Bind/Rebind/Clear, recompute giữ artifact VALID cũ khi lỗi, viewer và persistence lifecycle đã hoạt động.
+- Save, Open, Save As, Autosave và Recovery giữ nguyên persistent `GeometryReference`.
 
 ## Tree, persistence và session
 
@@ -56,5 +56,5 @@
 - Hình học chuẩn hóa chưa được lưu vào `model/`; ứng dụng vẫn import lại nguồn bất biến khi mở dự án.
 - Chưa có component editing hoặc thay đổi cấu trúc assembly.
 - Chưa có assembly constraints.
-- Chưa có UI CAM, thuật toán gia công, simulation, collision, Post Processor hoặc G-code.
+- Chưa hỗ trợ inner loops, spline, Pocket, Contour, Post Processor hoặc G-code.
 - Chưa triển khai Setup Sheet.
