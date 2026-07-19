@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
-from hms_cadcam.cam.adapters import OcpPlanarFaceResolver
-from hms_cadcam.cam.domain import GeometryReference, LengthUnit, ResolvedMachiningGeometry
+from hms_cadcam.cam.adapters import OcpContourProfileResolver, OcpPlanarFaceResolver
+from hms_cadcam.cam.domain import (
+    GeometryReference, LengthUnit, ResolvedContourProfile, ResolvedMachiningGeometry,
+)
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
     BoundingDimensions,
@@ -129,6 +131,8 @@ class MainWindow(QMainWindow):
             self.viewport.clear_toolpaths,
             self,
             face_resolver=self._resolve_planar_face_reference,
+            contour_pick_provider=self._current_contour_reference,
+            profile_resolver=self._resolve_contour_profile_reference,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_dock = QDockWidget("CAM Workspace", self)
@@ -235,7 +239,7 @@ class MainWindow(QMainWindow):
         for mode in ("shaded", "wireframe", "shaded_with_edges"):
             display_menu.addAction(self.cad_controller.actions[f"display_{mode}"])
         selection_menu = cad_viewer_menu.addMenu("Lựa chọn")
-        for mode in ("solid", "face", "edge", "vertex"):
+        for mode in ("solid", "face", "wire", "edge", "vertex"):
             selection_menu.addAction(self.cad_controller.actions[f"selection_{mode}"])
 
     def _build_quick_access_toolbar(self) -> None:
@@ -283,10 +287,32 @@ class MainWindow(QMainWindow):
         unit = (LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM)
         return OcpPlanarFaceResolver(self._cad_kernel, document_id, source_id, mapping, unit)
 
+    def _current_contour_reference(self) -> GeometryReference:
+        selections = self.cad_controller.active_selection
+        if len(selections) != 1 or selections[0].topology not in {SelectionMode.FACE, SelectionMode.WIRE}:
+            raise GeometryPickError("2D Contour requires exactly one planar FACE or closed WIRE selection.")
+        return self._contour_profile_resolver().bind_selection(selections[0])
+
+    def _contour_profile_resolver(self) -> OcpContourProfileResolver:
+        session = self.project_controller.service.current_project
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        mapping = self.cad_controller.persistent_object_map
+        if (not isinstance(self._cad_kernel, OcpCadKernel) or session is None or
+                document_id is None or source_id is None or mapping is None):
+            raise GeometryPickError("No active OCP CAD source is available for Contour profile resolution.")
+        unit = LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM
+        return OcpContourProfileResolver(self._cad_kernel, document_id, source_id, mapping, unit)
+
     def _resolve_planar_face_reference(
         self, reference: GeometryReference
     ) -> ResolvedMachiningGeometry:
         return self._planar_face_resolver().resolve(reference)
+
+    def _resolve_contour_profile_reference(
+        self, reference: GeometryReference
+    ) -> ResolvedContourProfile:
+        return self._contour_profile_resolver().resolve(reference)
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)
@@ -302,6 +328,7 @@ class MainWindow(QMainWindow):
             "display_shaded_with_edges",
             "selection_solid",
             "selection_face",
+            "selection_wire",
             "selection_edge",
             "selection_vertex",
             "measurement",

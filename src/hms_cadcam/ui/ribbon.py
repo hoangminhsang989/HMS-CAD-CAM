@@ -110,6 +110,7 @@ class RibbonWidget(QTabWidget):
                             for key in (
                                 "selection_solid",
                                 "selection_face",
+                                "selection_wire",
                                 "selection_edge",
                                 "selection_vertex",
                                 "measurement",

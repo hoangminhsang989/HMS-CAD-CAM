@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, CamJobId, CamNodeId, ContentFingerprint,
+    ContourCutDirection, ContourParameters, ContourProfileSource, ContourSide,
     DirtyReason, FacingBoundarySource, FacingCutDirection, FacingParameters,
     FeedRate, FeedUnit,
     GeometryFingerprint, GeometryInputId, GeometryInputRole,
@@ -25,7 +26,7 @@ from hms_cadcam.cam.domain import (
     MachineRequirement, Operation, OperationCapability, OperationFamily,
     OperationGeometryInput,
     OperationId, OperationParameterSet, Point3,
-    ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
+    ResolvedContourProfile, ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
     SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
@@ -50,7 +51,9 @@ class CamWorkspace(QWidget):
                  toolpath_display: Callable[[object], object] | None = None,
                  toolpath_clear: Callable[[], None] | None = None,
                  parent: QWidget | None = None,
-                 face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None) -> None:
+                 face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
+                 contour_pick_provider: Callable[[], GeometryReference] | None = None,
+                 profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
@@ -59,6 +62,8 @@ class CamWorkspace(QWidget):
         self._toolpath_display = toolpath_display
         self._toolpath_clear = toolpath_clear
         self._face_resolver = face_resolver
+        self._contour_pick_provider = contour_pick_provider
+        self._profile_resolver = profile_resolver
         self._picked_reference: GeometryReference | None = None
         self._picked_reference_resolved = False
         self._generation: int | None = None
@@ -81,7 +86,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
-        for key in ("job", "setup", "resources", "group", "operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "group", "operation", "contour_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -92,10 +97,11 @@ class CamWorkspace(QWidget):
             "resources": ("Tạo Tool/Machine cơ bản", self.create_basic_resources),
             "group": ("Thêm Group", self.add_group),
             "operation": ("Thêm Facing 2.5D", self.add_operation),
+            "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
-            "pick": ("Bind/Rebind FACE", self.pick_geometry),
-            "clear_pick": ("Clear FACE", self.clear_geometry_pick),
+            "pick": ("Bind/Rebind profile", self.pick_geometry),
+            "clear_pick": ("Clear profile", self.clear_geometry_pick),
             "up": ("Lên", lambda: self.move_selected(-1)),
             "down": ("Xuống", lambda: self.move_selected(1)),
             "delete": ("Xóa", self.delete_selected),
@@ -306,12 +312,15 @@ class CamWorkspace(QWidget):
 
     def pick_geometry(self) -> None:
         """Explicitly bind the current unambiguous CAD selection."""
-        if self._pick_provider is None:
+        operation = self._selected_operation()
+        provider = (self._contour_pick_provider if operation is not None and
+                    operation.strategy_key == "contour_2d" else self._pick_provider)
+        if provider is None:
             self._error("Geometry picking adapter chưa sẵn sàng.")
             return
         generation = self._generation
         try:
-            reference = self._pick_provider()
+            reference = provider()
         except Exception as error:
             self._error(str(error))
             return
@@ -325,16 +334,28 @@ class CamWorkspace(QWidget):
         if not self._picked_reference_resolved:
             self._picked_reference = previous
             self._picked_reference_resolved = previous_status
-            self._error("Persistent FACE could not be resolved unambiguously.")
+            self._error("Persistent profile could not be resolved unambiguously.")
             return
         self.editor.show_reference(self._picked_reference)
         self.message.emit("Đã tạo GeometryReference; dùng Rebind để thay thế rõ ràng.")
 
     def clear_geometry_pick(self) -> None:
         """Clear an explicit binding; never choose a replacement automatically."""
+        operation = self._selected_operation()
+        if operation is not None and operation.strategy_key == "contour_2d" and operation.geometry_inputs:
+            item = self.tree.currentItem()
+            job = self._find_job(item)
+            setup = self._find_setup(item, job)
+            if item is not None and job is not None and setup is not None:
+                changed = replace(operation, geometry_inputs=(), revision=operation.revision.next(),
+                                  artifact_state=operation.artifact_state.mark_dirty(
+                                      DirtyReason.GEOMETRY_CHANGED))
+                self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id,
+                    lambda tree: tree.replace_operation(changed)))
         self._picked_reference = None
         self._picked_reference_resolved = False
         self.editor.show_reference(None)
+        self._update_generate_action()
 
     def cad_context_changed(self, *, force_invalidate: bool = False) -> None:
         """Re-resolve displayed references after CAD reload without rebinding them."""
@@ -342,25 +363,31 @@ class CamWorkspace(QWidget):
         if not self._service.has_project:
             self._update_generate_action()
             return
-        if self._face_resolver is not None and self._generation is not None:
+        if (self._face_resolver is not None or self._profile_resolver is not None) and self._generation is not None:
             for job in self._service.cam_snapshot.jobs:
                 for setup in job.setups:
                     for operation in setup.operation_tree.operations:
                         if (operation.artifact_state.status is not ArtifactStatus.VALID or
                                 len(operation.geometry_inputs) != 1):
                             continue
-                        try:
-                            parameters = FacingParameters.from_operation_parameters(operation.parameters)
-                        except (RuntimeError, TypeError, ValueError):
-                            continue
-                        if parameters.boundary_source is not FacingBoundarySource.PLANAR_FACE:
+                        resolver = None
+                        if operation.strategy_key == "facing_2_5d":
+                            try:
+                                parameters = FacingParameters.from_operation_parameters(operation.parameters)
+                            except (RuntimeError, TypeError, ValueError):
+                                continue
+                            if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
+                                resolver = self._face_resolver
+                        elif operation.strategy_key == "contour_2d":
+                            resolver = self._profile_resolver
+                        if resolver is None:
                             continue
                         if force_invalidate:
                             self._execute(lambda app, operation_id=operation.operation_id:
                                 app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
                             continue
                         try:
-                            result = self._face_resolver(operation.geometry_inputs[0].reference)
+                            result = resolver(operation.geometry_inputs[0].reference)
                         except (RuntimeError, TypeError, ValueError):
                             self._execute(lambda app, operation_id=operation.operation_id:
                                 app.invalidate_operation(operation_id, DirtyReason.GEOMETRY_CHANGED))
@@ -373,13 +400,25 @@ class CamWorkspace(QWidget):
     def _resolve_picked_reference(self) -> bool:
         if self._picked_reference is None:
             return False
-        if self._face_resolver is None:
+        is_contour = (self._picked_reference.subshape_selector or "").startswith("hms_profile_v1:")
+        resolver = self._profile_resolver if is_contour else self._face_resolver
+        if resolver is None:
             return True
         try:
-            result = self._face_resolver(self._picked_reference)
+            result = resolver(self._picked_reference)
         except (RuntimeError, TypeError, ValueError):
             return False
         return getattr(result, "status", None) is GeometryResolutionStatus.RESOLVED
+
+    def _selected_operation(self) -> Operation | None:
+        item = self.tree.currentItem()
+        if item is None or item.data(0, _KIND_ROLE) != "operation":
+            return None
+        setup = self._find_setup(item, self._find_job(item))
+        if setup is None:
+            return None
+        node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
+        return setup.operation_tree.get_operation(node.operation_id) if node.operation_id else None
 
     def add_operation(self) -> None:
         context = self._tree_context()
@@ -404,6 +443,31 @@ class CamWorkspace(QWidget):
         if changed:
             self.refresh(("operation", str(node_id)))
 
+    def add_contour_operation(self) -> None:
+        """Add one editable 2D Contour operation without guessing its profile."""
+        context = self._tree_context()
+        if context is None:
+            return
+        job_id, setup_id, _tree, parent_id = context
+        node_id, operation_id = CamNodeId.new(), OperationId.new()
+        snapshot = self._service.cam_snapshot
+        assembly = snapshot.tool_assemblies[0] if snapshot.tool_assemblies else None
+        tool_reference = ToolAssemblyReference.from_assembly(assembly) if assembly else ToolAssemblyReference(
+            ToolAssemblyId.new(), Revision(0), ContentFingerprint.from_payload({"missing": True}),
+            _length_unit(self._service.current_project))
+        machine = snapshot.machine_definitions[0] if snapshot.machine_definitions else None
+        machine_requirement = None if machine is None else MachineRequirement(
+            machine.machine_id, machine.revision, ContentFingerprint.from_payload(machine.to_dict()),
+            machine.unit, (OperationCapability.MILLING,))
+        setup = next(value for job in snapshot.jobs for value in job.setups if value.setup_id == setup_id)
+        parameters = _default_contour_parameters(setup)
+        operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup_id,
+                              tool_reference, (), parameters.to_operation_parameters(), machine_requirement)
+        changed = self._execute(lambda app: app.update_tree(job_id, setup_id,
+            lambda value: value.add_operation(parent_id, "2D Contour", operation)))
+        if changed:
+            self.refresh(("operation", str(node_id)))
+
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
@@ -412,8 +476,32 @@ class CamWorkspace(QWidget):
         setup = self._find_setup(item, self._find_job(item))
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
-        if operation is None or operation.strategy_key != "facing_2_5d":
-            self._error("Operation đã chọn không phải Facing 2.5D.")
+        if operation is None or operation.strategy_key not in {"facing_2_5d", "contour_2d"}:
+            self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "contour_2d":
+            draft = self.editor.contour_draft(setup.wcs.origin.unit)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            if (draft is None or draft.to_operation_parameters() != operation.parameters or
+                    self.editor.tool.currentData() != str(operation.tool_assembly.assembly_id) or
+                    self.editor.machine.currentData() != (str(machine_id) if machine_id else None) or
+                    len(operation.geometry_inputs) != 1 or
+                    self._picked_reference != operation.geometry_inputs[0].reference or
+                    not self._picked_reference_resolved or not operation.enabled):
+                self._error("Draft 2D Contour chưa hợp lệ hoặc chưa được Áp dụng.")
+                return
+            result = self._service.compute_contour(
+                operation.operation_id, expected_generation=self._generation,
+                profile_resolver=self._profile_resolver,
+            )
+            if result.accepted and result.artifact is not None:
+                if self._toolpath_display is not None:
+                    self._toolpath_display(result.artifact)
+                self.message.emit("2D Contour đã Generate và publish artifact hợp lệ.")
+                self.editor.set_error("")
+            else:
+                self._error(result.diagnostics[0].message if result.diagnostics else "2D Contour generation thất bại.")
+            self.refresh(self._selected_key)
             return
         draft = self.editor.facing_draft(setup.wcs.origin.unit)
         machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
@@ -581,6 +669,48 @@ class CamWorkspace(QWidget):
                             enabled=enabled, revision=current.revision.next(),
                             artifact_state=current.artifact_state.mark_dirty(reason))
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
+                elif current is not None and current.strategy_key == "contour_2d":
+                    unit = setup.wcs.origin.unit
+                    parameters = self.editor.contour_draft(unit)
+                    if parameters is None:
+                        raise ValueError("Draft 2D Contour chưa hợp lệ.")
+                    snapshot = self._service.cam_snapshot
+                    assembly = next(value for value in snapshot.tool_assemblies
+                                    if str(value.assembly_id) == values["tool_id"])
+                    machine = next(value for value in snapshot.machine_definitions
+                                   if str(value.machine_id) == values["machine_id"])
+                    requirement = MachineRequirement(machine.machine_id, machine.revision,
+                        machine.content_fingerprint, machine.unit, (OperationCapability.MILLING,))
+                    expected_kind = (GeometryReferenceKind.FACE
+                                     if parameters.profile_source is ContourProfileSource.PLANAR_FACE_OUTER
+                                     else GeometryReferenceKind.SKETCH_OR_PROFILE)
+                    if self._picked_reference is None or self._picked_reference.kind is not expected_kind:
+                        raise ValueError("Hãy Bind profile đúng loại trước khi Áp dụng 2D Contour.")
+                    existing = current.geometry_inputs[0] if len(current.geometry_inputs) == 1 else None
+                    input_id = (existing.input_id if existing is not None and
+                                existing.reference.reference_id == self._picked_reference.reference_id
+                                else GeometryInputId.new())
+                    geometry_inputs = (OperationGeometryInput(
+                        input_id, GeometryInputRole.PROFILE, self._picked_reference,
+                        True, expected_kind, 0,
+                    ),)
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    inputs_changed = (parameter_set != current.parameters or
+                                      tool_reference != current.tool_assembly or
+                                      requirement != current.machine_requirement or
+                                      geometry_inputs != current.geometry_inputs)
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if inputs_changed or enabled_changed:
+                        reason = DirtyReason.PARAMETERS_CHANGED if inputs_changed else DirtyReason.UPSTREAM_CHANGED
+                        changed_operation = replace(current, parameters=parameter_set,
+                            tool_assembly=tool_reference, machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs, enabled=enabled,
+                            revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason))
+                    tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
                 else:
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
                 result = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
@@ -654,8 +784,17 @@ class CamWorkspace(QWidget):
         try:
             node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
             operation = setup.operation_tree.get_operation(node.operation_id)
-            draft = self.editor.facing_draft(setup.wcs.origin.unit)
             machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            if operation.strategy_key == "contour_2d":
+                draft = self.editor.contour_draft(setup.wcs.origin.unit)
+                return bool(operation.enabled and draft is not None and
+                    draft.to_operation_parameters() == operation.parameters and
+                    len(operation.geometry_inputs) == 1 and
+                    self._picked_reference == operation.geometry_inputs[0].reference and
+                    self._picked_reference_resolved and
+                    self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
+                    self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
+            draft = self.editor.facing_draft(setup.wcs.origin.unit)
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
                 (draft.boundary_source is FacingBoundarySource.STOCK_BOX or
@@ -678,8 +817,16 @@ class _CamPropertiesEditor(QWidget):
         self._facing_fields = {key: QLineEdit() for key in (
             "top", "target", "stepdown", "stepover", "allowance", "clearance", "retract",
             "feed", "plunge", "spindle", "angle", "overtravel")}
+        self._contour_fields = {key: QLineEdit() for key in (
+            "top", "final", "stepdown", "radial", "axial", "clearance", "retract",
+            "feed", "plunge", "spindle", "lead")}
         self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
         self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
+        self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
+        self.contour_side = QComboBox(); self.contour_side.addItems([item.value for item in ContourSide])
+        self.contour_direction = QComboBox(); self.contour_direction.addItems([item.value for item in ContourCutDirection])
+        self.finishing_pass = QCheckBox("Finishing pass")
+        self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
         self.setup_kind = QComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
         self.stock_kind = QComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
@@ -698,16 +845,32 @@ class _CamPropertiesEditor(QWidget):
                            ("Spindle RPM", "spindle"), ("Raster angle", "angle"), ("Overtravel", "overtravel")):
             form.addRow(label, self._facing_fields[key])
         form.addRow("Hướng cắt", self.direction)
+        form.addRow("Nguồn profile", self.profile_source); form.addRow("Side", self.contour_side)
+        for label, key in (("Contour Top Z", "top"), ("Final depth Z", "final"),
+                           ("Contour stepdown", "stepdown"), ("Radial allowance", "radial"),
+                           ("Axial allowance", "axial"), ("Contour clearance Z", "clearance"),
+                           ("Contour retract Z", "retract"), ("Contour feed", "feed"),
+                           ("Contour plunge", "plunge"), ("Contour spindle", "spindle"),
+                           ("Linear lead length", "lead")):
+            form.addRow(label, self._contour_fields[key])
+        form.addRow("Contour direction", self.contour_direction)
+        form.addRow("", self.multiple_depth_passes); form.addRow("", self.finishing_pass)
         form.addRow("Trạng thái", self.status); form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
         for field in self._facing_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
-        for combo in (self.boundary_source, self.direction, self.tool, self.machine):
+        for field in self._contour_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
+        for combo in (self.boundary_source, self.direction, self.profile_source, self.contour_side,
+                      self.contour_direction, self.tool, self.machine):
             combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
+        self.finishing_pass.toggled.connect(lambda _checked: self.draft_changed.emit())
+        self.multiple_depth_passes.toggled.connect(lambda _checked: self.draft_changed.emit())
 
     def clear(self) -> None:
         for field in self._fields.values(): field.clear()
         for field in self._facing_fields.values(): field.clear()
+        for field in self._contour_fields.values(): field.clear()
         self.status.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -748,6 +911,23 @@ class _CamPropertiesEditor(QWidget):
             self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
             if operation.machine_requirement:
                 self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
+        elif operation is not None and operation.strategy_key == "contour_2d":
+            parameters = ContourParameters.from_operation_parameters(operation.parameters)
+            values = {"top": parameters.top_height.value, "final": parameters.final_depth.value,
+                      "stepdown": parameters.stepdown.value, "radial": parameters.radial_stock_allowance.value,
+                      "axial": parameters.axial_stock_allowance.value,
+                      "clearance": parameters.clearance_height.value, "retract": parameters.retract_height.value,
+                      "feed": parameters.cutting_feed_rate.value, "plunge": parameters.plunge_feed_rate.value,
+                      "spindle": parameters.spindle_speed.value, "lead": parameters.lead_length.value}
+            for key, value in values.items(): self._contour_fields[key].setText(str(value))
+            self.profile_source.setCurrentText(parameters.profile_source.value)
+            self.contour_side.setCurrentText(parameters.side.value)
+            self.contour_direction.setCurrentText(parameters.direction.value)
+            self.finishing_pass.setChecked(parameters.finishing_pass)
+            self.multiple_depth_passes.setChecked(parameters.multiple_depth_passes)
+            self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -762,10 +942,15 @@ class _CamPropertiesEditor(QWidget):
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
                       **{key: field.text() for key, field in self._facing_fields.items()},
+                      **{f"contour_{key}": field.text() for key, field in self._contour_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
-                      "machine_id": self.machine.currentData()})
+                      "machine_id": self.machine.currentData(), "profile_source": self.profile_source.currentText(),
+                      "contour_side": self.contour_side.currentText(),
+                      "contour_direction": self.contour_direction.currentText(),
+                      "finishing_pass": self.finishing_pass.isChecked(),
+                      "multiple_depth_passes": self.multiple_depth_passes.isChecked()})
 
     def has_valid_facing_draft(self, unit: LengthUnit) -> bool:
         return self.facing_draft(unit) is not None
@@ -787,6 +972,31 @@ class _CamPropertiesEditor(QWidget):
                 FacingCutDirection(self.direction.currentText()),
                 float(self._facing_fields["angle"].text()),
                 Length(float(self._facing_fields["overtravel"].text()), unit))
+            return value if self.tool.currentData() is not None and self.machine.currentData() is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def contour_draft(self, unit: LengthUnit) -> ContourParameters | None:
+        try:
+            feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+            value = ContourParameters(
+                unit, ContourProfileSource(self.profile_source.currentText()),
+                ContourSide(self.contour_side.currentText()),
+                Length(float(self._contour_fields["top"].text()), unit),
+                Length(float(self._contour_fields["final"].text()), unit),
+                Length(float(self._contour_fields["stepdown"].text()), unit),
+                Length(float(self._contour_fields["radial"].text()), unit),
+                Length(float(self._contour_fields["axial"].text()), unit),
+                Length(float(self._contour_fields["clearance"].text()), unit),
+                Length(float(self._contour_fields["retract"].text()), unit),
+                FeedRate(float(self._contour_fields["feed"].text()), feed_unit),
+                FeedRate(float(self._contour_fields["plunge"].text()), feed_unit),
+                SpindleSpeed(float(self._contour_fields["spindle"].text())),
+                ContourCutDirection(self.contour_direction.currentText()),
+                lead_length=Length(float(self._contour_fields["lead"].text()), unit),
+                finishing_pass=self.finishing_pass.isChecked(),
+                multiple_depth_passes=self.multiple_depth_passes.isChecked(),
+            )
             return value if self.tool.currentData() is not None and self.machine.currentData() is not None else None
         except (TypeError, ValueError):
             return None
@@ -817,6 +1027,23 @@ def _default_facing_parameters(setup: Setup) -> FacingParameters:
         Length(top + 5 * scale, unit), Length(top + 2 * scale, unit),
         FeedRate(500 * scale, feed_unit), FeedRate(100 * scale, feed_unit), SpindleSpeed(1000),
         FacingCutDirection.BIDIRECTIONAL, 0.0, Length(scale, unit))
+
+
+def _default_contour_parameters(setup: Setup) -> ContourParameters:
+    if not isinstance(setup.stock, BoxStock):
+        raise ValueError("2D Contour mặc định yêu cầu Stock BOX.")
+    unit = setup.wcs.origin.unit
+    feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+    top = setup.stock.size_z.value
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    return ContourParameters(
+        unit, ContourProfileSource.PLANAR_FACE_OUTER, ContourSide.ON,
+        Length(top, unit), Length(top - scale, unit), Length(scale, unit),
+        Length(0, unit), Length(0, unit), Length(top + 5 * scale, unit),
+        Length(top + 2 * scale, unit), FeedRate(500 * scale, feed_unit),
+        FeedRate(100 * scale, feed_unit), SpindleSpeed(1000),
+        ContourCutDirection.CLIMB, lead_length=Length(scale, unit),
+    )
 
 
 def _active_job(snapshot):

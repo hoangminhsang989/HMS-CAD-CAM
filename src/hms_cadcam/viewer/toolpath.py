@@ -14,6 +14,7 @@ class ToolpathSegment:
     end: Point3
     motion_class: MotionClass
     curved: bool = False
+    semantic: str = "motion"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +28,7 @@ class ToolpathPresentation:
     @classmethod
     def from_artifact(cls, artifact: ToolpathArtifact) -> "ToolpathPresentation":
         segments = tuple(ToolpathSegment(event.start.position, event.end.position,
-            event.motion_class, isinstance(event, ArcMove)) for event in artifact.events
+            event.motion_class, isinstance(event, ArcMove), _semantic(event.provenance, event.motion_class)) for event in artifact.events
             if isinstance(event, (RapidMove, LinearMove, ArcMove)))
         return cls(artifact.source_operation_id, artifact.artifact_fingerprint.digest, segments)
 
@@ -65,3 +66,18 @@ class ToolpathPresentationRegistry:
 
     def clear(self) -> None:
         self._items.clear()
+
+
+def _semantic(provenance: str, motion_class: MotionClass) -> str:
+    if "lead_in" in provenance:
+        return "lead_in"
+    if "lead_out" in provenance:
+        return "lead_out"
+    if "plunge" in provenance or "approach" in provenance:
+        return "plunge_link"
+    return {
+        MotionClass.NON_CUTTING: "rapid",
+        MotionClass.CUTTING: "cutting",
+        MotionClass.LINK: "link",
+        MotionClass.RETRACT: "retract",
+    }[motion_class]

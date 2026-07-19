@@ -37,7 +37,10 @@ from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
-from hms_cadcam.cam.domain import GeometryReference, OperationId, ResolvedMachiningGeometry
+from hms_cadcam.cam.domain import (
+    GeometryReference, OperationId, ResolvedContourProfile, ResolvedMachiningGeometry,
+)
+from hms_cadcam.cam.application.contour import ContourComputeResult
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.toolpath import ToolpathArtifact, ToolpathPublishResult
@@ -348,6 +351,23 @@ class ProjectService:
         before = self._cam_application.snapshot
         result = self._cam_application.compute_facing(
             session.root_path, operation_id, face_resolver=face_resolver
+        )
+        session.cam_snapshot = self._cam_application.snapshot
+        if session.cam_snapshot != before:
+            session.is_dirty = True
+        return result
+
+    def compute_contour(self, operation_id: OperationId,
+                        *, expected_generation: int | None = None,
+                        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
+                        ) -> ContourComputeResult:
+        """Generate/publish one 2D Contour through the project lifecycle gateway."""
+        session = self._require_current()
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("CAM command belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        result = self._cam_application.compute_contour(
+            session.root_path, operation_id, profile_resolver=profile_resolver
         )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:

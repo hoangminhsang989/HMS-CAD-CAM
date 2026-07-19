@@ -34,6 +34,7 @@ class SelectionMode(str, Enum):
 
     SOLID = "solid"
     FACE = "face"
+    WIRE = "wire"
     EDGE = "edge"
     VERTEX = "vertex"
 

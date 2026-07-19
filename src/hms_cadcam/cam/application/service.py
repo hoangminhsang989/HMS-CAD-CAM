@@ -9,10 +9,10 @@ from typing import Callable
 
 from hms_cadcam.cam.domain import (
     ArtifactStatus, CamChildNotFoundError, CamJob, CamJobId, CamNodeId,
-    DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
+    ContourParameters, DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
     FacingParameters, FixtureInstance, GeometryReference, Operation,
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
-    ResolvedMachiningGeometry, SetupId, StockDefinition, ToolAssembly,
+    ResolvedContourProfile, ResolvedMachiningGeometry, SetupId, StockDefinition, ToolAssembly,
     ToolDefinition, ValidationDiagnostic, WcsFrame, WorkOffset,
 )
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
@@ -24,6 +24,9 @@ from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator,
+)
+from hms_cadcam.cam.application.contour import (
+    ContourComputeResult, ContourGenerationError, ContourGenerator,
 )
 
 
@@ -390,6 +393,83 @@ class CamApplicationService:
                                  diagnostics=(*current.diagnostics, diagnostic))
                 self._snapshot = _replace_operation(self._snapshot, failed)
                 return FacingComputeResult(failed, None, False, (diagnostic,))
+
+    def compute_contour(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
+    ) -> ContourComputeResult:
+        """Synchronously compute/publish 2D Contour with the shared stale-token contract."""
+        with self._lock:
+            before_compute = _clone_snapshot(self._snapshot)
+            operation = _find_operation(self._snapshot, operation_id)
+            setup = next(setup for job in self._snapshot.jobs for setup in job.setups
+                         if setup.setup_id == operation.setup_id)
+            assembly = next((item for item in self._snapshot.tool_assemblies
+                             if item.assembly_id == operation.tool_assembly.assembly_id), None)
+            tool = None if assembly is None else next((item for item in self._snapshot.tool_definitions
+                                                       if item.tool_id == assembly.tool_id), None)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            machine = next((item for item in self._snapshot.machine_definitions
+                            if item.machine_id == machine_id), None)
+            generator = ContourGenerator()
+            try:
+                try:
+                    ContourParameters.from_operation_parameters(operation.parameters)
+                except (TypeError, ValueError) as error:
+                    raise ContourGenerationError(DiagnosticCode.CONTOUR_INVALID_PARAMETERS, str(error)) from error
+                if len(operation.geometry_inputs) != 1 or profile_resolver is None:
+                    raise ContourGenerationError(DiagnosticCode.CONTOUR_PROFILE_MISSING,
+                                                 "2D Contour requires one resolvable persistent profile reference.")
+                try:
+                    resolved = profile_resolver(operation.geometry_inputs[0].reference)
+                except (RuntimeError, TypeError, ValueError) as error:
+                    raise ContourGenerationError(DiagnosticCode.CONTOUR_PROFILE_MISSING,
+                                                 str(error) or "2D Contour profile resolution failed.") from error
+                inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
+                                                  machine=machine, resolved_profile=resolved)
+                if operation.artifact_state.status is ArtifactStatus.VALID:
+                    operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
+                        DirtyReason.PARAMETERS_CHANGED))
+                    inputs = replace(inputs, operation=operation)
+                    self._snapshot = _replace_operation(self._snapshot, operation)
+                computing, token = generator.begin(inputs)
+                self._snapshot = _replace_operation(self._snapshot, computing.operation)
+                candidate = generator.generate(computing)
+                current = _find_operation(self._snapshot, operation_id)
+                publish = publish_toolpath(current, candidate, token, inputs.input_fingerprint)
+                if not publish.accepted or publish.artifact is None:
+                    self._snapshot = _replace_operation(self._snapshot, publish.operation)
+                    diagnostic = ValidationDiagnostic(DiagnosticSeverity.ERROR,
+                        DiagnosticCode.CONTOUR_STALE_RESULT,
+                        "Kết quả 2D Contour đã stale và không được publish.")
+                    return ContourComputeResult(publish.operation, None, False, (diagnostic,))
+                metadata = self._artifact_store.publish(project_root, publish.artifact)
+                artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
+                staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
+                self._snapshot = _replace_operation(staged, publish.operation)
+                return ContourComputeResult(publish.operation, publish.artifact, True)
+            except (ContourGenerationError, ToolpathArtifactStoreError) as error:
+                diagnostic = (error.diagnostic if isinstance(error, ContourGenerationError) else
+                    ValidationDiagnostic(DiagnosticSeverity.ERROR, DiagnosticCode.CONTOUR_GENERATION_FAILED,
+                                         "Không thể publish file toolpath 2D Contour an toàn."))
+                original = _find_operation(before_compute, operation_id)
+                if original.artifact_state.status is ArtifactStatus.VALID:
+                    self._snapshot = before_compute
+                    return ContourComputeResult(original, None, False, (diagnostic,))
+                current = _find_operation(self._snapshot, operation_id)
+                state = current.artifact_state
+                if state.status is ArtifactStatus.COMPUTING and state.token is not None:
+                    state, _ = state.fail(state.token, (diagnostic,))
+                else:
+                    state = replace(state, status=ArtifactStatus.FAILED, token=None,
+                                    diagnostics=(diagnostic,))
+                failed = replace(current, artifact_state=state,
+                                 diagnostics=(*current.diagnostics, diagnostic))
+                self._snapshot = _replace_operation(self._snapshot, failed)
+                return ContourComputeResult(failed, None, False, (diagnostic,))
 
     def _mutate_job(self, job_id: CamJobId, mutation: Callable[[CamJob], object]) -> CamProjectSnapshot:
         """Clone an aggregate first so failed validation cannot leak partial state."""

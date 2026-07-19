@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from OCP.AIS import AIS_Shape
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+from OCP.GC import GC_MakeArcOfCircle
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopoDS import TopoDS_Compound
 from OCP.V3d import V3d_TypeOfOrientation
@@ -224,27 +226,41 @@ class OcpCadViewportBackend:
         """Render motion compounds separately from selectable CAD presentations."""
         self._require_initialized()
         context = self._lifecycle.context
-        groups = {MotionClass.NON_CUTTING: [], MotionClass.CUTTING: [],
-                  MotionClass.LINK: [], MotionClass.RETRACT: []}
+        groups = {key: [] for key in ("rapid", "plunge_link", "lead_in", "cutting",
+                                      "lead_out", "link", "retract")}
         for event in artifact.events:
             if isinstance(event, (RapidMove, LinearMove, ArcMove)):
-                groups[event.motion_class].append((event.start.position, event.end.position))
-        colors = {MotionClass.NON_CUTTING: (0.2, 0.55, 1.0), MotionClass.CUTTING: (0.1, 0.9, 0.25),
-                  MotionClass.LINK: (1.0, 0.7, 0.1), MotionClass.RETRACT: (0.9, 0.25, 0.9)}
+                semantic = _toolpath_semantic(event.provenance, event.motion_class)
+                groups[semantic].append(event)
+        colors = {"rapid": (0.2, 0.55, 1.0), "plunge_link": (1.0, 0.65, 0.1),
+                  "lead_in": (0.0, 0.85, 0.85), "cutting": (0.1, 0.9, 0.25),
+                  "lead_out": (0.0, 0.65, 0.85), "link": (1.0, 0.8, 0.2),
+                  "retract": (0.9, 0.25, 0.9)}
         presentations = []
         try:
-            for motion_class, segments in groups.items():
-                if not segments:
+            for semantic, events in groups.items():
+                if not events:
                     continue
                 compound, builder = TopoDS_Compound(), BRep_Builder()
                 builder.MakeCompound(compound)
-                for start, end in segments:
-                    edge = BRepBuilderAPI_MakeEdge(gp_Pnt(start.x, start.y, start.z),
-                                                   gp_Pnt(end.x, end.y, end.z)).Edge()
+                for event in events:
+                    start, end = event.start.position, event.end.position
+                    if isinstance(event, ArcMove):
+                        angle = math.atan2(start.y - event.center.y, start.x - event.center.x)
+                        radius = math.hypot(start.x - event.center.x, start.y - event.center.y)
+                        middle_angle = angle + event.sweep_radians / 2.0
+                        middle = gp_Pnt(event.center.x + radius * math.cos(middle_angle),
+                                        event.center.y + radius * math.sin(middle_angle), start.z)
+                        curve = GC_MakeArcOfCircle(gp_Pnt(start.x, start.y, start.z), middle,
+                                                   gp_Pnt(end.x, end.y, end.z)).Value()
+                        edge = BRepBuilderAPI_MakeEdge(curve).Edge()
+                    else:
+                        edge = BRepBuilderAPI_MakeEdge(gp_Pnt(start.x, start.y, start.z),
+                                                       gp_Pnt(end.x, end.y, end.z)).Edge()
                     builder.Add(compound, edge)
                 presentation = AIS_Shape(compound)
                 presentations.append(presentation)
-                red, green, blue = colors[motion_class]
+                red, green, blue = colors[semantic]
                 context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
                 context.Display(presentation, False)
         except Exception:
@@ -285,7 +301,6 @@ class OcpCadViewportBackend:
 
     def fit_all(self) -> None:
         self._lifecycle.fit_all()
-
     def set_view_direction(self, direction: ViewDirection) -> None:
         self._view_direction = direction
         if self._lifecycle.initialized:
@@ -520,3 +535,14 @@ class OcpCadViewportBackend:
         if registry is None:
             raise RuntimeError("Managed presentation registry is unavailable")
         return registry
+
+
+def _toolpath_semantic(provenance: str, motion_class: MotionClass) -> str:
+    if "lead_in" in provenance:
+        return "lead_in"
+    if "lead_out" in provenance:
+        return "lead_out"
+    if "plunge" in provenance or "approach" in provenance:
+        return "plunge_link"
+    return {MotionClass.NON_CUTTING: "rapid", MotionClass.CUTTING: "cutting",
+            MotionClass.LINK: "link", MotionClass.RETRACT: "retract"}[motion_class]

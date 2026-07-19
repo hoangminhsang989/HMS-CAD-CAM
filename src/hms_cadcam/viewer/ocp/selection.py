@@ -16,6 +16,7 @@ from hms_cadcam.viewer.models import SelectionMetadata, SelectionMode
 _SELECTION_TOPOLOGY = {
     SelectionMode.SOLID: TopAbs_ShapeEnum.TopAbs_SOLID,
     SelectionMode.FACE: TopAbs_ShapeEnum.TopAbs_FACE,
+    SelectionMode.WIRE: TopAbs_ShapeEnum.TopAbs_WIRE,
     SelectionMode.EDGE: TopAbs_ShapeEnum.TopAbs_EDGE,
     SelectionMode.VERTEX: TopAbs_ShapeEnum.TopAbs_VERTEX,
 }
