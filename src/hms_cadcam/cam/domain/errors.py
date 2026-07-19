@@ -33,5 +33,9 @@ class CamSourceScopeError(CamInvariantError):
     """A geometry reference uses an undeclared project source."""
 
 
+class CamRevisionConflictError(CamInvariantError):
+    """A library update expected a different current revision."""
+
+
 class UnsupportedCamSchemaError(CamValidationError):
     """Serialized CAM data uses an unsupported format or version."""
