@@ -159,6 +159,14 @@ class DiagnosticCode(StrEnum):
     POCKET_MACHINE_INCOMPATIBLE = "pocket.machine_incompatible"
     POCKET_GENERATION_FAILED = "pocket.generation_failed"
     POCKET_STALE_RESULT = "pocket.stale_result"
+    DRILL_GEOMETRY_MISSING = "drill.geometry_missing"
+    DRILL_GEOMETRY_STALE = "drill.geometry_stale"
+    DRILL_GEOMETRY_AMBIGUOUS = "drill.geometry_ambiguous"
+    DRILL_SOURCE_MISMATCH = "drill.source_mismatch"
+    DRILL_UNSUPPORTED_GEOMETRY = "drill.unsupported_geometry"
+    DRILL_INVALID_DEPTH = "drill.invalid_depth"
+    DRILL_UNIT_MISSING = "drill.unit_missing"
+    DRILL_DUPLICATE_LOCATION = "drill.duplicate_location"
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,7 @@ from hms_cadcam.cam.domain.geometry_reference import (
 )
 from hms_cadcam.cam.domain.face_selector import PersistentFaceSelectorV1
 from hms_cadcam.cam.domain.profile_selector import PersistentProfileSelectorV1
+from hms_cadcam.cam.domain.hole_selector import PersistentHoleSelectorV1
 from hms_cadcam.cam.domain.contour import (
     CONTOUR_STRATEGY_KEY,
     CONTOUR_STRATEGY_VERSION,
@@ -70,6 +71,18 @@ from hms_cadcam.cam.domain.pocket import (
     PocketStrategy,
     PocketValidationError,
     ResolvedPocketGeometry,
+)
+from hms_cadcam.cam.domain.drilling import (
+    DrillDepthDefinition,
+    DrillGeometryInput,
+    DrillingRegion,
+    DrillValidationError,
+    HoleLocation,
+    HolePattern,
+    HoleReference,
+    HoleSourceKind,
+    ResolvedDrillingGeometry,
+    ResolvedHoleLocation,
 )
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
@@ -247,6 +260,10 @@ __all__ = [
     "CuttingGeometryKind",
     "CylindricalGeometry",
     "DrillGeometry",
+    "DrillDepthDefinition",
+    "DrillGeometryInput",
+    "DrillingRegion",
+    "DrillValidationError",
     "FeedRate",
     "FeedUnit",
     "FixtureInstance",
@@ -274,6 +291,10 @@ __all__ = [
     "HolderDefinitionId",
     "HolderDefinition",
     "HolderSection",
+    "HoleLocation",
+    "HolePattern",
+    "HoleReference",
+    "HoleSourceKind",
     "HMS_GEOMETRY_REFERENCE_SCHEME",
     "HMS_GEOMETRY_REFERENCE_SCHEME_VERSION",
     "Length",
@@ -306,6 +327,7 @@ __all__ = [
     "PlanarFaceBounds",
     "PlanarFaceDescriptor",
     "PersistentFaceSelectorV1",
+    "PersistentHoleSelectorV1",
     "PersistentProfileSelectorV1",
     "POCKET_STRATEGY_KEY",
     "POCKET_STRATEGY_VERSION",
@@ -319,6 +341,8 @@ __all__ = [
     "PocketValidationError",
     "ResolvedFaceBoundary",
     "ResolvedMachiningGeometry",
+    "ResolvedDrillingGeometry",
+    "ResolvedHoleLocation",
     "ResolvedPocketGeometry",
     "ResolvedContourProfile",
     "Revision",

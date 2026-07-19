@@ -1,0 +1,708 @@
+"""Pure-Python drilling geometry, pattern, depth, and resolution contracts."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any, ClassVar
+
+from hms_cadcam.cam.domain.errors import CamValidationError
+from hms_cadcam.cam.domain.facing import OccurrenceTransformProvenance
+from hms_cadcam.cam.domain.geometry_reference import (
+    GeometryReference,
+    GeometryReferenceKind,
+    GeometryRepresentationKind,
+    GeometryResolutionStatus,
+)
+from hms_cadcam.cam.domain.operation import (
+    DiagnosticCode,
+    ValidationDiagnostic,
+)
+from hms_cadcam.cam.domain.revision import ContentFingerprint, GeometryFingerprint
+from hms_cadcam.cam.domain.spatial import Point3, Vector3
+from hms_cadcam.cam.domain.units import Length, LengthUnit
+
+_VERSION = 1
+_TOLERANCE = 1.0e-8
+_DEPTH_FORMAT = "HMS_CAM_DRILL_DEPTH"
+_REFERENCE_FORMAT = "HMS_CAM_HOLE_REFERENCE"
+_LOCATION_FORMAT = "HMS_CAM_HOLE_LOCATION"
+_PATTERN_FORMAT = "HMS_CAM_HOLE_PATTERN"
+_INPUT_FORMAT = "HMS_CAM_DRILL_GEOMETRY_INPUT"
+_REGION_FORMAT = "HMS_CAM_DRILLING_REGION"
+
+
+class DrillValidationError(CamValidationError):
+    """Drilling geometry validation failed with one stable diagnostic code."""
+
+    def __init__(self, code: DiagnosticCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class HoleSourceKind(StrEnum):
+    """Geometry sources supported by drilling foundation v1."""
+
+    EXPLICIT_POINT = "explicit_point"
+    BREP_VERTEX = "brep_vertex"
+    CIRCULAR_EDGE = "circular_edge"
+
+
+def _known_unit(unit: LengthUnit) -> None:
+    if not isinstance(unit, LengthUnit) or unit is LengthUnit.UNKNOWN:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNIT_MISSING,
+            "Drilling geometry requires an explicit known length unit",
+        )
+
+
+def _unit_axis(axis: Vector3) -> None:
+    if not isinstance(axis, Vector3) or abs(axis.magnitude - 1.0) > _TOLERANCE:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            "Hole axis must be a finite unit vector",
+        )
+
+
+def _point_in_unit(point: Point3, unit: LengthUnit, name: str) -> None:
+    if not isinstance(point, Point3) or point.unit is not unit:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNIT_MISSING,
+            f"{name} must use the drilling geometry unit",
+        )
+
+
+def _payload(data: Any, format_name: str, fields: set[str]) -> None:
+    if not isinstance(data, dict) or set(data) != {
+        "format", "format_version", *fields,
+    }:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            f"{format_name} payload is malformed",
+        )
+    if data["format"] != format_name or type(data["format_version"]) is not int:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            f"Unsupported {format_name} payload",
+        )
+    if data["format_version"] != _VERSION:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            f"Unsupported {format_name} version",
+        )
+
+
+def _provenance_dict(value: OccurrenceTransformProvenance) -> dict[str, Any]:
+    return {
+        "occurrence_path": value.occurrence_path,
+        "absolute_transform": list(value.absolute_transform),
+        "source_normal_reversed": value.source_normal_reversed,
+    }
+
+
+def _provenance_from_dict(data: Any) -> OccurrenceTransformProvenance:
+    if not isinstance(data, dict) or set(data) != {
+        "occurrence_path", "absolute_transform", "source_normal_reversed",
+    } or not isinstance(data["absolute_transform"], list):
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            "Hole provenance payload is malformed",
+        )
+    try:
+        return OccurrenceTransformProvenance(
+            data["occurrence_path"],
+            tuple(data["absolute_transform"]),
+            data["source_normal_reversed"],
+        )
+    except (TypeError, ValueError, CamValidationError) as error:
+        raise DrillValidationError(
+            DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+            "Hole provenance payload is invalid",
+        ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class DrillDepthDefinition:
+    """Absolute top/bottom Z convention with one positive drilling depth."""
+
+    unit: LengthUnit
+    top_z: Length
+    bottom_z: Length
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        if any(
+            not isinstance(value, Length) or value.unit is not self.unit
+            for value in (self.top_z, self.bottom_z)
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "Drill top and bottom Z must use the drilling unit",
+            )
+        if self.bottom_z.value >= self.top_z.value - _TOLERANCE:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_DEPTH,
+                "Drill bottom Z must be below top Z",
+            )
+
+    @property
+    def depth(self) -> Length:
+        return Length(self.top_z.value - self.bottom_z.value, self.unit)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _DEPTH_FORMAT,
+            "format_version": _VERSION,
+            "unit": self.unit.value,
+            "top_z": self.top_z.value,
+            "bottom_z": self.bottom_z.value,
+            "depth": self.depth.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrillDepthDefinition":
+        try:
+            _payload(data, _DEPTH_FORMAT, {"unit", "top_z", "bottom_z", "depth"})
+        except DrillValidationError as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_DEPTH,
+                "Drill depth payload is malformed or unsupported",
+            ) from error
+        try:
+            unit = LengthUnit(data["unit"])
+            result = cls(
+                unit,
+                Length(data["top_z"], unit),
+                Length(data["bottom_z"], unit),
+            )
+            supplied = Length(data["depth"], unit)
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_DEPTH,
+                "Drill depth payload is invalid",
+            ) from error
+        if abs(supplied.value - result.depth.value) > _TOLERANCE:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_DEPTH,
+                "Drill depth does not match top and bottom Z",
+            )
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class HoleReference:
+    """Persistent hole target plus explicitly bound drilling plane and axis."""
+
+    reference: GeometryReference
+    axis: Vector3
+    plane_origin: Point3
+    unit: LengthUnit
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, GeometryReference):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "Hole GeometryReference is missing",
+            )
+        _known_unit(self.unit)
+        if (
+            self.reference.geometry_kind is not GeometryRepresentationKind.BREP
+            or self.reference.kind not in {
+                GeometryReferenceKind.VERTEX,
+                GeometryReferenceKind.EDGE,
+            }
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "HoleReference requires one persistent BREP VERTEX or EDGE",
+            )
+        _unit_axis(self.axis)
+        _point_in_unit(self.plane_origin, self.unit, "Hole reference plane origin")
+
+    @property
+    def fingerprint(self) -> ContentFingerprint:
+        reference = self.reference
+        return ContentFingerprint.from_payload({
+            "format": "hms_hole_reference_fingerprint_v1",
+            "target": {
+                "scheme": reference.scheme,
+                "scheme_version": reference.scheme_version,
+                "source_id": str(reference.source_id),
+                "kind": reference.kind.value,
+                "geometry_kind": reference.geometry_kind.value,
+                "occurrence_path": reference.occurrence_path,
+                "subshape_selector": reference.subshape_selector,
+                "expected_geometry_fingerprint": (
+                    reference.expected_geometry_fingerprint.to_dict()
+                ),
+                "expected_source_revision": reference.expected_source_revision.to_dict(),
+            },
+            "axis": self.axis.to_dict(),
+            "plane_origin": self.plane_origin.to_dict(),
+            "unit": self.unit.value,
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _REFERENCE_FORMAT,
+            "format_version": _VERSION,
+            "reference": self.reference.to_dict(),
+            "axis": self.axis.to_dict(),
+            "plane_origin": self.plane_origin.to_dict(),
+            "unit": self.unit.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HoleReference":
+        try:
+            _payload(data, _REFERENCE_FORMAT, {"reference", "axis", "plane_origin", "unit"})
+            return cls(
+                GeometryReference.from_dict(data["reference"]),
+                Vector3.from_dict(data["axis"]),
+                Point3.from_dict(data["plane_origin"]),
+                LengthUnit(data["unit"]),
+            )
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "HoleReference payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class HoleLocation:
+    """One normalized native-free drilling location."""
+
+    position: Point3
+    axis: Vector3
+    plane_origin: Point3
+    diameter: Length | None
+    unit: LengthUnit
+    source_kind: HoleSourceKind = HoleSourceKind.EXPLICIT_POINT
+    reference: HoleReference | None = None
+    provenance: OccurrenceTransformProvenance = OccurrenceTransformProvenance(
+        None,
+        (1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0),
+    )
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        _point_in_unit(self.position, self.unit, "Hole position")
+        _point_in_unit(self.plane_origin, self.unit, "Hole plane origin")
+        _unit_axis(self.axis)
+        if not isinstance(self.source_kind, HoleSourceKind):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "Hole source kind is invalid",
+            )
+        if not isinstance(self.provenance, OccurrenceTransformProvenance):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "Hole provenance is invalid",
+            )
+        distance = (
+            (self.position.x - self.plane_origin.x) * self.axis.x
+            + (self.position.y - self.plane_origin.y) * self.axis.y
+            + (self.position.z - self.plane_origin.z) * self.axis.z
+        )
+        if abs(distance) > _TOLERANCE:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "Hole position must lie on its declared plane",
+            )
+        if self.diameter is not None and (
+            not isinstance(self.diameter, Length)
+            or self.diameter.unit is not self.unit
+            or self.diameter.value <= 0.0
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "Hole diameter must be positive in the drilling unit",
+            )
+        requires_reference = self.source_kind is not HoleSourceKind.EXPLICIT_POINT
+        if requires_reference != (self.reference is not None):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "BREP hole locations require exactly one HoleReference",
+            )
+        if self.reference is not None:
+            if self.reference.unit is not self.unit:
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNIT_MISSING,
+                    "Hole location and reference units do not match",
+                )
+            if self.reference.reference.kind is GeometryReferenceKind.VERTEX:
+                expected = HoleSourceKind.BREP_VERTEX
+            else:
+                expected = HoleSourceKind.CIRCULAR_EDGE
+            if self.source_kind is not expected:
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                    "Hole source kind does not match its GeometryReference",
+                )
+            if (
+                self.axis.dot(self.reference.axis) < 1.0 - _TOLERANCE
+                or math.dist(
+                    (self.plane_origin.x, self.plane_origin.y, self.plane_origin.z),
+                    (
+                        self.reference.plane_origin.x,
+                        self.reference.plane_origin.y,
+                        self.reference.plane_origin.z,
+                    ),
+                ) > _TOLERANCE
+            ):
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                    "Hole location does not match its bound plane and axis",
+                )
+
+    @property
+    def fingerprint(self) -> GeometryFingerprint:
+        return GeometryFingerprint.from_payload({
+            "format": "hms_hole_location_v1",
+            "position": self.position.to_dict(),
+            "axis": self.axis.to_dict(),
+            "plane_origin": self.plane_origin.to_dict(),
+            "diameter": None if self.diameter is None else self.diameter.value,
+            "unit": self.unit.value,
+            "source_kind": self.source_kind.value,
+            "reference": None if self.reference is None else self.reference.fingerprint.to_dict(),
+            "provenance": _provenance_dict(self.provenance),
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _LOCATION_FORMAT,
+            "format_version": _VERSION,
+            "position": self.position.to_dict(),
+            "axis": self.axis.to_dict(),
+            "plane_origin": self.plane_origin.to_dict(),
+            "diameter": None if self.diameter is None else self.diameter.value,
+            "unit": self.unit.value,
+            "source_kind": self.source_kind.value,
+            "reference": None if self.reference is None else self.reference.to_dict(),
+            "provenance": _provenance_dict(self.provenance),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HoleLocation":
+        try:
+            _payload(data, _LOCATION_FORMAT, {
+                "position", "axis", "plane_origin", "diameter", "unit",
+                "source_kind", "reference", "provenance",
+            })
+            unit = LengthUnit(data["unit"])
+            reference = (
+                None if data["reference"] is None
+                else HoleReference.from_dict(data["reference"])
+            )
+            return cls(
+                Point3.from_dict(data["position"]),
+                Vector3.from_dict(data["axis"]),
+                Point3.from_dict(data["plane_origin"]),
+                None if data["diameter"] is None else Length(data["diameter"], unit),
+                unit,
+                HoleSourceKind(data["source_kind"]),
+                reference,
+                _provenance_from_dict(data["provenance"]),
+            )
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "Hole location payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class HolePattern:
+    """Canonical explicit list of coplanar, unique hole locations."""
+
+    locations: tuple[HoleLocation, ...]
+    unit: LengthUnit
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        if (
+            not isinstance(self.locations, tuple)
+            or not self.locations
+            or any(not isinstance(value, HoleLocation) for value in self.locations)
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "HolePattern requires at least one explicit location",
+            )
+        if any(value.unit is not self.unit for value in self.locations):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "HolePattern locations must use one unit",
+            )
+        canonical = tuple(sorted(self.locations, key=_location_key))
+        keys = tuple(_position_key(value.position) for value in canonical)
+        if len(set(keys)) != len(keys):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_DUPLICATE_LOCATION,
+                "HolePattern contains duplicate locations",
+            )
+        first = canonical[0]
+        for location in canonical[1:]:
+            if first.axis.dot(location.axis) < 1.0 - _TOLERANCE:
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                    "HolePattern axes must use one direction",
+                )
+            delta = Vector3(
+                location.position.x - first.plane_origin.x,
+                location.position.y - first.plane_origin.y,
+                location.position.z - first.plane_origin.z,
+            )
+            if abs(delta.dot(first.axis)) > _TOLERANCE:
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                    "HolePattern locations must be coplanar",
+                )
+        object.__setattr__(self, "locations", canonical)
+
+    @property
+    def fingerprint(self) -> GeometryFingerprint:
+        return GeometryFingerprint.from_payload({
+            "format": "hms_hole_pattern_v1",
+            "unit": self.unit.value,
+            "locations": [value.fingerprint.to_dict() for value in self.locations],
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _PATTERN_FORMAT,
+            "format_version": _VERSION,
+            "unit": self.unit.value,
+            "locations": [value.to_dict() for value in self.locations],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HolePattern":
+        try:
+            _payload(data, _PATTERN_FORMAT, {"unit", "locations"})
+            if not isinstance(data["locations"], list):
+                raise TypeError("locations must be a list")
+            return cls(
+                tuple(HoleLocation.from_dict(value) for value in data["locations"]),
+                LengthUnit(data["unit"]),
+            )
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "HolePattern payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class DrillGeometryInput:
+    """Exactly one persistent hole reference or explicit point pattern."""
+
+    source: HoleReference | HolePattern
+    unit: LengthUnit
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        if not isinstance(self.source, (HoleReference, HolePattern)):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "DrillGeometryInput requires one reference or explicit pattern",
+            )
+        if self.source.unit is not self.unit:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "Drill geometry input unit does not match its source",
+            )
+
+    @property
+    def fingerprint(self) -> ContentFingerprint:
+        return ContentFingerprint.from_payload({
+            "format": "hms_drill_geometry_input_v1",
+            "unit": self.unit.value,
+            "source_type": "reference" if isinstance(self.source, HoleReference) else "pattern",
+            "source_fingerprint": self.source.fingerprint.to_dict(),
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        source_type = "reference" if isinstance(self.source, HoleReference) else "pattern"
+        return {
+            "format": _INPUT_FORMAT,
+            "format_version": _VERSION,
+            "unit": self.unit.value,
+            "source_type": source_type,
+            "source": self.source.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrillGeometryInput":
+        try:
+            _payload(data, _INPUT_FORMAT, {"unit", "source_type", "source"})
+            if data["source_type"] == "reference":
+                source = HoleReference.from_dict(data["source"])
+            elif data["source_type"] == "pattern":
+                source = HolePattern.from_dict(data["source"])
+            else:
+                raise ValueError("unknown drilling source")
+            return cls(source, LengthUnit(data["unit"]))
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "DrillGeometryInput payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class DrillingRegion:
+    """Resolved coplanar drilling locations and validated depth."""
+
+    geometry_input: DrillGeometryInput
+    pattern: HolePattern
+    depth: DrillDepthDefinition
+    unit: LengthUnit
+    source_fingerprint: GeometryFingerprint
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        if not isinstance(self.geometry_input, DrillGeometryInput):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "DrillingRegion geometry input is missing",
+            )
+        if not isinstance(self.pattern, HolePattern) or not isinstance(
+            self.depth, DrillDepthDefinition
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "DrillingRegion pattern or depth is invalid",
+            )
+        if any(value.unit is not self.unit for value in (
+            self.geometry_input, self.pattern, self.depth,
+        )):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "DrillingRegion values must use one unit",
+            )
+        if not isinstance(self.source_fingerprint, GeometryFingerprint):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "DrillingRegion source fingerprint is invalid",
+            )
+        source = self.geometry_input.source
+        if isinstance(source, HolePattern):
+            matches_input = self.pattern == source
+        else:
+            matches_input = (
+                len(self.pattern.locations) == 1
+                and self.pattern.locations[0].reference == source
+            )
+        if not matches_input:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_SOURCE_MISMATCH,
+                "DrillingRegion pattern does not match its geometry input",
+            )
+
+    @property
+    def fingerprint(self) -> GeometryFingerprint:
+        return GeometryFingerprint.from_payload({
+            "format": "hms_drilling_region_v1",
+            "geometry_input": self.geometry_input.fingerprint.to_dict(),
+            "pattern": self.pattern.fingerprint.to_dict(),
+            "depth": self.depth.to_dict(),
+            "unit": self.unit.value,
+            "source_fingerprint": self.source_fingerprint.to_dict(),
+        })
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _REGION_FORMAT,
+            "format_version": _VERSION,
+            "geometry_input": self.geometry_input.to_dict(),
+            "pattern": self.pattern.to_dict(),
+            "depth": self.depth.to_dict(),
+            "unit": self.unit.value,
+            "source_fingerprint": self.source_fingerprint.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrillingRegion":
+        try:
+            _payload(data, _REGION_FORMAT, {
+                "geometry_input", "pattern", "depth", "unit", "source_fingerprint",
+            })
+            return cls(
+                DrillGeometryInput.from_dict(data["geometry_input"]),
+                HolePattern.from_dict(data["pattern"]),
+                DrillDepthDefinition.from_dict(data["depth"]),
+                LengthUnit(data["unit"]),
+                GeometryFingerprint.from_dict(data["source_fingerprint"]),
+            )
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                "DrillingRegion payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedHoleLocation:
+    """Fail-closed native-free result for one persistent hole reference."""
+
+    status: GeometryResolutionStatus
+    location: HoleLocation | None = None
+    diagnostics: tuple[ValidationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, GeometryResolutionStatus):
+            raise CamValidationError("Hole resolution status is invalid")
+        if (self.status is GeometryResolutionStatus.RESOLVED) != (self.location is not None):
+            raise CamValidationError("Only resolved hole geometry may carry a location")
+        if self.status is not GeometryResolutionStatus.RESOLVED and not self.diagnostics:
+            raise CamValidationError("Failed hole resolution requires a diagnostic")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedDrillingGeometry:
+    """Fail-closed result for a complete drilling geometry input."""
+
+    status: GeometryResolutionStatus
+    region: DrillingRegion | None = None
+    diagnostics: tuple[ValidationDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, GeometryResolutionStatus):
+            raise CamValidationError("Drilling resolution status is invalid")
+        if (self.status is GeometryResolutionStatus.RESOLVED) != (self.region is not None):
+            raise CamValidationError("Only resolved drilling geometry may carry a region")
+        if self.status is not GeometryResolutionStatus.RESOLVED and not self.diagnostics:
+            raise CamValidationError("Failed drilling resolution requires a diagnostic")
+
+
+def _position_key(value: Point3) -> tuple[int, int, int]:
+    return tuple(round(coordinate / _TOLERANCE) for coordinate in (value.x, value.y, value.z))
+
+
+def _location_key(value: HoleLocation) -> tuple[object, ...]:
+    return (*_position_key(value.position), value.source_kind.value, value.fingerprint.digest)
