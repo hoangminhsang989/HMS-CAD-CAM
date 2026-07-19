@@ -10,13 +10,22 @@ from uuid import uuid4
 
 import pytest
 
-from hms_cadcam.cad.models import CadGeometryKind
+from hms_cadcam.cad.models import CadGeometryKind, XcafNodeRole
 from hms_cadcam.cad.persistent_keys import (
+    PersistentKeyScheme,
     PersistentCadObjectKey,
+    PersistentXcafOccurrenceKey,
     TopologyPath,
     TopologyPathVersion,
+    XcafOccurrenceKeyVersion,
+    XcafOccurrencePath,
+    XcafProductIdentity,
 )
-from hms_cadcam.project.cad_state import CadViewState, PersistentObjectAppearance
+from hms_cadcam.project.cad_state import (
+    CadViewState,
+    ObjectAppearanceOverride,
+    PersistentObjectAppearance,
+)
 from hms_cadcam.project.constants import (
     AUTOSAVE_METADATA_FILENAME,
     DATABASE_FILENAME,
@@ -122,6 +131,49 @@ def test_recovery_restores_pending_cad_view_state_from_snapshot(tmp_path) -> Non
 
     assert not recovered.is_dirty
     assert opener.cad_view_state(source_id) == state
+
+
+def test_recovery_restores_pending_xcaf_override_without_source_appearance(
+    tmp_path,
+) -> None:
+    owner = ProjectService.create_default(tmp_path / "owner-xcaf-config")
+    source = tmp_path / "recovery.step"
+    source.write_bytes(b"recovery XCAF source")
+    session = owner.create_project_from_source(tmp_path, "XCAF Recovery", source)
+    source_id = session.manifest.source_files[0].source_id
+    key = PersistentXcafOccurrenceKey(
+        source_id,
+        CadGeometryKind.BREP,
+        PersistentKeyScheme.XCAF_OCCURRENCE,
+        XcafOccurrenceKeyVersion.V1,
+        XcafOccurrencePath("assembly:" + "d" * 32 + "/part:" + "e" * 32),
+        XcafProductIdentity("product:" + "f" * 32),
+        XcafNodeRole.PART,
+    )
+    state = CadViewState(
+        source_id,
+        object_appearances=(
+            PersistentObjectAppearance(
+                key,
+                ObjectAppearanceOverride(transparency=0.4),
+            ),
+        ),
+    )
+    owner.stage_cad_view_state(state)
+    snapshot = owner.autosave()
+    assert snapshot is not None and session.is_dirty
+
+    opener = ProjectService.create_default(tmp_path / "opener-xcaf-config")
+    opener._session_locks._pid_checker = lambda _pid: False
+    with pytest.raises(RecoveryRequiredError) as raised:
+        opener.open_project(session.root_path)
+    recovered = opener.recover_project(raised.value.assessment)
+
+    assert not recovered.is_dirty
+    assert opener.cad_view_state(source_id) == state
+    restored = opener.cad_view_state(source_id).object_appearances[0].appearance
+    assert isinstance(restored, ObjectAppearanceOverride)
+    assert restored.color is None
 
 
 def test_corrupt_snapshot_is_rejected_before_stale_lock_is_replaced(tmp_path) -> None:

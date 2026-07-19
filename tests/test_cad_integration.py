@@ -34,15 +34,29 @@ from hms_cadcam.cad.models import (  # noqa: E402
     CadDocumentId,
     CadDocumentMetadata,
     CadFormat,
+    CadGeometryKind,
     CadImportResult,
     CadKernelStatus,
     CadObjectId,
     CadObjectKind,
     TopologyCounts,
+    XcafNodeRole,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
+from hms_cadcam.cad.persistent_keys import (  # noqa: E402
+    PersistentKeyScheme,
+    PersistentXcafOccurrenceKey,
+    XcafOccurrenceKeyVersion,
+    XcafOccurrencePath,
+    XcafProductIdentity,
+)
 from hms_cadcam.cad.ocp.measurement import OcpMeasurementService  # noqa: E402
 from hms_cadcam.project.models import UnitSystem  # noqa: E402
+from hms_cadcam.project.cad_state import (  # noqa: E402
+    CadViewState,
+    ObjectAppearanceOverride,
+    PersistentObjectAppearance,
+)
 from hms_cadcam.project.service import ProjectService  # noqa: E402
 from hms_cadcam.ui.cad_worker import CadImportTask  # noqa: E402
 from hms_cadcam.ui.main_window import MainWindow  # noqa: E402
@@ -1223,6 +1237,325 @@ def test_project_cad_view_state_save_open_round_trip(tmp_path: Path) -> None:
     assert not reopened_service.is_dirty
     assert reopened_service.autosave() is None
     assert list((project_root / "autosave").iterdir()) == []
+    reopened.close()
+
+
+def test_project_xcaf_repeated_occurrence_save_open_and_reset_round_trip(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "persistent-assembly.step"
+    write_xcaf_step_fixture(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(
+        tmp_path, "Persistent XCAF", source
+    )
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    repeated = sorted(
+        (
+            node
+            for node in tree.presentation_nodes
+            if node.product_name == "Repeated Product"
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )
+    assert len(repeated) == 2
+    first, second = repeated
+    first_source = window.cad_controller._base_appearances[first.object_id]
+    second_source = window.cad_controller._base_appearances[second.object_id]
+    override_color = ObjectColor(0.25, 0.45, 0.75)
+
+    backend.fail_appearance = "color"
+    assert not window.cad_controller.set_object_color(
+        tree.document_id, first.object_id, override_color
+    )
+    assert not session.is_dirty
+    assert session.cad_view_states == {}
+    assert window.cad_controller.set_object_color(
+        tree.document_id, first.object_id, override_color
+    )
+    assert window.cad_controller.set_object_transparency(
+        tree.document_id, first.object_id, 0.35
+    )
+    assert window.cad_controller.set_object_visibility(
+        tree.document_id, second.object_id, False
+    )
+    state = service.cad_view_state(session.manifest.source_files[0].source_id)
+    assert len(state.object_appearances) == 2
+    assert all(
+        isinstance(item.appearance, ObjectAppearanceOverride)
+        for item in state.object_appearances
+    )
+    service.save()
+    project_root = session.root_path
+    with sqlite3.connect(project_root / "project.db") as connection:
+        rows = connection.execute(
+            """
+            SELECT visible, color_r, color_g, color_b, transparency
+            FROM cad_xcaf_occurrence_appearance
+            ORDER BY occurrence_path
+            """
+        ).fetchall()
+        assert len(rows) == 2
+        assert any(row[0] == 0 and row[1:4] == (None, None, None) for row in rows)
+    window.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    reopened_backend = IntegrationViewportBackend()
+    reopened = MainWindow(reopened_service, OcpCadKernel(), reopened_backend)
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+    reopened_tree = reopened.cad_controller.active_tree
+    assert reopened_tree is not None
+    reopened_repeated = sorted(
+        (
+            node
+            for node in reopened_tree.presentation_nodes
+            if node.product_name == "Repeated Product"
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )
+    reopened_appearances = dict(reopened.cad_controller.appearances)
+    assert reopened_appearances[reopened_repeated[0].object_id] == ObjectAppearance(
+        True, override_color, 0.35
+    )
+    assert reopened_appearances[reopened_repeated[1].object_id] == ObjectAppearance(
+        False, second_source.color, second_source.transparency
+    )
+    assert not reopened_service.is_dirty
+    assert reopened_service.autosave() is None
+
+    assert reopened.cad_controller.reset_object_appearance(
+        reopened_tree.document_id, reopened_repeated[0].object_id
+    )
+    reset = dict(reopened.cad_controller.appearances)[
+        reopened_repeated[0].object_id
+    ]
+    assert reset == first_source
+    pending = reopened_service.cad_view_state(
+        session.manifest.source_files[0].source_id
+    )
+    assert len(pending.object_appearances) == 1
+    reopened_service.save()
+    with sqlite3.connect(project_root / "project.db") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
+        ).fetchone()[0] == 1
+    reopened.close()
+
+
+def test_project_xcaf_save_as_preserves_source_id_and_instance_override(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "save-as-assembly.step"
+    write_xcaf_step_fixture(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    original = service.create_project_from_source(tmp_path, "XCAF Original", source)
+    source_id = original.manifest.source_files[0].source_id
+    window = MainWindow(service, OcpCadKernel(), IntegrationViewportBackend())
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    target = sorted(
+        (
+            node
+            for node in tree.presentation_nodes
+            if node.product_name == "Repeated Product"
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )[1]
+    color = ObjectColor(0.65, 0.25, 0.45)
+    assert window.cad_controller.set_object_color(
+        tree.document_id, target.object_id, color
+    )
+    service.save()
+    original_root = original.root_path
+    window.cad_controller.shutdown()
+
+    copied = service.save_as(tmp_path, "XCAF Copy")
+    assert copied.manifest.source_files[0].source_id == source_id
+    copy_root = copied.root_path
+    copied_window = MainWindow(
+        service, OcpCadKernel(), IntegrationViewportBackend()
+    )
+    _wait_until(application, lambda: not copied_window.cad_controller.is_busy)
+    copied_tree = copied_window.cad_controller.active_tree
+    assert copied_tree is not None
+    copied_target = sorted(
+        (
+            node
+            for node in copied_tree.presentation_nodes
+            if node.product_name == "Repeated Product"
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )[1]
+    assert dict(copied_window.cad_controller.appearances)[
+        copied_target.object_id
+    ].color == color
+    assert copied_window.cad_controller.reset_object_appearance(
+        copied_tree.document_id, copied_target.object_id
+    )
+    service.save()
+    with sqlite3.connect(original_root / "project.db") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
+        ).fetchone()[0] == 1
+    with sqlite3.connect(copy_root / "project.db") as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
+        ).fetchone()[0] == 0
+    copied_window.close()
+
+
+def test_xcaf_stale_and_foreign_occurrence_keys_are_not_applied(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    application = _application()
+    source = tmp_path / "stale-assembly.step"
+    write_xcaf_step_fixture(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Stale XCAF", source)
+    source_id = session.manifest.source_files[0].source_id
+    stale_key = PersistentXcafOccurrenceKey(
+        source_id,
+        CadGeometryKind.BREP,
+        PersistentKeyScheme.XCAF_OCCURRENCE,
+        XcafOccurrenceKeyVersion.V1,
+        XcafOccurrencePath("assembly:" + "a" * 32 + "/part:" + "b" * 32),
+        XcafProductIdentity("product:" + "c" * 32),
+        XcafNodeRole.PART,
+    )
+    service.stage_cad_view_state(
+        CadViewState(
+            source_id,
+            object_appearances=(
+                PersistentObjectAppearance(
+                    stale_key,
+                    ObjectAppearanceOverride(color=ObjectColor(0.2, 0.3, 0.4)),
+                ),
+            ),
+        )
+    )
+    service.save()
+    timestamp = "2026-01-01T00:00:00Z"
+    with sqlite3.connect(session.root_path / "project.db") as connection:
+        connection.execute(
+            """
+            INSERT INTO cad_xcaf_occurrence_appearance VALUES (
+                ?, 'brep', 'xcaf_occurrence', 1, ?, ?, 'part',
+                0, NULL, NULL, NULL, NULL, ?
+            )
+            """,
+            (
+                str(uuid4()),
+                "assembly:" + "d" * 32 + "/part:" + "e" * 32,
+                "product:" + "f" * 32,
+                timestamp,
+            ),
+        )
+    service.close_project()
+
+    caplog.set_level("WARNING")
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(session.root_path)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(reopened_service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+
+    assert backend.color_changes == []
+    assert backend.visibility_changes == []
+    assert backend.transparency_changes == []
+    assert "source_id không hợp lệ" in caplog.text
+    assert "persistent path stale/missing" in caplog.text
+    assert not reopened_service.is_dirty
+    window.close()
+
+
+def test_xcaf_restore_apply_failure_rolls_back_to_source_without_dirty(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "rollback-assembly.step"
+    write_xcaf_step_fixture(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Rollback XCAF", source)
+    first = MainWindow(service, OcpCadKernel(), IntegrationViewportBackend())
+    _wait_until(application, lambda: not first.cad_controller.is_busy)
+    tree = first.cad_controller.active_tree
+    assert tree is not None
+    target = tree.presentation_nodes[0]
+    assert first.cad_controller.set_object_color(
+        tree.document_id, target.object_id, ObjectColor(0.3, 0.5, 0.7)
+    )
+    assert first.cad_controller.set_object_transparency(
+        tree.document_id, target.object_id, 0.4
+    )
+    service.save()
+    project_root = session.root_path
+    first.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    backend = IntegrationViewportBackend()
+    backend.fail_appearance = "transparency"
+    reopened = MainWindow(reopened_service, OcpCadKernel(), backend)
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+    reopened_tree = reopened.cad_controller.active_tree
+    assert reopened_tree is not None
+    source_appearances = reopened.cad_controller._base_appearances
+    assert dict(reopened.cad_controller.appearances) == source_appearances
+    assert backend.reset_appearance_changes
+    assert not reopened_service.is_dirty
+    assert reopened_service.autosave() is None
+    reopened.close()
+
+
+def test_xcaf_save_during_isolate_uses_pre_isolate_visibility(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "isolate-assembly.step"
+    write_xcaf_step_fixture(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Isolate XCAF", source)
+    window = MainWindow(service, OcpCadKernel(), IntegrationViewportBackend())
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None and len(tree.presentation_nodes) == 3
+    first, second = tree.presentation_nodes[:2]
+    assert window.cad_controller.set_object_color(
+        tree.document_id, first.object_id, ObjectColor(0.4, 0.5, 0.6)
+    )
+    assert window.cad_controller.isolate_object(
+        tree.document_id, first.object_id
+    )
+    assert not dict(window.cad_controller.appearances)[second.object_id].visible
+    service.save()
+    project_root = session.root_path
+    window.cad_controller.shutdown()
+    service.close_project()
+
+    reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
+    reopened_service.open_project(project_root)
+    reopened = MainWindow(
+        reopened_service, OcpCadKernel(), IntegrationViewportBackend()
+    )
+    _wait_until(application, lambda: not reopened.cad_controller.is_busy)
+    reopened_tree = reopened.cad_controller.active_tree
+    assert reopened_tree is not None
+    appearances = dict(reopened.cad_controller.appearances)
+    assert all(
+        appearances[node.object_id].visible
+        for node in reopened_tree.presentation_nodes
+    )
     reopened.close()
 
 

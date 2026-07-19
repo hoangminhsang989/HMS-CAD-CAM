@@ -27,10 +27,12 @@ from hms_cadcam.cad.models import (
 )
 from hms_cadcam.cad.persistent_keys import (
     PersistentCadObjectMap,
+    PersistentXcafOccurrenceKey,
     build_persistent_object_map,
 )
 from hms_cadcam.project.cad_state import (
     CadViewState,
+    ObjectAppearanceOverride,
     PersistentObjectAppearance,
     default_cad_view_state,
 )
@@ -48,6 +50,7 @@ from hms_cadcam.viewer.models import (
 from hms_cadcam.viewer.widget import CadViewportWidget
 
 logger = logging.getLogger(__name__)
+_UNCHANGED = object()
 
 
 class CadUiController(QObject):
@@ -95,6 +98,7 @@ class CadUiController(QObject):
         self._selected_object_ids: tuple[CadObjectId, ...] = ()
         self._appearances: dict[CadObjectId, ObjectAppearance] = {}
         self._base_appearances: dict[CadObjectId, ObjectAppearance] = {}
+        self._user_overrides: dict[CadObjectId, ObjectAppearanceOverride] = {}
         self._isolate_snapshot: dict[CadObjectId, bool] | None = None
         self._active_source_id: UUID | None = None
         self._persistent_map: PersistentCadObjectMap | None = None
@@ -358,6 +362,7 @@ class CadUiController(QObject):
             else {}
         )
         self._appearances = dict(self._base_appearances)
+        self._user_overrides = {}
         self._isolate_snapshot = None
         self._active_source_id = candidate_source_id
         self._persistent_map = (
@@ -366,12 +371,7 @@ class CadUiController(QObject):
                 result.metadata.geometry_kind,
                 tree,
             )
-            if (
-                candidate_source_id is not None
-                and tree is not None
-                and result.metadata.document_kind
-                not in {CadDocumentKind.XCAF_PART, CadDocumentKind.XCAF_ASSEMBLY}
-            )
+            if candidate_source_id is not None and tree is not None
             else None
         )
         if self._persistent_map is not None and self._persistent_map.ambiguous_nodes:
@@ -379,12 +379,7 @@ class CadUiController(QObject):
                 "Bỏ qua %d topology node mơ hồ, không đủ chắc chắn để persistence",
                 self._persistent_map.ambiguous_nodes,
             )
-        restored = (
-            None
-            if result.metadata.document_kind
-            in {CadDocumentKind.XCAF_PART, CadDocumentKind.XCAF_ASSEMBLY}
-            else self._load_project_view_state(result.metadata.geometry_kind)
-        )
+        restored = self._load_project_view_state(result.metadata.geometry_kind)
         if not self._apply_persisted_state(restored):
             self.message.emit(
                 "Không thể khôi phục trọn vẹn CAD view state; giữ trạng thái viewer trước khi apply."
@@ -517,6 +512,7 @@ class CadUiController(QObject):
         self._active_tree = None
         self._appearances = {}
         self._base_appearances = {}
+        self._user_overrides = {}
         self._isolate_snapshot = None
         self._active_source_id = None
         self._persistent_map = None
@@ -648,6 +644,7 @@ class CadUiController(QObject):
         if not self._valid_object_request(document_id, object_id):
             return False
         previous_appearances = dict(self._appearances)
+        previous_overrides = dict(self._user_overrides)
         if not self._viewport.set_object_visibility(document_id, object_id, visible):
             return False
         affected = set(self._descendant_ids(object_id))
@@ -658,6 +655,7 @@ class CadUiController(QObject):
                 color=current.color,
                 transparency=current.transparency,
             )
+            self._update_xcaf_override(affected_id, visible=visible)
         self._refresh_container_visibility()
         selected_topology_hidden = any(
             item.object_id in affected for item in self._active_selection
@@ -681,6 +679,7 @@ class CadUiController(QObject):
         if not self._stage_current_state():
             self._restore_runtime_appearances(previous_appearances, affected)
             self._appearances = previous_appearances
+            self._user_overrides = previous_overrides
             return False
         self._emit_appearances()
         return True
@@ -759,6 +758,7 @@ class CadUiController(QObject):
         if not isinstance(color, ObjectColor):
             return False
         previous_appearances = dict(self._appearances)
+        previous_overrides = dict(self._user_overrides)
         if not self._viewport.set_object_color(document_id, object_id, color):
             return False
         for affected_id in self._descendant_ids(object_id):
@@ -768,12 +768,14 @@ class CadUiController(QObject):
                 color=color,
                 transparency=current.transparency,
             )
+            self._update_xcaf_override(affected_id, color=color)
         if not self._stage_current_state():
             self._restore_runtime_appearances(
                 previous_appearances,
                 set(self._descendant_ids(object_id)),
             )
             self._appearances = previous_appearances
+            self._user_overrides = previous_overrides
             return False
         self._emit_appearances()
         return True
@@ -791,6 +793,7 @@ class CadUiController(QObject):
         except (TypeError, ValueError):
             return False
         previous_appearances = dict(self._appearances)
+        previous_overrides = dict(self._user_overrides)
         if not self._viewport.set_object_transparency(
             document_id,
             object_id,
@@ -804,12 +807,16 @@ class CadUiController(QObject):
                 color=current.color,
                 transparency=validated,
             )
+            self._update_xcaf_override(
+                affected_id, transparency=validated
+            )
         if not self._stage_current_state():
             self._restore_runtime_appearances(
                 previous_appearances,
                 set(self._descendant_ids(object_id)),
             )
             self._appearances = previous_appearances
+            self._user_overrides = previous_overrides
             return False
         self._emit_appearances()
         return True
@@ -822,6 +829,8 @@ class CadUiController(QObject):
         """Reset user color/transparency overrides to each source baseline."""
         if not self._valid_object_request(document_id, object_id):
             return False
+        previous_appearances = dict(self._appearances)
+        previous_overrides = dict(self._user_overrides)
         if not self._viewport.reset_object_appearance(document_id, object_id):
             return False
         for affected_id in self._descendant_ids(object_id):
@@ -832,7 +841,18 @@ class CadUiController(QObject):
                 color=base.color,
                 transparency=base.transparency,
             )
+            self._update_xcaf_override(
+                affected_id,
+                color=None,
+                transparency=None,
+            )
         if not self._stage_current_state():
+            self._restore_runtime_appearances(
+                previous_appearances,
+                set(self._descendant_ids(object_id)),
+            )
+            self._appearances = previous_appearances
+            self._user_overrides = previous_overrides
             return False
         self._emit_appearances()
         return True
@@ -968,6 +988,7 @@ class CadUiController(QObject):
             )
             for node in tree.root.walk()
         }
+        loaded_overrides: dict[CadObjectId, ObjectAppearanceOverride] = {}
         mapping = self._persistent_map
         if state is not None:
             for item in state.object_appearances:
@@ -980,12 +1001,24 @@ class CadUiController(QObject):
                     continue
                 object_id = mapping.by_persistent.get(key) if mapping is not None else None
                 if object_id is None:
-                    logger.warning(
-                        "Bỏ qua CAD appearance do topology path stale/missing: %s",
-                        key.topology_path,
-                    )
+                    if hasattr(key, "topology_path"):
+                        logger.warning(
+                            "Bỏ qua CAD appearance do topology path stale/missing: %s",
+                            _persistent_path_text(key),
+                        )
+                    else:
+                        logger.warning(
+                            "Bỏ qua CAD appearance do persistent path stale/missing: %s",
+                            _persistent_path_text(key),
+                        )
                     continue
-                desired[object_id] = item.appearance
+                if isinstance(item.appearance, ObjectAppearanceOverride):
+                    loaded_overrides[object_id] = item.appearance
+                    desired[object_id] = item.appearance.apply(
+                        self._base_appearances.get(object_id, ObjectAppearance())
+                    )
+                else:
+                    desired[object_id] = item.appearance
         operations: list[tuple[Callable[[], bool], Callable[[], bool]]] = [
             (
                 lambda: self._viewport.set_display_mode(desired_mode),
@@ -1001,7 +1034,47 @@ class CadUiController(QObject):
             if state is None:
                 continue
             node = tree.find(object_id)
-            if node is None or not node.has_presentation or appearance == default:
+            if node is None or not node.has_presentation:
+                continue
+            override = loaded_overrides.get(object_id)
+            if override is not None:
+                if override.color is not None:
+                    operations.append(
+                        (
+                            lambda oid=object_id, value=override.color: self._viewport.set_object_color(
+                                document_id, oid, value
+                            ),
+                            lambda oid=object_id: self._viewport.reset_object_appearance(
+                                document_id, oid
+                            ),
+                        )
+                    )
+                if override.transparency is not None:
+                    operations.append(
+                        (
+                            lambda oid=object_id, value=override.transparency: self._viewport.set_object_transparency(
+                                document_id, oid, value
+                            ),
+                            lambda oid=object_id: self._viewport.reset_object_appearance(
+                                document_id, oid
+                            ),
+                        )
+                    )
+                if override.visible is not None:
+                    operations.append(
+                        (
+                            lambda oid=object_id, value=override.visible: self._viewport.set_object_visibility(
+                                document_id, oid, value
+                            ),
+                            lambda oid=object_id: self._viewport.set_object_visibility(
+                                document_id, oid, True
+                            ),
+                        )
+                    )
+                continue
+            if node.occurrence_id is not None:
+                continue
+            if appearance == default:
                 continue
             if appearance.color != default.color:
                 operations.append(
@@ -1049,6 +1122,7 @@ class CadUiController(QObject):
         self._display_mode = desired_mode
         self._view_direction = desired_direction
         self._appearances = desired
+        self._user_overrides = loaded_overrides
         self._refresh_container_visibility()
         self.actions[f"display_{desired_mode.value}"].setChecked(True)
         return True
@@ -1057,17 +1131,17 @@ class CadUiController(QObject):
         source_id = self._active_source_id
         metadata = self._active_metadata
         mapping = self._persistent_map
-        if metadata is not None and metadata.document_kind in {
-            CadDocumentKind.XCAF_PART,
-            CadDocumentKind.XCAF_ASSEMBLY,
-        }:
-            return True
         if source_id is None or self._project_service is None:
             return True
         if metadata is None or mapping is None:
             return False
         persisted: list[PersistentObjectAppearance] = []
         for object_id, key in mapping.by_runtime.items():
+            if isinstance(key, PersistentXcafOccurrenceKey):
+                override = self._user_overrides.get(object_id)
+                if override is not None and not override.is_empty:
+                    persisted.append(PersistentObjectAppearance(key, override))
+                continue
             appearance = self._appearances.get(object_id, ObjectAppearance())
             if self._isolate_snapshot is not None:
                 appearance = ObjectAppearance(
@@ -1091,6 +1165,40 @@ class CadUiController(QObject):
             return False
         self.project_state_changed.emit()
         return True
+
+    def _update_xcaf_override(
+        self,
+        object_id: CadObjectId,
+        *,
+        visible: bool | None | object = _UNCHANGED,
+        color: ObjectColor | None | object = _UNCHANGED,
+        transparency: float | None | object = _UNCHANGED,
+    ) -> None:
+        mapping = self._persistent_map
+        key = mapping.by_runtime.get(object_id) if mapping is not None else None
+        if not isinstance(key, PersistentXcafOccurrenceKey):
+            return
+        current = self._user_overrides.get(object_id, ObjectAppearanceOverride())
+        base = self._base_appearances.get(object_id, ObjectAppearance())
+        if visible is not _UNCHANGED and visible == base.visible:
+            visible = None
+        if color is not _UNCHANGED and color == base.color:
+            color = None
+        if transparency is not _UNCHANGED and transparency == base.transparency:
+            transparency = None
+        updated = ObjectAppearanceOverride(
+            visible=current.visible if visible is _UNCHANGED else visible,
+            color=current.color if color is _UNCHANGED else color,
+            transparency=(
+                current.transparency
+                if transparency is _UNCHANGED
+                else transparency
+            ),
+        )
+        if updated.is_empty:
+            self._user_overrides.pop(object_id, None)
+        else:
+            self._user_overrides[object_id] = updated
 
     def _restore_runtime_appearances(
         self,
@@ -1143,3 +1251,10 @@ def _source_object_appearance(source) -> ObjectAppearance:
     if color is None:
         return ObjectAppearance()
     return ObjectAppearance(color=ObjectColor(color.red, color.green, color.blue))
+
+
+def _persistent_path_text(key: object) -> str:
+    path = getattr(key, "topology_path", None)
+    if path is None:
+        path = getattr(key, "occurrence_path", None)
+    return str(path) if path is not None else "<unknown>"

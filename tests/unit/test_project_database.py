@@ -16,7 +16,7 @@ def test_database_initialization_is_idempotent_and_has_no_cam_tables(tmp_path) -
     database.open_and_migrate(path)
     database.validate(path)
 
-    assert database.current_schema_version(path) == 2
+    assert database.current_schema_version(path) == 3
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
@@ -27,10 +27,11 @@ def test_database_initialization_is_idempotent_and_has_no_cam_tables(tmp_path) -
         "schema_migrations",
         "cad_view_state",
         "cad_object_appearance",
+        "cad_xcaf_occurrence_appearance",
     }
 
 
-def test_database_migrates_schema_v1_to_v2_transactionally(tmp_path) -> None:
+def test_database_migrates_schema_v1_to_latest_transactionally(tmp_path) -> None:
     path = tmp_path / "legacy-v1.db"
     with sqlite3.connect(path) as connection:
         connection.execute(
@@ -42,7 +43,7 @@ def test_database_migrates_schema_v1_to_v2_transactionally(tmp_path) -> None:
     database = ProjectDatabase()
     database.open_and_migrate(path)
 
-    assert database.current_schema_version(path) == 2
+    assert database.current_schema_version(path) == 3
     with sqlite3.connect(path) as connection:
         tables = {
             row[0]
@@ -50,8 +51,37 @@ def test_database_migrates_schema_v1_to_v2_transactionally(tmp_path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
-    assert {"cad_view_state", "cad_object_appearance"}.issubset(tables)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert {
+        "cad_view_state",
+        "cad_object_appearance",
+        "cad_xcaf_occurrence_appearance",
+    }.issubset(tables)
+
+
+def test_database_migrates_v2_to_v3_without_changing_v2_rows(tmp_path) -> None:
+    path = tmp_path / "legacy-v2.db"
+    database = ProjectDatabase()
+    database.initialize(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE cad_xcaf_occurrence_appearance")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 3")
+        connection.execute("PRAGMA user_version = 2")
+        connection.execute(
+            "INSERT INTO cad_view_state VALUES (?, ?, ?, ?, ?)",
+            ("legacy-source", 1, "shaded", "top", "legacy"),
+        )
+
+    database.open_and_migrate(path)
+
+    assert database.current_schema_version(path) == 3
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT source_id FROM cad_view_state"
+        ).fetchone() == ("legacy-source",)
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='cad_xcaf_occurrence_appearance'"
+        ).fetchone() == (1,)
 
 
 def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path) -> None:
@@ -67,7 +97,8 @@ def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path)
     with sqlite3.connect(project_root / "project.db") as connection:
         connection.execute("DROP TABLE cad_object_appearance")
         connection.execute("DROP TABLE cad_view_state")
-        connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+        connection.execute("DROP TABLE cad_xcaf_occurrence_appearance")
+        connection.execute("DELETE FROM schema_migrations WHERE version >= 2")
         connection.execute("PRAGMA user_version = 1")
 
     opener = ProjectService.create_default(tmp_path / "opener-config")
@@ -75,7 +106,7 @@ def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path)
 
     assert (project_root / "project.hms.json").read_bytes() == manifest_before
     assert stored_source.read_bytes() == source_before
-    assert ProjectDatabase().current_schema_version(project_root / "project.db") == 2
+    assert ProjectDatabase().current_schema_version(project_root / "project.db") == 3
 
 
 def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:

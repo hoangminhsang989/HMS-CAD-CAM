@@ -5,21 +5,27 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from uuid import UUID
 
-from hms_cadcam.cad.models import CadGeometryKind
+from hms_cadcam.cad.models import CadGeometryKind, XcafNodeRole
 from hms_cadcam.cad.persistent_keys import (
+    PersistentKeyScheme,
     PersistentCadObjectKey,
+    PersistentXcafOccurrenceKey,
     TopologyPath,
     TopologyPathVersion,
+    XcafOccurrenceKeyVersion,
+    XcafOccurrencePath,
+    XcafProductIdentity,
 )
 from hms_cadcam.project.cad_state import (
     CAD_VIEW_STATE_VERSION,
     DEFAULT_DISPLAY_MODE,
     DEFAULT_VIEW_DIRECTION,
     CadViewState,
+    ObjectAppearanceOverride,
     PersistentObjectAppearance,
     default_cad_view_state,
 )
@@ -46,7 +52,9 @@ class CadViewStateStore:
         }
         blocked_sources: set[UUID] = set()
         try:
-            with sqlite3.connect(database_path, timeout=5.0) as connection:
+            with closing(
+                sqlite3.connect(database_path, timeout=5.0)
+            ) as connection:
                 connection.row_factory = sqlite3.Row
                 for row in connection.execute("SELECT * FROM cad_view_state"):
                     source_id: UUID | None = None
@@ -101,6 +109,62 @@ class CadViewStateStore:
                             )
                     except (KeyError, TypeError, ValueError):
                         logger.warning("Bỏ qua CAD appearance không hợp lệ", exc_info=True)
+                for row in connection.execute(
+                    "SELECT * FROM cad_xcaf_occurrence_appearance"
+                ):
+                    try:
+                        source_id = UUID(row["source_id"])
+                        if source_id not in valid_sources:
+                            logger.warning(
+                                "Bỏ qua XCAF appearance có source_id không hợp lệ: %s",
+                                source_id,
+                            )
+                            continue
+                        if source_id in blocked_sources:
+                            logger.warning(
+                                "Bỏ qua XCAF appearance do view state không hợp lệ: %s",
+                                source_id,
+                            )
+                            continue
+                        key = PersistentXcafOccurrenceKey(
+                            source_id=source_id,
+                            geometry_kind=CadGeometryKind(row["geometry_kind"]),
+                            key_scheme=PersistentKeyScheme(row["key_scheme"]),
+                            key_version=XcafOccurrenceKeyVersion(row["key_version"]),
+                            occurrence_path=XcafOccurrencePath(row["occurrence_path"]),
+                            product_identity=XcafProductIdentity(
+                                row["product_identity"]
+                            ),
+                            occurrence_role=XcafNodeRole(row["occurrence_role"]),
+                        )
+                        color_values = (
+                            row["color_r"],
+                            row["color_g"],
+                            row["color_b"],
+                        )
+                        color = (
+                            None
+                            if color_values == (None, None, None)
+                            else ObjectColor(*color_values)
+                        )
+                        override = ObjectAppearanceOverride(
+                            visible=(
+                                None
+                                if row["visible"] is None
+                                else bool(row["visible"])
+                            ),
+                            color=color,
+                            transparency=row["transparency"],
+                        )
+                        if not override.is_empty:
+                            appearances[source_id].append(
+                                PersistentObjectAppearance(key, override)
+                            )
+                    except (KeyError, TypeError, ValueError):
+                        logger.warning(
+                            "Bỏ qua XCAF occurrence appearance không hợp lệ",
+                            exc_info=True,
+                        )
         except sqlite3.Error as error:
             raise ProjectDatabaseError(str(error)) from error
         result: dict[UUID, CadViewState] = {}
@@ -149,6 +213,7 @@ class CadViewStateStore:
         if not set(normalized).issubset(valid_sources):
             raise ValueError("CAD view state references an unknown project source")
         connection.execute("DELETE FROM cad_object_appearance")
+        connection.execute("DELETE FROM cad_xcaf_occurrence_appearance")
         connection.execute("DELETE FROM cad_view_state")
         timestamp = datetime_to_json(utc_now())
         for state in normalized.values():
@@ -175,6 +240,39 @@ class CadViewStateStore:
             for item in state.object_appearances:
                 key = item.key
                 appearance = item.appearance
+                if isinstance(key, PersistentXcafOccurrenceKey):
+                    if not isinstance(appearance, ObjectAppearanceOverride):
+                        raise TypeError("XCAF persistence requires user override")
+                    color = appearance.color
+                    connection.execute(
+                        """
+                        INSERT INTO cad_xcaf_occurrence_appearance(
+                            source_id, geometry_kind, key_scheme, key_version,
+                            occurrence_path, product_identity, occurrence_role,
+                            visible, color_r, color_g, color_b, transparency, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(state.source_id),
+                            key.geometry_kind.value,
+                            key.key_scheme.value,
+                            int(key.key_version),
+                            key.occurrence_path.value,
+                            key.product_identity.value,
+                            key.occurrence_role.value,
+                            None if appearance.visible is None else int(appearance.visible),
+                            None if color is None else color.red,
+                            None if color is None else color.green,
+                            None if color is None else color.blue,
+                            appearance.transparency,
+                            timestamp,
+                        ),
+                    )
+                    continue
+                if not isinstance(key, PersistentCadObjectKey) or not isinstance(
+                    appearance, ObjectAppearance
+                ):
+                    raise TypeError("Topology persistence row is invalid")
                 connection.execute(
                     """
                     INSERT INTO cad_object_appearance(

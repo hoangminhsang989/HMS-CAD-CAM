@@ -9,14 +9,23 @@ from uuid import uuid4
 
 import pytest
 
-from hms_cadcam.cad.models import CadGeometryKind
+from hms_cadcam.cad.models import CadGeometryKind, XcafNodeRole
 from hms_cadcam.cad.persistent_keys import (
+    PersistentKeyScheme,
     PersistentCadObjectKey,
+    PersistentXcafOccurrenceKey,
     TopologyPath,
     TopologyPathVersion,
+    XcafOccurrenceKeyVersion,
+    XcafOccurrencePath,
+    XcafProductIdentity,
 )
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveMetadata
-from hms_cadcam.project.cad_state import CadViewState, PersistentObjectAppearance
+from hms_cadcam.project.cad_state import (
+    CadViewState,
+    ObjectAppearanceOverride,
+    PersistentObjectAppearance,
+)
 from hms_cadcam.project.constants import (
     AUTOSAVE_LATEST_FILENAME,
     AUTOSAVE_METADATA_FILENAME,
@@ -141,6 +150,49 @@ def test_autosave_database_contains_pending_cad_state_without_cleaning_main(tmp_
     with sqlite3.connect(session.root_path / DATABASE_FILENAME) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
+        ).fetchone()[0] == 0
+
+
+def test_autosave_contains_pending_xcaf_override_without_source_color(
+    tmp_path,
+) -> None:
+    source = tmp_path / "autosave.step"
+    source.write_bytes(b"immutable XCAF source")
+    service = ProjectService.create_default(tmp_path / "config-xcaf")
+    session = service.create_project_from_source(tmp_path, "Autosave XCAF", source)
+    source_id = session.manifest.source_files[0].source_id
+    key = PersistentXcafOccurrenceKey(
+        source_id,
+        CadGeometryKind.BREP,
+        PersistentKeyScheme.XCAF_OCCURRENCE,
+        XcafOccurrenceKeyVersion.V1,
+        XcafOccurrencePath("assembly:" + "a" * 32 + "/part:" + "b" * 32),
+        XcafProductIdentity("product:" + "c" * 32),
+        XcafNodeRole.PART,
+    )
+    state = CadViewState(
+        source_id,
+        object_appearances=(
+            PersistentObjectAppearance(
+                key, ObjectAppearanceOverride(visible=False)
+            ),
+        ),
+    )
+    service.stage_cad_view_state(state)
+
+    snapshot = service.autosave()
+
+    assert snapshot is not None and session.is_dirty
+    with sqlite3.connect(snapshot.path / DATABASE_FILENAME) as connection:
+        assert connection.execute(
+            """
+            SELECT visible, color_r, color_g, color_b
+            FROM cad_xcaf_occurrence_appearance
+            """
+        ).fetchone() == (0, None, None, None)
+    with sqlite3.connect(session.root_path / DATABASE_FILENAME) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 0
 
 

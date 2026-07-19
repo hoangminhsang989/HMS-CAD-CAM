@@ -5,10 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from hms_cadcam.cad.persistent_keys import PersistentCadObjectKey
+from hms_cadcam.cad.persistent_keys import (
+    PersistentCadObjectKey,
+    PersistentObjectKey,
+    PersistentXcafOccurrenceKey,
+)
 from hms_cadcam.viewer.models import (
     DisplayMode,
     ObjectAppearance,
+    ObjectColor,
     ViewDirection,
 )
 
@@ -18,17 +23,61 @@ DEFAULT_VIEW_DIRECTION = ViewDirection.ISOMETRIC
 
 
 @dataclass(frozen=True, slots=True)
+class ObjectAppearanceOverride:
+    """Only user-authored XCAF values; ``None`` preserves source appearance."""
+
+    visible: bool | None = None
+    color: ObjectColor | None = None
+    transparency: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.visible is not None and not isinstance(self.visible, bool):
+            raise TypeError("CAD visibility override must be bool or None")
+        if self.color is not None and not isinstance(self.color, ObjectColor):
+            raise TypeError("CAD color override must be ObjectColor or None")
+        if self.transparency is not None:
+            ObjectAppearance(transparency=self.transparency)
+
+    @property
+    def is_empty(self) -> bool:
+        return (
+            self.visible is None
+            and self.color is None
+            and self.transparency is None
+        )
+
+    def apply(self, source: ObjectAppearance) -> ObjectAppearance:
+        """Layer this user override over source/default appearance."""
+        if not isinstance(source, ObjectAppearance):
+            raise TypeError("Source appearance must be ObjectAppearance")
+        return ObjectAppearance(
+            visible=source.visible if self.visible is None else self.visible,
+            color=source.color if self.color is None else self.color,
+            transparency=(
+                source.transparency
+                if self.transparency is None
+                else self.transparency
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PersistentObjectAppearance:
     """One non-default appearance addressed only by a persistent key."""
 
-    key: PersistentCadObjectKey
-    appearance: ObjectAppearance
+    key: PersistentObjectKey
+    appearance: ObjectAppearance | ObjectAppearanceOverride
 
     def __post_init__(self) -> None:
-        if not isinstance(self.key, PersistentCadObjectKey):
+        if not isinstance(
+            self.key, (PersistentCadObjectKey, PersistentXcafOccurrenceKey)
+        ):
             raise TypeError("Persistent appearance key is invalid")
-        if not isinstance(self.appearance, ObjectAppearance):
-            raise TypeError("Persistent object appearance is invalid")
+        if isinstance(self.key, PersistentCadObjectKey):
+            if not isinstance(self.appearance, ObjectAppearance):
+                raise TypeError("Topology appearance must be ObjectAppearance")
+        elif not isinstance(self.appearance, ObjectAppearanceOverride):
+            raise TypeError("XCAF appearance must be a user override")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,12 +121,9 @@ class CadViewState:
                 (
                     item
                     for item in self.object_appearances
-                    if item.appearance != ObjectAppearance()
+                    if _has_persisted_value(item)
                 ),
-                key=lambda item: (
-                    item.key.topology_path.value,
-                    item.key.geometry_kind.value,
-                ),
+                key=_appearance_sort_key,
             )
         )
         return CadViewState(
@@ -92,3 +138,25 @@ class CadViewState:
 def default_cad_view_state(source_id: UUID) -> CadViewState:
     """Return the implicit state used when SQLite contains no row."""
     return CadViewState(source_id=source_id)
+
+
+def _has_persisted_value(item: PersistentObjectAppearance) -> bool:
+    if isinstance(item.appearance, ObjectAppearanceOverride):
+        return not item.appearance.is_empty
+    return item.appearance != ObjectAppearance()
+
+
+def _appearance_sort_key(item: PersistentObjectAppearance) -> tuple[str, ...]:
+    key = item.key
+    if isinstance(key, PersistentCadObjectKey):
+        return (
+            "topology",
+            key.topology_path.value,
+            key.geometry_kind.value,
+        )
+    return (
+        key.key_scheme.value,
+        key.occurrence_path.value,
+        key.product_identity.value,
+        key.occurrence_role.value,
+    )
