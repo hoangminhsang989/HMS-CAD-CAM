@@ -37,7 +37,7 @@ class CamApplicationService:
     @property
     def snapshot(self) -> CamProjectSnapshot:
         with self._lock:
-            return self._snapshot
+            return _clone_snapshot(self._snapshot)
 
     @property
     def is_dirty(self) -> bool:
@@ -48,25 +48,47 @@ class CamApplicationService:
         if not isinstance(snapshot, CamProjectSnapshot):
             raise TypeError("CAM project snapshot is invalid")
         with self._lock:
-            self._snapshot = snapshot
-            self._persisted = snapshot
+            self._snapshot = _clone_snapshot(snapshot)
+            self._persisted = _clone_snapshot(snapshot)
             self._selection = CamSelection()
             self._generation += 1
 
     def apply(self, mutation: Callable[[CamProjectSnapshot], CamProjectSnapshot]) -> CamProjectSnapshot:
         """Apply one validated mutation atomically in memory."""
         with self._lock:
-            candidate = mutation(self._snapshot)
+            candidate = mutation(_clone_snapshot(self._snapshot))
             if not isinstance(candidate, CamProjectSnapshot):
                 raise TypeError("CAM mutation must return CamProjectSnapshot")
-            self._snapshot = candidate
-            return candidate
+            self._snapshot = _clone_snapshot(candidate)
+            return _clone_snapshot(self._snapshot)
+
+    def execute(
+        self,
+        command: Callable[["CamApplicationService"], CamProjectSnapshot],
+    ) -> CamProjectSnapshot:
+        """Run a possibly multi-step command as one in-memory transaction."""
+        with self._lock:
+            before = _clone_snapshot(self._snapshot)
+            persisted = _clone_snapshot(self._persisted)
+            selection = self._selection
+            generation = self._generation
+            try:
+                changed = command(self)
+                if not isinstance(changed, CamProjectSnapshot):
+                    raise TypeError("CAM command must return CamProjectSnapshot")
+            except Exception:
+                self._snapshot = before
+                self._persisted = persisted
+                self._selection = selection
+                self._generation = generation
+                raise
+            return _clone_snapshot(self._snapshot)
 
     def mark_persisted(self, snapshot: CamProjectSnapshot | None = None) -> None:
         with self._lock:
             if snapshot is not None:
-                self._snapshot = snapshot
-            self._persisted = self._snapshot
+                self._snapshot = _clone_snapshot(snapshot)
+            self._persisted = _clone_snapshot(self._snapshot)
 
     def clear(self) -> None:
         with self._lock:
@@ -200,6 +222,18 @@ class CamApplicationService:
     def add_basic_resources(self, tool: ToolDefinition, holder: HolderDefinition,
                             assembly: ToolAssembly, machine: MachineDefinition) -> CamProjectSnapshot:
         """Atomically add one project-owned tooling and MILL machine bundle."""
+        if (
+            assembly.tool_id != tool.tool_id
+            or assembly.expected_tool_revision != tool.revision
+            or assembly.expected_tool_fingerprint != tool.content_fingerprint
+            or assembly.holder_id != holder.holder_id
+            or assembly.expected_holder_revision != holder.revision
+            or assembly.expected_holder_fingerprint != holder.content_fingerprint
+        ):
+            raise ValueError("Tool assembly does not reference the supplied bundle definitions")
+        if not (tool.unit is holder.unit is assembly.unit is machine.unit):
+            raise ValueError("CAM resource bundle units must match explicitly")
+
         def mutation(state: CamProjectSnapshot) -> CamProjectSnapshot:
             return replace(state, tool_definitions=(*state.tool_definitions, tool),
                            holder_definitions=(*state.holder_definitions, holder),
@@ -238,7 +272,7 @@ class CamApplicationService:
             operation = _find_operation(self._snapshot, operation_id)
             changed = replace(operation, artifact_state=operation.artifact_state.mark_dirty(reason))
             self._snapshot = _replace_operation(self._snapshot, changed)
-            return self._snapshot
+            return _clone_snapshot(self._snapshot)
 
     def _mutate_job(self, job_id: CamJobId, mutation: Callable[[CamJob], object]) -> CamProjectSnapshot:
         """Clone an aggregate first so failed validation cannot leak partial state."""
@@ -265,6 +299,14 @@ def _job(snapshot: CamProjectSnapshot, job_id: CamJobId) -> CamJob:
         if item.job_id == job_id:
             return item
     raise CamChildNotFoundError(f"CAM job does not exist: {job_id}")
+
+
+def _clone_snapshot(snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
+    """Detach mutable aggregate roots at every public service boundary."""
+    return replace(
+        snapshot,
+        jobs=tuple(CamJob.from_dict(job.to_dict()) for job in snapshot.jobs),
+    )
 
 
 def reconcile_artifacts(project_root: Path, snapshot: CamProjectSnapshot,

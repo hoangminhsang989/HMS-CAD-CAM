@@ -95,6 +95,7 @@ class CamWorkspace(QWidget):
     def bind_project(self, session: object) -> None:
         """Clear old identities before rendering a new project snapshot."""
         self._selected_key = None
+        self._picked_reference = None
         self.editor.clear()
         if not isinstance(session, ProjectSession):
             self._generation = None
@@ -148,6 +149,12 @@ class CamWorkspace(QWidget):
         if matches:
             self.tree.setCurrentItem(matches[0])
         self._guard = False
+        if matches:
+            self._selected_key = preserve
+            self._show_properties(matches[0])
+        else:
+            self._selected_key = None
+            self.editor.clear()
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -255,19 +262,25 @@ class CamWorkspace(QWidget):
         if not self._service.has_project:
             return
         values = basic_mill_resources(_length_unit(self._service.current_project))
-        self._execute(lambda app: app.add_basic_resources(*values))
-        self.refresh(self._selected_key)
+        changed = self._execute(lambda app: app.add_basic_resources(*values))
+        if changed is not None:
+            self.refresh(self._selected_key)
 
     def pick_geometry(self) -> None:
         """Explicitly bind the current unambiguous CAD selection."""
         if self._pick_provider is None:
             self._error("Geometry picking adapter chưa sẵn sàng.")
             return
+        generation = self._generation
         try:
-            self._picked_reference = self._pick_provider()
+            reference = self._pick_provider()
         except Exception as error:
             self._error(str(error))
             return
+        if generation is None or generation != self._service.cam_generation:
+            self._error("Phiên chọn hình học đã bị hủy vì dự án đã thay đổi.")
+            return
+        self._picked_reference = reference
         self.editor.show_reference(self._picked_reference)
         self.message.emit("Đã tạo GeometryReference; dùng Rebind để thay thế rõ ràng.")
 
@@ -307,9 +320,10 @@ class CamWorkspace(QWidget):
         node = tree.get_node(node_id)
         siblings = tree.get_node(node.parent_id).child_ids
         new_index = max(0, min(len(siblings) - 1, siblings.index(node_id) + delta))
-        self._execute(lambda app: app.update_tree(job_id, setup_id,
+        changed = self._execute(lambda app: app.update_tree(job_id, setup_id,
             lambda value: value.reorder_node(node_id, new_index)))
-        self.refresh((item.data(0, _KIND_ROLE), str(node_id)))
+        if changed is not None:
+            self.refresh((item.data(0, _KIND_ROLE), str(node_id)))
 
     def delete_selected(self) -> None:
         item = self.tree.currentItem()
@@ -322,14 +336,15 @@ class CamWorkspace(QWidget):
             return
         job_id = CamJobId.parse(item.data(0, _JOB_ROLE))
         if kind == "job":
-            self._execute(lambda app: app.delete_job(job_id))
+            changed = self._execute(lambda app: app.delete_job(job_id))
         elif kind == "setup":
-            self._execute(lambda app: app.delete_setup(job_id, SetupId.parse(item.data(0, _SETUP_ROLE))))
+            changed = self._execute(lambda app: app.delete_setup(job_id, SetupId.parse(item.data(0, _SETUP_ROLE))))
         else:
             setup_id = SetupId.parse(item.data(0, _SETUP_ROLE))
             node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
-            self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
-        self.refresh()
+            changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
+        if changed is not None:
+            self.refresh()
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._guard or column != 0:
@@ -337,14 +352,16 @@ class CamWorkspace(QWidget):
         kind = item.data(0, _KIND_ROLE)
         old_key = (kind, item.data(0, _ID_ROLE))
         job_id = CamJobId.parse(item.data(0, _JOB_ROLE))
+        changed = None
         if kind == "job":
-            self._execute(lambda app: app.rename_job(job_id, item.text(0)))
+            changed = self._execute(lambda app: app.rename_job(job_id, item.text(0)))
         elif kind == "setup":
-            self._execute(lambda app: app.rename_setup(job_id, SetupId.parse(item.data(0, _SETUP_ROLE)), item.text(0)))
+            changed = self._execute(lambda app: app.rename_setup(job_id, SetupId.parse(item.data(0, _SETUP_ROLE)), item.text(0)))
         elif kind in {"group", "operation"}:
             setup_id, node_id = SetupId.parse(item.data(0, _SETUP_ROLE)), CamNodeId.parse(item.data(0, _ID_ROLE))
-            self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.rename_node(node_id, item.text(0))))
-        self.refresh(old_key)
+            changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.rename_node(node_id, item.text(0))))
+        if changed is not None:
+            self.refresh(old_key)
 
     def _apply_properties(self, values: dict[str, object]) -> None:
         item = self.tree.currentItem()
@@ -355,7 +372,7 @@ class CamWorkspace(QWidget):
         kind = item.data(0, _KIND_ROLE)
         try:
             if kind == "job" and job:
-                self._execute(lambda app: app.rename_job(job.job_id, str(values["name"])))
+                result = self._execute(lambda app: app.rename_job(job.job_id, str(values["name"])))
             elif kind in {"setup", "stock"} and job and setup:
                 unit = setup.wcs.origin.unit
                 origin = Point3(float(values["x"]), float(values["y"]), float(values["z"]), unit)
@@ -363,18 +380,23 @@ class CamWorkspace(QWidget):
                 stock_kind = StockKind(str(values["stock_kind"]))
                 if stock_kind is StockKind.BOX:
                     stock = BoxStock(Length(float(values["a"]), unit), Length(float(values["b"]), unit), Length(float(values["c"]), unit), wcs)
-                else:
+                elif stock_kind is StockKind.CYLINDER:
                     from hms_cadcam.cam.domain import CylinderStock
                     stock = CylinderStock(Length(float(values["a"]), unit), Length(float(values["b"]), unit), wcs)
+                else:
+                    raise ValueError(f"Stock {stock_kind.value} chưa được hỗ trợ trong editor 7B.1")
                 changed = replace(setup, name=str(values["name"]), kind=SetupKind(str(values["setup_kind"])),
                                   wcs=wcs, work_offset=WorkOffset(str(values["offset"])), stock=stock)
-                self._execute(lambda app: app.replace_setup(job.job_id, changed))
+                result = self._execute(lambda app: app.replace_setup(job.job_id, changed))
             elif kind in {"group", "operation"} and job and setup:
                 node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
                 tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
-                self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
-            self.editor.set_error("")
-            self.refresh(self._selected_key)
+                result = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
+            else:
+                result = None
+            if result is not None:
+                self.editor.set_error("")
+                self.refresh(self._selected_key)
         except (TypeError, ValueError) as error:
             self.editor.set_error(str(error))
 
@@ -411,12 +433,15 @@ class CamWorkspace(QWidget):
         if self._generation is None:
             return None
         try:
-            result = self._service.execute_cam_command(command)
+            result = self._service.execute_cam_command(
+                command,
+                expected_generation=self._generation,
+            )
             self.message.emit("Đã cập nhật CAM; dự án có thay đổi chưa lưu.")
             return result
         except Exception as error:
-            self._error(str(error))
             self.refresh(self._selected_key)
+            self._error(str(error))
             return None
 
     def _error(self, text: str) -> None:
@@ -430,7 +455,7 @@ class _CamPropertiesEditor(QWidget):
         self._commit = commit
         self._fields = {key: QLineEdit() for key in ("name", "offset", "x", "y", "z", "a", "b", "c")}
         self.setup_kind = QComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
-        self.stock_kind = QComboBox(); self.stock_kind.addItems([StockKind.BOX.value, StockKind.CYLINDER.value])
+        self.stock_kind = QComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
         self.enabled = QCheckBox("Được bật")
         self.status = QLabel("—")
         self.error = QLabel(); self.error.setStyleSheet("color: #d9534f")
@@ -458,7 +483,10 @@ class _CamPropertiesEditor(QWidget):
         elif setup.stock.kind is StockKind.CYLINDER: values = (dimensions["diameter"]["value"], dimensions["length"]["value"], "")
         else: values = ("", "", "")
         for key, value in zip(("a", "b", "c"), values, strict=True): self._fields[key].setText(str(value))
-        self.status.setText("MISSING — chưa có artifact")
+        if setup.stock.kind in {StockKind.BOX, StockKind.CYLINDER}:
+            self.status.setText("MISSING — chưa có artifact")
+        else:
+            self.status.setText(f"UNSUPPORTED — stock {setup.stock.kind.value}")
 
     def show_node(self, name: str, operation: Operation | None) -> None:
         self.clear(); self._fields["name"].setText(name); self.enabled.setChecked(True if operation is None else operation.enabled)

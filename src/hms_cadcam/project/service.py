@@ -253,7 +253,9 @@ class ProjectService:
 
     def save(self) -> ProjectSession:
         """Persist the current project."""
-        session = self._saver.save(self._require_current())
+        current = self._require_current()
+        current.cam_snapshot = self._cam_application.snapshot
+        session = self._saver.save(current)
         self._cam_application.mark_persisted(session.cam_snapshot)
         return session
 
@@ -269,9 +271,9 @@ class ProjectService:
             raise TypeError("CAM project snapshot is invalid")
         session = self._require_current()
         before = self._cam_application.snapshot
-        self._cam_application.apply(lambda _current: snapshot)
-        session.cam_snapshot = snapshot
-        if snapshot != before:
+        changed = self._cam_application.apply(lambda _current: snapshot)
+        session.cam_snapshot = changed
+        if changed != before:
             session.is_dirty = True
         return session
 
@@ -291,17 +293,22 @@ class ProjectService:
     def execute_cam_command(
         self,
         command: Callable[[CamApplicationService], CamProjectSnapshot],
+        *,
+        expected_generation: int | None = None,
     ) -> CamProjectSnapshot:
         """Execute one CAM application command and propagate project dirty state."""
         session = self._require_current()
+        if (
+            expected_generation is not None
+            and expected_generation != self._cam_application.generation
+        ):
+            raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
         try:
-            changed = command(self._cam_application)
+            changed = self._cam_application.execute(command)
         except Exception:
             session.cam_snapshot = self._cam_application.snapshot
             raise
-        if not isinstance(changed, CamProjectSnapshot):
-            raise TypeError("CAM command must return CamProjectSnapshot")
         session.cam_snapshot = changed
         if changed != before:
             session.is_dirty = True
@@ -369,7 +376,7 @@ class ProjectService:
             is_dirty=True,
             cad_view_states=dict(session.cad_view_states),
             persisted_cad_view_states=dict(session.persisted_cad_view_states),
-            cam_snapshot=session.cam_snapshot,
+            cam_snapshot=self._cam_application.snapshot,
             persisted_cam_snapshot=session.persisted_cam_snapshot,
         )
         return self._autosave.create_snapshot(
@@ -385,9 +392,10 @@ class ProjectService:
     ) -> ProjectSession:
         """Create and select an independent copy of the current project."""
         current = self._require_current()
+        current.cam_snapshot = self._cam_application.snapshot
         target = self.target_path(parent_dir, project_name)
         if target.resolve() == current.root_path.resolve():
-            return self._saver.save(current)
+            return self.save()
         self._cleanup_staging(parent_dir)
         self._ensure_overwrite_target_available(parent_dir, project_name, overwrite)
         session = self._saver.save_as(
@@ -446,6 +454,8 @@ class ProjectService:
                 raise
         self._current_project = session
         self._cam_application.load(session.cam_snapshot)
+        session.cam_snapshot = self._cam_application.snapshot
+        session.persisted_cam_snapshot = self._cam_application.snapshot
         try:
             self._recent_projects.add(session.root_path)
         except OSError:
