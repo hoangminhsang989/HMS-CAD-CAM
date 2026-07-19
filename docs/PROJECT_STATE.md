@@ -6,8 +6,8 @@
 - Giai đoạn 3–4: Session Lock, Autosave, Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
 - Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state đã hoàn thành.
 - Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và persistence đã hoàn thành.
-- Giai đoạn 7A.1–7B.6: CAM Foundation, UI, Facing, Contour 2D, Pocket v1 và Drilling v1 đã hoàn thành.
-- Baseline trước Drilling UI/Persistence: `1801e4d`.
+- Giai đoạn 7A.1–7B.6: CAM Foundation, UI, Facing, Contour 2D, Pocket v1 và Drilling v1 đã hoàn thành; Drilling v1 đã review ổn định.
+- Commit mới nhất sau review Drilling v1: `00cedb8`.
 - Toàn bộ pytest: **565 passed**.
 
 ## Kiến trúc và dữ liệu dự án
@@ -40,15 +40,13 @@
 - OCP planar-face resolver hỗ trợ repeated/nested XCAF occurrence và fail-closed khi reference không còn hợp lệ.
 - 2D Contour hỗ trợ persistent outer loop LINE/ARC, offset, depth passes, lead và fail-closed validation.
 - Pocket Geometry, Strategy, Viewer, UI và Persistence v1 đã hoàn thành cho một outer loop, không island.
-- Drilling v1 hỗ trợ persistent VERTEX/circular EDGE, SPOT_DRILL, DRILL và PECK_DRILL.
-- Drilling Viewer/Recompute và UI/Persistence giữ semantic toolpath, artifact và lifecycle dự án mà không lưu native/runtime state.
+- Drilling v1 hỗ trợ explicit point pattern, persistent BREP VERTEX, full circular EDGE, SPOT_DRILL, DRILL và PECK_DRILL.
+- Drilling Viewer/Recompute, UI, Save/Open, Save As và Autosave/Recovery đã hoàn thành, giữ semantic toolpath mà không lưu native/runtime state.
 - Bind/Rebind/Clear, recompute giữ artifact VALID cũ khi lỗi và stale result không được publish/display.
-- Save, Open, Save As, Autosave và Recovery giữ nguyên persistent `GeometryReference`.
 
 ## Tree, persistence và session
 
-- Persistent key XCAF dùng `source_id`, occurrence path có phiên bản và product fingerprint.
-- Save, Open và Save As lưu/khôi phục đúng XCAF occurrence override; Save As giữ `source_id`.
+- Persistent key XCAF dùng `source_id`, occurrence path có phiên bản và product fingerprint; Save/Open/Save As giữ đúng occurrence override và `source_id`.
 - Autosave và Recovery hỗ trợ XCAF override và CAM editable state qua SQLite v4.
 - Apply/rollback appearance thực hiện nguyên tử và giữ source style khi thất bại.
 - CAD view state v2 cũ và migration SQLite v2 → v3 vẫn được hỗ trợ.
@@ -59,4 +57,4 @@
 - Measurement là read-only, không làm dirty project hoặc kích hoạt autosave.
 - Hình học chuẩn hóa chưa được lưu vào `model/`; ứng dụng vẫn import lại nguồn bất biến khi mở dự án.
 - Chưa có component editing, thay đổi cấu trúc assembly hoặc assembly constraints.
-- Chưa có Tapping, Boring, hole recognition tự động, Simulation, Collision, Post Processor, G-code hoặc Setup Sheet; CAM chưa hỗ trợ island, rest machining hay adaptive clearing.
+- Chưa có Tapping, Boring, Simulation, Collision, Post Processor hoặc G-code.
