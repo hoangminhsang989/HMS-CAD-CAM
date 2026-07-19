@@ -484,8 +484,7 @@ class HolePattern:
                 "HolePattern locations must use one unit",
             )
         canonical = tuple(sorted(self.locations, key=_location_key))
-        keys = tuple(_position_key(value.position) for value in canonical)
-        if len(set(keys)) != len(keys):
+        if _has_duplicate_locations(canonical):
             raise DrillValidationError(
                 DiagnosticCode.DRILL_DUPLICATE_LOCATION,
                 "HolePattern contains duplicate locations",
@@ -1047,6 +1046,34 @@ class ResolvedDrillingGeometry:
 
 def _position_key(value: Point3) -> tuple[int, int, int]:
     return tuple(round(coordinate / _TOLERANCE) for coordinate in (value.x, value.y, value.z))
+
+
+def _has_duplicate_locations(locations: tuple[HoleLocation, ...]) -> bool:
+    cells: dict[tuple[int, int, int], list[Point3]] = {}
+    for location in locations:
+        position = location.position
+        cell = tuple(
+            math.floor(coordinate / _TOLERANCE)
+            for coordinate in (position.x, position.y, position.z)
+        )
+        for x_offset in (-1, 0, 1):
+            for y_offset in (-1, 0, 1):
+                for z_offset in (-1, 0, 1):
+                    neighbor = (
+                        cell[0] + x_offset,
+                        cell[1] + y_offset,
+                        cell[2] + z_offset,
+                    )
+                    if any(
+                        math.dist(
+                            (position.x, position.y, position.z),
+                            (other.x, other.y, other.z),
+                        ) <= _TOLERANCE
+                        for other in cells.get(neighbor, ())
+                    ):
+                        return True
+        cells.setdefault(cell, []).append(position)
+    return False
 
 
 def _location_key(value: HoleLocation) -> tuple[object, ...]:

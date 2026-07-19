@@ -123,6 +123,11 @@ def test_explicit_pattern_is_canonical_unique_and_fingerprint_stable() -> None:
         HolePattern((first, first), LengthUnit.MM)
     assert duplicate.value.code is DiagnosticCode.DRILL_DUPLICATE_LOCATION
 
+    near_boundary = (_point(0.49e-8, 0), _point(0.51e-8, 0))
+    with pytest.raises(DrillValidationError) as tolerance_duplicate:
+        HolePattern(near_boundary, LengthUnit.MM)
+    assert tolerance_duplicate.value.code is DiagnosticCode.DRILL_DUPLICATE_LOCATION
+
 
 def test_pattern_rejects_non_planar_locations_and_unit_mismatch() -> None:
     with pytest.raises(DrillValidationError) as non_planar:
