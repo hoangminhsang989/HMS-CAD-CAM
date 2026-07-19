@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from enum import StrEnum
@@ -17,11 +18,18 @@ from hms_cadcam.cam.domain.geometry_reference import (
 )
 from hms_cadcam.cam.domain.operation import (
     DiagnosticCode,
+    OperationParameterSet,
     ValidationDiagnostic,
 )
 from hms_cadcam.cam.domain.revision import ContentFingerprint, GeometryFingerprint
 from hms_cadcam.cam.domain.spatial import Point3, Vector3
-from hms_cadcam.cam.domain.units import Length, LengthUnit
+from hms_cadcam.cam.domain.units import (
+    FeedRate,
+    FeedUnit,
+    Length,
+    LengthUnit,
+    SpindleSpeed,
+)
 
 _VERSION = 1
 _TOLERANCE = 1.0e-8
@@ -31,6 +39,10 @@ _LOCATION_FORMAT = "HMS_CAM_HOLE_LOCATION"
 _PATTERN_FORMAT = "HMS_CAM_HOLE_PATTERN"
 _INPUT_FORMAT = "HMS_CAM_DRILL_GEOMETRY_INPUT"
 _REGION_FORMAT = "HMS_CAM_DRILLING_REGION"
+_STRATEGY_FORMAT = "HMS_CAM_DRILLING_STRATEGY"
+DRILLING_STRATEGY_KEY = "drilling_v1"
+DRILLING_STRATEGY_VERSION = 1
+_GEOMETRY_CHUNK_SIZE = 4000
 
 
 class DrillValidationError(CamValidationError):
@@ -47,6 +59,27 @@ class HoleSourceKind(StrEnum):
     EXPLICIT_POINT = "explicit_point"
     BREP_VERTEX = "brep_vertex"
     CIRCULAR_EDGE = "circular_edge"
+
+
+class DrillingCycle(StrEnum):
+    """Controller-neutral drilling process semantics."""
+
+    SPOT_DRILL = "spot_drill"
+    DRILL = "drill"
+    PECK_DRILL = "peck_drill"
+
+
+class DrillRetractPolicy(StrEnum):
+    """Safe Z level reached between pecks."""
+
+    RETRACT_HEIGHT = "retract_height"
+    CLEARANCE_HEIGHT = "clearance_height"
+
+
+class DrillApproachPolicy(StrEnum):
+    """Approach policies supported by drilling core v1."""
+
+    RAPID_CLEARANCE_FEED_RETRACT = "rapid_clearance_feed_retract"
 
 
 def _known_unit(unit: LengthUnit) -> None:
@@ -663,6 +696,318 @@ class DrillingRegion:
             raise DrillValidationError(
                 DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
                 "DrillingRegion payload is invalid",
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class DrillingStrategy:
+    """Versioned, controller-neutral drilling process definition v1."""
+
+    unit: LengthUnit
+    geometry: DrillGeometryInput
+    depth: DrillDepthDefinition
+    cycle: DrillingCycle
+    clearance_height: Length
+    retract_height: Length
+    feed_rate: FeedRate
+    spindle_speed: SpindleSpeed
+    dwell_seconds: float = 0.0
+    peck_depth: Length | None = None
+    retract_policy: DrillRetractPolicy = DrillRetractPolicy.RETRACT_HEIGHT
+    approach_policy: DrillApproachPolicy = (
+        DrillApproachPolicy.RAPID_CLEARANCE_FEED_RETRACT
+    )
+    tolerance: Length | None = None
+    strategy_version: int = DRILLING_STRATEGY_VERSION
+    schema_version: int = _VERSION
+    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+
+    def __post_init__(self) -> None:
+        _known_unit(self.unit)
+        if not isinstance(self.geometry, DrillGeometryInput):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                "Drilling strategy geometry is missing",
+            )
+        if not isinstance(self.depth, DrillDepthDefinition):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_DEPTH_INVALID,
+                "Drilling strategy depth is invalid",
+            )
+        if self.geometry.unit is not self.unit or self.depth.unit is not self.unit:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "Drilling geometry and depth must use the strategy unit",
+            )
+        if not isinstance(self.cycle, DrillingCycle):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling cycle is invalid",
+            )
+        for value, name in (
+            (self.clearance_height, "clearance height"),
+            (self.retract_height, "retract height"),
+        ):
+            if not isinstance(value, Length) or value.unit is not self.unit:
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_UNIT_MISSING,
+                    f"Drilling {name} must use the strategy unit",
+                )
+        if (
+            self.retract_height.value <= self.depth.top_z.value
+            or self.clearance_height.value <= self.retract_height.value
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling retract must be above top Z and clearance above retract",
+            )
+        expected_feed = (
+            FeedUnit.MM_PER_MINUTE
+            if self.unit is LengthUnit.MM
+            else FeedUnit.INCH_PER_MINUTE
+        )
+        if not isinstance(self.feed_rate, FeedRate) or self.feed_rate.unit is not expected_feed:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_UNIT_MISSING,
+                "Drilling feed must match the strategy length unit",
+            )
+        if not isinstance(self.spindle_speed, SpindleSpeed):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling spindle speed is invalid",
+            )
+        if isinstance(self.dwell_seconds, bool) or not isinstance(
+            self.dwell_seconds, (int, float)
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling dwell must be finite and non-negative",
+            )
+        dwell = float(self.dwell_seconds)
+        if not math.isfinite(dwell) or dwell < 0.0:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling dwell must be finite and non-negative",
+            )
+        object.__setattr__(self, "dwell_seconds", dwell)
+        if not isinstance(self.retract_policy, DrillRetractPolicy) or not isinstance(
+            self.approach_policy, DrillApproachPolicy
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling retract or approach policy is invalid",
+            )
+        if self.cycle is DrillingCycle.PECK_DRILL:
+            if (
+                not isinstance(self.peck_depth, Length)
+                or self.peck_depth.unit is not self.unit
+                or self.peck_depth.value <= 0.0
+                or self.peck_depth.value >= self.depth.depth.value
+            ):
+                raise DrillValidationError(
+                    DiagnosticCode.DRILL_INVALID_PECK,
+                    "Peck depth must be positive and smaller than total drilling depth",
+                )
+        elif self.peck_depth is not None:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PECK,
+                "Peck depth is only valid for PECK_DRILL",
+            )
+        tolerance = self.tolerance or Length(_TOLERANCE, self.unit)
+        if (
+            not isinstance(tolerance, Length)
+            or tolerance.unit is not self.unit
+            or tolerance.value <= 0.0
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling tolerance must be positive in the strategy unit",
+            )
+        object.__setattr__(self, "tolerance", tolerance)
+        if (
+            type(self.strategy_version) is not int
+            or self.strategy_version != DRILLING_STRATEGY_VERSION
+            or type(self.schema_version) is not int
+            or self.schema_version != _VERSION
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Unsupported drilling strategy version",
+            )
+
+    @property
+    def top_z(self) -> Length:
+        return self.depth.top_z
+
+    @property
+    def final_depth(self) -> Length:
+        return self.depth.bottom_z
+
+    @property
+    def fingerprint(self) -> ContentFingerprint:
+        return ContentFingerprint.from_payload(self.to_dict())
+
+    def to_operation_parameters(self) -> OperationParameterSet:
+        geometry_json = json.dumps(
+            self.geometry.to_dict(), sort_keys=True, separators=(",", ":")
+        )
+        chunks = tuple(
+            geometry_json[index:index + _GEOMETRY_CHUNK_SIZE]
+            for index in range(0, len(geometry_json), _GEOMETRY_CHUNK_SIZE)
+        )
+        values: list[tuple[str, object]] = [
+            ("unit", self.unit.value),
+            ("cycle", self.cycle.value),
+            ("top_z", self.top_z.value),
+            ("final_depth", self.final_depth.value),
+            ("clearance_height", self.clearance_height.value),
+            ("retract_height", self.retract_height.value),
+            ("feed_rate", self.feed_rate.value),
+            ("spindle_speed", self.spindle_speed.value),
+            ("dwell_seconds", self.dwell_seconds),
+            ("peck_depth", None if self.peck_depth is None else self.peck_depth.value),
+            ("retract_policy", self.retract_policy.value),
+            ("approach_policy", self.approach_policy.value),
+            ("tolerance", self.tolerance.value),
+            ("geometry_chunk_count", len(chunks)),
+        ]
+        values.extend((f"geometry_{index:04d}", chunk) for index, chunk in enumerate(chunks))
+        return OperationParameterSet(
+            DRILLING_STRATEGY_KEY,
+            DRILLING_STRATEGY_VERSION,
+            tuple(values),
+        )
+
+    @classmethod
+    def from_operation_parameters(cls, value: OperationParameterSet) -> "DrillingStrategy":
+        if value.strategy_key != DRILLING_STRATEGY_KEY:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Operation is not a drilling strategy",
+            )
+        data = dict(value.values)
+        try:
+            chunk_count = data.pop("geometry_chunk_count")
+            if type(chunk_count) is not int or not 1 <= chunk_count <= 1024:
+                raise ValueError("invalid geometry chunk count")
+            chunk_keys = tuple(f"geometry_{index:04d}" for index in range(chunk_count))
+            if any(type(data.get(key)) is not str for key in chunk_keys):
+                raise ValueError("invalid geometry chunks")
+            geometry_text = "".join(str(data.pop(key)) for key in chunk_keys)
+            fields = {
+                "unit", "cycle", "top_z", "final_depth", "clearance_height",
+                "retract_height", "feed_rate", "spindle_speed", "dwell_seconds",
+                "peck_depth", "retract_policy", "approach_policy", "tolerance",
+            }
+            if set(data) != fields:
+                raise ValueError("unexpected drilling parameters")
+            unit = LengthUnit(data["unit"])
+            feed_unit = (
+                FeedUnit.MM_PER_MINUTE
+                if unit is LengthUnit.MM
+                else FeedUnit.INCH_PER_MINUTE
+            )
+            peck = data["peck_depth"]
+            return cls(
+                unit=unit,
+                geometry=DrillGeometryInput.from_dict(json.loads(geometry_text)),
+                depth=DrillDepthDefinition(
+                    unit, Length(data["top_z"], unit), Length(data["final_depth"], unit)
+                ),
+                cycle=DrillingCycle(data["cycle"]),
+                clearance_height=Length(data["clearance_height"], unit),
+                retract_height=Length(data["retract_height"], unit),
+                feed_rate=FeedRate(data["feed_rate"], feed_unit),
+                spindle_speed=SpindleSpeed(data["spindle_speed"]),
+                dwell_seconds=data["dwell_seconds"],
+                peck_depth=None if peck is None else Length(peck, unit),
+                retract_policy=DrillRetractPolicy(data["retract_policy"]),
+                approach_policy=DrillApproachPolicy(data["approach_policy"]),
+                tolerance=Length(data["tolerance"], unit),
+                strategy_version=value.strategy_version,
+                schema_version=value.schema_version,
+            )
+        except DrillValidationError:
+            raise
+        except (KeyError, TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling operation parameters are malformed",
+            ) from error
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": _STRATEGY_FORMAT,
+            "format_version": _VERSION,
+            "strategy_key": DRILLING_STRATEGY_KEY,
+            "strategy_version": self.strategy_version,
+            "schema_version": self.schema_version,
+            "unit": self.unit.value,
+            "geometry": self.geometry.to_dict(),
+            "depth": self.depth.to_dict(),
+            "cycle": self.cycle.value,
+            "clearance_height": self.clearance_height.value,
+            "retract_height": self.retract_height.value,
+            "feed_rate": self.feed_rate.value,
+            "spindle_speed": self.spindle_speed.value,
+            "dwell_seconds": self.dwell_seconds,
+            "peck_depth": None if self.peck_depth is None else self.peck_depth.value,
+            "retract_policy": self.retract_policy.value,
+            "approach_policy": self.approach_policy.value,
+            "tolerance": self.tolerance.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrillingStrategy":
+        fields = {
+            "format", "format_version", "strategy_key", "strategy_version",
+            "schema_version", "unit", "geometry", "depth", "cycle",
+            "clearance_height", "retract_height", "feed_rate", "spindle_speed",
+            "dwell_seconds", "peck_depth", "retract_policy", "approach_policy",
+            "tolerance",
+        }
+        if (
+            not isinstance(data, dict)
+            or set(data) != fields
+            or data.get("format") != _STRATEGY_FORMAT
+            or data.get("format_version") != _VERSION
+            or data.get("strategy_key") != DRILLING_STRATEGY_KEY
+        ):
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling strategy payload is malformed",
+            )
+        try:
+            unit = LengthUnit(data["unit"])
+            feed_unit = (
+                FeedUnit.MM_PER_MINUTE
+                if unit is LengthUnit.MM
+                else FeedUnit.INCH_PER_MINUTE
+            )
+            peck = data["peck_depth"]
+            return cls(
+                unit=unit,
+                geometry=DrillGeometryInput.from_dict(data["geometry"]),
+                depth=DrillDepthDefinition.from_dict(data["depth"]),
+                cycle=DrillingCycle(data["cycle"]),
+                clearance_height=Length(data["clearance_height"], unit),
+                retract_height=Length(data["retract_height"], unit),
+                feed_rate=FeedRate(data["feed_rate"], feed_unit),
+                spindle_speed=SpindleSpeed(data["spindle_speed"]),
+                dwell_seconds=data["dwell_seconds"],
+                peck_depth=None if peck is None else Length(peck, unit),
+                retract_policy=DrillRetractPolicy(data["retract_policy"]),
+                approach_policy=DrillApproachPolicy(data["approach_policy"]),
+                tolerance=Length(data["tolerance"], unit),
+                strategy_version=data["strategy_version"],
+                schema_version=data["schema_version"],
+            )
+        except DrillValidationError:
+            raise
+        except (TypeError, ValueError, CamValidationError) as error:
+            raise DrillValidationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling strategy payload is invalid",
             ) from error
 
 

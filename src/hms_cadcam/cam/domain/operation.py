@@ -167,6 +167,14 @@ class DiagnosticCode(StrEnum):
     DRILL_INVALID_DEPTH = "drill.invalid_depth"
     DRILL_UNIT_MISSING = "drill.unit_missing"
     DRILL_DUPLICATE_LOCATION = "drill.duplicate_location"
+    DRILL_INVALID_PARAMETER = "drill.invalid_parameter"
+    DRILL_INVALID_PECK = "drill.invalid_peck"
+    DRILL_TOOL_MISSING = "drill.tool_missing"
+    DRILL_TOOL_STALE = "drill.tool_stale"
+    DRILL_TOOL_INVALID = "drill.tool_invalid"
+    DRILL_DEPTH_INVALID = "drill.depth_invalid"
+    DRILL_GENERATION_FAILED = "drill.generation_failed"
+    DRILL_STALE_RESULT = "drill.stale_result"
 
 
 @dataclass(frozen=True, slots=True)

@@ -35,10 +35,13 @@ from hms_cadcam.project.recovery import (
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
-from hms_cadcam.cam.application import CamApplicationService, FacingComputeResult, PocketComputeResult
+from hms_cadcam.cam.application import (
+    CamApplicationService, DrillingComputeResult, FacingComputeResult, PocketComputeResult,
+)
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.domain import (
-    GeometryReference, OperationId, ResolvedContourProfile, ResolvedMachiningGeometry,
+    DrillDepthDefinition, DrillGeometryInput, GeometryReference, OperationId,
+    ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
     ResolvedPocketGeometry,
 )
 from hms_cadcam.cam.application.contour import ContourComputeResult
@@ -385,6 +388,31 @@ class ProjectService:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
         result = self._cam_application.compute_pocket(
+            session.root_path, operation_id, geometry_resolver=geometry_resolver
+        )
+        session.cam_snapshot = self._cam_application.snapshot
+        if session.cam_snapshot != before:
+            session.is_dirty = True
+        return result
+
+    def compute_drilling(
+        self,
+        operation_id: OperationId,
+        *,
+        expected_generation: int | None = None,
+        geometry_resolver: Callable[
+            [DrillGeometryInput, DrillDepthDefinition], ResolvedDrillingGeometry
+        ] | None = None,
+    ) -> DrillingComputeResult:
+        """Generate/publish one Drilling operation through the project gateway."""
+        session = self._require_current()
+        if (
+            expected_generation is not None
+            and expected_generation != self._cam_application.generation
+        ):
+            raise RuntimeError("CAM command belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        result = self._cam_application.compute_drilling(
             session.root_path, operation_id, geometry_resolver=geometry_resolver
         )
         session.cam_snapshot = self._cam_application.snapshot

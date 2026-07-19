@@ -16,6 +16,14 @@ from hms_cadcam.cam.application.contour import (
 )
 from hms_cadcam.cam.application.pocket_geometry import PocketGeometryResolver
 from hms_cadcam.cam.application.drilling_geometry import DrillingGeometryResolver
+from hms_cadcam.cam.application.drilling import (
+    DrillingComputeResult,
+    DrillingGenerationError,
+    DrillingGenerator,
+    DrillingHole,
+    DrillingInputs,
+    drilling_peck_levels,
+)
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult,
     PocketGenerationError,
@@ -28,6 +36,8 @@ from hms_cadcam.cam.application.pocket import (
 __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
            "FacingGenerator", "FacingInputs", "basic_mill_resources", "offset_contour", "reconcile_artifacts",
-           "DrillingGeometryResolver", "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
+           "DrillingComputeResult", "DrillingGenerationError", "DrillingGenerator",
+           "DrillingGeometryResolver", "DrillingHole", "DrillingInputs",
+           "drilling_peck_levels", "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels", "resolve_box_facing_region",
            "resolve_profile_in_setup"]
