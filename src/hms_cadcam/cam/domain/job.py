@@ -129,6 +129,12 @@ class CamJob:
         current = self.get_setup(setup_id)
         self._replace_setup(current.with_name(name))
 
+    def replace_setup(self, setup: Setup) -> None:
+        """Replace one complete setup through the aggregate boundary."""
+        if not isinstance(setup, Setup):
+            raise CamValidationError("Setup is invalid")
+        self._replace_setup(setup)
+
     def set_active_setup(self, setup_id: SetupId | None) -> None:
         """Select an existing setup or explicitly clear selection."""
         if setup_id is not None:

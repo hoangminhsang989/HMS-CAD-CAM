@@ -46,6 +46,11 @@ from hms_cadcam.cad.models import (
 from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_controller import CadUiController
+from hms_cadcam.ui.cam_ui import CamWorkspace
+from hms_cadcam.ui.cam_geometry_adapter import (
+    GeometryPickError,
+    geometry_reference_from_selection,
+)
 from hms_cadcam.ui.project_controller import ProjectUiController
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
@@ -113,9 +118,22 @@ class MainWindow(QMainWindow):
         self.project_dock = self._create_project_dock()
         self.properties_dock = self._create_properties_dock()
         self.output_dock = self._create_output_dock()
+        self.cam_workspace = CamWorkspace(
+            project_service,
+            lambda: self.cad_controller.active_source_id,
+            self._current_geometry_reference,
+            self,
+        )
+        self.cam_workspace.message.connect(self._append_output)
+        self.cam_dock = QDockWidget("CAM Workspace", self)
+        self.cam_dock.setObjectName("CamWorkspaceDock")
+        self.cam_dock.setWidget(self.cam_workspace)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.project_dock)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.cam_dock)
+        self.tabifyDockWidget(self.project_dock, self.cam_dock)
+        self.project_dock.raise_()
         self.resizeDocks(
             [self.project_dock, self.properties_dock],
             [310, 280],
@@ -175,7 +193,11 @@ class MainWindow(QMainWindow):
         for title in ("Chỉnh sửa", "Hiển thị"):
             menu_bar.addMenu(title)
         cad_viewer_menu = menu_bar.addMenu("CAD")
-        for title in ("CAM", "Máy", "Toolpath", "Setup"):
+        cam_menu = menu_bar.addMenu("CAM")
+        cam_workspace_action = QAction("Mở CAM Workspace", self)
+        cam_workspace_action.triggered.connect(self._show_cam_workspace)
+        cam_menu.addAction(cam_workspace_action)
+        for title in ("Máy", "Toolpath", "Setup"):
             menu_bar.addMenu(title)
         help_menu = menu_bar.addMenu("Trợ giúp")
 
@@ -225,6 +247,23 @@ class MainWindow(QMainWindow):
             action.setToolTip(f"{tooltip} — chưa khả dụng")
             action.setEnabled(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
+
+    def _show_cam_workspace(self) -> None:
+        """Switch the left manager to CAM without replacing the CAD viewport."""
+        if hasattr(self, "cam_dock"):
+            self.cam_dock.show()
+            self.cam_dock.raise_()
+
+    def _current_geometry_reference(self):
+        """Convert exactly one current viewer selection through the safe adapter."""
+        selections = self.cad_controller.active_selection
+        source_id = self.cad_controller.active_source_id
+        mapping = self.cad_controller.persistent_object_map
+        if len(selections) != 1 or source_id is None or mapping is None:
+            raise GeometryPickError("Hãy chọn đúng một đối tượng CAD có persistent mapping.")
+        return geometry_reference_from_selection(
+            selections[0], source_id=source_id, persistent_map=mapping
+        )
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)
@@ -366,6 +405,7 @@ class MainWindow(QMainWindow):
             source_id, source_path = source_binding
             self.cad_controller.bind_project(source_path, source_id=source_id)
         self._update_project_display(session)
+        self.cam_workspace.bind_project(session)
 
     def _update_cad_document(self, metadata: object) -> None:
         self._active_document_metadata = (

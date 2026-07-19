@@ -288,6 +288,31 @@ class ProjectService:
             session.is_dirty = True
         return session
 
+    def execute_cam_command(
+        self,
+        command: Callable[[CamApplicationService], CamProjectSnapshot],
+    ) -> CamProjectSnapshot:
+        """Execute one CAM application command and propagate project dirty state."""
+        session = self._require_current()
+        before = self._cam_application.snapshot
+        try:
+            changed = command(self._cam_application)
+        except Exception:
+            session.cam_snapshot = self._cam_application.snapshot
+            raise
+        if not isinstance(changed, CamProjectSnapshot):
+            raise TypeError("CAM command must return CamProjectSnapshot")
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+        return changed
+
+    @property
+    def cam_generation(self) -> int:
+        """Return the active CAM project generation for stale-signal guards."""
+        self._require_current()
+        return self._cam_application.generation
+
     def register_toolpath_artifact(
         self,
         operation_id: OperationId,

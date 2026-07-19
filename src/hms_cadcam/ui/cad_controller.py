@@ -130,6 +130,21 @@ class CadUiController(QObject):
         return self._active_tree
 
     @property
+    def active_source_id(self) -> UUID | None:
+        """Return the project source bound to the active CAD document."""
+        return self._active_source_id
+
+    @property
+    def active_selection(self) -> tuple[SelectionMetadata, ...]:
+        """Expose immutable native-free viewer selection to application adapters."""
+        return self._active_selection
+
+    @property
+    def persistent_object_map(self) -> PersistentCadObjectMap | None:
+        """Expose the safe runtime-to-persistent mapping, never native geometry."""
+        return self._persistent_map
+
+    @property
     def appearances(self) -> tuple[tuple[CadObjectId, ObjectAppearance], ...]:
         return tuple(self._appearances.items())
 
