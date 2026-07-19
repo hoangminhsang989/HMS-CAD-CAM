@@ -233,7 +233,8 @@ class OcpCadViewportBackend:
         groups = {key: [] for key in (
             "rapid", "approach", "peck_resume", "plunge", "plunge_link",
             "lead_in", "pocket_cutting", "cutting", "lead_out", "link",
-            "retract",
+            "retract", "synchronized_descent", "synchronized_retract",
+            "final_retract",
         )}
         movements = tuple(
             event for event in artifact.events
@@ -241,7 +242,10 @@ class OcpCadViewportBackend:
         )
         for event, segment in zip(movements, metadata.segments, strict=True):
             groups[segment.semantic].append(event)
-        annotation_groups = {key: [] for key in ("dwell", "hole_complete")}
+        annotation_groups = {key: [] for key in (
+            "dwell", "synchronization_begin", "spindle_reversal",
+            "hole_complete", "synchronization_end",
+        )}
         for annotation in metadata.annotations:
             annotation_groups[annotation.semantic].append(annotation.position)
         colors = {
@@ -256,9 +260,28 @@ class OcpCadViewportBackend:
             "lead_out": (0.0, 0.65, 0.85),
             "link": (1.0, 0.8, 0.2),
             "retract": (0.9, 0.25, 0.9),
+            "synchronized_descent": (0.15, 0.95, 0.35),
+            "synchronized_retract": (0.95, 0.35, 0.8),
+            "final_retract": (0.65, 0.35, 1.0),
             "dwell": (1.0, 0.2, 0.2),
+            "synchronization_begin": (1.0, 0.85, 0.15),
+            "spindle_reversal": (1.0, 0.35, 0.1),
             "hole_complete": (0.25, 1.0, 0.85),
+            "synchronization_end": (0.55, 0.85, 1.0),
         }
+        operation_id = artifact.source_operation_id
+        previous = self._toolpaths.get(operation_id, ())
+        metadata_registry = getattr(self, "_toolpath_metadata", None)
+        if metadata_registry is None:
+            metadata_registry = {}
+            self._toolpath_metadata = metadata_registry
+        previous_metadata = metadata_registry.get(operation_id)
+        if previous_metadata is not None:
+            metadata = replace(
+                metadata,
+                visible=previous_metadata.visible,
+                highlighted=previous_metadata.highlighted,
+            )
         presentations = []
         try:
             for semantic, events in groups.items():
@@ -286,6 +309,8 @@ class OcpCadViewportBackend:
                 red, green, blue = colors[semantic]
                 context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
                 context.Display(presentation, False)
+                if not metadata.visible:
+                    context.Erase(presentation, False)
             for semantic, points in annotation_groups.items():
                 if not points:
                     continue
@@ -305,27 +330,35 @@ class OcpCadViewportBackend:
                     False,
                 )
                 context.Display(presentation, False)
+                if not metadata.visible:
+                    context.Erase(presentation, False)
+            context.UpdateCurrentViewer()
         except Exception:
             for presentation in presentations:
                 context.Remove(presentation, False)
             context.UpdateCurrentViewer()
             raise
-        previous = self._toolpaths.get(artifact.source_operation_id, ())
+        self._toolpaths[operation_id] = tuple(presentations)
+        metadata_registry[operation_id] = metadata
         try:
             for presentation in previous:
                 context.Remove(presentation, False)
             context.UpdateCurrentViewer()
         except Exception:
+            if previous_metadata is None:
+                self._toolpaths.pop(operation_id, None)
+                metadata_registry.pop(operation_id, None)
+            else:
+                self._toolpaths[operation_id] = previous
+                metadata_registry[operation_id] = previous_metadata
             for presentation in presentations:
                 context.Remove(presentation, False)
             for presentation in previous:
                 context.Display(presentation, False)
+                if previous_metadata is not None and not previous_metadata.visible:
+                    context.Erase(presentation, False)
             context.UpdateCurrentViewer()
             raise
-        self._toolpaths[artifact.source_operation_id] = tuple(presentations)
-        if not hasattr(self, "_toolpath_metadata"):
-            self._toolpath_metadata = {}
-        self._toolpath_metadata[artifact.source_operation_id] = metadata
 
     def get_toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]:
         """Return deterministic native-free metadata for displayed CAM artifacts."""

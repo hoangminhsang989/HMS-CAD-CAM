@@ -257,9 +257,16 @@ class TappingGenerator:
             cutting_direction, retract_direction = _spindle_semantics(strategy.hand)
             sync_metadata = (
                 ("format", "hms_tapping_sync_v1"),
+                ("hand", strategy.hand.value),
+                ("metadata_version", "1"),
+                ("nominal_diameter", format(
+                    strategy.nominal_diameter.value, ".17g"
+                )),
                 ("pitch", format(strategy.pitch.value, ".17g")),
                 ("pitch_unit", strategy.unit.value),
                 ("policy", strategy.synchronization_policy.value),
+                ("rpm", format(strategy.spindle_speed.value, ".17g")),
+                ("thread_depth", format(strategy.depth.depth.value, ".17g")),
             )
             for hole_index, hole in enumerate(inputs.holes):
                 clearance = Pose(Point3(
