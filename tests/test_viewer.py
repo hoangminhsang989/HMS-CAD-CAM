@@ -687,6 +687,54 @@ def test_registry_apply_failure_restores_previous_appearance(operation: str) -> 
             assert context.current_transparencies[presentation] == pytest.approx(0.0)
 
 
+def test_registry_color_failure_restores_xcaf_source_style_instead_of_uniform_color(
+) -> None:
+    document_id = CadDocumentId("doc:xcaf-source-rollback")
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    children = tuple(
+        CadObjectNode(
+            document_id,
+            CadObjectId(f"{document_id}:object:{index}"),
+            CadObjectKind.PART,
+            f"Part {index}",
+            bounds,
+            has_presentation=True,
+        )
+        for index in (1, 2)
+    )
+    root = CadObjectNode(
+        document_id,
+        CadObjectId(f"{document_id}:document"),
+        CadObjectKind.DOCUMENT,
+        "XCAF document",
+        bounds,
+        children,
+    )
+    presentations = {node.object_id: object() for node in children}
+    source_color = ObjectColor(0.8, 0.2, 0.1)
+    context = FakeRegistryContext()
+    registry = OcpPresentationRegistry(
+        context,
+        CadDocumentTree(document_id, root),
+        presentations,
+        base_appearances={
+            node.object_id: ObjectAppearance(color=source_color)
+            for node in children
+        },
+        native_base_styles={node.object_id: () for node in children},
+    )
+    registry.set_transparency(root.object_id, 0.35)
+    original = dict(registry.appearances)
+    context.fail_once("color", 2)
+
+    with pytest.raises(RuntimeError, match="simulated color failure"):
+        registry.set_color(root.object_id, ObjectColor(0.1, 0.3, 0.9))
+
+    assert registry.appearances == original
+    assert context.current_colors == {}
+    assert set(context.current_transparencies.values()) == {0.35}
+
+
 def test_lifecycle_commit_failure_restores_old_registry_and_isolate_state() -> None:
     bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
 

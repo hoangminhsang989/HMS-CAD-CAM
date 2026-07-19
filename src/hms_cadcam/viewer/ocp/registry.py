@@ -45,6 +45,8 @@ class OcpPresentationRegistry:
         }
         self.appearances = dict(self.base_appearances)
         self._native_base_styles = dict(native_base_styles or {})
+        self._color_overrides: set[CadObjectId] = set()
+        self._transparency_overrides: set[CadObjectId] = set()
         self._isolate_snapshot: dict[CadObjectId, bool] | None = None
 
     @property
@@ -98,21 +100,36 @@ class OcpPresentationRegistry:
         )
         presentation_ids = self.presentation_ids(object_id)
         previous = {
-            item_id: self.appearances[item_id].color
-            for item_id in presentation_ids
+            item_id: self.appearances[item_id] for item_id in presentation_ids
         }
+        previous_color_overrides = set(self._color_overrides)
+        previous_transparency_overrides = set(self._transparency_overrides)
+
+        def rollback(presentation: AIS_InteractiveObject, item_id: CadObjectId) -> None:
+            appearance = previous[item_id]
+            self._restore_native_color(
+                presentation,
+                item_id,
+                appearance.color,
+                item_id in previous_color_overrides,
+            )
+            if item_id in previous_transparency_overrides:
+                self._set_native_transparency(
+                    presentation,
+                    appearance.transparency,
+                )
+
         self._apply_native_transaction(
             presentation_ids,
             lambda presentation, _item_id: self._set_native_color(
                 presentation, native_color
             ),
-            lambda presentation, item_id: self._set_native_color(
-                presentation, _native_color(previous[item_id])
-            ),
+            rollback,
         )
         for item in node.walk():
             current = self.appearances[item.object_id]
             self.appearances[item.object_id] = replace(current, color=color)
+        self._color_overrides.update(presentation_ids)
 
     def set_transparency(self, object_id: CadObjectId, value: float) -> None:
         validated = ObjectAppearance(transparency=value).transparency
@@ -137,6 +154,7 @@ class OcpPresentationRegistry:
                 current,
                 transparency=validated,
             )
+        self._transparency_overrides.update(presentation_ids)
 
     def reset_appearance(self, object_id: CadObjectId) -> None:
         """Remove user color/transparency overrides and restore source appearance."""
@@ -145,14 +163,25 @@ class OcpPresentationRegistry:
         previous = {
             item_id: self.appearances[item_id] for item_id in presentation_ids
         }
+        previous_color_overrides = set(self._color_overrides)
+        previous_transparency_overrides = set(self._transparency_overrides)
 
         def apply(presentation: AIS_InteractiveObject, item_id: CadObjectId) -> None:
             self._restore_native_base(presentation, item_id)
 
         def rollback(presentation: AIS_InteractiveObject, item_id: CadObjectId) -> None:
             appearance = previous[item_id]
-            self._set_native_color(presentation, _native_color(appearance.color))
-            self._set_native_transparency(presentation, appearance.transparency)
+            self._restore_native_color(
+                presentation,
+                item_id,
+                appearance.color,
+                item_id in previous_color_overrides,
+            )
+            if item_id in previous_transparency_overrides:
+                self._set_native_transparency(
+                    presentation,
+                    appearance.transparency,
+                )
 
         self._apply_native_transaction(presentation_ids, apply, rollback)
         for item in node.walk():
@@ -163,6 +192,8 @@ class OcpPresentationRegistry:
                 color=base.color,
                 transparency=base.transparency,
             )
+        self._color_overrides.difference_update(presentation_ids)
+        self._transparency_overrides.difference_update(presentation_ids)
 
     def isolate(self, object_id: CadObjectId) -> None:
         target_ids = set(self.presentation_ids(object_id))
@@ -259,6 +290,18 @@ class OcpPresentationRegistry:
         if isinstance(presentation, AIS_ColoredShape):
             _set_custom_color(presentation, color)
             self._context.Redisplay(presentation, False, True)
+
+    def _restore_native_color(
+        self,
+        presentation: AIS_InteractiveObject,
+        object_id: CadObjectId,
+        color: ObjectColor,
+        had_override: bool,
+    ) -> None:
+        if had_override or object_id not in self._native_base_styles:
+            self._set_native_color(presentation, _native_color(color))
+            return
+        self._restore_native_base(presentation, object_id)
 
     def _set_native_transparency(
         self,
