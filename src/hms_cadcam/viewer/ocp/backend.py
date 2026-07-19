@@ -148,18 +148,36 @@ class OcpCadViewportBackend:
                 self._lifecycle.commit_registry(registry)
             else:
                 self._lifecycle.commit_presentation(presentation)
-        except Exception:
-            if registry is not None:
-                self._lifecycle.discard_registry(registry)
-            elif presentation is not None:
-                self._lifecycle.discard_presentation(presentation)
-            self._restore_selection(
-                old_document_id,
-                old_tree,
-                old_presentation,
-                old_presentations,
-            )
+        except Exception as error:
+            cleanup_error: Exception | None = None
+            try:
+                if registry is not None:
+                    self._lifecycle.discard_registry(registry)
+                elif presentation is not None:
+                    self._lifecycle.discard_presentation(presentation)
+            except Exception as discard_error:
+                cleanup_error = discard_error
+                logging.getLogger(__name__).exception(
+                    "Cannot discard failed CAD presentation candidate"
+                )
+            try:
+                self._restore_selection(
+                    old_document_id,
+                    old_tree,
+                    old_presentation,
+                    old_presentations,
+                )
+            except Exception as restore_error:
+                if cleanup_error is None:
+                    cleanup_error = restore_error
+                logging.getLogger(__name__).exception(
+                    "Cannot restore previous CAD selection after replace failure"
+                )
             self._emit_selection(())
+            if cleanup_error is not None:
+                raise RuntimeError(
+                    "CAD candidate discard or previous selection restore failed"
+                ) from error
             raise
         self._document_id = document_id
         self._tree = tree
@@ -232,11 +250,11 @@ class OcpCadViewportBackend:
             for selected_id in self._selected_object_ids
             for leaf_id in registry.presentation_ids(selected_id)
         }
+        registry.set_visibility(object_id, visible)
         if not visible and affected.intersection(selected_leaves):
             self._require_selection().clear_selection()
             self._selected_object_ids = ()
             self._emit_selection(())
-        registry.set_visibility(object_id, visible)
 
     def isolate_object(
         self,
@@ -250,11 +268,11 @@ class OcpCadViewportBackend:
             for selected_id in self._selected_object_ids
             for leaf_id in registry.presentation_ids(selected_id)
         }
+        registry.isolate(object_id)
         if selected_leaves and not selected_leaves.issubset(retained):
             self._require_selection().clear_selection()
             self._selected_object_ids = ()
             self._emit_selection(())
-        registry.isolate(object_id)
 
     def reset_isolate(self, document_id: CadDocumentId) -> None:
         self._require_registry(document_id).reset_isolate()

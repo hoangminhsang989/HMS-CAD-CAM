@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from OCP.BRep import BRep_Builder  # noqa: E402
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from OCP.BRepMesh import BRepMesh_IncrementalMesh  # noqa: E402
@@ -16,7 +17,7 @@ from OCP.StlAPI import StlAPI_Writer  # noqa: E402
 from OCP.TopAbs import TopAbs_ShapeEnum  # noqa: E402
 from OCP.TopExp import TopExp  # noqa: E402
 from OCP.TopTools import TopTools_IndexedMapOfShape  # noqa: E402
-from OCP.TopoDS import TopoDS_Shape  # noqa: E402
+from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape  # noqa: E402
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -24,6 +25,7 @@ from hms_cadcam.cad.models import (  # noqa: E402
     BoundingBox,
     CadDocumentId,
     CadDocumentTree,
+    CadFormat,
     CadObjectId,
     CadObjectKind,
     CadObjectNode,
@@ -35,6 +37,7 @@ from hms_cadcam.viewer import models as models_module  # noqa: E402
 from hms_cadcam.viewer.factory import CadViewportBackendFactory  # noqa: E402
 from hms_cadcam.viewer.models import (  # noqa: E402
     DisplayMode,
+    DEFAULT_OBJECT_COLOR,
     KeyboardModifier,
     MouseButton,
     ObjectAppearance,
@@ -156,9 +159,13 @@ class MockViewportBackend:
 class FakeView:
     def __init__(self) -> None:
         self.projection = None
+        self.redraw_count = 0
 
     def SetProj(self, projection) -> None:  # noqa: N802 - OCP-compatible fake
         self.projection = projection
+
+    def Redraw(self) -> None:  # noqa: N802 - OCP-compatible fake
+        self.redraw_count += 1
 
 
 class FakeLifecycle:
@@ -256,6 +263,77 @@ class FailOnceSelection(FakeSelection):
         super().bind_document(document_id, shape, presentation)
 
 
+class FakeManagedSelection(FakeSelection):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_bind = False
+        self.clear_selection_count = 0
+        self.selected_object_ids: tuple[CadObjectId, ...] = ()
+
+    def bind_document(
+        self,
+        document_id,
+        shape,
+        presentation,
+        object_shapes=None,
+        presentations=None,
+    ) -> None:
+        del object_shapes, presentations
+        if self.fail_next_bind:
+            self.fail_next_bind = False
+            raise RuntimeError("simulated managed bind failure")
+        super().bind_document(document_id, shape, presentation)
+
+    def select_objects(self, object_ids: tuple[CadObjectId, ...]) -> None:
+        self.selected_object_ids = object_ids
+
+    def clear_selection(self) -> None:
+        self.clear_selection_count += 1
+        self.selected_object_ids = ()
+
+
+class FakeManagedLifecycle(FakeLifecycle):
+    def __init__(self) -> None:
+        super().__init__()
+        self.registry = None
+        self.context = FakeRegistryContext()
+        self.discard_count = 0
+        self.fail_commit = False
+        self.fail_discard = False
+
+    @property
+    def presentations(self):
+        return self.registry.presentations if self.registry is not None else {}
+
+    def prepare_registry(self, tree, shapes, mode, triangulation=None):
+        del shapes, mode, triangulation
+        candidates = {node.object_id: object() for node in tree.presentation_nodes}
+        self.context.displayed.update(candidates.values())
+        return OcpPresentationRegistry(self.context, tree, candidates)
+
+    def commit_registry(self, registry) -> None:
+        if self.fail_commit:
+            self.fail_commit = False
+            raise RuntimeError("simulated managed commit failure")
+        self.registry = registry
+        self.presentation = next(iter(registry.presentations.values()))
+
+    def discard_registry(self, registry) -> None:
+        assert registry is not self.registry
+        self.discard_count += 1
+        if self.fail_discard:
+            self.fail_discard = False
+            raise RuntimeError("simulated managed discard failure")
+        for presentation in registry.presentations.values():
+            self.context.displayed.discard(presentation)
+
+    def clear(self) -> None:
+        if self.registry is not None:
+            self.registry.clear_isolate()
+        self.registry = None
+        super().clear()
+
+
 class FakeInput:
     def __init__(self) -> None:
         self.reset_count = 0
@@ -298,21 +376,44 @@ class FakeRegistryContext:
         self.erased: set[object] = set()
         self.colors: list[tuple[object, object]] = []
         self.transparencies: list[tuple[object, float]] = []
+        self.current_colors: dict[object, tuple[float, float, float]] = {}
+        self.current_transparencies: dict[object, float] = {}
+        self.removed: set[object] = set()
         self.update_count = 0
+        self.fail_operation: str | None = None
+        self.fail_on_call = 0
+        self._operation_calls = 0
+
+    def fail_once(self, operation: str, call_number: int = 2) -> None:
+        self.fail_operation = operation
+        self.fail_on_call = call_number
+        self._operation_calls = 0
+
+    def _maybe_fail(self, operation: str) -> None:
+        if self.fail_operation != operation:
+            return
+        self._operation_calls += 1
+        if self._operation_calls == self.fail_on_call:
+            self.fail_operation = None
+            raise RuntimeError(f"simulated {operation} failure")
 
     def Display(self, presentation, update: bool) -> None:  # noqa: N802
         del update
+        self._maybe_fail("display")
         self.displayed.add(presentation)
         self.erased.discard(presentation)
 
     def Erase(self, presentation, update: bool) -> None:  # noqa: N802
         del update
+        self._maybe_fail("erase")
         self.erased.add(presentation)
         self.displayed.discard(presentation)
 
     def SetColor(self, presentation, color, update: bool) -> None:  # noqa: N802
         del update
+        self._maybe_fail("color")
         self.colors.append((presentation, color))
+        self.current_colors[presentation] = (color.Red(), color.Green(), color.Blue())
 
     def SetTransparency(  # noqa: N802
         self,
@@ -321,10 +422,18 @@ class FakeRegistryContext:
         update: bool,
     ) -> None:
         del update
+        self._maybe_fail("transparency")
         self.transparencies.append((presentation, value))
+        self.current_transparencies[presentation] = value
 
     def UpdateCurrentViewer(self) -> None:  # noqa: N802
         self.update_count += 1
+
+    def Remove(self, presentation, update: bool) -> None:  # noqa: N802
+        del update
+        self._maybe_fail("remove")
+        self.removed.add(presentation)
+        self.displayed.discard(presentation)
 
 
 def _assert_no_topods(value: object) -> None:
@@ -436,6 +545,193 @@ def test_registry_hide_show_isolate_and_reset_restore_visibility() -> None:
     assert registry.appearances[second_id].visible is True
     assert registry.appearances[first_id].transparency == pytest.approx(0.5)
     assert len(context.colors) == 3
+    registry.set_visibility(root.object_id, False)
+    assert not registry.appearances[root.object_id].visible
+    assert not registry.appearances[first_id].visible
+    assert not registry.appearances[second_id].visible
+    registry.set_visibility(first_id, True)
+    assert registry.appearances[root.object_id].visible
+    assert registry.appearances[first_id].visible
+    assert not registry.appearances[second_id].visible
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("visibility", "color", "transparency", "isolate", "reset_isolate"),
+)
+def test_registry_apply_failure_restores_previous_appearance(operation: str) -> None:
+    document_id = CadDocumentId(f"doc:rollback:{operation}")
+    first_id = CadObjectId(f"{document_id}:object:1")
+    second_id = CadObjectId(f"{document_id}:object:2")
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    children = tuple(
+        CadObjectNode(
+            document_id,
+            object_id,
+            CadObjectKind.SOLID,
+            f"Solid {index}",
+            bounds,
+            has_presentation=True,
+        )
+        for index, object_id in enumerate((first_id, second_id), start=1)
+    )
+    root = CadObjectNode(
+        document_id,
+        CadObjectId(f"{document_id}:document"),
+        CadObjectKind.DOCUMENT,
+        "CAD document",
+        bounds,
+        children,
+    )
+    presentations = {first_id: object(), second_id: object()}
+    context = FakeRegistryContext()
+    context.displayed.update(presentations.values())
+    registry = OcpPresentationRegistry(
+        context,
+        CadDocumentTree(document_id, root),
+        presentations,
+    )
+    original = dict(registry.appearances)
+
+    if operation == "visibility":
+        context.fail_once("erase")
+        action = lambda: registry.set_visibility(root.object_id, False)
+    elif operation == "color":
+        context.fail_once("color")
+        action = lambda: registry.set_color(root.object_id, ObjectColor(0.1, 0.2, 0.3))
+    elif operation == "transparency":
+        context.fail_once("transparency")
+        action = lambda: registry.set_transparency(root.object_id, 0.6)
+    elif operation == "isolate":
+        registry.set_visibility(second_id, False)
+        original = dict(registry.appearances)
+        context.fail_once("display", 1)
+        action = lambda: registry.isolate(second_id)
+    else:
+        registry.set_visibility(second_id, False)
+        registry.isolate(second_id)
+        original = dict(registry.appearances)
+        context.fail_once("display", 1)
+        action = registry.reset_isolate
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        action()
+
+    assert registry.appearances == original
+    assert registry.isolate_active is (operation == "reset_isolate")
+    for object_id, presentation in presentations.items():
+        expected = original[object_id]
+        assert (presentation in context.displayed) is expected.visible
+        if operation == "color":
+            assert context.current_colors[presentation] == pytest.approx(
+                (
+                    DEFAULT_OBJECT_COLOR.red,
+                    DEFAULT_OBJECT_COLOR.green,
+                    DEFAULT_OBJECT_COLOR.blue,
+                )
+            )
+        if operation == "transparency":
+            assert context.current_transparencies[presentation] == pytest.approx(0.0)
+
+
+def test_lifecycle_commit_failure_restores_old_registry_and_isolate_state() -> None:
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+
+    def make_registry(
+        context: FakeRegistryContext,
+        name: str,
+        count: int,
+    ) -> OcpPresentationRegistry:
+        document_id = CadDocumentId(f"doc:{name}")
+        children = tuple(
+            CadObjectNode(
+                document_id,
+                CadObjectId(f"{document_id}:object:{index}"),
+                CadObjectKind.SOLID,
+                f"Solid {index}",
+                bounds,
+                has_presentation=True,
+            )
+            for index in range(1, count + 1)
+        )
+        root = CadObjectNode(
+            document_id,
+            CadObjectId(f"{document_id}:document"),
+            CadObjectKind.DOCUMENT,
+            "CAD document",
+            bounds,
+            children,
+        )
+        presentations = {node.object_id: object() for node in children}
+        context.displayed.update(presentations.values())
+        return OcpPresentationRegistry(
+            context,
+            CadDocumentTree(document_id, root),
+            presentations,
+        )
+
+    context = FakeRegistryContext()
+    old_registry = make_registry(context, "old", 2)
+    old_target = old_registry.tree.presentation_nodes[0].object_id
+    old_registry.isolate(old_target)
+    candidate = make_registry(context, "candidate", 1)
+    lifecycle = OcpViewportLifecycle()
+    lifecycle._context = context
+    lifecycle._view = FakeView()
+    lifecycle._registry = old_registry
+    context.fail_once("remove", 2)
+
+    with pytest.raises(RuntimeError, match="simulated remove"):
+        lifecycle.commit_registry(candidate)
+
+    assert lifecycle.registry is old_registry
+    assert old_registry.isolate_active
+    for object_id, presentation in old_registry.presentations.items():
+        assert (presentation in context.displayed) is old_registry.appearances[
+            object_id
+        ].visible
+    assert set(candidate.presentations.values()).issubset(context.displayed)
+
+
+def test_lifecycle_discard_retries_and_removes_every_candidate() -> None:
+    document_id = CadDocumentId("doc:discard")
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    children = tuple(
+        CadObjectNode(
+            document_id,
+            CadObjectId(f"{document_id}:object:{index}"),
+            CadObjectKind.SOLID,
+            f"Solid {index}",
+            bounds,
+            has_presentation=True,
+        )
+        for index in (1, 2)
+    )
+    root = CadObjectNode(
+        document_id,
+        CadObjectId(f"{document_id}:document"),
+        CadObjectKind.DOCUMENT,
+        "CAD document",
+        bounds,
+        children,
+    )
+    presentations = {node.object_id: object() for node in children}
+    context = FakeRegistryContext()
+    context.displayed.update(presentations.values())
+    candidate = OcpPresentationRegistry(
+        context,
+        CadDocumentTree(document_id, root),
+        presentations,
+    )
+    lifecycle = OcpViewportLifecycle()
+    lifecycle._context = context
+    lifecycle._view = FakeView()
+    context.fail_once("remove", 2)
+
+    lifecycle.discard_registry(candidate)
+
+    assert not set(presentations.values()).intersection(context.displayed)
+    assert set(presentations.values()).issubset(context.removed)
 
 
 def test_factory_creates_real_backend_when_ocp_is_available() -> None:
@@ -624,6 +920,117 @@ def test_ocp_backend_preserves_old_document_when_selection_bind_fails() -> None:
     assert backend._document_id == first
     assert lifecycle.presentation is old_presentation
     assert selection.document_id == first
+
+
+@pytest.mark.parametrize("failure", ("bind", "commit"))
+def test_managed_registry_failure_discards_candidate_and_preserves_old(
+    failure: str,
+) -> None:
+    kernel = OcpCadKernel()
+    first = kernel.create_box(1.0, 2.0, 3.0)
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, BRepPrimAPI_MakeBox(4.0, 5.0, 6.0).Shape())
+    builder.Add(compound, BRepPrimAPI_MakeBox(7.0, 8.0, 9.0).Shape())
+    second = kernel._documents.add_brep(compound, CadFormat.GENERATED).document_id
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+
+    backend.display_document(first)
+    old_registry = lifecycle.registry
+    old_presentation = lifecycle.presentation
+    if failure == "bind":
+        selection.fail_next_bind = True
+    else:
+        lifecycle.fail_commit = True
+
+    with pytest.raises(RuntimeError, match=f"managed {failure}"):
+        backend.display_document(second)
+
+    assert backend._document_id == first
+    assert lifecycle.registry is old_registry
+    assert lifecycle.presentation is old_presentation
+    assert len(lifecycle.presentations) == 1
+    assert selection.document_id == first
+    assert lifecycle.discard_count == 1
+
+
+def test_discard_failure_still_restores_old_document_selection() -> None:
+    kernel = OcpCadKernel()
+    first = kernel.create_box(1.0, 2.0, 3.0)
+    second = kernel.create_box(4.0, 5.0, 6.0)
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+    backend.display_document(first)
+    old_registry = lifecycle.registry
+    lifecycle.fail_commit = True
+    lifecycle.fail_discard = True
+
+    with pytest.raises(RuntimeError, match="discard"):
+        backend.display_document(second)
+
+    assert backend._document_id == first
+    assert lifecycle.registry is old_registry
+    assert selection.document_id == first
+
+
+def test_visibility_apply_failure_preserves_selection_and_registry_state() -> None:
+    kernel = OcpCadKernel()
+    document_id = kernel.create_box(1.0, 2.0, 3.0)
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+    backend.display_document(document_id)
+    object_id = kernel.get_document_tree(document_id).presentation_nodes[0].object_id
+    backend.select_objects(document_id, (object_id,))
+    original = dict(lifecycle.registry.appearances)
+    lifecycle.context.fail_once("erase", 1)
+
+    with pytest.raises(RuntimeError, match="simulated erase"):
+        backend.set_object_visibility(document_id, object_id, False)
+
+    assert lifecycle.registry.appearances == original
+    assert selection.selected_object_ids == (object_id,)
+    assert selection.clear_selection_count == 0
+    assert backend._selected_object_ids == (object_id,)
+
+
+def test_clear_drops_managed_registry_selection_and_isolate_snapshot() -> None:
+    kernel = OcpCadKernel()
+    document_id = kernel.create_box(1.0, 2.0, 3.0)
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+    backend.display_document(document_id)
+    object_id = kernel.get_document_tree(document_id).presentation_nodes[0].object_id
+    backend.select_objects(document_id, (object_id,))
+    backend.isolate_object(document_id, object_id)
+    old_registry = lifecycle.registry
+    assert old_registry.isolate_active
+
+    backend.clear()
+
+    assert backend._document_id is None
+    assert backend._tree is None
+    assert backend._selected_object_ids == ()
+    assert lifecycle.registry is None
+    assert not old_registry.isolate_active
+    assert selection.document_id is None
 
 
 def test_ocp_backend_camera_display_selection_and_resize_mapping() -> None:

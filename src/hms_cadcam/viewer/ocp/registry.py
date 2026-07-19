@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import replace
 
 from OCP.AIS import AIS_InteractiveContext, AIS_InteractiveObject
@@ -49,18 +51,27 @@ class OcpPresentationRegistry:
         if not isinstance(visible, bool):
             raise TypeError("Object visibility must be bool")
         node = self._require_node(object_id)
+        presentation_ids = self.presentation_ids(object_id)
+        previous = {
+            item_id: self.appearances[item_id].visible
+            for item_id in presentation_ids
+        }
+        desired = {item_id: visible for item_id in presentation_ids}
+        self._apply_native_transaction(
+            presentation_ids,
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                desired[item_id],
+            ),
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                previous[item_id],
+            ),
+        )
         for item in node.walk():
             current = self.appearances[item.object_id]
             self.appearances[item.object_id] = replace(current, visible=visible)
-            presentation = self.presentations.get(item.object_id)
-            if presentation is None:
-                continue
-            if visible:
-                self._context.Display(presentation, False)
-            else:
-                self._context.Erase(presentation, False)
         self._refresh_container_visibility()
-        self._context.UpdateCurrentViewer()
 
     def set_color(self, object_id: CadObjectId, color: ObjectColor) -> None:
         if not isinstance(color, ObjectColor):
@@ -72,79 +83,167 @@ class OcpPresentationRegistry:
             color.blue,
             Quantity_TOC_RGB,
         )
+        presentation_ids = self.presentation_ids(object_id)
+        previous = {
+            item_id: self.appearances[item_id].color
+            for item_id in presentation_ids
+        }
+        self._apply_native_transaction(
+            presentation_ids,
+            lambda presentation, _item_id: self._context.SetColor(
+                presentation,
+                native_color,
+                False,
+            ),
+            lambda presentation, item_id: self._context.SetColor(
+                presentation,
+                _native_color(previous[item_id]),
+                False,
+            ),
+        )
         for item in node.walk():
             current = self.appearances[item.object_id]
             self.appearances[item.object_id] = replace(current, color=color)
-            presentation = self.presentations.get(item.object_id)
-            if presentation is not None:
-                self._context.SetColor(presentation, native_color, False)
-        self._context.UpdateCurrentViewer()
 
     def set_transparency(self, object_id: CadObjectId, value: float) -> None:
         validated = ObjectAppearance(transparency=value).transparency
         node = self._require_node(object_id)
+        presentation_ids = self.presentation_ids(object_id)
+        previous = {
+            item_id: self.appearances[item_id].transparency
+            for item_id in presentation_ids
+        }
+        self._apply_native_transaction(
+            presentation_ids,
+            lambda presentation, _item_id: self._context.SetTransparency(
+                presentation,
+                validated,
+                False,
+            ),
+            lambda presentation, item_id: self._context.SetTransparency(
+                presentation,
+                previous[item_id],
+                False,
+            ),
+        )
         for item in node.walk():
             current = self.appearances[item.object_id]
             self.appearances[item.object_id] = replace(
                 current,
                 transparency=validated,
             )
-            presentation = self.presentations.get(item.object_id)
-            if presentation is not None:
-                self._context.SetTransparency(presentation, validated, False)
-        self._context.UpdateCurrentViewer()
 
     def isolate(self, object_id: CadObjectId) -> None:
         target_ids = set(self.presentation_ids(object_id))
-        if self._isolate_snapshot is None:
-            self._isolate_snapshot = {
+        snapshot = self._isolate_snapshot
+        if snapshot is None:
+            snapshot = {
                 item_id: appearance.visible
                 for item_id, appearance in self.appearances.items()
             }
-        else:
-            self._apply_visibility_snapshot(self._isolate_snapshot)
-        for presentation_id in self.presentations:
-            self._set_leaf_visibility(
-                presentation_id,
-                presentation_id in target_ids,
-            )
+        presentation_ids = tuple(self.presentations)
+        previous = {
+            item_id: self.appearances[item_id].visible
+            for item_id in presentation_ids
+        }
+        desired = {
+            item_id: item_id in target_ids for item_id in presentation_ids
+        }
+        self._apply_native_transaction(
+            presentation_ids,
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                desired[item_id],
+            ),
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                previous[item_id],
+            ),
+        )
+        for presentation_id, visible in desired.items():
+            current = self.appearances[presentation_id]
+            self.appearances[presentation_id] = replace(current, visible=visible)
         self._refresh_container_visibility()
-        self._context.UpdateCurrentViewer()
+        self._isolate_snapshot = snapshot
 
     def reset_isolate(self) -> None:
         snapshot = self._isolate_snapshot
         if snapshot is None:
             return
-        self._apply_visibility_snapshot(snapshot)
+        presentation_ids = tuple(self.presentations)
+        previous = {
+            item_id: self.appearances[item_id].visible
+            for item_id in presentation_ids
+        }
+        self._apply_native_transaction(
+            presentation_ids,
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                snapshot[item_id],
+            ),
+            lambda presentation, item_id: self._set_native_visibility(
+                presentation,
+                previous[item_id],
+            ),
+        )
+        for item_id, visible in snapshot.items():
+            current = self.appearances[item_id]
+            self.appearances[item_id] = replace(current, visible=visible)
+        self._refresh_container_visibility()
         self._isolate_snapshot = None
-        self._context.UpdateCurrentViewer()
 
     def clear_isolate(self) -> None:
         self._isolate_snapshot = None
 
-    def _set_leaf_visibility(self, object_id: CadObjectId, visible: bool) -> None:
-        current = self.appearances[object_id]
-        self.appearances[object_id] = replace(current, visible=visible)
-        presentation = self.presentations[object_id]
+    def _set_native_visibility(
+        self,
+        presentation: AIS_InteractiveObject,
+        visible: bool,
+    ) -> None:
         if visible:
             self._context.Display(presentation, False)
         else:
             self._context.Erase(presentation, False)
 
-    def _apply_visibility_snapshot(
+    def _apply_native_transaction(
         self,
-        snapshot: dict[CadObjectId, bool],
+        object_ids: tuple[CadObjectId, ...],
+        apply: Callable[[AIS_InteractiveObject, CadObjectId], None],
+        rollback: Callable[[AIS_InteractiveObject, CadObjectId], None],
     ) -> None:
-        for object_id, visible in snapshot.items():
-            appearance = self.appearances[object_id]
-            self.appearances[object_id] = replace(appearance, visible=visible)
-            presentation = self.presentations.get(object_id)
-            if presentation is None:
-                continue
-            if visible:
-                self._context.Display(presentation, False)
-            else:
-                self._context.Erase(presentation, False)
+        try:
+            for object_id in object_ids:
+                apply(self.presentations[object_id], object_id)
+            self._context.UpdateCurrentViewer()
+        except Exception as error:
+            rollback_error = self._rollback_native(object_ids, rollback)
+            if rollback_error is not None:
+                raise RuntimeError(
+                    "CAD appearance apply and rollback both failed"
+                ) from error
+            raise
+
+    def _rollback_native(
+        self,
+        object_ids: tuple[CadObjectId, ...],
+        rollback: Callable[[AIS_InteractiveObject, CadObjectId], None],
+    ) -> Exception | None:
+        first_error: Exception | None = None
+        logger = logging.getLogger(__name__)
+        for object_id in object_ids:
+            try:
+                rollback(self.presentations[object_id], object_id)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+                logger.exception("Cannot rollback CAD appearance for %s", object_id)
+        try:
+            self._context.UpdateCurrentViewer()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+            logger.exception("Cannot redraw CAD viewer after appearance rollback")
+        return first_error
 
     def _refresh_container_visibility(self) -> None:
         for node in reversed(self.tree.root.walk()):
@@ -166,3 +265,12 @@ class OcpPresentationRegistry:
         if node is None:
             raise KeyError(f"CAD object not found: {object_id}")
         return node
+
+
+def _native_color(color: ObjectColor) -> Quantity_Color:
+    return Quantity_Color(
+        color.red,
+        color.green,
+        color.blue,
+        Quantity_TOC_RGB,
+    )

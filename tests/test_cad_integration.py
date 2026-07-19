@@ -64,6 +64,7 @@ class IntegrationViewportBackend:
         self.initialized = False
         self.closed = False
         self.fail_display = False
+        self.fail_appearance: str | None = None
         self.current_document: CadDocumentId | None = None
         self.display_history: list[CadDocumentId] = []
         self.clear_count = 0
@@ -123,6 +124,9 @@ class IntegrationViewportBackend:
         object_id: CadObjectId,
         visible: bool,
     ) -> None:
+        if self.fail_appearance == "visibility":
+            self.fail_appearance = None
+            raise RuntimeError("simulated visibility apply failure")
         self.visibility_changes.append((document_id, object_id, visible))
 
     def isolate_object(
@@ -130,6 +134,9 @@ class IntegrationViewportBackend:
         document_id: CadDocumentId,
         object_id: CadObjectId,
     ) -> None:
+        if self.fail_appearance == "isolate":
+            self.fail_appearance = None
+            raise RuntimeError("simulated isolate apply failure")
         self.isolate_changes.append((document_id, object_id))
 
     def reset_isolate(self, document_id: CadDocumentId) -> None:
@@ -141,6 +148,9 @@ class IntegrationViewportBackend:
         object_id: CadObjectId,
         color: ObjectColor,
     ) -> None:
+        if self.fail_appearance == "color":
+            self.fail_appearance = None
+            raise RuntimeError("simulated color apply failure")
         self.color_changes.append((document_id, object_id, color))
 
     def set_object_transparency(
@@ -149,6 +159,9 @@ class IntegrationViewportBackend:
         object_id: CadObjectId,
         transparency: float,
     ) -> None:
+        if self.fail_appearance == "transparency":
+            self.fail_appearance = None
+            raise RuntimeError("simulated transparency apply failure")
         self.transparency_changes.append((document_id, object_id, transparency))
 
     def resize(self, width: int, height: int) -> None:
@@ -740,7 +753,61 @@ def test_appearance_is_session_only_and_isolate_resets_on_document_change(
         object_id,
         False,
     )
+    assert not window.cad_controller.set_object_visibility(
+        second_tree.document_id,
+        object_id,
+        False,
+    )
     assert not session.is_dirty
+    window.close()
+
+
+def test_appearance_apply_error_preserves_controller_state_and_project(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "appearance_failure.brep"
+    _write_brep(source)
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Rollback", UnitSystem.MILLIMETER)
+    backend = IntegrationViewportBackend()
+    window = MainWindow(service, OcpCadKernel(), backend)
+    window.cad_controller.start_import(source, CadFormat.BREP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    assert tree is not None
+    object_id = tree.presentation_nodes[0].object_id
+    actions = {
+        "visibility": lambda: window.cad_controller.set_object_visibility(
+            tree.document_id,
+            object_id,
+            False,
+        ),
+        "isolate": lambda: window.cad_controller.isolate_object(
+            tree.document_id,
+            object_id,
+        ),
+        "color": lambda: window.cad_controller.set_object_color(
+            tree.document_id,
+            object_id,
+            ObjectColor(0.1, 0.2, 0.3),
+        ),
+        "transparency": lambda: window.cad_controller.set_object_transparency(
+            tree.document_id,
+            object_id,
+            0.6,
+        ),
+    }
+
+    for operation, action in actions.items():
+        original = window.cad_controller.appearances
+        backend.fail_appearance = operation
+        assert not action()
+        assert window.cad_controller.appearances == original
+
+    assert not window.cad_controller.reset_isolate(tree.document_id)
+    assert not session.is_dirty
+    assert list((session.root_path / "autosave").iterdir()) == []
     window.close()
 
 

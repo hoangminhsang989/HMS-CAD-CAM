@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 
 from OCP.AIS import (
     AIS_InteractiveContext,
@@ -200,9 +201,13 @@ class OcpViewportLifecycle:
                     candidate = self.prepare_shape(shape, mode)
                 candidates[node.object_id] = candidate
             return OcpPresentationRegistry(self.context, tree, candidates)
-        except Exception:
-            for candidate in candidates.values():
-                self.context.Remove(candidate, False)
+        except Exception as error:
+            try:
+                self._remove_candidate_presentations(tuple(candidates.values()))
+            except Exception:
+                raise RuntimeError(
+                    "CAD registry prepare and candidate cleanup both failed"
+                ) from error
             raise
 
     def commit_registry(self, registry: OcpPresentationRegistry) -> None:
@@ -211,24 +216,95 @@ class OcpViewportLifecycle:
             return
         old_registry = self._registry
         old_presentation = self._presentation
+        try:
+            if old_registry is not None:
+                for presentation in old_registry.presentations.values():
+                    self.context.Remove(presentation, False)
+            if old_presentation is not None:
+                self.context.Remove(old_presentation, False)
+            self.view.Redraw()
+        except Exception as error:
+            rollback_error = self._restore_active_presentations(
+                old_registry,
+                old_presentation,
+            )
+            if rollback_error is not None:
+                raise RuntimeError(
+                    "CAD registry commit and rollback both failed"
+                ) from error
+            raise
         if old_registry is not None:
             old_registry.clear_isolate()
-            for presentation in old_registry.presentations.values():
-                self.context.Remove(presentation, False)
-        if old_presentation is not None:
-            self.context.Remove(old_presentation, False)
         self._registry = registry
         self._presentation = None
-        self.view.Redraw()
+
+    def _restore_active_presentations(
+        self,
+        registry: OcpPresentationRegistry | None,
+        presentation: AIS_InteractiveObject | None,
+    ) -> Exception | None:
+        first_error: Exception | None = None
+        logger = logging.getLogger(__name__)
+        if registry is not None:
+            for object_id, old_presentation in registry.presentations.items():
+                try:
+                    if registry.appearances[object_id].visible:
+                        self.context.Display(old_presentation, False)
+                    else:
+                        self.context.Erase(old_presentation, False)
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+                    logger.exception(
+                        "Cannot restore CAD presentation %s after commit failure",
+                        object_id,
+                    )
+        if presentation is not None:
+            try:
+                self.context.Display(presentation, False)
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+                logger.exception("Cannot restore legacy CAD presentation")
+        try:
+            self.view.Redraw()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+            logger.exception("Cannot redraw restored CAD registry")
+        return first_error
 
     def discard_registry(self, registry: OcpPresentationRegistry) -> None:
         """Remove candidates after a failed prepare/bind without touching active state."""
         if registry is self._registry:
             return
+        self._remove_candidate_presentations(
+            tuple(registry.presentations.values())
+        )
         registry.clear_isolate()
-        for presentation in registry.presentations.values():
-            self.context.Remove(presentation, False)
         self.view.Redraw()
+
+    def _remove_candidate_presentations(
+        self,
+        presentations: tuple[AIS_InteractiveObject, ...],
+    ) -> None:
+        pending = presentations
+        first_error: Exception | None = None
+        for _attempt in range(2):
+            failed: list[AIS_InteractiveObject] = []
+            for presentation in pending:
+                try:
+                    self.context.Remove(presentation, False)
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
+                    failed.append(presentation)
+            if not failed:
+                return
+            pending = tuple(failed)
+        raise RuntimeError("Cannot remove failed CAD presentation candidates") from (
+            first_error
+        )
 
     def discard_presentation(
         self,
