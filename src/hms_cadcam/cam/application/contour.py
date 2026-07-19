@@ -632,10 +632,42 @@ def _safe_lead_point(
         candidate = (start.x + normal[0] * length, start.y + normal[1] * length)
         samples = tuple((start.x + normal[0] * length * ratio,
                          start.y + normal[1] * length * ratio) for ratio in (0.25, 0.5, 0.75, 1.0))
-        if all(_point_in_polygon(point, source_polygon) is want_inside for point in samples):
+        if (all(_point_in_polygon(point, source_polygon) is want_inside for point in samples)
+                and not _lead_crosses_profile_boundary((start.x, start.y), candidate, source_polygon)):
             return candidate
     raise ContourGenerationError(DiagnosticCode.CONTOUR_UNSAFE_LEAD,
                                  "Không thể tạo linear lead-in/lead-out ở đúng phía profile.")
+
+
+def _lead_crosses_profile_boundary(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+) -> bool:
+    """Return whether a lead meets the profile boundary after its start point."""
+    direction = (end[0] - start[0], end[1] - start[1])
+    direction_squared = direction[0] ** 2 + direction[1] ** 2
+    for first, second in zip(polygon, polygon[1:]):
+        edge = (second[0] - first[0], second[1] - first[1])
+        offset = (first[0] - start[0], first[1] - start[1])
+        denominator = direction[0] * edge[1] - direction[1] * edge[0]
+        if abs(denominator) > _TOLERANCE:
+            lead_parameter = (offset[0] * edge[1] - offset[1] * edge[0]) / denominator
+            edge_parameter = (offset[0] * direction[1] - offset[1] * direction[0]) / denominator
+            if (_TOLERANCE < lead_parameter <= 1.0 + _TOLERANCE
+                    and -_TOLERANCE <= edge_parameter <= 1.0 + _TOLERANCE):
+                return True
+            continue
+        if abs(offset[0] * direction[1] - offset[1] * direction[0]) > _TOLERANCE:
+            continue
+        first_parameter = (offset[0] * direction[0] + offset[1] * direction[1]) / direction_squared
+        second_offset = (second[0] - start[0], second[1] - start[1])
+        second_parameter = ((second_offset[0] * direction[0]
+                             + second_offset[1] * direction[1]) / direction_squared)
+        if min(1.0, max(first_parameter, second_parameter)) > max(
+                _TOLERANCE, min(first_parameter, second_parameter)):
+            return True
+    return False
 
 
 def _start_tangent(segment: ContourSegment) -> tuple[float, float]:

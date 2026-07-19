@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from hms_cadcam.cam.application import ContourGenerationError, ContourGenerator, basic_mill_resources, offset_contour
+from hms_cadcam.cam.application.contour import _canonical_start, _safe_lead_point, _sample_loop
 from hms_cadcam.cam.domain import (
     ArtifactStatus, CamNodeId, ContourBounds, ContourCurveKind, ContourCutDirection, ContourLoop,
     ContourOrientation, ContourParameters, ContourProfileDescriptor, ContourProfileSource, DirtyReason,
@@ -133,6 +134,23 @@ def test_self_intersection_and_unsafe_lead_fail_closed() -> None:
     assert intersection.value.code is DiagnosticCode.CONTOUR_SELF_INTERSECTION
     with pytest.raises(ContourGenerationError) as lead:
         _inputs(_parameters(side=ContourSide.INSIDE, lead_length=Length(20, unit)))
+    assert lead.value.code is DiagnosticCode.CONTOUR_UNSAFE_LEAD
+
+
+def test_lead_crossing_narrow_concavity_fails_closed() -> None:
+    unit = LengthUnit.MM
+    points = tuple(Point3(x, y, 0, unit) for x, y in (
+        (0, 0), (120, 0), (120, 100), (41, 100),
+        (41, 40), (39, 40), (39, 100), (0, 100),
+    ))
+    loop = ContourLoop(tuple(ContourSegment(ContourCurveKind.LINE, points[index],
+        points[(index + 1) % len(points)]) for index in range(len(points))),
+        ContourOrientation.COUNTERCLOCKWISE)
+    canonical = _canonical_start(loop)
+
+    from hms_cadcam.cam.domain import DiagnosticCode
+    with pytest.raises(ContourGenerationError) as lead:
+        _safe_lead_point(canonical, _sample_loop(canonical), ContourSide.INSIDE, 100)
     assert lead.value.code is DiagnosticCode.CONTOUR_UNSAFE_LEAD
 
 
