@@ -32,6 +32,7 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 _QT_MOUSE_BUTTONS = {
     Qt.MouseButton.LeftButton: MouseButton.LEFT,
@@ -124,10 +125,22 @@ class CadViewportWidget(QWidget):
         return bool(self._initialized and callable(callback) and self._invoke(
             "display toolpath", callback, artifact, clear_error=True))
 
+    @property
+    def toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]:
+        """Expose native-free CAM metadata for the current viewer session."""
+        callback = getattr(self._backend, "get_toolpath_presentations", None)
+        return callback() if callable(callback) else ()
+
     def clear_toolpaths(self) -> None:
         callback = getattr(self._backend, "clear_toolpaths", None)
         if callable(callback):
             self._invoke("clear toolpaths", callback, clear_error=True)
+
+    def remove_toolpath(self, operation_id: OperationId) -> None:
+        """Remove one CAM presentation without disturbing CAD or other operations."""
+        callback = getattr(self._backend, "remove_toolpath", None)
+        if callable(callback):
+            self._invoke("remove toolpath", callback, operation_id, clear_error=True)
 
     def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> bool:
         callback = getattr(self._backend, "set_toolpath_visibility", None)

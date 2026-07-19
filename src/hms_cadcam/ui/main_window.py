@@ -130,6 +130,7 @@ class MainWindow(QMainWindow):
             self.viewport.display_toolpath,
             self.viewport.clear_toolpaths,
             self,
+            toolpath_remove=self.viewport.remove_toolpath,
             face_resolver=self._resolve_planar_face_reference,
             contour_pick_provider=self._current_contour_reference,
             profile_resolver=self._resolve_contour_profile_reference,

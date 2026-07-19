@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 
 from OCP.AIS import AIS_Shape
 from OCP.BRep import BRep_Builder
@@ -40,6 +41,7 @@ from hms_cadcam.viewer.ocp.input_controller import OcpInputController
 from hms_cadcam.viewer.ocp.lifecycle import OcpViewportLifecycle
 from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
 from hms_cadcam.viewer.ocp.selection import OcpSelectionController
+from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 _VIEW_DIRECTIONS = {
     ViewDirection.TOP: V3d_TypeOfOrientation.V3d_TypeOfOrientation_Zup_Top,
@@ -74,6 +76,7 @@ class OcpCadViewportBackend:
         self._pending_size = (0, 0)
         self._closed = False
         self._toolpaths: dict[OperationId, tuple[AIS_Shape, ...]] = {}
+        self._toolpath_metadata: dict[OperationId, ToolpathPresentation] = {}
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(
@@ -225,15 +228,18 @@ class OcpCadViewportBackend:
     def display_toolpath(self, artifact: ToolpathArtifact) -> None:
         """Render motion compounds separately from selectable CAD presentations."""
         self._require_initialized()
+        metadata = ToolpathPresentation.from_artifact(artifact)
         context = self._lifecycle.context
-        groups = {key: [] for key in ("rapid", "plunge_link", "lead_in", "cutting",
-                                      "lead_out", "link", "retract")}
+        groups = {key: [] for key in ("rapid", "plunge", "plunge_link", "lead_in",
+                                      "pocket_cutting", "cutting", "lead_out", "link",
+                                      "retract")}
         for event in artifact.events:
             if isinstance(event, (RapidMove, LinearMove, ArcMove)):
                 semantic = _toolpath_semantic(event.provenance, event.motion_class)
                 groups[semantic].append(event)
-        colors = {"rapid": (0.2, 0.55, 1.0), "plunge_link": (1.0, 0.65, 0.1),
-                  "lead_in": (0.0, 0.85, 0.85), "cutting": (0.1, 0.9, 0.25),
+        colors = {"rapid": (0.2, 0.55, 1.0), "plunge": (1.0, 0.55, 0.05),
+                  "plunge_link": (1.0, 0.65, 0.1), "lead_in": (0.0, 0.85, 0.85),
+                  "pocket_cutting": (0.25, 0.95, 0.2), "cutting": (0.1, 0.9, 0.25),
                   "lead_out": (0.0, 0.65, 0.85), "link": (1.0, 0.8, 0.2),
                   "retract": (0.9, 0.25, 0.9)}
         presentations = []
@@ -268,24 +274,42 @@ class OcpCadViewportBackend:
                 context.Remove(presentation, False)
             context.UpdateCurrentViewer()
             raise
-        previous = tuple(presentation for values in self._toolpaths.values()
-                         for presentation in values)
-        for presentation in previous:
-            context.Remove(presentation, False)
-        self._toolpaths = {artifact.source_operation_id: tuple(presentations)}
-        context.UpdateCurrentViewer()
+        previous = self._toolpaths.get(artifact.source_operation_id, ())
+        try:
+            for presentation in previous:
+                context.Remove(presentation, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            for presentation in presentations:
+                context.Remove(presentation, False)
+            for presentation in previous:
+                context.Display(presentation, False)
+            context.UpdateCurrentViewer()
+            raise
+        self._toolpaths[artifact.source_operation_id] = tuple(presentations)
+        if not hasattr(self, "_toolpath_metadata"):
+            self._toolpath_metadata = {}
+        self._toolpath_metadata[artifact.source_operation_id] = metadata
+
+    def get_toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]:
+        """Return deterministic native-free metadata for displayed CAM artifacts."""
+        metadata = getattr(self, "_toolpath_metadata", {})
+        return tuple(metadata[key] for key in sorted(metadata, key=str))
 
     def clear_toolpaths(self) -> None:
         if not self._toolpaths:
+            getattr(self, "_toolpath_metadata", {}).clear()
             return
         if not self._lifecycle.initialized:
             self._toolpaths.clear()
+            getattr(self, "_toolpath_metadata", {}).clear()
             return
         context = self._lifecycle.context
         for presentations in self._toolpaths.values():
             for presentation in presentations:
                 context.Remove(presentation, False)
         self._toolpaths.clear()
+        getattr(self, "_toolpath_metadata", {}).clear()
         context.UpdateCurrentViewer()
 
     def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None:
@@ -293,11 +317,29 @@ class OcpCadViewportBackend:
         for presentation in self._toolpaths.get(operation_id, ()):
             (context.Display if visible else context.Erase)(presentation, False)
         context.UpdateCurrentViewer()
+        metadata = getattr(self, "_toolpath_metadata", {})
+        if operation_id in metadata:
+            metadata[operation_id] = replace(metadata[operation_id], visible=visible)
 
-    def _remove_toolpath(self, operation_id: OperationId) -> None:
+    def remove_toolpath(self, operation_id: OperationId) -> None:
+        """Remove one operation presentation and leave every other registry entry intact."""
+        if not self._lifecycle.initialized:
+            self._toolpaths.pop(operation_id, None)
+            getattr(self, "_toolpath_metadata", {}).pop(operation_id, None)
+            return
         context = self._lifecycle.context
-        for presentation in self._toolpaths.pop(operation_id, ()):
-            context.Remove(presentation, False)
+        presentations = self._toolpaths.get(operation_id, ())
+        try:
+            for presentation in presentations:
+                context.Remove(presentation, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            for presentation in presentations:
+                context.Display(presentation, False)
+            context.UpdateCurrentViewer()
+            raise
+        self._toolpaths.pop(operation_id, None)
+        getattr(self, "_toolpath_metadata", {}).pop(operation_id, None)
 
     def fit_all(self) -> None:
         self._lifecycle.fit_all()
@@ -538,11 +580,14 @@ class OcpCadViewportBackend:
 
 
 def _toolpath_semantic(provenance: str, motion_class: MotionClass) -> str:
+    is_pocket = provenance.startswith("pocket.")
     if "lead_in" in provenance:
         return "lead_in"
     if "lead_out" in provenance:
         return "lead_out"
     if "plunge" in provenance or "approach" in provenance:
-        return "plunge_link"
+        return "plunge" if is_pocket else "plunge_link"
+    if is_pocket and motion_class is MotionClass.CUTTING:
+        return "pocket_cutting"
     return {MotionClass.NON_CUTTING: "rapid", MotionClass.CUTTING: "cutting",
             MotionClass.LINK: "link", MotionClass.RETRACT: "retract"}[motion_class]

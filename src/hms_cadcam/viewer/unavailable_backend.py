@@ -15,6 +15,7 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 
 class UnavailableCadViewportBackend:
@@ -53,8 +54,14 @@ class UnavailableCadViewportBackend:
     def display_toolpath(self, artifact: ToolpathArtifact) -> None:
         del artifact
 
+    def get_toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]:
+        return ()
+
     def clear_toolpaths(self) -> None:
         return None
+
+    def remove_toolpath(self, operation_id: OperationId) -> None:
+        del operation_id
 
     def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None:
         del operation_id, visible

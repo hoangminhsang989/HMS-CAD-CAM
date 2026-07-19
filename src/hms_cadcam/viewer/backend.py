@@ -18,6 +18,7 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 SelectionCallback = Callable[[tuple[SelectionMetadata, ...]], None]
 
@@ -38,7 +39,11 @@ class CadViewportBackend(Protocol):
 
     def display_toolpath(self, artifact: ToolpathArtifact) -> None: ...
 
+    def get_toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]: ...
+
     def clear_toolpaths(self) -> None: ...
+
+    def remove_toolpath(self, operation_id: OperationId) -> None: ...
 
     def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None: ...
 

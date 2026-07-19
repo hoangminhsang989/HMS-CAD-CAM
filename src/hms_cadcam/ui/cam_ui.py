@@ -33,6 +33,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import basic_mill_resources
+from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
@@ -51,6 +52,7 @@ class CamWorkspace(QWidget):
                  toolpath_display: Callable[[object], object] | None = None,
                  toolpath_clear: Callable[[], None] | None = None,
                  parent: QWidget | None = None,
+                 toolpath_remove: Callable[[OperationId], None] | None = None,
                  face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
                  contour_pick_provider: Callable[[], GeometryReference] | None = None,
                  profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None) -> None:
@@ -61,6 +63,8 @@ class CamWorkspace(QWidget):
         self._pick_provider = pick_provider
         self._toolpath_display = toolpath_display
         self._toolpath_clear = toolpath_clear
+        self._toolpath_remove = toolpath_remove
+        self._displayed_operation_id: OperationId | None = None
         self._face_resolver = face_resolver
         self._contour_pick_provider = contour_pick_provider
         self._profile_resolver = profile_resolver
@@ -122,6 +126,7 @@ class CamWorkspace(QWidget):
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
+        self._displayed_operation_id = None
         if not isinstance(session, ProjectSession):
             self._generation = None
             self._render(None)
@@ -180,6 +185,7 @@ class CamWorkspace(QWidget):
         else:
             self._selected_key = None
             self.editor.clear()
+            self._remove_displayed_toolpath()
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -229,6 +235,7 @@ class CamWorkspace(QWidget):
         if item is None:
             self._selected_key = None
             self.editor.clear()
+            self._remove_displayed_toolpath()
             return
         self._selected_key = (item.data(0, _KIND_ROLE), item.data(0, _ID_ROLE))
         self._show_properties(item)
@@ -239,8 +246,10 @@ class CamWorkspace(QWidget):
         setup = self._find_setup(item, job)
         if kind == "job" and job:
             self.editor.show_job(job.name)
+            self._remove_displayed_toolpath()
         elif kind in {"setup", "stock"} and setup:
             self.editor.show_setup(setup)
+            self._remove_displayed_toolpath()
         elif kind in {"group", "operation"} and setup:
             node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
             operation = (
@@ -250,6 +259,7 @@ class CamWorkspace(QWidget):
             if operation is None:
                 self._picked_reference = None
                 self.editor.show_node(node.name, None)
+                self._remove_displayed_toolpath()
             else:
                 self._picked_reference = (
                     operation.geometry_inputs[0].reference
@@ -262,13 +272,33 @@ class CamWorkspace(QWidget):
                 artifact = (self._service.load_toolpath_artifact(operation.operation_id)
                             if operation.artifact_state.status is ArtifactStatus.VALID else None)
                 if artifact is not None and self._toolpath_display is not None:
-                    self._toolpath_display(artifact)
-                elif self._toolpath_clear is not None:
-                    self._toolpath_clear()
+                    displayed = self._toolpath_display(artifact)
+                    if displayed is not False:
+                        self.editor.show_toolpath_metadata(
+                            ToolpathPresentation.from_artifact(artifact)
+                        )
+                        previous = self._displayed_operation_id
+                        self._displayed_operation_id = operation.operation_id
+                        if previous is not None and previous != operation.operation_id:
+                            self._remove_toolpath(previous)
+                else:
+                    self._remove_displayed_toolpath()
         else:
             self._picked_reference = None
             self.editor.clear()
+            self._remove_displayed_toolpath()
         self._update_generate_action()
+
+    def _remove_toolpath(self, operation_id: OperationId) -> None:
+        if self._toolpath_remove is not None:
+            self._toolpath_remove(operation_id)
+        elif self._toolpath_clear is not None:
+            self._toolpath_clear()
+
+    def _remove_displayed_toolpath(self) -> None:
+        if self._displayed_operation_id is not None:
+            self._remove_toolpath(self._displayed_operation_id)
+            self._displayed_operation_id = None
 
     def create_job(self) -> None:
         if not self._service.has_project:
@@ -378,7 +408,7 @@ class CamWorkspace(QWidget):
                                 continue
                             if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
                                 resolver = self._face_resolver
-                        elif operation.strategy_key == "contour_2d":
+                        elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
                             resolver = self._profile_resolver
                         if resolver is None:
                             continue
@@ -563,6 +593,7 @@ class CamWorkspace(QWidget):
         if QMessageBox.question(self, "Xác nhận xóa", f"Xóa '{item.text(0)}'?") != QMessageBox.StandardButton.Yes:
             return
         job_id = CamJobId.parse(item.data(0, _JOB_ROLE))
+        removed_operation_id: OperationId | None = None
         if kind == "job":
             changed = self._execute(lambda app: app.delete_job(job_id))
         elif kind == "setup":
@@ -570,10 +601,19 @@ class CamWorkspace(QWidget):
         else:
             setup_id = SetupId.parse(item.data(0, _SETUP_ROLE))
             node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
+            if kind == "operation":
+                setup = self._find_setup(item, self._find_job(item))
+                node = setup.operation_tree.get_node(node_id) if setup is not None else None
+                removed_operation_id = node.operation_id if node is not None else None
             changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
         if changed is not None:
-            if self._toolpath_clear is not None:
+            if removed_operation_id is not None:
+                self._remove_toolpath(removed_operation_id)
+                if self._displayed_operation_id == removed_operation_id:
+                    self._displayed_operation_id = None
+            elif self._toolpath_clear is not None:
                 self._toolpath_clear()
+                self._displayed_operation_id = None
             self.refresh()
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -832,6 +872,8 @@ class _CamPropertiesEditor(QWidget):
         self.stock_kind = QComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
         self.enabled = QCheckBox("Được bật")
         self.status = QLabel("—")
+        self.toolpath_metadata = QLabel("—")
+        self.toolpath_metadata.setWordWrap(True)
         self.error = QLabel(); self.error.setStyleSheet("color: #d9534f")
         form = QFormLayout(self)
         for label, key in (("Tên", "name"), ("Work offset", "offset"), ("WCS X", "x"), ("WCS Y", "y"), ("WCS Z", "z")):
@@ -855,7 +897,8 @@ class _CamPropertiesEditor(QWidget):
             form.addRow(label, self._contour_fields[key])
         form.addRow("Contour direction", self.contour_direction)
         form.addRow("", self.multiple_depth_passes); form.addRow("", self.finishing_pass)
-        form.addRow("Trạng thái", self.status); form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
+        form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
+        form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
         for field in self._facing_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
@@ -871,7 +914,7 @@ class _CamPropertiesEditor(QWidget):
         for field in self._fields.values(): field.clear()
         for field in self._facing_fields.values(): field.clear()
         for field in self._contour_fields.values(): field.clear()
-        self.status.setText("—"); self.error.clear()
+        self.status.setText("—"); self.toolpath_metadata.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
         self.clear(); self._fields["name"].setText(name); self.status.setText("Editable")
@@ -930,6 +973,17 @@ class _CamPropertiesEditor(QWidget):
                 self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
+
+    def show_toolpath_metadata(self, value: ToolpathPresentation) -> None:
+        """Show native-free artifact metadata; never expose runtime or NC data."""
+        bounds = value.bounds
+        minimum, maximum = bounds.minimum, bounds.maximum
+        self.toolpath_metadata.setText(
+            f"{value.operation_id} · {value.strategy_key} · {value.pass_count} pass · "
+            f"[{minimum.x:.3f}, {minimum.y:.3f}, {minimum.z:.3f}] → "
+            f"[{maximum.x:.3f}, {maximum.y:.3f}, {maximum.z:.3f}] · "
+            f"{value.artifact_status.value.upper()}"
+        )
 
     def show_reference(self, reference: GeometryReference | None) -> None:
         if reference is None:

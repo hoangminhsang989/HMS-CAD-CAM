@@ -385,6 +385,7 @@ class PocketGenerator:
              ("operation", ContentFingerprint.from_payload({
                  "revision": operation.revision.to_dict(), "enabled": operation.enabled,
              })),
+             ("stock", ContentFingerprint.from_payload(setup.stock.to_dict())),
              ("wcs", ContentFingerprint.from_payload(setup.wcs.to_dict()))),
             tool_fingerprint,
             machine.content_fingerprint,

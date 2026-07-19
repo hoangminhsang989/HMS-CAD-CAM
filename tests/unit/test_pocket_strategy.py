@@ -15,6 +15,7 @@ from hms_cadcam.cam.application import (
 )
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
+    BoxStock,
     CamNodeId,
     ContourBounds,
     ContourCurveKind,
@@ -66,6 +67,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.cam.toolpath import ArcMove, LinearMove, MotionClass, RapidMove, publish_toolpath
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cam_ui import _default_setup
+from hms_cadcam.viewer.toolpath import ToolpathPresentationRegistry
 
 IDENTITY = (1.0, 0.0, 0.0, 0.0,
             0.0, 1.0, 0.0, 0.0,
@@ -261,6 +263,27 @@ def test_cutting_direction_controls_loop_orientation_and_fingerprint() -> None:
     assert climb.strategy.fingerprint != conventional.strategy.fingerprint
 
 
+def test_stock_content_participates_in_pocket_recompute_fingerprint() -> None:
+    generator, inputs, _, resolved = _inputs()
+    stock = inputs.setup.stock
+    assert isinstance(stock, BoxStock)
+    changed_setup = inputs.setup.with_stock(BoxStock(
+        Length(stock.size_x.value + 5, stock.size_x.unit),
+        stock.size_y,
+        stock.size_z,
+        stock.frame,
+    ))
+    changed = generator.resolve_inputs(
+        inputs.operation,
+        changed_setup,
+        assembly=inputs.assembly,
+        tool=inputs.tool,
+        machine=inputs.machine,
+        resolved_geometry=resolved,
+    )
+    assert changed.input_fingerprint != inputs.input_fingerprint
+
+
 def test_generation_is_deterministic_retracts_safely_and_stays_inside_rectangle() -> None:
     generator, inputs, _, _ = _inputs()
     computing, token = generator.begin(inputs)
@@ -288,6 +311,18 @@ def test_generation_is_deterministic_retracts_safely_and_stays_inside_rectangle(
     stale = publish_toolpath(replace(changed, artifact_state=newer), artifact, token,
                              inputs.input_fingerprint)
     assert not stale.accepted and stale.artifact is None
+
+    disabled = publish_toolpath(replace(computing.operation, enabled=False), artifact, token,
+                                inputs.input_fingerprint)
+    assert not disabled.accepted and disabled.artifact is None
+
+    registry = ToolpathPresentationRegistry()
+    registry.bind_project(1)
+    assert registry.display(artifact, generation=1)
+    before = registry.presentations
+    if stale.accepted and stale.artifact is not None:
+        registry.display(stale.artifact, generation=1)
+    assert registry.presentations == before
 
 
 def test_invalid_tool_and_stepover_fail_before_token() -> None:
@@ -340,6 +375,11 @@ def test_recompute_publish_keeps_previous_valid_artifact_on_resolution_failure(t
                                     geometry_resolver=lambda _reference: resolved)
     assert result.accepted and result.operation.artifact_state.status is ArtifactStatus.VALID
     artifact = service.load_toolpath_artifact(operation.operation_id)
+    assert artifact is not None
+    registry = ToolpathPresentationRegistry()
+    registry.bind_project(service.cam_generation)
+    assert registry.display(artifact, generation=service.cam_generation)
+    shown_before_error = registry.presentations
     stale_geometry = ResolvedPocketGeometry(
         GeometryResolutionStatus.STALE,
         diagnostics=(ValidationDiagnostic(DiagnosticSeverity.ERROR,
@@ -350,6 +390,7 @@ def test_recompute_publish_keeps_previous_valid_artifact_on_resolution_failure(t
                                     geometry_resolver=lambda _reference: stale_geometry)
     assert not failed.accepted and failed.operation.artifact_state.status is ArtifactStatus.VALID
     assert service.load_toolpath_artifact(operation.operation_id) == artifact
+    assert registry.presentations == shown_before_error
     service.save()
     root = session.root_path
     service.close_project()

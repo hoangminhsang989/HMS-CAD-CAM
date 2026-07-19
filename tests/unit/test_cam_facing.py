@@ -28,7 +28,7 @@ from hms_cadcam.project.exceptions import RecoveryRequiredError
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
 from hms_cadcam.ui.cam_ui import _default_setup
 from hms_cadcam.ui.cam_ui import CamWorkspace
-from hms_cadcam.viewer.toolpath import ToolpathPresentationRegistry
+from hms_cadcam.viewer.toolpath import ToolpathPresentation, ToolpathPresentationRegistry
 from hms_cadcam.viewer.ocp import backend as ocp_backend_module
 
 
@@ -524,12 +524,18 @@ def test_facing_ui_invalid_field_does_not_mutate_and_generate_displays(tmp_path)
     operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert operation.artifact_state.status is ArtifactStatus.VALID
     assert displayed and displayed[-1].source_operation_id == operation.operation_id
+    assert str(operation.operation_id) in workspace.editor.toolpath_metadata.text()
+    assert "G-code" not in workspace.editor.toolpath_metadata.text()
     revision = operation.revision
     workspace.editor._fields["name"].setText("Facing renamed")
     workspace.editor._submit()
     renamed = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert renamed.revision == revision
     assert renamed.artifact_state.status is ArtifactStatus.VALID
+    cleared_before_switch = len(cleared)
+    workspace.tree.setCurrentItem(workspace.tree.topLevelItem(0))
+    assert len(cleared) == cleared_before_switch + 1
+    assert workspace.editor.toolpath_metadata.text() == "—"
     workspace.bind_project(session)
     assert cleared
     workspace.deleteLater()
@@ -638,9 +644,12 @@ def test_ocp_toolpath_display_failure_keeps_previous_presentation(monkeypatch) -
     backend._lifecycle = SimpleNamespace(initialized=True, context=context)
     old_presentation = object()
     backend._toolpaths = {artifact.source_operation_id: (old_presentation,)}
+    old_metadata = ToolpathPresentation.from_artifact(artifact)
+    backend._toolpath_metadata = {artifact.source_operation_id: old_metadata}
     monkeypatch.setattr(ocp_backend_module, "AIS_Shape", lambda _shape: object())
     monkeypatch.setattr(ocp_backend_module, "Quantity_Color", lambda *_args: object())
     with pytest.raises(RuntimeError, match="injected display failure"):
         backend.display_toolpath(artifact)
     assert backend._toolpaths == {artifact.source_operation_id: (old_presentation,)}
+    assert backend.get_toolpath_presentations() == (old_metadata,)
     assert old_presentation not in context.removed
