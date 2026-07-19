@@ -141,6 +141,13 @@ class DiagnosticCode(StrEnum):
     CONTOUR_MACHINE_INCOMPATIBLE = "contour.machine_incompatible"
     CONTOUR_STALE_RESULT = "contour.stale_result"
     CONTOUR_GENERATION_FAILED = "contour.generation_failed"
+    POCKET_PROFILE_MISSING = "pocket.profile_missing"
+    POCKET_PROFILE_STALE = "pocket.profile_stale"
+    POCKET_PROFILE_INVALID = "pocket.profile_invalid"
+    POCKET_UNSUPPORTED_CURVE = "pocket.unsupported_curve"
+    POCKET_SELF_INTERSECTION = "pocket.self_intersection"
+    POCKET_INVALID_DEPTH = "pocket.invalid_depth"
+    POCKET_UNIT_MISSING = "pocket.unit_missing"
 
 
 @dataclass(frozen=True, slots=True)

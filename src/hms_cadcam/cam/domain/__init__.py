@@ -58,6 +58,17 @@ from hms_cadcam.cam.domain.facing import (
     ResolvedFaceBoundary,
     ResolvedMachiningGeometry,
 )
+from hms_cadcam.cam.domain.pocket import (
+    POCKET_STRATEGY_KEY,
+    POCKET_STRATEGY_VERSION,
+    PocketBoundary,
+    PocketDepthDefinition,
+    PocketGeometryInput,
+    PocketRegion,
+    PocketStrategy,
+    PocketValidationError,
+    ResolvedPocketGeometry,
+)
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
     KinematicChain,
@@ -294,8 +305,17 @@ __all__ = [
     "PlanarFaceDescriptor",
     "PersistentFaceSelectorV1",
     "PersistentProfileSelectorV1",
+    "POCKET_STRATEGY_KEY",
+    "POCKET_STRATEGY_VERSION",
+    "PocketBoundary",
+    "PocketDepthDefinition",
+    "PocketGeometryInput",
+    "PocketRegion",
+    "PocketStrategy",
+    "PocketValidationError",
     "ResolvedFaceBoundary",
     "ResolvedMachiningGeometry",
+    "ResolvedPocketGeometry",
     "ResolvedContourProfile",
     "Revision",
     "Setup",

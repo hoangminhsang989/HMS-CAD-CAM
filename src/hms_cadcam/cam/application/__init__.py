@@ -14,8 +14,9 @@ from hms_cadcam.cam.application.contour import (
     offset_contour,
     resolve_profile_in_setup,
 )
+from hms_cadcam.cam.application.pocket_geometry import PocketGeometryResolver
 
 __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
            "FacingGenerator", "FacingInputs", "basic_mill_resources", "offset_contour", "reconcile_artifacts",
-           "resolve_box_facing_region", "resolve_profile_in_setup"]
+           "PocketGeometryResolver", "resolve_box_facing_region", "resolve_profile_in_setup"]
