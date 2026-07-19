@@ -1148,6 +1148,8 @@ def test_project_cad_view_state_save_open_round_trip(tmp_path: Path) -> None:
     assert reopened.cad_controller.display_mode is DisplayMode.WIREFRAME
     assert reopened.cad_controller.view_direction is ViewDirection.TOP
     assert not reopened_service.is_dirty
+    assert reopened_service.autosave() is None
+    assert list((project_root / "autosave").iterdir()) == []
     reopened.close()
 
 
@@ -1291,6 +1293,9 @@ def test_restore_apply_failure_rolls_back_without_partial_state(tmp_path: Path) 
     assert first_window.cad_controller.set_object_color(
         tree.document_id, object_id, ObjectColor(0.1, 0.2, 0.3)
     )
+    assert first_window.cad_controller.set_object_transparency(
+        tree.document_id, object_id, 0.45
+    )
     service.save()
     project_root = session.root_path
     first_window.cad_controller.shutdown()
@@ -1299,7 +1304,7 @@ def test_restore_apply_failure_rolls_back_without_partial_state(tmp_path: Path) 
     reopened_service = ProjectService.create_default(tmp_path / "reopen-config")
     reopened_service.open_project(project_root)
     backend = IntegrationViewportBackend()
-    backend.fail_appearance = "color"
+    backend.fail_appearance = "transparency"
     reopened = MainWindow(reopened_service, OcpCadKernel(), backend)
     _wait_until(application, lambda: not reopened.cad_controller.is_busy)
 
@@ -1307,5 +1312,7 @@ def test_restore_apply_failure_rolls_back_without_partial_state(tmp_path: Path) 
         appearance == ObjectAppearance()
         for _object_id, appearance in reopened.cad_controller.appearances
     )
+    assert backend.color_changes[-1][2] == ObjectAppearance().color
+    assert backend.transparency_changes[-1][2] == 0.0
     assert not reopened_service.is_dirty
     reopened.close()

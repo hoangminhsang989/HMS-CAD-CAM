@@ -27,14 +27,19 @@ from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor
 
 
-def _tree(document_value: str, *, reverse: bool = False) -> CadDocumentTree:
+def _tree(
+    document_value: str,
+    *,
+    reverse: bool = False,
+    first_max: float = 2,
+) -> CadDocumentTree:
     document_id = CadDocumentId(document_value)
     first = CadObjectNode(
         document_id,
         CadObjectId(f"{document_value}:runtime-a"),
         CadObjectKind.SOLID,
         "Runtime A",
-        BoundingBox(0, 0, 0, 2, 2, 2),
+        BoundingBox(0, 0, 0, first_max, first_max, first_max),
         has_presentation=True,
     )
     second = CadObjectNode(
@@ -68,6 +73,35 @@ def test_topology_paths_are_deterministic_without_runtime_or_traversal_identity(
 
     assert set(first.by_persistent) == set(second.by_persistent)
     assert all("doc:" not in key.topology_path.value for key in first.by_persistent)
+
+
+def test_changed_topology_signature_does_not_resolve_to_the_old_object() -> None:
+    source_id = uuid4()
+    original = build_persistent_object_map(
+        source_id, CadGeometryKind.BREP, _tree("doc:original")
+    )
+    changed = build_persistent_object_map(
+        source_id,
+        CadGeometryKind.BREP,
+        _tree("doc:changed", first_max=3),
+    )
+    old_key = original.by_runtime[CadObjectId("doc:original:runtime-a")]
+
+    assert old_key not in changed.by_persistent
+
+
+def test_same_topology_from_another_project_has_disjoint_persistent_keys() -> None:
+    first = build_persistent_object_map(
+        uuid4(), CadGeometryKind.BREP, _tree("doc:first-project")
+    )
+    second = build_persistent_object_map(
+        uuid4(), CadGeometryKind.BREP, _tree("doc:second-project")
+    )
+
+    assert set(first.by_persistent).isdisjoint(second.by_persistent)
+    assert {
+        key.topology_path for key in first.by_persistent
+    } == {key.topology_path for key in second.by_persistent}
 
 
 def test_ambiguous_sibling_topology_is_not_mapped() -> None:
@@ -143,6 +177,37 @@ def test_default_rows_are_omitted_and_reset_deletes_existing_rows(tmp_path) -> N
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
         ).fetchone()[0] == 0
+
+
+def test_future_view_state_blocks_appearance_rows_for_the_same_source(tmp_path) -> None:
+    database_path = tmp_path / "future-state.db"
+    ProjectDatabase().initialize(database_path)
+    source_id = uuid4()
+    timestamp = "2026-01-01T00:00:00Z"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO cad_view_state VALUES (?, ?, ?, ?, ?)",
+            (str(source_id), 99, "shaded", "top", timestamp),
+        )
+        connection.execute(
+            "INSERT INTO cad_object_appearance VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(source_id),
+                1,
+                "solid:" + "8" * 32,
+                "brep",
+                0,
+                0.1,
+                0.2,
+                0.3,
+                0.4,
+                timestamp,
+            ),
+        )
+
+    loaded = CadViewStateStore().load(database_path, [source_id])
+
+    assert loaded == {}
 
 
 def test_public_persistence_models_contain_no_native_cad_objects() -> None:

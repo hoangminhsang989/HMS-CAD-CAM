@@ -44,10 +44,12 @@ class CadViewStateStore:
         appearances: dict[UUID, list[PersistentObjectAppearance]] = {
             source_id: [] for source_id in valid_sources
         }
+        blocked_sources: set[UUID] = set()
         try:
             with sqlite3.connect(database_path, timeout=5.0) as connection:
                 connection.row_factory = sqlite3.Row
                 for row in connection.execute("SELECT * FROM cad_view_state"):
+                    source_id: UUID | None = None
                     try:
                         source_id = UUID(row["source_id"])
                         if source_id not in valid_sources:
@@ -60,6 +62,8 @@ class CadViewStateStore:
                             view_direction=ViewDirection(row["view_direction"]),
                         )
                     except (KeyError, TypeError, ValueError):
+                        if source_id in valid_sources:
+                            blocked_sources.add(source_id)
                         logger.warning("Bỏ qua CAD view state không hợp lệ", exc_info=True)
                 for row in connection.execute("SELECT * FROM cad_object_appearance"):
                     try:
@@ -67,6 +71,12 @@ class CadViewStateStore:
                         if source_id not in valid_sources:
                             logger.warning(
                                 "Bỏ qua CAD appearance có source_id không hợp lệ: %s",
+                                source_id,
+                            )
+                            continue
+                        if source_id in blocked_sources:
+                            logger.warning(
+                                "Bỏ qua CAD appearance do view state của source không hợp lệ: %s",
                                 source_id,
                             )
                             continue
@@ -95,6 +105,8 @@ class CadViewStateStore:
             raise ProjectDatabaseError(str(error)) from error
         result: dict[UUID, CadViewState] = {}
         for source_id, state in states.items():
+            if source_id in blocked_sources:
+                continue
             merged = CadViewState(
                 source_id=source_id,
                 state_version=state.state_version,

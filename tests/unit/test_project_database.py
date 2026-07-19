@@ -6,6 +6,7 @@ import pytest
 
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.exceptions import ProjectDatabaseError, UnsupportedFormatVersionError
+from hms_cadcam.project.service import ProjectService
 
 
 def test_database_initialization_is_idempotent_and_has_no_cam_tables(tmp_path) -> None:
@@ -51,6 +52,30 @@ def test_database_migrates_schema_v1_to_v2_transactionally(tmp_path) -> None:
         }
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     assert {"cad_view_state", "cad_object_appearance"}.issubset(tables)
+
+
+def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path) -> None:
+    source = tmp_path / "legacy-source.brep"
+    source.write_bytes(b"immutable legacy source")
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.create_project_from_source(tmp_path, "Legacy Migration", source)
+    project_root = session.root_path
+    stored_source = project_root / session.manifest.source_files[0].stored_path
+    manifest_before = (project_root / "project.hms.json").read_bytes()
+    source_before = stored_source.read_bytes()
+    service.close_project()
+    with sqlite3.connect(project_root / "project.db") as connection:
+        connection.execute("DROP TABLE cad_object_appearance")
+        connection.execute("DROP TABLE cad_view_state")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 2")
+        connection.execute("PRAGMA user_version = 1")
+
+    opener = ProjectService.create_default(tmp_path / "opener-config")
+    opener.open_project(project_root)
+
+    assert (project_root / "project.hms.json").read_bytes() == manifest_before
+    assert stored_source.read_bytes() == source_before
+    assert ProjectDatabase().current_schema_version(project_root / "project.db") == 2
 
 
 def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:

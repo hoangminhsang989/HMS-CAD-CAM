@@ -106,6 +106,11 @@ def test_cad_state_save_open_and_save_as_preserve_logical_source_id(tmp_path) ->
     assert copied.manifest.project_id != reopened.manifest.project_id
     assert copied.manifest.source_files[0].source_id == source_id
     assert service.cad_view_state(source_id) == state
+    copied_root = copied.root_path
+    service.close_project()
+    reopened_copy = service.open_project(copied_root)
+    assert reopened_copy.manifest.source_files[0].source_id == source_id
+    assert service.cad_view_state(source_id) == state
 
 
 def test_failed_save_keeps_pending_cad_state_dirty_and_out_of_main_db(

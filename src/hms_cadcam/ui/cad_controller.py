@@ -630,7 +630,7 @@ class CadUiController(QObject):
         object_id: CadObjectId,
         visible: bool,
     ) -> bool:
-        """Apply parent-recursive visibility without dirtying the project."""
+        """Apply parent-recursive visibility and stage it after viewer success."""
         if not self._valid_object_request(document_id, object_id):
             return False
         previous_appearances = dict(self._appearances)
