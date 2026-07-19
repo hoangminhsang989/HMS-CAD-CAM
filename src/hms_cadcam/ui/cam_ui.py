@@ -74,6 +74,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(self.toolbar)
         layout.addWidget(splitter)
         self.actions = self._actions()
+        self.editor.draft_changed.connect(self._update_generate_action)
         for key in ("job", "setup", "resources", "group", "operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
@@ -238,13 +239,15 @@ class CamWorkspace(QWidget):
             else:
                 self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
                                       self._service.cam_snapshot.machine_definitions)
-                artifact = self._service.load_toolpath_artifact(operation.operation_id)
+                artifact = (self._service.load_toolpath_artifact(operation.operation_id)
+                            if operation.artifact_state.status is ArtifactStatus.VALID else None)
                 if artifact is not None and self._toolpath_display is not None:
-                    if self._toolpath_clear is not None:
-                        self._toolpath_clear()
                     self._toolpath_display(artifact)
+                elif self._toolpath_clear is not None:
+                    self._toolpath_clear()
         else:
             self.editor.clear()
+        self._update_generate_action()
 
     def create_job(self) -> None:
         if not self._service.has_project:
@@ -343,6 +346,14 @@ class CamWorkspace(QWidget):
         if operation is None or operation.strategy_key != "facing_2_5d":
             self._error("Operation đã chọn không phải Facing 2.5D.")
             return
+        draft = self.editor.facing_draft(setup.wcs.origin.unit)
+        machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+        if (draft is None or draft.to_operation_parameters() != operation.parameters or
+                self.editor.tool.currentData() != str(operation.tool_assembly.assembly_id) or
+                self.editor.machine.currentData() != (str(machine_id) if machine_id else None) or
+                not operation.enabled):
+            self._error("Draft Facing chưa hợp lệ hoặc chưa được Áp dụng.")
+            return
         result = self._service.compute_facing(operation.operation_id,
                                               expected_generation=self._generation)
         if result.accepted and result.artifact is not None:
@@ -401,6 +412,8 @@ class CamWorkspace(QWidget):
             node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
             changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
         if changed is not None:
+            if self._toolpath_clear is not None:
+                self._toolpath_clear()
             self.refresh()
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -467,10 +480,21 @@ class CamWorkspace(QWidget):
                                    if str(value.machine_id) == values["machine_id"])
                     requirement = MachineRequirement(machine.machine_id, machine.revision,
                         machine.content_fingerprint, machine.unit, (OperationCapability.MILLING,))
-                    changed_operation = replace(current, parameters=parameters.to_operation_parameters(),
-                        tool_assembly=ToolAssemblyReference.from_assembly(assembly), machine_requirement=requirement,
-                        enabled=bool(values["enabled"]), revision=current.revision.next(),
-                        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED))
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    inputs_changed = (parameter_set != current.parameters or
+                                      tool_reference != current.tool_assembly or
+                                      requirement != current.machine_requirement)
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if inputs_changed or enabled_changed:
+                        reason = (DirtyReason.PARAMETERS_CHANGED if inputs_changed
+                                  else DirtyReason.UPSTREAM_CHANGED)
+                        changed_operation = replace(current, parameters=parameter_set,
+                            tool_assembly=tool_reference, machine_requirement=requirement,
+                            enabled=enabled, revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason))
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
                 else:
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
@@ -531,8 +555,33 @@ class CamWorkspace(QWidget):
         self.editor.set_error(text)
         self.message.emit(f"CAM: {text}")
 
+    def _update_generate_action(self) -> None:
+        action = self.actions.get("generate") if hasattr(self, "actions") else None
+        item = self.tree.currentItem()
+        setup = self._find_setup(item, self._find_job(item)) if item is not None else None
+        valid = bool(item is not None and item.data(0, _KIND_ROLE) == "operation" and
+                     setup is not None and
+                     self._draft_matches_selected_operation(item, setup))
+        if action is not None:
+            action.setEnabled(valid)
+
+    def _draft_matches_selected_operation(self, item: QTreeWidgetItem, setup: Setup) -> bool:
+        try:
+            node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
+            operation = setup.operation_tree.get_operation(node.operation_id)
+            draft = self.editor.facing_draft(setup.wcs.origin.unit)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            return bool(operation.enabled and draft is not None and
+                draft.to_operation_parameters() == operation.parameters and
+                self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
+                self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
+        except (TypeError, ValueError):
+            return False
+
 
 class _CamPropertiesEditor(QWidget):
+    draft_changed = Signal()
+
     def __init__(self, commit: Callable[[dict[str, object]], None]) -> None:
         super().__init__()
         self._commit = commit
@@ -562,6 +611,10 @@ class _CamPropertiesEditor(QWidget):
         form.addRow("Hướng cắt", self.direction)
         form.addRow("Trạng thái", self.status); form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
+        for field in self._facing_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
+        for combo in (self.boundary_source, self.direction, self.tool, self.machine):
+            combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
 
     def clear(self) -> None:
         for field in self._fields.values(): field.clear()
@@ -591,6 +644,7 @@ class _CamPropertiesEditor(QWidget):
         self.tool.clear(); self.machine.clear()
         for value in assemblies: self.tool.addItem(value.name, str(value.assembly_id))
         for value in machines: self.machine.addItem(value.name, str(value.machine_id))
+        self.tool.setCurrentIndex(-1); self.machine.setCurrentIndex(-1)
         if operation is not None and operation.strategy_key == "facing_2_5d":
             parameters = FacingParameters.from_operation_parameters(operation.parameters)
             values = {"top": parameters.top_height.value, "target": parameters.target_height.value,
@@ -602,9 +656,9 @@ class _CamPropertiesEditor(QWidget):
             for key, value in values.items(): self._facing_fields[key].setText(str(value))
             self.boundary_source.setCurrentText(parameters.boundary_source.value)
             self.direction.setCurrentText(parameters.direction.value)
-            self.tool.setCurrentIndex(max(0, self.tool.findData(str(operation.tool_assembly.assembly_id))))
+            self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
             if operation.machine_requirement:
-                self.machine.setCurrentIndex(max(0, self.machine.findData(str(operation.machine_requirement.machine_id))))
+                self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -623,6 +677,30 @@ class _CamPropertiesEditor(QWidget):
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
                       "machine_id": self.machine.currentData()})
+
+    def has_valid_facing_draft(self, unit: LengthUnit) -> bool:
+        return self.facing_draft(unit) is not None
+
+    def facing_draft(self, unit: LengthUnit) -> FacingParameters | None:
+        try:
+            feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+            value = FacingParameters(unit, FacingBoundarySource(self.boundary_source.currentText()),
+                Length(float(self._facing_fields["top"].text()), unit),
+                Length(float(self._facing_fields["target"].text()), unit),
+                Length(float(self._facing_fields["stepdown"].text()), unit),
+                Length(float(self._facing_fields["stepover"].text()), unit),
+                Length(float(self._facing_fields["allowance"].text()), unit),
+                Length(float(self._facing_fields["clearance"].text()), unit),
+                Length(float(self._facing_fields["retract"].text()), unit),
+                FeedRate(float(self._facing_fields["feed"].text()), feed_unit),
+                FeedRate(float(self._facing_fields["plunge"].text()), feed_unit),
+                SpindleSpeed(float(self._facing_fields["spindle"].text())),
+                FacingCutDirection(self.direction.currentText()),
+                float(self._facing_fields["angle"].text()),
+                Length(float(self._facing_fields["overtravel"].text()), unit))
+            return value if self.tool.currentData() is not None and self.machine.currentData() is not None else None
+        except (TypeError, ValueError):
+            return None
 
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:

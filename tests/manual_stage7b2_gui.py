@@ -96,9 +96,39 @@ def main() -> int:
         operation = _operation(service)
         assert operation.artifact_state.status is ArtifactStatus.VALID
         assert backend._toolpaths.get(operation.operation_id)
-        workspace.editor._facing_fields["target"].setText("48")
+
+        def edit_and_generate(**values: str) -> None:
+            for key, value in values.items():
+                workspace.editor._facing_fields[key].setText(value)
+            workspace.editor._submit()
+            assert workspace.actions["generate"].isEnabled(), workspace.editor.error.text()
+            workspace.generate_selected()
+            assert _operation(service).artifact_state.status is ArtifactStatus.VALID
+
+        edit_and_generate(target="49", stepdown="1", angle="0")
+        edit_and_generate(angle="90")
+        edit_and_generate(angle="37")
+        edit_and_generate(target="47.5", stepdown="1")
+
+        before_invalid = _operation(service).parameters
+        workspace.editor._facing_fields["target"].setText("50")
+        assert not workspace.actions["generate"].isEnabled()
+        workspace.editor._submit()
+        assert _operation(service).parameters == before_invalid and workspace.editor.error.text()
+        workspace.editor._facing_fields["target"].setText("47.5")
+        workspace.editor._facing_fields["clearance"].setText("51")
+        workspace.editor._submit()
+        assert _operation(service).parameters == before_invalid and workspace.editor.error.text()
+        workspace.editor._facing_fields["clearance"].setText("55")
+        workspace.editor._facing_fields["stepover"].setText("11")
         workspace.editor._submit(); workspace.generate_selected()
-        assert FacingParameters.from_operation_parameters(_operation(service).parameters).target_height.value == 48
+        assert _operation(service).artifact_state.status is ArtifactStatus.FAILED
+
+        edit_and_generate(target="48", stepdown="1", stepover="5", angle="37")
+        workspace.toggle_toolpath_visibility(); workspace.toggle_toolpath_visibility()
+        assert backend._toolpaths.get(operation.operation_id)
+        parameters = FacingParameters.from_operation_parameters(_operation(service).parameters)
+        assert parameters.target_height.value == 48 and parameters.raster_angle_degrees == 37
         assert service.load_toolpath_artifact(operation.operation_id) is not None
         service.save()
         screenshot = Path(tempfile.gettempdir()) / "hms_stage7b2_facing.png"
@@ -156,7 +186,7 @@ def main() -> int:
         assert backend._toolpaths.get(operation.operation_id)
         window.cam_dock.hide(); window.cam_dock.show(); window.resize(1100, 700)
         service.save()
-        logger.info("GUI verified: BREP, Setup/BOX/resources, Facing Generate/Recompute, viewer, Save/Open/Save As/Autosave/Recovery")
+        logger.info("GUI verified: one/multi-level, raster 0/90/37, invalid fields/stepover, visibility, Save/Open/Save As/Autosave/Recovery")
         finish()
 
     QTimer.singleShot(100, lambda: wait_ready(window, initial))

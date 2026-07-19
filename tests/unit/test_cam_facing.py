@@ -1,6 +1,8 @@
 """Facing 2.5D domain, generator, recompute and lifecycle tests."""
 
 from dataclasses import replace
+import math
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -8,7 +10,8 @@ from PySide6.QtWidgets import QApplication
 
 from hms_cadcam.cam.application import FacingGenerationError, FacingGenerator, basic_mill_resources
 from hms_cadcam.cam.domain import (
-    ArtifactStatus, CamInvariantError, CamNodeId, FacingBoundarySource, FacingCutDirection,
+    ArtifactStatus, BoxStock, CamInvariantError, CamNodeId, DirtyReason,
+    FacingBoundarySource, FacingCutDirection,
     FacingParameters, FeedRate, FeedUnit, GeometryFingerprint, Length, LengthUnit,
     GeometryResolutionStatus, MachineRequirement, Operation, OperationCapability, OperationFamily, OperationId,
     PlanarFaceDescriptor, Point3, ResolvedMachiningGeometry, SpindleSpeed, ToolAssemblyReference, Vector3,
@@ -19,15 +22,17 @@ from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
 from hms_cadcam.ui.cam_ui import _default_setup
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.viewer.toolpath import ToolpathPresentationRegistry
+from hms_cadcam.viewer.ocp import backend as ocp_backend_module
 
 
 def _parameters(*, angle: float = 0.0, direction: FacingCutDirection = FacingCutDirection.BIDIRECTIONAL,
-                target: float = 48.0, stepdown: float = 1.0) -> FacingParameters:
+                target: float = 48.0, stepdown: float = 1.0,
+                stepover: float = 5.0, overtravel: float = 1.0) -> FacingParameters:
     unit = LengthUnit.MM
     return FacingParameters(unit, FacingBoundarySource.STOCK_BOX, Length(50, unit), Length(target, unit),
-        Length(stepdown, unit), Length(5, unit), Length(0, unit), Length(55, unit), Length(52, unit),
+        Length(stepdown, unit), Length(stepover, unit), Length(0, unit), Length(55, unit), Length(52, unit),
         FeedRate(500, FeedUnit.MM_PER_MINUTE), FeedRate(100, FeedUnit.MM_PER_MINUTE),
-        SpindleSpeed(1000), direction, angle, Length(1, unit))
+        SpindleSpeed(1000), direction, angle, Length(overtravel, unit))
 
 
 def _inputs(parameters: FacingParameters | None = None):
@@ -118,6 +123,29 @@ def test_multiple_stepdowns_bidirectional_order_and_overtravel() -> None:
     assert first.end.position.x == pytest.approx(106.0)
 
 
+def test_float_rounding_does_not_duplicate_the_final_depth() -> None:
+    _, _, _, _, artifact = _artifact(_parameters(target=49.9, stepdown=0.1))
+    cuts = [event for event in artifact.events if isinstance(event, LinearMove)
+            and event.motion_class is MotionClass.CUTTING]
+    assert {event.start.position.z for event in cuts} == {49.9}
+
+
+def test_angled_raster_keeps_vertex_lanes_for_full_boundary_coverage() -> None:
+    angle = 37.0
+    _, inputs, _, _, artifact = _artifact(_parameters(
+        angle=angle, target=49.0, stepover=10.0, overtravel=0.0))
+    cuts = [event for event in artifact.events if isinstance(event, LinearMove)
+            and event.motion_class is MotionClass.CUTTING]
+    radians = math.radians(angle)
+    v_axis = (-math.sin(radians), math.cos(radians))
+    lane_positions = [event.start.position.x * v_axis[0] +
+                      event.start.position.y * v_axis[1] for event in cuts]
+    boundary_positions = [point.x * v_axis[0] + point.y * v_axis[1]
+                          for point in inputs.region.boundary]
+    assert min(lane_positions) == pytest.approx(min(boundary_positions))
+    assert max(lane_positions) == pytest.approx(max(boundary_positions))
+
+
 def test_climb_and_conventional_keep_consistent_pass_direction() -> None:
     for direction, sign in ((FacingCutDirection.CLIMB, 1), (FacingCutDirection.CONVENTIONAL, -1)):
         _, _, _, _, artifact = _artifact(_parameters(direction=direction, target=49.0))
@@ -167,6 +195,16 @@ def test_unsupported_tool_and_machine_limit_fail_with_specific_diagnostic() -> N
     assert captured.value.code.value == "facing.machine_incompatible"
 
 
+def test_excessive_pass_count_is_rejected_before_generation() -> None:
+    parameters = replace(_parameters(), stepover=Length(1.0e-12, LengthUnit.MM))
+    generator, inputs = _inputs()
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters())
+    with pytest.raises(FacingGenerationError) as captured:
+        generator.resolve_inputs(operation, inputs.setup, assembly=inputs.assembly,
+                                 tool=inputs.tool, machine=inputs.machine)
+    assert captured.value.code.value == "facing.invalid_parameters"
+
+
 def test_face_resolution_stale_fails_closed() -> None:
     parameters = replace(_parameters(), boundary_source=FacingBoundarySource.PLANAR_FACE)
     generator, inputs = _inputs()
@@ -177,6 +215,21 @@ def test_face_resolution_stale_fails_closed() -> None:
             resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.TOPOLOGY_CHANGED,
                                                      message="topology changed"))
     assert captured.value.code.value == "facing.geometry_stale"
+
+
+def test_planar_face_top_must_match_the_absolute_facing_top() -> None:
+    parameters = replace(_parameters(), boundary_source=FacingBoundarySource.PLANAR_FACE)
+    generator, inputs = _inputs()
+    operation = replace(inputs.operation, parameters=parameters.to_operation_parameters())
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (10, 0), (10, 10), (0, 10)))
+    descriptor = PlanarFaceDescriptor(points, Vector3(0, 0, 1),
+        GeometryFingerprint.from_payload({"face": "wrong-height"}))
+    with pytest.raises(FacingGenerationError) as captured:
+        generator.resolve_inputs(operation, inputs.setup, assembly=inputs.assembly,
+            tool=inputs.tool, machine=inputs.machine,
+            resolved_face=ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor))
+    assert captured.value.code.value == "facing.invalid_parameters"
 
 
 def test_project_compute_save_open_and_artifact_round_trip(tmp_path) -> None:
@@ -219,18 +272,28 @@ def test_facing_ui_invalid_field_does_not_mutate_and_generate_displays(tmp_path)
     workspace = CamWorkspace(service, lambda: session.manifest.source_files[0].source_id,
                              toolpath_display=displayed.append, toolpath_clear=lambda: cleared.append(True))
     workspace.create_job(); workspace.create_setup(); workspace.create_basic_resources(); workspace.add_operation()
+    assert workspace.actions["generate"].isEnabled()
     before = service.cam_snapshot
     workspace.editor._facing_fields["stepdown"].setText("0")
+    assert not workspace.actions["generate"].isEnabled()
     workspace.editor._submit()
     assert service.cam_snapshot == before
     assert workspace.editor.error.text()
     workspace.editor._facing_fields["stepdown"].setText("1")
     workspace.editor._facing_fields["target"].setText("48")
+    assert not workspace.actions["generate"].isEnabled()
     workspace.editor._submit()
+    assert workspace.actions["generate"].isEnabled()
     workspace.generate_selected()
     operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert operation.artifact_state.status is ArtifactStatus.VALID
     assert displayed and displayed[-1].source_operation_id == operation.operation_id
+    revision = operation.revision
+    workspace.editor._fields["name"].setText("Facing renamed")
+    workspace.editor._submit()
+    renamed = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert renamed.revision == revision
+    assert renamed.artifact_state.status is ArtifactStatus.VALID
     workspace.bind_project(session)
     assert cleared
     workspace.deleteLater()
@@ -264,7 +327,39 @@ def test_recompute_store_failure_keeps_previous_artifact(tmp_path, monkeypatch) 
     failed = service.compute_facing(operation_id)
     assert not failed.accepted
     assert service.cam_snapshot.artifacts == old_metadata
+    restored = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert restored.artifact_state.status is ArtifactStatus.VALID
     assert service.load_toolpath_artifact(operation_id).artifact_fingerprint == old_artifact.artifact_fingerprint
+
+
+def test_stock_change_invalidates_and_operation_delete_prunes_artifact_metadata(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    service.new_project(tmp_path, "Facing Dependencies")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    node_id, operation_id = CamNodeId.new(), OperationId.new()
+    requirement = MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                                     machine.unit, (OperationCapability.MILLING,))
+    operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (),
+        _parameters(target=49).to_operation_parameters(), requirement)
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Facing", operation)))
+    assert service.compute_facing(operation_id).accepted
+    changed_stock = BoxStock(Length(120, LengthUnit.MM), setup.stock.size_y,
+                             setup.stock.size_z, setup.stock.frame)
+    service.execute_cam_command(lambda app: app.update_stock(job_id, setup.setup_id, changed_stock))
+    changed = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert changed.artifact_state.status is ArtifactStatus.DIRTY
+    assert DirtyReason.STOCK_CHANGED in changed.artifact_state.dirty_reasons
+    assert service.cam_snapshot.artifacts
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.remove_node(node_id)))
+    assert service.cam_snapshot.artifacts == ()
 
 
 def test_toolpath_presentation_registry_rejects_stale_project_and_clears() -> None:
@@ -281,3 +376,35 @@ def test_toolpath_presentation_registry_rejects_stale_project_and_clears() -> No
     assert not registry.presentations[0].visible
     registry.bind_project(8)
     assert registry.presentations == ()
+
+
+def test_ocp_toolpath_display_failure_keeps_previous_presentation(monkeypatch) -> None:
+    _, _, _, _, artifact = _artifact(_parameters(target=49))
+
+    class FailingContext:
+        def __init__(self) -> None:
+            self.removed = []
+
+        def SetColor(self, *_args) -> None:
+            return None
+
+        def Display(self, *_args) -> None:
+            raise RuntimeError("injected display failure")
+
+        def Remove(self, presentation, _update) -> None:
+            self.removed.append(presentation)
+
+        def UpdateCurrentViewer(self) -> None:
+            return None
+
+    context = FailingContext()
+    backend = object.__new__(ocp_backend_module.OcpCadViewportBackend)
+    backend._lifecycle = SimpleNamespace(initialized=True, context=context)
+    old_presentation = object()
+    backend._toolpaths = {artifact.source_operation_id: (old_presentation,)}
+    monkeypatch.setattr(ocp_backend_module, "AIS_Shape", lambda _shape: object())
+    monkeypatch.setattr(ocp_backend_module, "Quantity_Color", lambda *_args: object())
+    with pytest.raises(RuntimeError, match="injected display failure"):
+        backend.display_toolpath(artifact)
+    assert backend._toolpaths == {artifact.source_operation_id: (old_presentation,)}
+    assert old_presentation not in context.removed

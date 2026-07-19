@@ -21,6 +21,7 @@ from hms_cadcam.cam.toolpath import (
 
 _ARTIFACT_NAMESPACE = UUID("f1f13ec6-7ed7-4d12-a920-1816de0abe0a")
 _TOLERANCE = 1.0e-8
+_MAX_CUTTING_PASSES = 20_000
 
 
 class FacingGenerationError(ValueError):
@@ -170,9 +171,17 @@ class FacingGenerator:
                 raise FacingGenerationError(DiagnosticCode.FACING_AXIS_MISMATCH,
                                             "Normal của mặt không cùng hướng +Z Setup WCS.")
         region_z = region.boundary[0].z
-        if abs(region_z - parameters.top_height.value) > _TOLERANCE and parameters.boundary_source is FacingBoundarySource.STOCK_BOX:
+        if abs(region_z - parameters.top_height.value) > _TOLERANCE:
             raise FacingGenerationError(DiagnosticCode.FACING_INVALID_PARAMETERS,
-                                        "Top height phải trùng mặt trên Stock BOX trong Setup WCS.")
+                                        "Top height phải trùng mặt Facing trong Setup WCS.")
+        depth_ratio = ((parameters.top_height.value - parameters.final_cut_height) /
+                       parameters.stepdown.value)
+        lane_count = _estimated_raster_lane_count(
+            region, parameters.raster_angle_degrees, parameters.stepover.value)
+        if (not math.isfinite(depth_ratio) or not math.isfinite(lane_count) or
+                max(1, math.ceil(depth_ratio)) * int(lane_count) > _MAX_CUTTING_PASSES):
+            raise FacingGenerationError(DiagnosticCode.FACING_INVALID_PARAMETERS,
+                                        "Facing vượt giới hạn 20.000 cutting passes an toàn.")
         tool_fp = ContentFingerprint.from_payload({"assembly": assembly.to_dict(), "tool": tool.to_dict()})
         machine_fp = machine.content_fingerprint
         snapshot = OperationInputSnapshot(operation.strategy_key, operation.strategy_version,
@@ -252,7 +261,16 @@ class FacingGenerator:
 
 def _depth_levels(top: float, target: float, stepdown: float) -> tuple[float, ...]:
     count = max(1, math.ceil((top - target) / stepdown))
-    return tuple(max(target, top - stepdown * index) for index in range(1, count + 1))
+    levels: list[float] = []
+    for index in range(1, count + 1):
+        depth = max(target, top - stepdown * index)
+        if not levels or depth != levels[-1]:
+            levels.append(depth)
+    if abs(levels[-1] - target) <= _TOLERANCE:
+        levels[-1] = target
+    elif levels[-1] > target:
+        levels.append(target)
+    return tuple(levels)
 
 
 def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
@@ -278,12 +296,22 @@ def _raster_lanes(region: FacingRegion, angle_degrees: float, step: float,
             if abs(delta) > _TOLERANCE and -_TOLERANCE <= (v - first[1]) / delta <= 1.0 + _TOLERANCE:
                 intersections.append(first[0] + (v - first[1]) / delta * (second[0] - first[0]))
         unique = sorted({round(value, 12) for value in intersections})
-        if len(unique) < 2 or unique[-1] - unique[0] <= _TOLERANCE:
+        if not unique:
             continue
         start_u, end_u = unique[0] - extension, unique[-1] + extension
         to_xy = lambda u: (u * u_axis[0] + v * v_axis[0], u * u_axis[1] + v * v_axis[1])
         lanes.append((to_xy(start_u), to_xy(end_u)))
     return tuple(lanes)
+
+
+def _estimated_raster_lane_count(region: FacingRegion, angle_degrees: float,
+                                  step: float) -> float:
+    angle = math.radians(angle_degrees)
+    v_axis = (-math.sin(angle), math.cos(angle))
+    positions = tuple(point.x * v_axis[0] + point.y * v_axis[1]
+                      for point in region.boundary)
+    ratio = (max(positions) - min(positions)) / step
+    return math.ceil(ratio) + 1 if math.isfinite(ratio) else math.inf
 
 
 def _oriented_lane(lane: tuple[tuple[float, float], tuple[float, float]],

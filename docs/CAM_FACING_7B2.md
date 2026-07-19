@@ -34,6 +34,8 @@ hai biên chiếu và khoảng còn lại cuối cùng luôn được thêm, nê
 sót strip do làm tròn. Hai đầu lane được kéo dài bằng bán kính dao cộng
 `overtravel`. Các lớp Z đi từ trên xuống, lớp cuối được chặn đúng tại target cộng
 allowance; thứ tự lớp/lane là xác định.
+Generation fail trước khi tạo artifact nếu tổ hợp số lớp và lane vượt quá 20.000
+cutting passes, tránh input cực nhỏ làm treo UI hoặc tạo artifact vượt policy lưu trữ.
 
 `CLIMB` giữ chiều âm→dương của trục raster, `CONVENTIONAL` giữ chiều ngược lại;
 quy ước này giả định spindle quay clockwise khi nhìn từ +Z về phôi.

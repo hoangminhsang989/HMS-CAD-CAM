@@ -223,7 +223,6 @@ class OcpCadViewportBackend:
     def display_toolpath(self, artifact: ToolpathArtifact) -> None:
         """Render motion compounds separately from selectable CAD presentations."""
         self._require_initialized()
-        self._remove_toolpath(artifact.source_operation_id)
         context = self._lifecycle.context
         groups = {MotionClass.NON_CUTTING: [], MotionClass.CUTTING: [],
                   MotionClass.LINK: [], MotionClass.RETRACT: []}
@@ -233,21 +232,31 @@ class OcpCadViewportBackend:
         colors = {MotionClass.NON_CUTTING: (0.2, 0.55, 1.0), MotionClass.CUTTING: (0.1, 0.9, 0.25),
                   MotionClass.LINK: (1.0, 0.7, 0.1), MotionClass.RETRACT: (0.9, 0.25, 0.9)}
         presentations = []
-        for motion_class, segments in groups.items():
-            if not segments:
-                continue
-            compound, builder = TopoDS_Compound(), BRep_Builder()
-            builder.MakeCompound(compound)
-            for start, end in segments:
-                edge = BRepBuilderAPI_MakeEdge(gp_Pnt(start.x, start.y, start.z),
-                                               gp_Pnt(end.x, end.y, end.z)).Edge()
-                builder.Add(compound, edge)
-            presentation = AIS_Shape(compound)
-            red, green, blue = colors[motion_class]
-            context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
-            context.Display(presentation, False)
-            presentations.append(presentation)
-        self._toolpaths[artifact.source_operation_id] = tuple(presentations)
+        try:
+            for motion_class, segments in groups.items():
+                if not segments:
+                    continue
+                compound, builder = TopoDS_Compound(), BRep_Builder()
+                builder.MakeCompound(compound)
+                for start, end in segments:
+                    edge = BRepBuilderAPI_MakeEdge(gp_Pnt(start.x, start.y, start.z),
+                                                   gp_Pnt(end.x, end.y, end.z)).Edge()
+                    builder.Add(compound, edge)
+                presentation = AIS_Shape(compound)
+                presentations.append(presentation)
+                red, green, blue = colors[motion_class]
+                context.SetColor(presentation, Quantity_Color(red, green, blue, Quantity_TOC_RGB), False)
+                context.Display(presentation, False)
+        except Exception:
+            for presentation in presentations:
+                context.Remove(presentation, False)
+            context.UpdateCurrentViewer()
+            raise
+        previous = tuple(presentation for values in self._toolpaths.values()
+                         for presentation in values)
+        for presentation in previous:
+            context.Remove(presentation, False)
+        self._toolpaths = {artifact.source_operation_id: tuple(presentations)}
         context.UpdateCurrentViewer()
 
     def clear_toolpaths(self) -> None:

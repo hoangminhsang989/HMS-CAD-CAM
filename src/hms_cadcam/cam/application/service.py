@@ -62,6 +62,13 @@ class CamApplicationService:
             candidate = mutation(_clone_snapshot(self._snapshot))
             if not isinstance(candidate, CamProjectSnapshot):
                 raise TypeError("CAM mutation must return CamProjectSnapshot")
+            operation_ids = {operation.operation_id for job in candidate.jobs
+                             for setup in job.setups
+                             for operation in setup.operation_tree.operations}
+            candidate = replace(candidate, artifacts=tuple(
+                metadata for metadata in candidate.artifacts
+                if metadata.operation_id in operation_ids
+            ))
             self._snapshot = _clone_snapshot(candidate)
             return _clone_snapshot(self._snapshot)
 
@@ -138,7 +145,8 @@ class CamApplicationService:
             active = state.active_job_id
             if active == job_id:
                 active = jobs[0].job_id if jobs else None
-            return replace(state, jobs=jobs, active_job_id=active)
+            return replace(state, jobs=jobs, active_job_id=active,
+                           artifacts=_referenced_artifacts(jobs, state.artifacts))
         return self.apply(mutation)
 
     def reorder_job(self, job_id: CamJobId, new_index: int) -> CamProjectSnapshot:
@@ -169,8 +177,8 @@ class CamApplicationService:
     def replace_setup(self, job_id: CamJobId, setup: Setup) -> CamProjectSnapshot:
         """Replace a complete validated setup through the aggregate boundary."""
         def change(job: CamJob) -> None:
-            job.get_setup(setup.setup_id)
-            job.replace_setup(setup)
+            current = job.get_setup(setup.setup_id)
+            job.replace_setup(_invalidate_setup_dependencies(current, setup))
         return self._mutate_job(job_id, change)
 
     def delete_setup(self, job_id: CamJobId, setup_id: SetupId) -> CamProjectSnapshot:
@@ -183,13 +191,19 @@ class CamApplicationService:
         return self._mutate_job(job_id, lambda job: job.set_active_setup(setup_id))
 
     def update_wcs(self, job_id: CamJobId, setup_id: SetupId, value: WcsFrame) -> CamProjectSnapshot:
-        return self._mutate_job(job_id, lambda job: job.update_wcs(setup_id, value))
+        def change(job: CamJob) -> None:
+            current = job.get_setup(setup_id)
+            job.replace_setup(_invalidate_setup_dependencies(current, current.with_wcs(value)))
+        return self._mutate_job(job_id, change)
 
     def update_work_offset(self, job_id: CamJobId, setup_id: SetupId, value: WorkOffset) -> CamProjectSnapshot:
         return self._mutate_job(job_id, lambda job: job.update_work_offset(setup_id, value))
 
     def update_stock(self, job_id: CamJobId, setup_id: SetupId, value: StockDefinition) -> CamProjectSnapshot:
-        return self._mutate_job(job_id, lambda job: job.set_stock(setup_id, value))
+        def change(job: CamJob) -> None:
+            current = job.get_setup(setup_id)
+            job.replace_setup(_invalidate_setup_dependencies(current, current.with_stock(value)))
+        return self._mutate_job(job_id, change)
 
     def add_fixture(self, job_id: CamJobId, setup_id: SetupId, value: FixtureInstance) -> CamProjectSnapshot:
         return self._mutate_job(job_id, lambda job: job.add_fixture(setup_id, value))
@@ -292,6 +306,7 @@ class CamApplicationService:
     def compute_facing(self, project_root: Path, operation_id: OperationId) -> FacingComputeResult:
         """Synchronously compute and publish Facing while retaining stale-token contracts."""
         with self._lock:
+            before_compute = _clone_snapshot(self._snapshot)
             operation = _find_operation(self._snapshot, operation_id)
             setup = next(setup for job in self._snapshot.jobs for setup in job.setups
                          if setup.setup_id == operation.setup_id)
@@ -303,6 +318,7 @@ class CamApplicationService:
             machine = next((item for item in self._snapshot.machine_definitions
                             if item.machine_id == machine_id), None)
             generator = FacingGenerator()
+            inputs_resolved = False
             try:
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
@@ -310,6 +326,7 @@ class CamApplicationService:
                     self._snapshot = _replace_operation(self._snapshot, operation)
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
                                                   machine=machine)
+                inputs_resolved = True
                 computing, token = generator.begin(inputs)
                 self._snapshot = _replace_operation(self._snapshot, computing.operation)
                 candidate = generator.generate(computing)
@@ -332,6 +349,10 @@ class CamApplicationService:
                     diagnostic = ValidationDiagnostic(DiagnosticSeverity.ERROR,
                         DiagnosticCode.FACING_GENERATION_FAILED,
                         "Không thể publish file toolpath Facing an toàn.")
+                original = _find_operation(before_compute, operation_id)
+                if inputs_resolved and original.artifact_state.status is ArtifactStatus.VALID:
+                    self._snapshot = before_compute
+                    return FacingComputeResult(original, None, False, (diagnostic,))
                 current = _find_operation(self._snapshot, operation_id)
                 state = current.artifact_state
                 if state.status is ArtifactStatus.COMPUTING and state.token is not None:
@@ -351,7 +372,8 @@ class CamApplicationService:
             candidate = CamJob.from_dict(current.to_dict())
             mutation(candidate)
             jobs = tuple(candidate if item.job_id == job_id else item for item in state.jobs)
-            return replace(state, jobs=jobs)
+            return replace(state, jobs=jobs,
+                           artifacts=_referenced_artifacts(jobs, state.artifacts))
         return self.apply(change)
 
 
@@ -449,3 +471,30 @@ def _replace_operation(snapshot: CamProjectSnapshot, changed: Operation) -> CamP
     if not found:
         raise CamChildNotFoundError(f"Operation does not exist: {changed.operation_id}")
     return replace(snapshot, jobs=tuple(jobs))
+
+
+def _invalidate_setup_dependencies(current: Setup, candidate: Setup) -> Setup:
+    reasons = []
+    if current.wcs != candidate.wcs:
+        reasons.append(DirtyReason.WCS_CHANGED)
+    if current.stock != candidate.stock:
+        reasons.append(DirtyReason.STOCK_CHANGED)
+    if not reasons:
+        return candidate
+    operations = candidate.operation_tree.operations
+    for reason in reasons:
+        operations = tuple(replace(operation,
+            artifact_state=operation.artifact_state.mark_dirty(reason))
+            for operation in operations)
+    tree = OperationTree(candidate.setup_id, candidate.operation_tree.root_id,
+        candidate.operation_tree.nodes, operations,
+        candidate.operation_tree.dependency_graph,
+        candidate.operation_tree.revision.next())
+    return replace(candidate, operation_tree=tree, revision=candidate.revision.next())
+
+
+def _referenced_artifacts(jobs: tuple[CamJob, ...], artifacts: tuple) -> tuple:
+    operation_ids = {operation.operation_id for job in jobs for setup in job.setups
+                     for operation in setup.operation_tree.operations}
+    return tuple(metadata for metadata in artifacts
+                 if metadata.operation_id in operation_ids)
