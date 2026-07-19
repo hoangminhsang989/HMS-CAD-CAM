@@ -21,6 +21,12 @@ from hms_cadcam.project.filesystem import (
 from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.models import ProjectSession, SourceFileRecord, utc_now
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.cam.persistence import (
+    CamSqliteRepository, ToolpathArtifactStore, ToolpathArtifactStoreError,
+)
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectSaver:
@@ -32,11 +38,15 @@ class ProjectSaver:
         validator: ProjectValidator,
         database: ProjectDatabase,
         cad_state_store: CadViewStateStore,
+        cam_repository: CamSqliteRepository | None = None,
+        artifact_store: ToolpathArtifactStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
         self._database = database
         self._cad_state_store = cad_state_store
+        self._cam_repository = cam_repository or CamSqliteRepository()
+        self._artifact_store = artifact_store or ToolpathArtifactStore()
 
     def save(self, session: ProjectSession) -> ProjectSession:
         """Validate and atomically save the current manifest."""
@@ -50,10 +60,17 @@ class ProjectSaver:
                 session.cad_view_states.values(),
                 (record.source_id for record in manifest.source_files),
             )
+            persisted_cam = self._cam_repository.replace_all(connection, session.cam_snapshot)
             self._manifest_store.save(session.root_path, manifest)
         session.manifest = manifest
         session.persisted_cad_view_states = dict(session.cad_view_states)
+        session.cam_snapshot = persisted_cam
+        session.persisted_cam_snapshot = persisted_cam
         session.is_dirty = False
+        try:
+            self._artifact_store.cleanup_orphans(session.root_path, persisted_cam.artifacts)
+        except (OSError, ToolpathArtifactStoreError):
+            logger.warning("Không thể dọn toolpath artifact mồ côi", exc_info=True)
         return session
 
     def import_source(self, session: ProjectSession, source_path: Path) -> ProjectSession:
@@ -83,6 +100,7 @@ class ProjectSaver:
         session.manifest = manifest
         session.is_dirty = (
             session.cad_view_states != session.persisted_cad_view_states
+            or session.cam_snapshot != session.persisted_cam_snapshot
         )
         return session
 
@@ -132,6 +150,12 @@ class ProjectSaver:
                 session.root_path / DATABASE_FILENAME,
                 staging / DATABASE_FILENAME,
             )
+            copied_artifacts = self._artifact_store.copy_referenced(
+                session.root_path,
+                staging,
+                session.cam_snapshot.artifacts,
+            )
+            staged_cam = replace(session.cam_snapshot, artifacts=copied_artifacts)
             with self._cad_state_store.transaction(
                 staging / DATABASE_FILENAME
             ) as connection:
@@ -140,6 +164,7 @@ class ProjectSaver:
                     session.cad_view_states.values(),
                     (record.source_id for record in records),
                 )
+                persisted_cam = self._cam_repository.replace_all(connection, staged_cam)
             self._manifest_store.save(staging, manifest)
             self._validator.validate_references(staging, manifest)
             self._database.validate(staging / DATABASE_FILENAME)
@@ -150,4 +175,6 @@ class ProjectSaver:
             is_dirty=False,
             cad_view_states=dict(session.cad_view_states),
             persisted_cad_view_states=dict(session.cad_view_states),
+            cam_snapshot=persisted_cam,
+            persisted_cam_snapshot=persisted_cam,
         )

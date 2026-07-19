@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 from pathlib import Path
+from collections.abc import Callable
 from uuid import UUID
 
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
@@ -34,6 +35,12 @@ from hms_cadcam.project.recovery import (
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.cam.application import CamApplicationService
+from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
+from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.domain.operation import ComputationToken
+from hms_cadcam.cam.domain.revision import DependencyFingerprint
+from hms_cadcam.cam.toolpath import ToolpathArtifact, ToolpathPublishResult
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
@@ -53,6 +60,7 @@ class ProjectService:
         session_locks: SessionLockManager,
         autosave: AutosaveManager,
         recovery: RecoveryManager,
+        cam_application: CamApplicationService | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -63,6 +71,7 @@ class ProjectService:
         self._session_locks = session_locks
         self._autosave = autosave
         self._recovery = recovery
+        self._cam_application = cam_application or CamApplicationService()
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -72,12 +81,15 @@ class ProjectService:
         validator = ProjectValidator()
         database = ProjectDatabase()
         cad_state_store = CadViewStateStore()
+        cam_repository = CamSqliteRepository()
+        artifact_store = ToolpathArtifactStore()
         session_locks = SessionLockManager()
         autosave = AutosaveManager(
             manifest_store,
             validator,
             database,
             cad_state_store,
+            cam_repository,
         )
         return cls(
             creator=ProjectCreator(manifest_store, validator, database),
@@ -86,12 +98,16 @@ class ProjectService:
                 validator,
                 database,
                 cad_state_store,
+                cam_repository,
+                artifact_store,
             ),
             saver=ProjectSaver(
                 manifest_store,
                 validator,
                 database,
                 cad_state_store,
+                cam_repository,
+                artifact_store,
             ),
             validator=validator,
             database=database,
@@ -105,6 +121,7 @@ class ProjectService:
                 database,
                 session_locks,
             ),
+            cam_application=CamApplicationService(artifact_store),
         )
 
     @property
@@ -236,7 +253,57 @@ class ProjectService:
 
     def save(self) -> ProjectSession:
         """Persist the current project."""
-        return self._saver.save(self._require_current())
+        session = self._saver.save(self._require_current())
+        self._cam_application.mark_persisted(session.cam_snapshot)
+        return session
+
+    @property
+    def cam_snapshot(self) -> CamProjectSnapshot:
+        """Return the current immutable CAM project snapshot."""
+        self._require_current()
+        return self._cam_application.snapshot
+
+    def stage_cam_snapshot(self, snapshot: CamProjectSnapshot) -> ProjectSession:
+        """Stage complete validated CAM editable state without writing SQLite."""
+        if not isinstance(snapshot, CamProjectSnapshot):
+            raise TypeError("CAM project snapshot is invalid")
+        session = self._require_current()
+        before = self._cam_application.snapshot
+        self._cam_application.apply(lambda _current: snapshot)
+        session.cam_snapshot = snapshot
+        if snapshot != before:
+            session.is_dirty = True
+        return session
+
+    def apply_cam_mutation(
+        self,
+        mutation: Callable[[CamProjectSnapshot], CamProjectSnapshot],
+    ) -> ProjectSession:
+        """Apply one atomic CAM snapshot mutation and mark project dirty on change."""
+        session = self._require_current()
+        before = self._cam_application.snapshot
+        changed = self._cam_application.apply(mutation)
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+        return session
+
+    def register_toolpath_artifact(
+        self,
+        operation_id: OperationId,
+        candidate: ToolpathArtifact,
+        token: ComputationToken,
+        current_input: DependencyFingerprint,
+    ) -> ToolpathPublishResult:
+        """Publish a verified artifact file and stage its metadata for Save."""
+        session = self._require_current()
+        result = self._cam_application.register_artifact(
+            session.root_path, operation_id, candidate, token, current_input
+        )
+        session.cam_snapshot = self._cam_application.snapshot
+        if result.accepted or session.cam_snapshot != session.persisted_cam_snapshot:
+            session.is_dirty = True
+        return result
 
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""
@@ -277,6 +344,8 @@ class ProjectService:
             is_dirty=True,
             cad_view_states=dict(session.cad_view_states),
             persisted_cad_view_states=dict(session.persisted_cad_view_states),
+            cam_snapshot=session.cam_snapshot,
+            persisted_cam_snapshot=session.persisted_cam_snapshot,
         )
         return self._autosave.create_snapshot(
             snapshot_session,
@@ -313,6 +382,7 @@ class ProjectService:
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
         self._session_locks.release(self._current_project.root_path)
         self._current_project = None
+        self._cam_application.clear()
 
     def recent_projects(self) -> tuple[RecentProjectEntry, ...]:
         """Return recently opened project paths."""
@@ -350,6 +420,7 @@ class ProjectService:
                 self._session_locks.release(session.root_path)
                 raise
         self._current_project = session
+        self._cam_application.load(session.cam_snapshot)
         try:
             self._recent_projects.add(session.root_path)
         except OSError:

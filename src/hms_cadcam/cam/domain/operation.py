@@ -95,6 +95,9 @@ class DiagnosticCode(StrEnum):
     DEPENDENCY_CYCLE = "dependency_cycle"
     UPSTREAM_INVALID = "upstream_invalid"
     OPERATION_DISABLED = "operation_disabled"
+    ARTIFACT_MISSING = "artifact_missing"
+    ARTIFACT_CORRUPT = "artifact_corrupt"
+    COMPUTATION_INTERRUPTED = "computation_interrupted"
 
 
 @dataclass(frozen=True, slots=True)

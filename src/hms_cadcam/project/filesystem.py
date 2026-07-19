@@ -17,6 +17,7 @@ from hms_cadcam.project.constants import (
     PROJECT_SUFFIX,
     SOURCE_DIRECTORY,
     TEMP_DIRECTORY,
+    TOOLPATHS_DIRECTORY,
 )
 from hms_cadcam.project.exceptions import (
     ProjectAlreadyExistsError,
@@ -150,6 +151,7 @@ def create_runtime_directories(project_root: Path) -> None:
     """Create the Stage 3 runtime directories and identify the temp root."""
     (project_root / AUTOSAVE_DIRECTORY).mkdir()
     (project_root / BACKUPS_DIRECTORY).mkdir()
+    (project_root / TOOLPATHS_DIRECTORY).mkdir()
     temp_root = project_root / TEMP_DIRECTORY
     temp_root.mkdir()
     write_owned_directory_metadata(temp_root, OwnedDirectoryPurpose.TEMP_ROOT)

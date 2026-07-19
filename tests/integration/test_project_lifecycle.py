@@ -25,7 +25,8 @@ def test_unicode_create_import_open_and_save_as(tmp_path) -> None:
         "project.db",
         "session.lock",
         "source",
-        "temp",
+            "temp",
+            "toolpaths",
     }
     assert (root / "temp" / OWNED_DIRECTORY_METADATA_FILENAME).is_file()
     source = tmp_path / "nguồn mẫu.step"
@@ -80,7 +81,8 @@ def test_confirmed_overwrite_replaces_complete_project(tmp_path) -> None:
         "project.db",
         "session.lock",
         "source",
-        "temp",
+            "temp",
+            "toolpaths",
     }
     assert (
         replacement.root_path / "temp" / OWNED_DIRECTORY_METADATA_FILENAME

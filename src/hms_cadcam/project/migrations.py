@@ -96,4 +96,108 @@ MIGRATIONS: dict[int, Sequence[str]] = {
         ON cad_xcaf_occurrence_appearance(source_id, key_scheme, key_version)
         """,
     ),
+    4: (
+        """
+        CREATE TABLE cam_project_state (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            active_job_id TEXT
+        )
+        """,
+        """
+        CREATE TABLE cam_jobs (
+            job_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+            name TEXT NOT NULL,
+            revision_json TEXT NOT NULL,
+            active_setup_id TEXT
+        )
+        """,
+        """
+        CREATE TABLE cam_setups (
+            setup_id TEXT PRIMARY KEY NOT NULL,
+            job_id TEXT NOT NULL REFERENCES cam_jobs(job_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            payload_json TEXT NOT NULL,
+            tree_root_id TEXT NOT NULL,
+            tree_revision_json TEXT NOT NULL,
+            UNIQUE(job_id, position)
+        )
+        """,
+        """
+        CREATE TABLE cam_nodes (
+            node_id TEXT PRIMARY KEY NOT NULL,
+            setup_id TEXT NOT NULL REFERENCES cam_setups(setup_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            payload_json TEXT NOT NULL,
+            UNIQUE(setup_id, position)
+        )
+        """,
+        """
+        CREATE TABLE cam_operations (
+            operation_id TEXT PRIMARY KEY NOT NULL,
+            setup_id TEXT NOT NULL REFERENCES cam_setups(setup_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            payload_json TEXT NOT NULL,
+            UNIQUE(setup_id, position)
+        )
+        """,
+        """
+        CREATE TABLE cam_dependencies (
+            setup_id TEXT NOT NULL REFERENCES cam_setups(setup_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            payload_json TEXT NOT NULL,
+            PRIMARY KEY(setup_id, position)
+        )
+        """,
+        """
+        CREATE TABLE cam_tool_definitions (
+            definition_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+            payload_json TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE cam_holder_definitions (
+            definition_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+            payload_json TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE cam_tool_assemblies (
+            assembly_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+            payload_json TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE cam_machine_definitions (
+            machine_id TEXT PRIMARY KEY NOT NULL,
+            position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+            payload_json TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE toolpath_artifacts (
+            artifact_id TEXT PRIMARY KEY NOT NULL,
+            operation_id TEXT NOT NULL REFERENCES cam_operations(operation_id) ON DELETE CASCADE,
+            relative_path TEXT NOT NULL UNIQUE,
+            checksum_sha256 TEXT NOT NULL,
+            artifact_fingerprint_json TEXT NOT NULL,
+            input_fingerprint_json TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+            artifact_schema_version INTEGER NOT NULL CHECK (artifact_schema_version > 0),
+            expected_operation_revision_json TEXT NOT NULL,
+            computation_generation INTEGER NOT NULL CHECK (computation_generation > 0),
+            completion_status TEXT NOT NULL,
+            UNIQUE(operation_id)
+        )
+        """,
+        """
+        CREATE INDEX idx_cam_setups_job ON cam_setups(job_id, position)
+        """,
+        """
+        CREATE INDEX idx_cam_operations_setup ON cam_operations(setup_id, position)
+        """,
+    ),
 }

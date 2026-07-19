@@ -43,6 +43,7 @@ from hms_cadcam.project.models import (
 )
 from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.cam.persistence import CamSqliteRepository
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SNAPSHOT_PREFIX = "snapshot-"
@@ -199,11 +200,13 @@ class AutosaveManager:
         validator: ProjectValidator,
         database: ProjectDatabase,
         cad_state_store: CadViewStateStore | None = None,
+        cam_repository: CamSqliteRepository | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
         self._database = database
         self._cad_state_store = cad_state_store or CadViewStateStore()
+        self._cam_repository = cam_repository or CamSqliteRepository()
         self._operation_lock = threading.Lock()
 
     def create_snapshot(
@@ -270,6 +273,7 @@ class AutosaveManager:
                         session.cad_view_states.values(),
                         (record.source_id for record in session.manifest.source_files),
                     )
+                    self._cam_repository.replace_all(connection, session.cam_snapshot)
                 metadata = AutosaveMetadata(
                     format=AUTOSAVE_FORMAT,
                     format_version=AUTOSAVE_FORMAT_VERSION,
