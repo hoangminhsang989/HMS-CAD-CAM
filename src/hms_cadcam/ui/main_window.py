@@ -27,11 +27,17 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
-from hms_cadcam.cam.adapters import OcpContourProfileResolver, OcpPlanarFaceResolver
-from hms_cadcam.cam.application import PocketGeometryResolver
+from hms_cadcam.cam.adapters import (
+    OcpContourProfileResolver,
+    OcpDrillingGeometryResolver,
+    OcpPlanarFaceResolver,
+)
+from hms_cadcam.cam.application import DrillingGeometryResolver, PocketGeometryResolver
 from hms_cadcam.cam.domain import (
-    GeometryReference, LengthUnit, PocketGeometryInput, ResolvedContourProfile,
-    ResolvedMachiningGeometry, ResolvedPocketGeometry,
+    DrillDepthDefinition, DrillGeometryInput, GeometryReference, HoleReference,
+    LengthUnit, PocketGeometryInput, ResolvedContourProfile,
+    ResolvedDrillingGeometry, ResolvedMachiningGeometry, ResolvedPocketGeometry,
+    Vector3,
 )
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
@@ -137,6 +143,8 @@ class MainWindow(QMainWindow):
             contour_pick_provider=self._current_contour_reference,
             profile_resolver=self._resolve_contour_profile_reference,
             pocket_resolver=self._resolve_pocket_geometry_reference,
+            drilling_pick_provider=self._current_drilling_reference,
+            drilling_resolver=self._resolve_drilling_geometry,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_dock = QDockWidget("CAM Workspace", self)
@@ -331,6 +339,51 @@ class MainWindow(QMainWindow):
         unit = LengthUnit.INCH if session.manifest.units.value == "inch" else LengthUnit.MM
         resolver = PocketGeometryResolver(self._contour_profile_resolver())
         return resolver.resolve(PocketGeometryInput(reference, unit))
+
+    def _current_drilling_reference(self, axis: Vector3) -> HoleReference:
+        selections = self.cad_controller.active_selection
+        if (
+            len(selections) != 1
+            or selections[0].topology not in {SelectionMode.VERTEX, SelectionMode.EDGE}
+        ):
+            raise GeometryPickError(
+                "Drilling requires exactly one BREP VERTEX or circular EDGE selection."
+            )
+        return self._drilling_geometry_resolver().bind_selection(
+            selections[0], axis=axis,
+        )
+
+    def _drilling_geometry_resolver(self) -> OcpDrillingGeometryResolver:
+        session = self.project_controller.service.current_project
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        mapping = self.cad_controller.persistent_object_map
+        if (
+            not isinstance(self._cad_kernel, OcpCadKernel)
+            or session is None
+            or document_id is None
+            or source_id is None
+            or mapping is None
+        ):
+            raise GeometryPickError(
+                "No active OCP CAD source is available for Drilling resolution."
+            )
+        unit = (
+            LengthUnit.INCH
+            if session.manifest.units.value == "inch"
+            else LengthUnit.MM
+        )
+        return OcpDrillingGeometryResolver(
+            self._cad_kernel, document_id, source_id, mapping, unit,
+        )
+
+    def _resolve_drilling_geometry(
+        self,
+        geometry: DrillGeometryInput,
+        depth: DrillDepthDefinition,
+    ) -> ResolvedDrillingGeometry:
+        resolver = DrillingGeometryResolver(self._drilling_geometry_resolver())
+        return resolver.resolve(geometry, depth)
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)

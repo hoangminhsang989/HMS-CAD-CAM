@@ -1,7 +1,8 @@
 """Small validated project resources used by the 7B.1 creation dialog."""
 
 from hms_cadcam.cam.domain import (
-    AffineTransform, CylindricalGeometry, FeedRate, FeedUnit, HolderDefinition,
+    AffineTransform, Angle, AngleUnit, CylindricalGeometry, DrillGeometry,
+    FeedRate, FeedUnit, HolderDefinition,
     HolderDefinitionId, HolderSection, KinematicChain, KinematicMount,
     KinematicNode, KinematicSide, Length, LengthUnit, MachineAxis,
     MachineAxisType, MachineCapabilities, MachineDefinition, MachineDefinitionId,
@@ -40,7 +41,8 @@ def basic_mill_resources(unit: LengthUnit) -> tuple[
         milling=True, turning=False, live_tooling=False, probing=False,
         tapping=False, threading=False, spindle_count=1,
         maximum_feed=FeedRate(5000, feed_unit), maximum_rapid=FeedRate(10000, feed_unit),
-        tool_capacity=12, coolant=(), operations=(OperationCapability.MILLING,),
+        tool_capacity=12, coolant=(),
+        operations=(OperationCapability.DRILLING, OperationCapability.MILLING),
     )
     machine = MachineDefinition(
         MachineDefinitionId.new(), "Máy phay cơ bản", MachineKind.MILL, unit, (axis,),
@@ -49,3 +51,55 @@ def basic_mill_resources(unit: LengthUnit) -> tuple[
         WorkEnvelope(Length(1000, unit), Length(500, unit), Length(500, unit)),
     )
     return tool, holder, assembly, machine
+
+
+def basic_drilling_resources(unit: LengthUnit) -> tuple[
+    ToolDefinition,
+    ToolDefinition,
+    HolderDefinition,
+    ToolAssembly,
+    ToolAssembly,
+]:
+    """Create one drill and one center-drill bundle for project-owned UI use."""
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    drill = ToolDefinition(
+        ToolDefinitionId.new(), "Mũi khoan 6", ToolFamily.DRILL, unit,
+        DrillGeometry(
+            Length(6.0 * scale, unit),
+            Length(30.0 * scale, unit),
+            Angle(118.0, AngleUnit.DEGREE),
+        ),
+        Length(100.0 * scale, unit), Length(40.0 * scale, unit),
+        ShankGeometry(
+            Length(6.0 * scale, unit), Length(60.0 * scale, unit),
+        ),
+    )
+    center_drill = ToolDefinition(
+        ToolDefinitionId.new(), "Mũi khoan tâm 6", ToolFamily.CENTER_DRILL, unit,
+        DrillGeometry(
+            Length(6.0 * scale, unit),
+            Length(12.0 * scale, unit),
+            Angle(90.0, AngleUnit.DEGREE),
+        ),
+        Length(60.0 * scale, unit), Length(20.0 * scale, unit),
+        ShankGeometry(
+            Length(6.0 * scale, unit), Length(40.0 * scale, unit),
+        ),
+    )
+    holder = HolderDefinition(
+        HolderDefinitionId.new(), "Holder khoan cơ bản", unit,
+        (HolderSection(
+            Length(0, unit), Length(35.0 * scale, unit),
+            Length(30.0 * scale, unit), Length(40.0 * scale, unit),
+        ),),
+        Length(0, unit), interface="generic_taper",
+    )
+    drill_assembly = ToolAssembly.create(
+        ToolAssemblyId.new(), "Cụm mũi khoan 6", drill,
+        Length(35.0 * scale, unit), Length(80.0 * scale, unit), holder,
+    )
+    center_assembly = ToolAssembly.create(
+        ToolAssemblyId.new(), "Cụm mũi khoan tâm 6", center_drill,
+        Length(18.0 * scale, unit), Length(55.0 * scale, unit), holder,
+    )
+    return drill, center_drill, holder, drill_assembly, center_assembly

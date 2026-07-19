@@ -116,7 +116,7 @@ def test_cam_workspace_builds_job_setup_group_operation_tree(tmp_path) -> None:
     setup = job.setups[0]
     assert len(setup.operation_tree.nodes) == 3
     assert len(setup.operation_tree.operations) == 1
-    assert len(project.cam_snapshot.tool_assemblies) == 1
+    assert len(project.cam_snapshot.tool_assemblies) == 3
     assert len(project.cam_snapshot.machine_definitions) == 1
     assert project.is_dirty
     workspace.deleteLater()

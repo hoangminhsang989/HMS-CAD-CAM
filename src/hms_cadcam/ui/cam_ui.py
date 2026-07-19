@@ -17,11 +17,14 @@ from PySide6.QtWidgets import (
 from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, CamJobId, CamNodeId, ContentFingerprint,
     ContourCutDirection, ContourParameters, ContourProfileSource, ContourSide,
-    DirtyReason, FacingBoundarySource, FacingCutDirection, FacingParameters,
+    DirtyReason, DrillApproachPolicy, DrillDepthDefinition, DrillGeometryInput,
+    DrillRetractPolicy, DrillingCycle, DrillingStrategy,
+    FacingBoundarySource, FacingCutDirection, FacingParameters,
     FeedRate, FeedUnit,
     GeometryFingerprint, GeometryInputId, GeometryInputRole,
     GeometryReference, GeometryReferenceId,
     GeometryReferenceKind, GeometryRepresentationKind, GeometryResolutionStatus,
+    HoleReference,
     Length, LengthUnit,
     MachineRequirement, Operation, OperationCapability, OperationFamily,
     OperationGeometryInput,
@@ -29,14 +32,15 @@ from hms_cadcam.cam.domain import (
     PocketCuttingDirection, PocketDepthDefinition, PocketEntryPolicy,
     PocketGeometryInput, PocketStrategy,
     ResolvedContourProfile, ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
-    ResolvedPocketGeometry,
-    SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, Vector3, WcsFrame, WorkOffset,
+    ResolvedDrillingGeometry, ResolvedPocketGeometry,
+    SpindleSpeed, ToolAssemblyId, ToolAssemblyReference, ToolFamily,
+    Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
 from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
-from hms_cadcam.cam.application import basic_mill_resources
+from hms_cadcam.cam.application import basic_drilling_resources, basic_mill_resources
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
@@ -60,7 +64,11 @@ class CamWorkspace(QWidget):
                  face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
                  contour_pick_provider: Callable[[], GeometryReference] | None = None,
                  profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
-                 pocket_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None) -> None:
+                 pocket_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+                 drilling_pick_provider: Callable[[Vector3], HoleReference] | None = None,
+                 drilling_resolver: Callable[
+                     [DrillGeometryInput, DrillDepthDefinition], ResolvedDrillingGeometry
+                 ] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
@@ -75,12 +83,19 @@ class CamWorkspace(QWidget):
         self._contour_pick_provider = contour_pick_provider
         self._profile_resolver = profile_resolver
         self._pocket_resolver = pocket_resolver
+        self._drilling_pick_provider = drilling_pick_provider
+        self._drilling_resolver = drilling_resolver
         self._picked_reference: GeometryReference | None = None
+        self._picked_hole_reference: HoleReference | None = None
         self._picked_reference_resolved = False
         self._pocket_drafts: dict[
             OperationId, tuple[dict[str, object], GeometryReference | None]
         ] = {}
+        self._drilling_drafts: dict[
+            OperationId, tuple[dict[str, object], HoleReference | None]
+        ] = {}
         self._active_editor_operation_id: OperationId | None = None
+        self._active_editor_strategy_key: str | None = None
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -101,7 +116,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
-        for key in ("job", "setup", "resources", "group", "operation", "contour_operation", "pocket_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -114,10 +129,11 @@ class CamWorkspace(QWidget):
             "operation": ("Thêm Facing 2.5D", self.add_operation),
             "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
             "pocket_operation": ("Thêm Pocket 2.5D", self.add_pocket_operation),
+            "drilling_operation": ("Thêm Drilling", self.add_drilling_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
-            "pick": ("Bind/Rebind profile", self.pick_geometry),
-            "clear_pick": ("Clear profile", self.clear_geometry_pick),
+            "pick": ("Bind/Rebind geometry", self.pick_geometry),
+            "clear_pick": ("Clear geometry", self.clear_geometry_pick),
             "up": ("Lên", lambda: self.move_selected(-1)),
             "down": ("Xuống", lambda: self.move_selected(1)),
             "delete": ("Xóa", self.delete_selected),
@@ -134,10 +150,13 @@ class CamWorkspace(QWidget):
         """Clear old identities before rendering a new project snapshot."""
         self._selected_key = None
         self._picked_reference = None
+        self._picked_hole_reference = None
         self._picked_reference_resolved = False
         self._pocket_drafts.clear()
+        self._drilling_drafts.clear()
         self._toolpath_visibility.clear()
         self._active_editor_operation_id = None
+        self._active_editor_strategy_key = None
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
@@ -155,7 +174,7 @@ class CamWorkspace(QWidget):
         self._render(preserve or self._selected_key)
 
     def _render(self, preserve: tuple[str, str] | None) -> None:
-        self._stash_active_pocket_draft()
+        self._stash_active_operation_draft()
         self._guard = True
         self.tree.clear()
         matches: list[QTreeWidgetItem] = []
@@ -252,8 +271,9 @@ class CamWorkspace(QWidget):
             return
         item = self.tree.currentItem()
         if item is None:
-            self._stash_active_pocket_draft()
+            self._stash_active_operation_draft()
             self._active_editor_operation_id = None
+            self._active_editor_strategy_key = None
             self._selected_key = None
             self.editor.clear()
             self._remove_displayed_toolpath()
@@ -262,8 +282,9 @@ class CamWorkspace(QWidget):
         self._show_properties(item)
 
     def _show_properties(self, item: QTreeWidgetItem) -> None:
-        self._stash_active_pocket_draft()
+        self._stash_active_operation_draft()
         self._active_editor_operation_id = None
+        self._active_editor_strategy_key = None
         kind = item.data(0, _KIND_ROLE)
         job = self._find_job(item)
         setup = self._find_setup(item, job)
@@ -281,13 +302,28 @@ class CamWorkspace(QWidget):
             )
             if operation is None:
                 self._picked_reference = None
+                self._picked_hole_reference = None
                 self.editor.show_node(node.name, None)
                 self._remove_displayed_toolpath()
             else:
+                self._picked_hole_reference = None
                 self._picked_reference = (
                     operation.geometry_inputs[0].reference
                     if len(operation.geometry_inputs) == 1 else None
                 )
+                if operation.strategy_key == "drilling_v1":
+                    try:
+                        drilling = DrillingStrategy.from_operation_parameters(
+                            operation.parameters
+                        )
+                    except (TypeError, ValueError):
+                        drilling = None
+                    source = drilling.geometry.source if drilling is not None else None
+                    if (
+                        isinstance(source, HoleReference)
+                        and self._picked_reference == source.reference
+                    ):
+                        self._picked_hole_reference = source
                 self._picked_reference_resolved = self._resolve_picked_reference()
                 self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
                                       self._service.cam_snapshot.machine_definitions)
@@ -298,7 +334,26 @@ class CamWorkspace(QWidget):
                         self._picked_reference = saved[1]
                         self._picked_reference_resolved = self._resolve_picked_reference()
                     self._active_editor_operation_id = operation.operation_id
-                self.editor.show_reference(self._picked_reference, self._picked_reference_resolved)
+                    self._active_editor_strategy_key = operation.strategy_key
+                elif operation.strategy_key == "drilling_v1":
+                    saved = self._drilling_drafts.get(operation.operation_id)
+                    if saved is not None:
+                        self.editor.restore_drilling_state(saved[0])
+                        self._picked_hole_reference = saved[1]
+                        self._picked_reference = (
+                            None if saved[1] is None else saved[1].reference
+                        )
+                        self._picked_reference_resolved = self._resolve_picked_reference()
+                    self._active_editor_operation_id = operation.operation_id
+                    self._active_editor_strategy_key = operation.strategy_key
+                self.editor.show_reference(
+                    self._picked_reference,
+                    self._picked_reference_resolved,
+                    subject=(
+                        "hole" if operation.strategy_key == "drilling_v1"
+                        else "profile"
+                    ),
+                )
                 artifact = (self._service.load_toolpath_artifact(operation.operation_id)
                             if operation.artifact_state.status is ArtifactStatus.VALID else None)
                 if artifact is not None and self._toolpath_display is not None:
@@ -366,23 +421,51 @@ class CamWorkspace(QWidget):
         """Create the minimal project-owned resource bundle without a global library."""
         if not self._service.has_project:
             return
-        values = basic_mill_resources(_length_unit(self._service.current_project))
-        changed = self._execute(lambda app: app.add_basic_resources(*values))
+        unit = _length_unit(self._service.current_project)
+        mill_values = basic_mill_resources(unit)
+        drill, center_drill, holder, drill_assembly, center_assembly = (
+            basic_drilling_resources(unit)
+        )
+
+        def add_resources(app):
+            app.add_basic_resources(*mill_values)
+            app.add_tool_definition(drill)
+            app.add_tool_definition(center_drill)
+            app.add_holder_definition(holder)
+            app.add_tool_assembly(drill_assembly)
+            return app.add_tool_assembly(center_assembly)
+
+        changed = self._execute(add_resources)
         if changed is not None:
             self.refresh(self._selected_key)
 
     def pick_geometry(self) -> None:
         """Explicitly bind the current unambiguous CAD selection."""
         operation = self._selected_operation()
-        provider = (self._contour_pick_provider if operation is not None and
-                    operation.strategy_key in {"contour_2d", "pocket_2_5d"}
-                    else self._pick_provider)
+        is_drilling = operation is not None and operation.strategy_key == "drilling_v1"
+        provider = (
+            self._drilling_pick_provider if is_drilling
+            else self._contour_pick_provider if operation is not None and
+            operation.strategy_key in {"contour_2d", "pocket_2_5d"}
+            else self._pick_provider
+        )
         if provider is None:
             self._error("Geometry picking adapter chưa sẵn sàng.")
             return
         generation = self._generation
         try:
-            reference = provider()
+            if is_drilling:
+                item = self.tree.currentItem()
+                setup = self._find_setup(item, self._find_job(item))
+                if setup is None:
+                    raise ValueError("Drilling chưa có Setup hợp lệ.")
+                hole_reference = provider(setup.wcs.z_axis)
+                if not isinstance(hole_reference, HoleReference):
+                    raise TypeError("Drilling picker returned an invalid reference")
+                reference = hole_reference.reference
+            else:
+                hole_reference = None
+                reference = provider()
         except Exception as error:
             self._error(str(error))
             return
@@ -390,16 +473,19 @@ class CamWorkspace(QWidget):
             self._error("Phiên chọn hình học đã bị hủy vì dự án đã thay đổi.")
             return
         previous = self._picked_reference
+        previous_hole = self._picked_hole_reference
         previous_status = self._picked_reference_resolved
         self._picked_reference = reference
+        self._picked_hole_reference = hole_reference
         self._picked_reference_resolved = self._resolve_picked_reference()
         if not self._picked_reference_resolved:
             self._picked_reference = previous
+            self._picked_hole_reference = previous_hole
             self._picked_reference_resolved = previous_status
-            self._error("Persistent profile could not be resolved unambiguously.")
+            self._error("Persistent geometry could not be resolved unambiguously.")
             return
         self.editor.show_reference(self._picked_reference, True)
-        self._stash_active_pocket_draft()
+        self._stash_active_operation_draft()
         self._update_generate_action()
         self.message.emit("Đã tạo GeometryReference; dùng Rebind để thay thế rõ ràng.")
 
@@ -407,7 +493,9 @@ class CamWorkspace(QWidget):
         """Clear an explicit binding; never choose a replacement automatically."""
         operation = self._selected_operation()
         if (operation is not None
-                and operation.strategy_key in {"contour_2d", "pocket_2_5d"}
+                and operation.strategy_key in {
+                    "contour_2d", "drilling_v1", "pocket_2_5d",
+                }
                 and operation.geometry_inputs):
             item = self.tree.currentItem()
             job = self._find_job(item)
@@ -422,9 +510,16 @@ class CamWorkspace(QWidget):
                     return
                 self.refresh(self._selected_key)
         self._picked_reference = None
+        self._picked_hole_reference = None
         self._picked_reference_resolved = False
-        self.editor.show_reference(None)
-        self._stash_active_pocket_draft()
+        self.editor.show_reference(
+            None,
+            subject=(
+                "hole" if operation is not None
+                and operation.strategy_key == "drilling_v1" else "profile"
+            ),
+        )
+        self._stash_active_operation_draft()
         self._update_generate_action()
 
     def cad_context_changed(self, *, force_invalidate: bool = False) -> None:
@@ -434,7 +529,11 @@ class CamWorkspace(QWidget):
         if not self._service.has_project:
             self._update_generate_action()
             return
-        if (self._face_resolver is not None or self._profile_resolver is not None) and self._generation is not None:
+        if (
+            self._face_resolver is not None
+            or self._profile_resolver is not None
+            or self._drilling_resolver is not None
+        ) and self._generation is not None:
             for job in self._service.cam_snapshot.jobs:
                 for setup in job.setups:
                     for operation in setup.operation_tree.operations:
@@ -451,6 +550,14 @@ class CamWorkspace(QWidget):
                                 resolver = self._face_resolver
                         elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
                             resolver = self._profile_resolver
+                        elif operation.strategy_key == "drilling_v1":
+                            try:
+                                drilling = DrillingStrategy.from_operation_parameters(
+                                    operation.parameters
+                                )
+                            except (RuntimeError, TypeError, ValueError):
+                                continue
+                            resolver = self._drilling_resolver
                         if resolver is None:
                             continue
                         if force_invalidate:
@@ -462,7 +569,11 @@ class CamWorkspace(QWidget):
                             ) is not None or invalidated
                             continue
                         try:
-                            result = resolver(operation.geometry_inputs[0].reference)
+                            result = (
+                                resolver(drilling.geometry, drilling.depth)
+                                if operation.strategy_key == "drilling_v1"
+                                else resolver(operation.geometry_inputs[0].reference)
+                            )
                         except (RuntimeError, TypeError, ValueError):
                             invalidated = self._execute(
                                 lambda app, operation_id=operation.operation_id:
@@ -485,6 +596,24 @@ class CamWorkspace(QWidget):
     def _resolve_picked_reference(self) -> bool:
         if self._picked_reference is None:
             return False
+        if self._picked_hole_reference is not None:
+            if self._drilling_resolver is None:
+                return True
+            operation = self._selected_operation()
+            if operation is None or operation.strategy_key != "drilling_v1":
+                return False
+            try:
+                current = DrillingStrategy.from_operation_parameters(
+                    operation.parameters
+                )
+                geometry = DrillGeometryInput(
+                    self._picked_hole_reference,
+                    self._picked_hole_reference.unit,
+                )
+                result = self._drilling_resolver(geometry, current.depth)
+            except (RuntimeError, TypeError, ValueError):
+                return False
+            return getattr(result, "status", None) is GeometryResolutionStatus.RESOLVED
         is_contour = (self._picked_reference.subshape_selector or "").startswith("hms_profile_v1:")
         resolver = self._profile_resolver if is_contour else self._face_resolver
         if resolver is None:
@@ -505,15 +634,21 @@ class CamWorkspace(QWidget):
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
         return setup.operation_tree.get_operation(node.operation_id) if node.operation_id else None
 
-    def _stash_active_pocket_draft(self) -> None:
-        """Keep unapplied Pocket editor state by stable operation identity only."""
+    def _stash_active_operation_draft(self) -> None:
+        """Keep unapplied operation drafts by stable domain identity only."""
         operation_id = self._active_editor_operation_id
         if operation_id is None:
             return
-        self._pocket_drafts[operation_id] = (
-            self.editor.pocket_state(),
-            self._picked_reference,
-        )
+        if self._active_editor_strategy_key == "pocket_2_5d":
+            self._pocket_drafts[operation_id] = (
+                self.editor.pocket_state(),
+                self._picked_reference,
+            )
+        elif self._active_editor_strategy_key == "drilling_v1":
+            self._drilling_drafts[operation_id] = (
+                self.editor.drilling_state(),
+                self._picked_hole_reference,
+            )
 
     def add_operation(self) -> None:
         context = self._tree_context()
@@ -592,6 +727,69 @@ class CamWorkspace(QWidget):
         if changed:
             self.refresh(("operation", str(node_id)))
 
+    def add_drilling_operation(self) -> None:
+        """Add one explicitly bound Drilling operation without hole recognition."""
+        context = self._tree_context()
+        if context is None:
+            return
+        if self._drilling_pick_provider is None or self._drilling_resolver is None:
+            self._error("Drilling geometry adapter chưa sẵn sàng.")
+            return
+        job_id, setup_id, _tree, parent_id = context
+        snapshot = self._service.cam_snapshot
+        setup = next(
+            value for job in snapshot.jobs for value in job.setups
+            if value.setup_id == setup_id
+        )
+        generation = self._generation
+        try:
+            hole_reference = self._drilling_pick_provider(setup.wcs.z_axis)
+            if not isinstance(hole_reference, HoleReference):
+                raise TypeError("Drilling picker returned an invalid reference")
+            strategy = _default_drilling_strategy(setup, hole_reference)
+            resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
+            if resolved.status is not GeometryResolutionStatus.RESOLVED:
+                message = (
+                    resolved.diagnostics[0].message
+                    if resolved.diagnostics else "Drilling geometry is invalid"
+                )
+                raise ValueError(message)
+            assembly = _find_drilling_assembly(snapshot, ToolFamily.DRILL)
+            machine = next((
+                value for value in snapshot.machine_definitions
+                if OperationCapability.DRILLING in value.capabilities.operations
+            ), None)
+            if assembly is None or machine is None:
+                raise ValueError(
+                    "Hãy tạo Tool/Machine cơ bản trước khi thêm Drilling."
+                )
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._error(str(error))
+            return
+        if generation is None or generation != self._service.cam_generation:
+            self._error("Phiên tạo Drilling đã stale vì dự án thay đổi.")
+            return
+        node_id, operation_id = CamNodeId.new(), OperationId.new()
+        operation_input = OperationGeometryInput(
+            GeometryInputId.new(), GeometryInputRole.DRIVE_GEOMETRY,
+            hole_reference.reference, True, hole_reference.reference.kind, 0,
+        )
+        requirement = MachineRequirement(
+            machine.machine_id, machine.revision, machine.content_fingerprint,
+            machine.unit, (OperationCapability.DRILLING,),
+        )
+        operation = Operation(
+            operation_id, node_id, OperationFamily.DRILLING, setup_id,
+            ToolAssemblyReference.from_assembly(assembly), (operation_input,),
+            strategy.to_operation_parameters(), requirement,
+        )
+        changed = self._execute(lambda app: app.update_tree(
+            job_id, setup_id,
+            lambda value: value.add_operation(parent_id, "Drilling", operation),
+        ))
+        if changed:
+            self.refresh(("operation", str(node_id)))
+
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
@@ -601,9 +799,64 @@ class CamWorkspace(QWidget):
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is None or operation.strategy_key not in {
-            "facing_2_5d", "contour_2d", "pocket_2_5d",
+            "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "drilling_v1":
+            generation = self._generation
+            draft = self.editor.drilling_draft(
+                setup.wcs.origin.unit, self._picked_hole_reference,
+            )
+            machine_id = (
+                operation.machine_requirement.machine_id
+                if operation.machine_requirement else None
+            )
+            if (
+                draft is None
+                or draft.to_operation_parameters() != operation.parameters
+                or self.editor.tool.currentData()
+                != str(operation.tool_assembly.assembly_id)
+                or self.editor.machine.currentData()
+                != (str(machine_id) if machine_id else None)
+                or len(operation.geometry_inputs) != 1
+                or self._picked_hole_reference is None
+                or self._picked_reference != operation.geometry_inputs[0].reference
+                or not self._picked_reference_resolved
+                or not operation.enabled
+            ):
+                self._error("Draft Drilling chưa hợp lệ hoặc chưa được Áp dụng.")
+                return
+            result = self._service.compute_drilling(
+                operation.operation_id,
+                expected_generation=generation,
+                geometry_resolver=self._drilling_resolver,
+            )
+            current = self._selected_operation()
+            try:
+                service_generation = self._service.cam_generation
+            except (ProjectError, RuntimeError):
+                service_generation = None
+            if (
+                generation != self._generation
+                or generation != service_generation
+                or current is None
+                or current.operation_id != operation.operation_id
+            ):
+                self._error("Kết quả Drilling đã stale và không được hiển thị.")
+                return
+            if result.accepted and result.artifact is not None:
+                self.message.emit("Drilling đã Generate và publish artifact hợp lệ.")
+                self.editor.set_error("")
+                failure_message = None
+            else:
+                failure_message = (
+                    result.diagnostics[0].message
+                    if result.diagnostics else "Drilling generation thất bại."
+                )
+            self.refresh(self._selected_key)
+            if failure_message is not None:
+                self._error(failure_message)
             return
         if operation.strategy_key == "pocket_2_5d":
             generation = self._generation
@@ -949,6 +1202,112 @@ class CamWorkspace(QWidget):
                     tree_mutation = lambda tree: tree.rename_node(
                         node_id, str(values["name"])
                     ).replace_operation(changed_operation)
+                elif current is not None and current.strategy_key == "drilling_v1":
+                    unit = setup.wcs.origin.unit
+                    if self._picked_hole_reference is None:
+                        raise ValueError(
+                            "Drilling thiếu hole geometry. Hãy Bind trước khi Áp dụng."
+                        )
+                    parameters = self.editor.drilling_draft(
+                        unit, self._picked_hole_reference,
+                    )
+                    if parameters is None:
+                        raise ValueError("Thông số Drilling chưa hợp lệ.")
+                    if self._drilling_resolver is None:
+                        raise ValueError("Drilling resolver chưa sẵn sàng.")
+                    resolved = self._drilling_resolver(
+                        parameters.geometry, parameters.depth,
+                    )
+                    if resolved.status is not GeometryResolutionStatus.RESOLVED:
+                        raise ValueError(
+                            resolved.diagnostics[0].message
+                            if resolved.diagnostics
+                            else "Drilling geometry không còn hợp lệ."
+                        )
+                    snapshot = self._service.cam_snapshot
+                    assembly = next((
+                        value for value in snapshot.tool_assemblies
+                        if str(value.assembly_id) == values["tool_id"]
+                    ), None)
+                    if assembly is None:
+                        raise ValueError("Drilling thiếu Tool Assembly hợp lệ.")
+                    tool = next((
+                        value for value in snapshot.tool_definitions
+                        if value.tool_id == assembly.tool_id
+                    ), None)
+                    expected_family = (
+                        ToolFamily.CENTER_DRILL
+                        if parameters.cycle is DrillingCycle.SPOT_DRILL
+                        else ToolFamily.DRILL
+                    )
+                    if tool is None or tool.family is not expected_family:
+                        raise ValueError(
+                            f"{parameters.cycle.value} yêu cầu tool {expected_family.value}."
+                        )
+                    machine = next((
+                        value for value in snapshot.machine_definitions
+                        if str(value.machine_id) == values["machine_id"]
+                    ), None)
+                    if (
+                        machine is None
+                        or OperationCapability.DRILLING
+                        not in machine.capabilities.operations
+                    ):
+                        raise ValueError("Drilling thiếu máy có capability DRILLING.")
+                    requirement = MachineRequirement(
+                        machine.machine_id, machine.revision,
+                        machine.content_fingerprint, machine.unit,
+                        (OperationCapability.DRILLING,),
+                    )
+                    existing = (
+                        current.geometry_inputs[0]
+                        if len(current.geometry_inputs) == 1 else None
+                    )
+                    reference = self._picked_hole_reference.reference
+                    input_id = (
+                        existing.input_id
+                        if existing is not None
+                        and existing.reference.reference_id == reference.reference_id
+                        else GeometryInputId.new()
+                    )
+                    geometry_inputs = (OperationGeometryInput(
+                        input_id, GeometryInputRole.DRIVE_GEOMETRY, reference,
+                        True, reference.kind, 0,
+                    ),)
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    parameter_changed = parameter_set != current.parameters
+                    geometry_changed = geometry_inputs != current.geometry_inputs
+                    tool_changed = tool_reference != current.tool_assembly
+                    machine_changed = requirement != current.machine_requirement
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if any((parameter_changed, geometry_changed, tool_changed,
+                            machine_changed, enabled_changed)):
+                        if geometry_changed:
+                            reason = DirtyReason.GEOMETRY_CHANGED
+                        elif tool_changed:
+                            reason = DirtyReason.TOOL_CHANGED
+                        elif machine_changed:
+                            reason = DirtyReason.MACHINE_CHANGED
+                        elif parameter_changed:
+                            reason = DirtyReason.PARAMETERS_CHANGED
+                        else:
+                            reason = DirtyReason.UPSTREAM_CHANGED
+                        changed_operation = replace(
+                            current,
+                            parameters=parameter_set,
+                            tool_assembly=tool_reference,
+                            machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs,
+                            enabled=enabled,
+                            revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason),
+                        )
+                    tree_mutation = lambda tree: tree.rename_node(
+                        node_id, str(values["name"])
+                    ).replace_operation(changed_operation)
                 else:
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).set_enabled(node_id, bool(values["enabled"]))
                 result = self._execute(lambda app: app.update_tree(job.job_id, setup.setup_id, tree_mutation))
@@ -957,7 +1316,7 @@ class CamWorkspace(QWidget):
             if result is not None:
                 self.editor.set_error("")
                 self.refresh(self._selected_key)
-        except (TypeError, ValueError) as error:
+        except (RuntimeError, TypeError, ValueError) as error:
             self.editor.set_error(str(error))
 
     def _tree_context(self):
@@ -1043,6 +1402,23 @@ class CamWorkspace(QWidget):
                     self._picked_reference_resolved and
                     self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
                     self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
+            if operation.strategy_key == "drilling_v1":
+                draft = self.editor.drilling_draft(
+                    setup.wcs.origin.unit, self._picked_hole_reference,
+                )
+                return bool(
+                    operation.enabled
+                    and draft is not None
+                    and draft.to_operation_parameters() == operation.parameters
+                    and len(operation.geometry_inputs) == 1
+                    and self._picked_hole_reference is not None
+                    and self._picked_reference == operation.geometry_inputs[0].reference
+                    and self._picked_reference_resolved
+                    and self.editor.tool.currentData()
+                    == str(operation.tool_assembly.assembly_id)
+                    and self.editor.machine.currentData()
+                    == (str(machine_id) if machine_id else None)
+                )
             draft = self.editor.facing_draft(setup.wcs.origin.unit)
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
@@ -1072,6 +1448,10 @@ class _CamPropertiesEditor(QWidget):
         self._pocket_fields = {key: QLineEdit() for key in (
             "top", "bottom", "stepdown", "stepover", "allowance", "axial", "clearance",
             "retract", "feed", "plunge", "spindle", "tolerance")}
+        self._drilling_fields = {key: QLineEdit() for key in (
+            "top", "depth", "peck", "clearance", "retract", "feed",
+            "spindle", "dwell", "tolerance",
+        )}
         self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
         self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
         self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
@@ -1079,6 +1459,8 @@ class _CamPropertiesEditor(QWidget):
         self.contour_direction = QComboBox(); self.contour_direction.addItems([item.value for item in ContourCutDirection])
         self.pocket_entry = QComboBox(); self.pocket_entry.addItems([item.value for item in PocketEntryPolicy])
         self.pocket_direction = QComboBox(); self.pocket_direction.addItems([item.value for item in PocketCuttingDirection])
+        self.drilling_cycle = QComboBox(); self.drilling_cycle.addItems([item.value for item in DrillingCycle])
+        self.drilling_retract = QComboBox(); self.drilling_retract.addItems([item.value for item in DrillRetractPolicy])
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
@@ -1122,6 +1504,16 @@ class _CamPropertiesEditor(QWidget):
             form.addRow(label, self._pocket_fields[key])
         form.addRow("Pocket entry", self.pocket_entry)
         form.addRow("Pocket direction", self.pocket_direction)
+        form.addRow("Drilling cycle", self.drilling_cycle)
+        for label, key in (
+            ("Drilling Top Z", "top"), ("Drilling depth", "depth"),
+            ("Peck depth", "peck"), ("Drilling clearance Z", "clearance"),
+            ("Drilling retract Z", "retract"), ("Drilling feed", "feed"),
+            ("Drilling spindle", "spindle"), ("Drilling dwell (s)", "dwell"),
+            ("Drilling tolerance", "tolerance"),
+        ):
+            form.addRow(label, self._drilling_fields[key])
+        form.addRow("Peck retract", self.drilling_retract)
         form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
         form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
@@ -1131,9 +1523,11 @@ class _CamPropertiesEditor(QWidget):
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for field in self._pocket_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
+        for field in self._drilling_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for combo in (self.boundary_source, self.direction, self.profile_source, self.contour_side,
                       self.contour_direction, self.pocket_entry, self.pocket_direction,
-                      self.tool, self.machine):
+                      self.drilling_cycle, self.drilling_retract, self.tool, self.machine):
             combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
         self.finishing_pass.toggled.connect(lambda _checked: self.draft_changed.emit())
         self.multiple_depth_passes.toggled.connect(lambda _checked: self.draft_changed.emit())
@@ -1143,6 +1537,7 @@ class _CamPropertiesEditor(QWidget):
         for field in self._facing_fields.values(): field.clear()
         for field in self._contour_fields.values(): field.clear()
         for field in self._pocket_fields.values(): field.clear()
+        for field in self._drilling_fields.values(): field.clear()
         self.status.setText("—"); self.toolpath_metadata.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -1217,6 +1612,33 @@ class _CamPropertiesEditor(QWidget):
             self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
             if operation.machine_requirement:
                 self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
+        elif operation is not None and operation.strategy_key == "drilling_v1":
+            parameters = DrillingStrategy.from_operation_parameters(operation.parameters)
+            values = {
+                "top": parameters.top_z.value,
+                "depth": parameters.depth.depth.value,
+                "peck": (
+                    "" if parameters.peck_depth is None
+                    else parameters.peck_depth.value
+                ),
+                "clearance": parameters.clearance_height.value,
+                "retract": parameters.retract_height.value,
+                "feed": parameters.feed_rate.value,
+                "spindle": parameters.spindle_speed.value,
+                "dwell": parameters.dwell_seconds,
+                "tolerance": parameters.tolerance.value,
+            }
+            for key, value in values.items():
+                self._drilling_fields[key].setText(str(value))
+            self.drilling_cycle.setCurrentText(parameters.cycle.value)
+            self.drilling_retract.setCurrentText(parameters.retract_policy.value)
+            self.tool.setCurrentIndex(
+                self.tool.findData(str(operation.tool_assembly.assembly_id))
+            )
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(self.machine.findData(
+                    str(operation.machine_requirement.machine_id)
+                ))
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -1235,9 +1657,12 @@ class _CamPropertiesEditor(QWidget):
         self,
         reference: GeometryReference | None,
         resolved: bool | None = None,
+        *,
+        subject: str = "profile",
     ) -> None:
         if reference is None:
-            self.status.setText("PROFILE MISSING — chưa Bind profile")
+            label = "HOLE" if subject == "hole" else "PROFILE"
+            self.status.setText(f"{label} MISSING — chưa Bind {subject}")
         else:
             state = "RESOLVED" if resolved else "STALE/INVALID"
             self.status.setText(
@@ -1271,11 +1696,40 @@ class _CamPropertiesEditor(QWidget):
         self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
         self.enabled.setChecked(bool(state.get("enabled", False)))
 
+    def drilling_state(self) -> dict[str, object]:
+        """Capture transient Drilling editor primitives without persistence."""
+        return {
+            "name": self._fields["name"].text(),
+            "fields": {
+                key: field.text() for key, field in self._drilling_fields.items()
+            },
+            "cycle": self.drilling_cycle.currentText(),
+            "retract": self.drilling_retract.currentText(),
+            "tool_id": self.tool.currentData(),
+            "machine_id": self.machine.currentData(),
+            "enabled": self.enabled.isChecked(),
+        }
+
+    def restore_drilling_state(self, state: dict[str, object]) -> None:
+        """Restore one unapplied Drilling draft by stable operation ID."""
+        fields = state.get("fields")
+        if not isinstance(fields, dict):
+            return
+        self._fields["name"].setText(str(state.get("name", "")))
+        for key, field in self._drilling_fields.items():
+            field.setText(str(fields.get(key, "")))
+        self.drilling_cycle.setCurrentText(str(state.get("cycle", "")))
+        self.drilling_retract.setCurrentText(str(state.get("retract", "")))
+        self.tool.setCurrentIndex(self.tool.findData(state.get("tool_id")))
+        self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
+        self.enabled.setChecked(bool(state.get("enabled", False)))
+
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
                       **{key: field.text() for key, field in self._facing_fields.items()},
                       **{f"contour_{key}": field.text() for key, field in self._contour_fields.items()},
                       **{f"pocket_{key}": field.text() for key, field in self._pocket_fields.items()},
+                      **{f"drilling_{key}": field.text() for key, field in self._drilling_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
@@ -1284,6 +1738,8 @@ class _CamPropertiesEditor(QWidget):
                       "contour_direction": self.contour_direction.currentText(),
                       "pocket_entry": self.pocket_entry.currentText(),
                       "pocket_direction": self.pocket_direction.currentText(),
+                      "drilling_cycle": self.drilling_cycle.currentText(),
+                      "drilling_retract": self.drilling_retract.currentText(),
                       "finishing_pass": self.finishing_pass.isChecked(),
                       "multiple_depth_passes": self.multiple_depth_passes.isChecked()})
 
@@ -1370,6 +1826,59 @@ class _CamPropertiesEditor(QWidget):
         except (TypeError, ValueError):
             return None
 
+    def drilling_draft(
+        self,
+        unit: LengthUnit,
+        hole_reference: HoleReference | None,
+    ) -> DrillingStrategy | None:
+        try:
+            if hole_reference is None or hole_reference.unit is not unit:
+                return None
+            feed_unit = (
+                FeedUnit.MM_PER_MINUTE
+                if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+            )
+            top_z = float(self._drilling_fields["top"].text())
+            depth = float(self._drilling_fields["depth"].text())
+            cycle = DrillingCycle(self.drilling_cycle.currentText())
+            peck = (
+                Length(float(self._drilling_fields["peck"].text()), unit)
+                if cycle is DrillingCycle.PECK_DRILL else None
+            )
+            return DrillingStrategy(
+                unit=unit,
+                geometry=DrillGeometryInput(hole_reference, unit),
+                depth=DrillDepthDefinition(
+                    unit, Length(top_z, unit), Length(top_z - depth, unit),
+                ),
+                cycle=cycle,
+                clearance_height=Length(
+                    float(self._drilling_fields["clearance"].text()), unit,
+                ),
+                retract_height=Length(
+                    float(self._drilling_fields["retract"].text()), unit,
+                ),
+                feed_rate=FeedRate(
+                    float(self._drilling_fields["feed"].text()), feed_unit,
+                ),
+                spindle_speed=SpindleSpeed(
+                    float(self._drilling_fields["spindle"].text())
+                ),
+                dwell_seconds=float(self._drilling_fields["dwell"].text()),
+                peck_depth=peck,
+                retract_policy=DrillRetractPolicy(
+                    self.drilling_retract.currentText()
+                ),
+                approach_policy=(
+                    DrillApproachPolicy.RAPID_CLEARANCE_FEED_RETRACT
+                ),
+                tolerance=Length(
+                    float(self._drilling_fields["tolerance"].text()), unit,
+                ),
+            )
+        except (TypeError, ValueError):
+            return None
+
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:
     return LengthUnit.INCH if session and session.manifest.units is UnitSystem.INCH else LengthUnit.MM
@@ -1443,6 +1952,52 @@ def _default_pocket_parameters(setup: Setup) -> OperationParameterSet:
             ("tolerance", 1.0e-7 * scale),
         ),
     )
+
+
+def _default_drilling_strategy(
+    setup: Setup,
+    hole_reference: HoleReference,
+) -> DrillingStrategy:
+    """Create a conservative bound DRILL draft at the selected drilling plane."""
+    unit = setup.wcs.origin.unit
+    if hole_reference.unit is not unit:
+        raise ValueError("Drilling geometry unit does not match Setup WCS.")
+    delta = Vector3(
+        hole_reference.plane_origin.x - setup.wcs.origin.x,
+        hole_reference.plane_origin.y - setup.wcs.origin.y,
+        hole_reference.plane_origin.z - setup.wcs.origin.z,
+    )
+    top_z = delta.dot(setup.wcs.z_axis)
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    feed_unit = (
+        FeedUnit.MM_PER_MINUTE
+        if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+    )
+    return DrillingStrategy(
+        unit=unit,
+        geometry=DrillGeometryInput(hole_reference, unit),
+        depth=DrillDepthDefinition(
+            unit, Length(top_z, unit), Length(top_z - 5.0 * scale, unit),
+        ),
+        cycle=DrillingCycle.DRILL,
+        clearance_height=Length(top_z + 8.0 * scale, unit),
+        retract_height=Length(top_z + 3.0 * scale, unit),
+        feed_rate=FeedRate(120.0 * scale, feed_unit),
+        spindle_speed=SpindleSpeed(1500.0),
+        dwell_seconds=0.0,
+        retract_policy=DrillRetractPolicy.RETRACT_HEIGHT,
+        approach_policy=DrillApproachPolicy.RAPID_CLEARANCE_FEED_RETRACT,
+        tolerance=Length(1.0e-7 * scale, unit),
+    )
+
+
+def _find_drilling_assembly(snapshot, family: ToolFamily):
+    tools = {value.tool_id: value for value in snapshot.tool_definitions}
+    return next((
+        assembly for assembly in snapshot.tool_assemblies
+        if tools.get(assembly.tool_id) is not None
+        and tools[assembly.tool_id].family is family
+    ), None)
 
 
 def _active_job(snapshot):
