@@ -84,10 +84,19 @@ class OcpSelectionController:
         self._context.InitSelected()
         while self._context.MoreSelected():
             selected_shape = self._context.SelectedShape()
+            object_id = self._object_id_for_selected_shape(selected_shape)
+            if selected_shape.IsNull() and object_id is not None:
+                selected_shape = self._first_topology_shape(
+                    self._object_shapes[object_id]
+                )
             if not selected_shape.IsNull():
-                index = self._shape_index(selected_shape)
+                index = self._shape_index(selected_shape, object_id)
+                if index <= 0 and object_id is not None:
+                    selected_shape = self._first_topology_shape(
+                        self._object_shapes[object_id]
+                    )
+                    index = self._shape_index(selected_shape, object_id)
                 if index > 0:
-                    object_id = self._object_id_for_selected_shape(selected_shape)
                     items.append(
                         SelectionMetadata(
                             document_id=self._document_id,
@@ -136,12 +145,31 @@ class OcpSelectionController:
             self._context.Deactivate(presentation)
             self._context.Activate(presentation, selection_index)
 
-    def _shape_index(self, selected_shape: TopoDS_Shape) -> int:
+    def _shape_index(
+        self,
+        selected_shape: TopoDS_Shape,
+        object_id: CadObjectId | None,
+    ) -> int:
         if self._document_shape is None:
             return 0
+        index = self._shape_index_in(self._document_shape, selected_shape)
+        if index > 0 or object_id is None:
+            return index
+        object_shape = self._object_shapes.get(object_id)
+        return (
+            self._shape_index_in(object_shape, selected_shape)
+            if object_shape is not None
+            else 0
+        )
+
+    def _shape_index_in(
+        self,
+        container: TopoDS_Shape,
+        selected_shape: TopoDS_Shape,
+    ) -> int:
         shapes = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(
-            self._document_shape,
+            container,
             _SELECTION_TOPOLOGY[self._mode],
             shapes,
         )
@@ -169,3 +197,12 @@ class OcpSelectionController:
             if shapes.FindIndex(selected_shape) > 0:
                 return object_id
         return None
+
+    def _first_topology_shape(self, container: TopoDS_Shape) -> TopoDS_Shape:
+        shapes = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(
+            container,
+            _SELECTION_TOPOLOGY[self._mode],
+            shapes,
+        )
+        return shapes.FindKey(1) if shapes.Extent() > 0 else TopoDS_Shape()

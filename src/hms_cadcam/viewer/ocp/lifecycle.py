@@ -6,6 +6,7 @@ import ctypes
 import logging
 
 from OCP.AIS import (
+    AIS_ColoredShape,
     AIS_InteractiveContext,
     AIS_InteractiveObject,
     AIS_Shape,
@@ -16,11 +17,20 @@ from OCP.OpenGl import OpenGl_GraphicDriver
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.Poly import Poly_Triangulation
 from OCP.TopoDS import TopoDS_Shape
+from OCP.TopAbs import TopAbs_ShapeEnum
+from OCP.TopExp import TopExp
+from OCP.TopTools import TopTools_IndexedMapOfShape
 from OCP.V3d import V3d_View, V3d_Viewer
 from OCP.WNT import WNT_Window
 
-from hms_cadcam.cad.models import CadDocumentTree, CadObjectId
-from hms_cadcam.viewer.models import DEFAULT_OBJECT_COLOR, DisplayMode
+from hms_cadcam.cad.models import CadDocumentTree, CadObjectId, XcafColor
+from hms_cadcam.cad.ocp.xcaf import OcpXcafPresentationSource
+from hms_cadcam.viewer.models import (
+    DEFAULT_OBJECT_COLOR,
+    DisplayMode,
+    ObjectAppearance,
+    ObjectColor,
+)
 from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
 
 
@@ -210,6 +220,65 @@ class OcpViewportLifecycle:
                 ) from error
             raise
 
+    def prepare_xcaf_registry(
+        self,
+        tree: CadDocumentTree,
+        sources: dict[CadObjectId, OcpXcafPresentationSource],
+        mode: DisplayMode,
+    ) -> OcpPresentationRegistry:
+        """Prepare one XCAF-aware presentation for every placed part occurrence."""
+        candidates: dict[CadObjectId, AIS_InteractiveObject] = {}
+        base_appearances: dict[CadObjectId, ObjectAppearance] = {}
+        native_base_styles: dict[
+            CadObjectId, tuple[tuple[TopoDS_Shape, ObjectColor], ...]
+        ] = {}
+        try:
+            for node in tree.presentation_nodes:
+                source = sources.get(node.object_id)
+                if source is None:
+                    raise KeyError(f"Missing XCAF source for CAD object: {node.object_id}")
+                candidate = AIS_ColoredShape(source.shape)
+                styles = _source_styles(candidate, source)
+                for styled_shape, color in styles:
+                    candidate.SetCustomColor(
+                        styled_shape, _quantity_color(color)
+                    )
+                self._prepare_xcaf_presentation(candidate, mode)
+                effective_color = _source_color(node.source_appearance)
+                base_appearances[node.object_id] = ObjectAppearance(
+                    color=effective_color or DEFAULT_OBJECT_COLOR
+                )
+                native_base_styles[node.object_id] = styles
+                candidates[node.object_id] = candidate
+            return OcpPresentationRegistry(
+                self.context,
+                tree,
+                candidates,
+                base_appearances=base_appearances,
+                native_base_styles=native_base_styles,
+            )
+        except Exception as error:
+            try:
+                self._remove_candidate_presentations(tuple(candidates.values()))
+            except Exception:
+                raise RuntimeError(
+                    "XCAF registry prepare and candidate cleanup both failed"
+                ) from error
+            raise
+
+    def _prepare_xcaf_presentation(
+        self,
+        presentation: AIS_ColoredShape,
+        mode: DisplayMode,
+    ) -> None:
+        """Display XCAF styles without replacing product/subshape source colors."""
+        try:
+            self.context.Display(presentation, False)
+            self.apply_display_mode(presentation, mode, False)
+        except Exception:
+            self.context.Remove(presentation, False)
+            raise
+
     def commit_registry(self, registry: OcpPresentationRegistry) -> None:
         """Atomically promote a prepared registry and dispose the previous one."""
         if registry is self._registry:
@@ -379,3 +448,45 @@ class OcpViewportLifecycle:
         self._viewer = None
         self._driver = None
         self._display_connection = None
+
+
+def _source_color(appearance) -> ObjectColor | None:
+    color: XcafColor | None = appearance.surface_color or appearance.generic_color
+    if color is None:
+        return None
+    return ObjectColor(color.red, color.green, color.blue)
+
+
+def _quantity_color(color: ObjectColor) -> Quantity_Color:
+    return Quantity_Color(color.red, color.green, color.blue, Quantity_TOC_RGB)
+
+
+def _face_shapes(shape: TopoDS_Shape) -> tuple[TopoDS_Shape, ...]:
+    faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_ShapeEnum.TopAbs_FACE, faces)
+    return tuple(faces.FindKey(index) for index in range(1, faces.Extent() + 1))
+
+
+def _uniform_styles(
+    shape: TopoDS_Shape,
+    color: ObjectColor,
+) -> tuple[tuple[TopoDS_Shape, ObjectColor], ...]:
+    return ((shape, color),) + tuple((face, color) for face in _face_shapes(shape))
+
+
+def _source_styles(
+    presentation: AIS_ColoredShape,
+    source: OcpXcafPresentationSource,
+) -> tuple[tuple[TopoDS_Shape, ObjectColor], ...]:
+    occurrence_color = _source_color(source.occurrence_appearance)
+    if occurrence_color is not None:
+        return _uniform_styles(presentation.Shape(), occurrence_color)
+    styles: list[tuple[TopoDS_Shape, ObjectColor]] = []
+    product_color = _source_color(source.product_appearance)
+    if product_color is not None:
+        styles.extend(_uniform_styles(presentation.Shape(), product_color))
+    for subshape in source.subshape_sources:
+        color = _source_color(subshape.source_appearance)
+        if color is not None:
+            styles.append((subshape.shape, color))
+    return tuple(styles)

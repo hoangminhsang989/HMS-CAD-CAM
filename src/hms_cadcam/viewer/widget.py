@@ -226,6 +226,19 @@ class CadViewportWidget(QWidget):
             clear_error=True,
         )
 
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> bool:
+        return self._invoke(
+            "reset object appearance",
+            self._backend.reset_object_appearance,
+            document_id,
+            object_id,
+            clear_error=True,
+        )
+
     def shutdown(self) -> None:
         """Close backend resources idempotently before HWND destruction."""
         if self._closed:

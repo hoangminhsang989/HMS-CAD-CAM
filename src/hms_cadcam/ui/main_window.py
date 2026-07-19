@@ -439,7 +439,15 @@ class MainWindow(QMainWindow):
                     if appearance.visible
                     else Qt.CheckState.Unchecked,
                 )
-                tree_item.setText(1, "Hiện" if appearance.visible else "Ẩn")
+                node = tree_item.data(0, _OBJECT_NODE_ROLE)
+                if isinstance(node, CadObjectNode) and node.xcaf_role is not None:
+                    tree_item.setText(
+                        1,
+                        f"{node.xcaf_role.value.upper()} · {node.product_name} · "
+                        f"{'Hiện' if appearance.visible else 'Ẩn'}",
+                    )
+                else:
+                    tree_item.setText(1, "Hiện" if appearance.visible else "Ẩn")
         self._tree_sync_guard = False
         if self._selected_object_ids and not self._active_selection:
             self._show_object_properties(self._selected_object_ids[0])
@@ -498,6 +506,14 @@ class MainWindow(QMainWindow):
             self._show_document_properties()
 
     def _show_selection_properties(self, item: SelectionMetadata) -> None:
+        node = (
+            self._active_document_tree.find(item.object_id)
+            if self._active_document_tree is not None and item.object_id is not None
+            else None
+        )
+        if node is not None and node.occurrence_id is not None:
+            self._show_object_properties(node.object_id)
+            return
         rows = [
             ("Loại topology", item.topology.value.upper()),
             ("Selection ID", item.selection_id),
@@ -515,18 +531,33 @@ class MainWindow(QMainWindow):
         if node is None or appearance is None:
             self._show_document_properties()
             return
-        self._set_properties(
-            (
-                ("Topology object", node.label),
-                ("Object ID", str(node.object_id)),
-                ("Loại", node.kind.value.upper()),
-                ("Hiển thị", "Có" if appearance.visible else "Không"),
-                ("Màu", appearance.color.to_hex()),
-                ("Transparency", f"{appearance.transparency:.2f}"),
-                ("Bounding box", _format_bounds(node.bounding_box)),
-                ("Assembly semantics", "Không có — topology tree, chưa có XCAF"),
+        rows = [
+            ("Object", node.label),
+            ("Object ID", str(node.object_id)),
+            ("Loại", node.kind.value.upper()),
+            ("Hiển thị", "Có" if appearance.visible else "Không"),
+            ("Effective color", appearance.color.to_hex()),
+            ("Effective transparency", f"{appearance.transparency:.2f}"),
+            ("Bounding box", _format_bounds(node.bounding_box)),
+        ]
+        if node.occurrence_id is not None:
+            assert node.absolute_transform is not None
+            rows.extend(
+                (
+                    ("Occurrence name", node.label),
+                    ("Product name", node.product_name or "-"),
+                    ("Role", node.xcaf_role.value.upper() if node.xcaf_role else "-"),
+                    (
+                        "Absolute translation",
+                        _format_translation(node.absolute_transform.translation),
+                    ),
+                    (
+                        "Source appearance",
+                        _format_source_appearance(node.source_appearance),
+                    ),
+                )
             )
-        )
+        self._set_properties(tuple(rows))
 
     def _show_document_properties(self) -> None:
         metadata = self._active_document_metadata
@@ -575,14 +606,6 @@ class MainWindow(QMainWindow):
             self._configure_object_item(document, tree.root)
         document.addChild(QTreeWidgetItem(["Document ID", str(metadata.document_id)]))
         document.addChild(QTreeWidgetItem(["Geometry", metadata.geometry_kind.value]))
-        document.addChild(
-            QTreeWidgetItem(
-                [
-                    "Giới hạn",
-                    "Topology only; chưa có XCAF name/instance/product/transform",
-                ]
-            )
-        )
         if metadata.topology_counts is not None:
             counts = metadata.topology_counts
             document.addChild(
@@ -607,7 +630,10 @@ class MainWindow(QMainWindow):
             QTreeWidgetItem(["Bounding box", _format_bounds(metadata.bounding_box)])
         )
         if tree is not None and tree.document_id == metadata.document_id:
-            topology = QTreeWidgetItem(["Topology objects", "Lazy"])
+            is_xcaf = any(node.occurrence_id is not None for node in tree.root.children)
+            topology = QTreeWidgetItem(
+                ["Assembly occurrences" if is_xcaf else "Topology objects", "Lazy"]
+            )
             topology.setData(0, _TOPOLOGY_GROUP_ROLE, True)
             for node in tree.root.children:
                 topology.addChild(self._make_object_item(node))
@@ -618,8 +644,13 @@ class MainWindow(QMainWindow):
 
     def _make_object_item(self, node: CadObjectNode) -> QTreeWidgetItem:
         appearance = self._object_appearances.get(node.object_id, ObjectAppearance())
+        detail = (
+            f"{node.xcaf_role.value.upper()} · {node.product_name}"
+            if node.xcaf_role is not None
+            else ("Hiện" if appearance.visible else "Ẩn")
+        )
         item = QTreeWidgetItem(
-            [node.label, "Hiện" if appearance.visible else "Ẩn"]
+            [node.label, detail]
         )
         self._configure_object_item(item, node)
         if node.children:
@@ -741,6 +772,12 @@ class MainWindow(QMainWindow):
             "Transparency…",
             lambda: self._choose_object_transparency(document_id, object_id),
         )
+        menu.addAction(
+            "Reset Appearance",
+            lambda: self.cad_controller.reset_object_appearance(
+                document_id, object_id
+            ),
+        )
         menu.exec(self._project_tree.viewport().mapToGlobal(position))
 
     def _choose_object_color(
@@ -857,6 +894,19 @@ def _format_bounds(bounds) -> str:
         bounds.z_max,
     )
     return ", ".join(f"{value:.3f}" for value in values)
+
+
+def _format_translation(values: tuple[float, float, float]) -> str:
+    return f"X={values[0]:.3f}, Y={values[1]:.3f}, Z={values[2]:.3f}"
+
+
+def _format_source_appearance(source) -> str:
+    if source is None:
+        return "Default"
+    color = source.surface_color or source.generic_color or source.curve_color
+    if color is None:
+        return "Default"
+    return ObjectColor(color.red, color.green, color.blue).to_hex()
 
 
 def _format_units(metadata: CadDocumentMetadata) -> str:

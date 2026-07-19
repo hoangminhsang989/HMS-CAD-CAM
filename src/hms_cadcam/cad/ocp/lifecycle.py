@@ -22,6 +22,7 @@ from hms_cadcam.cad.models import (
     CadUnits,
     MeshStatistics,
     XcafAssemblyMetadata,
+    XcafNodeRole,
     XcafOccurrenceId,
     XcafOccurrenceMetadata,
     XcafProductId,
@@ -39,8 +40,11 @@ from hms_cadcam.cad.ocp.topology import (
 from hms_cadcam.cad.ocp.xcaf import (
     OcpXcafDocumentData,
     OcpXcafImportPayload,
+    OcpXcafPresentationSource,
     build_xcaf_document_data,
+    build_xcaf_document_tree,
     resolve_occurrence_shape,
+    resolve_presentation_sources,
 )
 
 
@@ -176,10 +180,16 @@ class OcpDocumentStore:
             topology_counts=topology_counts,
             source_path=source_path,
         )
-        tree, presentation_shapes = build_brep_document_tree(
-            document_id,
-            payload.shape,
+        tree = build_xcaf_document_tree(
+            document_id, payload, data, metadata.bounding_box
         )
+        presentation_shapes = {
+            data.object_ids_by_occurrence[occurrence_id]: resolve_occurrence_shape(
+                payload, data, occurrence_id
+            )
+            for occurrence_id, occurrence in data.occurrences.items()
+            if occurrence.role is XcafNodeRole.PART
+        }
         record = _XcafDocumentRecord(
             payload,
             data,
@@ -330,6 +340,14 @@ class OcpDocumentStore:
         """Resolve a native absolutely placed occurrence for trusted adapters."""
         record = self._get_xcaf_record(document_id)
         return resolve_occurrence_shape(record.payload, record.data, occurrence_id)
+
+    def resolve_xcaf_presentation_sources(
+        self,
+        document_id: CadDocumentId,
+    ) -> dict[CadObjectId, OcpXcafPresentationSource]:
+        """Resolve native XCAF labels/locations for trusted viewer adapters."""
+        record = self._get_xcaf_record(document_id)
+        return resolve_presentation_sources(record.payload, record.data)
 
     def release(self, document_id: CadDocumentId) -> None:
         """Remove the record so its native shape can be released."""

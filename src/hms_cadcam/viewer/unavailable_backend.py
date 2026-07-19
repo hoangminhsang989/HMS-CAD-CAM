@@ -101,6 +101,13 @@ class UnavailableCadViewportBackend:
     ) -> None:
         del document_id, object_id, transparency
 
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        del document_id, object_id
+
     def resize(self, width: int, height: int) -> None:
         del width, height
 

@@ -77,6 +77,12 @@ class CadViewportBackend(Protocol):
         transparency: float,
     ) -> None: ...
 
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None: ...
+
     def resize(self, width: int, height: int) -> None: ...
 
     def handle_mouse_press(

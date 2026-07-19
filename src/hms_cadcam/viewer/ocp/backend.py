@@ -9,6 +9,7 @@ from OCP.V3d import V3d_TypeOfOrientation
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.models import (
     CadDocumentId,
+    CadDocumentKind,
     CadDocumentTree,
     CadGeometryKind,
     CadObjectId,
@@ -91,6 +92,8 @@ class OcpCadViewportBackend:
         old_tree = self._tree
         old_presentation = self._lifecycle.presentation
         old_presentations = dict(getattr(self._lifecycle, "presentations", {}))
+        if old_presentation is None and old_presentations:
+            old_presentation = next(iter(old_presentations.values()))
         metadata = self._kernel.get_document_metadata(document_id)
         tree = self._kernel.get_document_tree(document_id)
         shape = None
@@ -103,11 +106,21 @@ class OcpCadViewportBackend:
                 presentation_shapes = self._kernel._resolve_presentation_shapes(
                     document_id
                 )
-                registry = self._lifecycle.prepare_registry(
-                    tree,
-                    presentation_shapes,
-                    self._display_mode,
-                )
+                if metadata.document_kind in {
+                    CadDocumentKind.XCAF_PART,
+                    CadDocumentKind.XCAF_ASSEMBLY,
+                }:
+                    registry = self._lifecycle.prepare_xcaf_registry(
+                        tree,
+                        self._kernel._resolve_xcaf_presentation_sources(document_id),
+                        self._display_mode,
+                    )
+                else:
+                    registry = self._lifecycle.prepare_registry(
+                        tree,
+                        presentation_shapes,
+                        self._display_mode,
+                    )
             else:
                 triangulation = self._kernel._resolve_triangulation(document_id)
                 registry = self._lifecycle.prepare_registry(
@@ -295,6 +308,13 @@ class OcpCadViewportBackend:
             object_id,
             transparency,
         )
+
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        self._require_registry(document_id).reset_appearance(object_id)
 
     def resize(self, width: int, height: int) -> None:
         if width < 0 or height < 0:

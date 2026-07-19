@@ -15,8 +15,13 @@ from OCP.XCAFDoc import XCAFDoc_ColorTool, XCAFDoc_ColorType, XCAFDoc_ShapeTool
 
 from hms_cadcam.cad.exceptions import CadImportError
 from hms_cadcam.cad.models import (
+    BoundingBox,
     CadDocumentId,
     CadDocumentKind,
+    CadDocumentTree,
+    CadObjectId,
+    CadObjectKind,
+    CadObjectNode,
     XcafAssemblyMetadata,
     XcafColor,
     XcafNameSource,
@@ -29,6 +34,7 @@ from hms_cadcam.cad.models import (
     XcafSubshapeAppearance,
     XcafTransform,
 )
+from hms_cadcam.cad.ocp.topology import get_bounding_box
 
 
 @dataclass(slots=True)
@@ -55,6 +61,8 @@ class OcpXcafDocumentData:
     absolute_locations: dict[XcafOccurrenceId, TopLoc_Location]
     product_ids_by_label_entry: dict[str, XcafProductId]
     occurrence_ids_by_label_entry: dict[str, tuple[XcafOccurrenceId, ...]]
+    object_ids_by_occurrence: dict[XcafOccurrenceId, CadObjectId]
+    occurrence_ids_by_object: dict[CadObjectId, XcafOccurrenceId]
 
     def release(self) -> None:
         """Drop all retained native labels and locations before record release."""
@@ -63,6 +71,26 @@ class OcpXcafDocumentData:
         self.absolute_locations.clear()
         self.product_ids_by_label_entry.clear()
         self.occurrence_ids_by_label_entry.clear()
+        self.object_ids_by_occurrence.clear()
+        self.occurrence_ids_by_object.clear()
+
+
+@dataclass(frozen=True, slots=True)
+class OcpXcafSubshapeSource:
+    """Private absolutely placed subshape source style."""
+
+    shape: TopoDS_Shape
+    source_appearance: XcafSourceAppearance
+
+
+@dataclass(frozen=True, slots=True)
+class OcpXcafPresentationSource:
+    """Private absolutely placed XCAF style input for one occurrence."""
+
+    shape: TopoDS_Shape
+    occurrence_appearance: XcafSourceAppearance
+    product_appearance: XcafSourceAppearance
+    subshape_sources: tuple[OcpXcafSubshapeSource, ...]
 
 
 def build_xcaf_document_data(
@@ -217,6 +245,115 @@ def build_xcaf_document_data(
         occurrence_ids_by_label_entry={
             entry: tuple(ids) for entry, ids in occurrence_ids_by_entry.items()
         },
+        object_ids_by_occurrence={},
+        occurrence_ids_by_object={},
+    )
+
+
+def build_xcaf_document_tree(
+    document_id: CadDocumentId,
+    payload: OcpXcafImportPayload,
+    data: OcpXcafDocumentData,
+    document_bounds: BoundingBox,
+) -> CadDocumentTree:
+    """Build an occurrence tree with one presentation per placed part leaf."""
+
+    def build_node(occurrence_id: XcafOccurrenceId) -> CadObjectNode:
+        occurrence = data.occurrences[occurrence_id]
+        product = data.products[occurrence.product_id]
+        object_id = CadObjectId(
+            f"{document_id}:xcaf-object:{occurrence_id.value.rsplit(':', 1)[-1]}"
+        )
+        data.object_ids_by_occurrence[occurrence_id] = object_id
+        data.occurrence_ids_by_object[object_id] = occurrence_id
+        children = tuple(build_node(item) for item in occurrence.child_occurrence_ids)
+        source = _effective_source_appearance(
+            occurrence.source_appearance,
+            product.source_appearance,
+        )
+        return CadObjectNode(
+            document_id=document_id,
+            object_id=object_id,
+            kind=(
+                CadObjectKind.ASSEMBLY
+                if occurrence.role is XcafNodeRole.ASSEMBLY
+                else CadObjectKind.PART
+            ),
+            label=occurrence.name,
+            bounding_box=get_bounding_box(
+                resolve_occurrence_shape(payload, data, occurrence_id)
+            ),
+            children=children,
+            has_presentation=occurrence.role is XcafNodeRole.PART,
+            occurrence_id=occurrence_id,
+            product_id=occurrence.product_id,
+            product_name=product.name,
+            xcaf_role=occurrence.role,
+            absolute_transform=occurrence.absolute_transform,
+            source_appearance=source,
+        )
+
+    roots = tuple(
+        build_node(occurrence_id)
+        for occurrence_id in data.assembly_metadata.root_occurrence_ids
+    )
+    root = CadObjectNode(
+        document_id=document_id,
+        object_id=CadObjectId(f"{document_id}:object:1"),
+        kind=CadObjectKind.DOCUMENT,
+        label="STEP assembly" if data.document_kind is CadDocumentKind.XCAF_ASSEMBLY else "STEP part",
+        bounding_box=document_bounds,
+        children=roots,
+    )
+    return CadDocumentTree(document_id, root)
+
+
+def resolve_presentation_sources(
+    payload: OcpXcafImportPayload,
+    data: OcpXcafDocumentData,
+) -> dict[CadObjectId, OcpXcafPresentationSource]:
+    """Resolve private presentation inputs for part occurrences only."""
+    result: dict[CadObjectId, OcpXcafPresentationSource] = {}
+    for occurrence_id, object_id in data.object_ids_by_occurrence.items():
+        occurrence = data.occurrences[occurrence_id]
+        if occurrence.role is not XcafNodeRole.PART:
+            continue
+        product = data.products[occurrence.product_id]
+        labels = TDF_LabelSequence()
+        subshape_sources: list[OcpXcafSubshapeSource] = []
+        if payload.shape_tool.GetSubShapes_s(
+            data.product_labels[occurrence.product_id], labels
+        ):
+            for index in range(1, labels.Length() + 1):
+                label = labels.Value(index)
+                appearance = _read_source_appearance(payload.color_tool, label)
+                if appearance == XcafSourceAppearance():
+                    continue
+                shape = XCAFDoc_ShapeTool.GetShape_s(label)
+                if not shape.IsNull():
+                    subshape_sources.append(
+                        OcpXcafSubshapeSource(
+                            shape.Located(data.absolute_locations[occurrence_id], False),
+                            appearance,
+                        )
+                    )
+        result[object_id] = OcpXcafPresentationSource(
+            shape=resolve_occurrence_shape(payload, data, occurrence_id),
+            occurrence_appearance=occurrence.source_appearance,
+            product_appearance=product.source_appearance,
+            subshape_sources=tuple(subshape_sources),
+        )
+    return result
+
+
+def _effective_source_appearance(
+    occurrence: XcafSourceAppearance,
+    product: XcafSourceAppearance,
+) -> XcafSourceAppearance:
+    return XcafSourceAppearance(
+        generic_color=occurrence.generic_color or product.generic_color,
+        surface_color=occurrence.surface_color or product.surface_color,
+        curve_color=occurrence.curve_color or product.curve_color,
     )
 
 

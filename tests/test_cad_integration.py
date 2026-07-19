@@ -57,6 +57,7 @@ from hms_cadcam.viewer.models import (  # noqa: E402
     ViewDirection,
     ViewportStatus,
 )
+from spikes.xcaf_step.fixture import write_xcaf_step_fixture  # noqa: E402
 
 
 class IntegrationViewportBackend:
@@ -80,6 +81,7 @@ class IntegrationViewportBackend:
         self.reset_isolate_documents: list[CadDocumentId] = []
         self.color_changes: list[tuple[CadDocumentId, CadObjectId, ObjectColor]] = []
         self.transparency_changes: list[tuple[CadDocumentId, CadObjectId, float]] = []
+        self.reset_appearance_changes: list[tuple[CadDocumentId, CadObjectId]] = []
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(True, self.initialized and not self.closed, "mock")
@@ -144,6 +146,13 @@ class IntegrationViewportBackend:
 
     def reset_isolate(self, document_id: CadDocumentId) -> None:
         self.reset_isolate_documents.append(document_id)
+
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> None:
+        self.reset_appearance_changes.append((document_id, object_id))
 
     def set_object_color(
         self,
@@ -384,6 +393,70 @@ def test_background_import_displays_step_and_brep(
     assert window.cad_controller.active_metadata is not None
     assert window.cad_controller.active_metadata.cad_format is cad_format
     assert window._import_status.text() == "CAD: Hoàn thành"
+    window.close()
+
+
+def test_xcaf_occurrence_tree_selection_properties_and_session_appearance(
+    tmp_path: Path,
+) -> None:
+    application = _application()
+    source = tmp_path / "nested-assembly.step"
+    expected = write_xcaf_step_fixture(source)
+    window, backend, _kernel = _window(tmp_path)
+    window.cad_controller.start_import(source, CadFormat.STEP)
+    _wait_until(application, lambda: not window.cad_controller.is_busy)
+    tree = window.cad_controller.active_tree
+    document_id = window.cad_controller.active_document_id
+    assert tree is not None and document_id is not None
+    assert window.cad_controller._persistent_map is None
+    root = tree.root.children[0]
+    repeated = [
+        node
+        for node in root.children
+        if node.product_name == expected.repeated_product_name
+    ]
+    assert len(repeated) == 2
+    first_item = window._ensure_object_item(repeated[0].object_id)
+    second_item = window._ensure_object_item(repeated[1].object_id)
+    assert first_item is not None and second_item is not None
+    assert repeated[0].product_name in first_item.text(1)
+    first_item.setSelected(True)
+    application.processEvents()
+    assert backend.object_selections[-1] == (document_id, (repeated[0].object_id,))
+
+    selected = SelectionMetadata(
+        document_id,
+        f"{document_id}:solid:1",
+        SelectionMode.SOLID,
+        repeated[1].bounding_box,
+        repeated[1].object_id,
+    )
+    backend.emit_selection((selected,))
+    application.processEvents()
+    assert second_item.isSelected()
+    properties = {
+        window._properties_table.item(row, 0).text(): (
+            window._properties_table.item(row, 1).text()
+        )
+        for row in range(window._properties_table.rowCount())
+    }
+    assert properties["Product name"] == expected.repeated_product_name
+    assert properties["Role"] == "PART"
+    assert properties["Object ID"] == str(repeated[1].object_id)
+    source_color = window.cad_controller._base_appearances[repeated[0].object_id].color
+    override = ObjectColor(0.2, 0.4, 0.7)
+    assert window.cad_controller.set_object_color(
+        document_id, repeated[0].object_id, override
+    )
+    assert window.cad_controller.set_object_transparency(
+        document_id, repeated[0].object_id, 0.35
+    )
+    assert window.cad_controller.reset_object_appearance(
+        document_id, repeated[0].object_id
+    )
+    current = dict(window.cad_controller.appearances)[repeated[0].object_id]
+    assert current.color == source_color
+    assert current.transparency == 0.0
     window.close()
 
 

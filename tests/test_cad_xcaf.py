@@ -13,6 +13,7 @@ from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
 
 from hms_cadcam.cad.exceptions import CadDocumentNotFoundError
 from hms_cadcam.cad.models import (
+    CadObjectKind,
     CadDocumentKind,
     XcafColor,
     XcafNameSource,
@@ -178,6 +179,64 @@ def test_source_appearance_product_occurrence_and_subshape(
         expected.subshape_surface_color,
     )
     assert "override" not in {field.name for field in fields(XcafSourceAppearance)}
+
+
+def test_xcaf_tree_uses_distinct_occurrence_objects_and_nested_hierarchy(
+    imported_assembly: tuple[XcafFixtureExpectations, OcpCadKernel, object],
+) -> None:
+    expected, kernel, document_id = imported_assembly
+    tree = kernel.get_document_tree(document_id)
+    assert len(tree.root.children) == 1
+    root = tree.root.children[0]
+    assert root.kind is CadObjectKind.ASSEMBLY
+    assert root.label == expected.root_product_name
+    assert not root.has_presentation
+    repeated = [
+        node for node in root.children if node.product_name == expected.repeated_product_name
+    ]
+    assert len(repeated) == 2
+    assert repeated[0].object_id != repeated[1].object_id
+    assert repeated[0].occurrence_id != repeated[1].occurrence_id
+    assert all(node.kind is CadObjectKind.PART for node in repeated)
+    assert all(node.has_presentation for node in repeated)
+    assert sorted(
+        node.absolute_transform.translation[0] for node in repeated
+    ) == pytest.approx([10.0, 40.0])
+    nested = next(node for node in root.children if node.kind is CadObjectKind.ASSEMBLY)
+    assert len(nested.children) == 1
+    assert nested.children[0].absolute_transform.translation == pytest.approx(
+        (0.0, 50.0, 20.0)
+    )
+    assert len(tree.presentation_nodes) == 3
+    _assert_public_value(tree)
+
+
+def test_xcaf_presentation_shapes_are_absolute_and_source_appearance_is_effective(
+    imported_assembly: tuple[XcafFixtureExpectations, OcpCadKernel, object],
+) -> None:
+    expected, kernel, document_id = imported_assembly
+    tree = kernel.get_document_tree(document_id)
+    repeated = sorted(
+        (
+            node
+            for node in tree.presentation_nodes
+            if node.product_name == expected.repeated_product_name
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )
+    native_shapes = kernel._resolve_presentation_shapes(document_id)
+    first_bounds = get_bounding_box(native_shapes[repeated[0].object_id])
+    second_bounds = get_bounding_box(native_shapes[repeated[1].object_id])
+    assert first_bounds.x_min == pytest.approx(10.0)
+    assert second_bounds.x_min == pytest.approx(40.0)
+    _assert_color(
+        repeated[0].source_appearance.surface_color,
+        expected.first_occurrence_color,
+    )
+    _assert_color(
+        repeated[1].source_appearance.surface_color,
+        expected.repeated_product_surface_color,
+    )
 
 
 def test_public_xcaf_models_are_ocp_free_and_ids_are_runtime_scoped(

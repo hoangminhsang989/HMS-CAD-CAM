@@ -72,6 +72,8 @@ class CadObjectKind(str, Enum):
     SHELL = "shell"
     SHAPE = "shape"
     MESH = "mesh"
+    ASSEMBLY = "assembly"
+    PART = "part"
 
 
 class CadUnits(str, Enum):
@@ -343,6 +345,12 @@ class CadObjectNode:
     bounding_box: BoundingBox
     children: tuple["CadObjectNode", ...] = ()
     has_presentation: bool = False
+    occurrence_id: XcafOccurrenceId | None = None
+    product_id: XcafProductId | None = None
+    product_name: str | None = None
+    xcaf_role: XcafNodeRole | None = None
+    absolute_transform: XcafTransform | None = None
+    source_appearance: XcafSourceAppearance | None = None
 
     def __post_init__(self) -> None:
         if not self.label.strip():
@@ -351,6 +359,20 @@ class CadObjectNode:
             raise ValueError("CAD object children must belong to the same document")
         if self.has_presentation and self.children:
             raise ValueError("Presentation nodes must be leaves")
+        xcaf_fields = (
+            self.occurrence_id,
+            self.product_id,
+            self.product_name,
+            self.xcaf_role,
+            self.absolute_transform,
+            self.source_appearance,
+        )
+        if any(value is not None for value in xcaf_fields) and any(
+            value is None for value in xcaf_fields
+        ):
+            raise ValueError("XCAF object metadata must be complete")
+        if self.product_name is not None and not self.product_name.strip():
+            raise ValueError("XCAF product name must not be empty")
 
     def walk(self) -> tuple["CadObjectNode", ...]:
         """Return this node and descendants in stable pre-order."""
@@ -359,7 +381,7 @@ class CadObjectNode:
 
 @dataclass(frozen=True, slots=True)
 class CadDocumentTree:
-    """Topology-only tree; it intentionally carries no XCAF assembly semantics."""
+    """OCP-free display tree for topology or XCAF product occurrences."""
 
     document_id: CadDocumentId
     root: CadObjectNode

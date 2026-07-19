@@ -17,6 +17,7 @@ from hms_cadcam.cad.measurement import MeasurementResult, MeasurementService
 from hms_cadcam.cad.measurement_factory import MeasurementServiceFactory
 from hms_cadcam.cad.models import (
     CadDocumentId,
+    CadDocumentKind,
     CadDocumentTree,
     CadDocumentMetadata,
     CadFormat,
@@ -93,6 +94,7 @@ class CadUiController(QObject):
         self._active_tree: CadDocumentTree | None = None
         self._selected_object_ids: tuple[CadObjectId, ...] = ()
         self._appearances: dict[CadObjectId, ObjectAppearance] = {}
+        self._base_appearances: dict[CadObjectId, ObjectAppearance] = {}
         self._isolate_snapshot: dict[CadObjectId, bool] | None = None
         self._active_source_id: UUID | None = None
         self._persistent_map: PersistentCadObjectMap | None = None
@@ -347,14 +349,15 @@ class CadUiController(QObject):
         self._active_document_id = result.document_id
         self._active_metadata = result.metadata
         self._active_tree = tree
-        self._appearances = (
+        self._base_appearances = (
             {
-                node.object_id: ObjectAppearance()
+                node.object_id: _source_object_appearance(node.source_appearance)
                 for node in tree.root.walk()
             }
             if tree is not None
             else {}
         )
+        self._appearances = dict(self._base_appearances)
         self._isolate_snapshot = None
         self._active_source_id = candidate_source_id
         self._persistent_map = (
@@ -363,7 +366,12 @@ class CadUiController(QObject):
                 result.metadata.geometry_kind,
                 tree,
             )
-            if candidate_source_id is not None and tree is not None
+            if (
+                candidate_source_id is not None
+                and tree is not None
+                and result.metadata.document_kind
+                not in {CadDocumentKind.XCAF_PART, CadDocumentKind.XCAF_ASSEMBLY}
+            )
             else None
         )
         if self._persistent_map is not None and self._persistent_map.ambiguous_nodes:
@@ -371,7 +379,12 @@ class CadUiController(QObject):
                 "Bỏ qua %d topology node mơ hồ, không đủ chắc chắn để persistence",
                 self._persistent_map.ambiguous_nodes,
             )
-        restored = self._load_project_view_state(result.metadata.geometry_kind)
+        restored = (
+            None
+            if result.metadata.document_kind
+            in {CadDocumentKind.XCAF_PART, CadDocumentKind.XCAF_ASSEMBLY}
+            else self._load_project_view_state(result.metadata.geometry_kind)
+        )
         if not self._apply_persisted_state(restored):
             self.message.emit(
                 "Không thể khôi phục trọn vẹn CAD view state; giữ trạng thái viewer trước khi apply."
@@ -503,6 +516,7 @@ class CadUiController(QObject):
         self._active_metadata = None
         self._active_tree = None
         self._appearances = {}
+        self._base_appearances = {}
         self._isolate_snapshot = None
         self._active_source_id = None
         self._persistent_map = None
@@ -800,6 +814,29 @@ class CadUiController(QObject):
         self._emit_appearances()
         return True
 
+    def reset_object_appearance(
+        self,
+        document_id: CadDocumentId,
+        object_id: CadObjectId,
+    ) -> bool:
+        """Reset user color/transparency overrides to each source baseline."""
+        if not self._valid_object_request(document_id, object_id):
+            return False
+        if not self._viewport.reset_object_appearance(document_id, object_id):
+            return False
+        for affected_id in self._descendant_ids(object_id):
+            current = self._appearances[affected_id]
+            base = self._base_appearances.get(affected_id, ObjectAppearance())
+            self._appearances[affected_id] = ObjectAppearance(
+                visible=current.visible,
+                color=base.color,
+                transparency=base.transparency,
+            )
+        if not self._stage_current_state():
+            return False
+        self._emit_appearances()
+        return True
+
     def _measure_active_document(self) -> None:
         document_id = self._active_document_id
         metadata = self._active_metadata
@@ -925,7 +962,12 @@ class CadUiController(QObject):
         desired_direction = (
             state.view_direction if state is not None else ViewDirection.ISOMETRIC
         )
-        desired = {node.object_id: ObjectAppearance() for node in tree.root.walk()}
+        desired = {
+            node.object_id: self._base_appearances.get(
+                node.object_id, ObjectAppearance()
+            )
+            for node in tree.root.walk()
+        }
         mapping = self._persistent_map
         if state is not None:
             for item in state.object_appearances:
@@ -956,6 +998,8 @@ class CadUiController(QObject):
         ]
         default = ObjectAppearance()
         for object_id, appearance in desired.items():
+            if state is None:
+                continue
             node = tree.find(object_id)
             if node is None or not node.has_presentation or appearance == default:
                 continue
@@ -1013,6 +1057,11 @@ class CadUiController(QObject):
         source_id = self._active_source_id
         metadata = self._active_metadata
         mapping = self._persistent_map
+        if metadata is not None and metadata.document_kind in {
+            CadDocumentKind.XCAF_PART,
+            CadDocumentKind.XCAF_ASSEMBLY,
+        }:
+            return True
         if source_id is None or self._project_service is None:
             return True
         if metadata is None or mapping is None:
@@ -1085,3 +1134,12 @@ def _display_label(mode: DisplayMode) -> str:
         DisplayMode.WIREFRAME: "Wireframe",
         DisplayMode.SHADED_WITH_EDGES: "Shaded with edges",
     }[mode]
+
+
+def _source_object_appearance(source) -> ObjectAppearance:
+    if source is None:
+        return ObjectAppearance()
+    color = source.surface_color or source.generic_color
+    if color is None:
+        return ObjectAppearance()
+    return ObjectAppearance(color=ObjectColor(color.red, color.green, color.blue))

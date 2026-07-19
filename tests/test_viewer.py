@@ -58,6 +58,7 @@ from hms_cadcam.viewer.unavailable_backend import (  # noqa: E402
     UnavailableCadViewportBackend,
 )
 from hms_cadcam.viewer.widget import CadViewportWidget  # noqa: E402
+from spikes.xcaf_step.fixture import write_xcaf_step_fixture  # noqa: E402
 
 
 class MockViewportBackend:
@@ -300,6 +301,7 @@ class FakeManagedLifecycle(FakeLifecycle):
         self.discard_count = 0
         self.fail_commit = False
         self.fail_discard = False
+        self.xcaf_prepare_count = 0
 
     @property
     def presentations(self):
@@ -310,6 +312,11 @@ class FakeManagedLifecycle(FakeLifecycle):
         candidates = {node.object_id: object() for node in tree.presentation_nodes}
         self.context.displayed.update(candidates.values())
         return OcpPresentationRegistry(self.context, tree, candidates)
+
+    def prepare_xcaf_registry(self, tree, sources, mode):
+        assert set(sources) == {node.object_id for node in tree.presentation_nodes}
+        self.xcaf_prepare_count += 1
+        return self.prepare_registry(tree, {}, mode)
 
     def commit_registry(self, registry) -> None:
         if self.fail_commit:
@@ -425,6 +432,14 @@ class FakeRegistryContext:
         self._maybe_fail("transparency")
         self.transparencies.append((presentation, value))
         self.current_transparencies[presentation] = value
+
+    def UnsetColor(self, presentation, update: bool) -> None:  # noqa: N802
+        del update
+        self.current_colors.pop(presentation, None)
+
+    def UnsetTransparency(self, presentation, update: bool) -> None:  # noqa: N802
+        del update
+        self.current_transparencies[presentation] = 0.0
 
     def UpdateCurrentViewer(self) -> None:  # noqa: N802
         self.update_count += 1
@@ -553,6 +568,44 @@ def test_registry_hide_show_isolate_and_reset_restore_visibility() -> None:
     assert registry.appearances[root.object_id].visible
     assert registry.appearances[first_id].visible
     assert not registry.appearances[second_id].visible
+
+
+def test_registry_user_override_reset_returns_to_source_appearance() -> None:
+    document_id = CadDocumentId("doc:source-appearance")
+    object_id = CadObjectId(f"{document_id}:object:1")
+    bounds = BoundingBox(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    leaf = CadObjectNode(
+        document_id,
+        object_id,
+        CadObjectKind.SOLID,
+        "Source colored part",
+        bounds,
+        has_presentation=True,
+    )
+    root = CadObjectNode(
+        document_id,
+        CadObjectId(f"{document_id}:document"),
+        CadObjectKind.DOCUMENT,
+        "CAD document",
+        bounds,
+        (leaf,),
+    )
+    source_color = ObjectColor(0.82, 0.12, 0.08)
+    context = FakeRegistryContext()
+    presentation = object()
+    registry = OcpPresentationRegistry(
+        context,
+        CadDocumentTree(document_id, root),
+        {object_id: presentation},
+        base_appearances={object_id: ObjectAppearance(color=source_color)},
+    )
+    override = ObjectColor(0.1, 0.3, 0.9)
+    registry.set_color(object_id, override)
+    registry.set_transparency(object_id, 0.55)
+    assert registry.appearances[object_id].color == override
+    registry.reset_appearance(object_id)
+    assert registry.appearances[object_id].color == source_color
+    assert registry.appearances[object_id].transparency == 0.0
 
 
 @pytest.mark.parametrize(
@@ -898,6 +951,66 @@ def test_ocp_backend_switches_brep_mesh_and_brep_safely(tmp_path: Path) -> None:
     assert lifecycle.replaced == 3
     assert lifecycle.removed == 2
     assert input_controller.reset_count == 3
+
+
+def test_ocp_backend_builds_one_registry_presentation_per_xcaf_part_occurrence(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "assembly.step"
+    write_xcaf_step_fixture(source)
+    kernel = OcpCadKernel()
+    result = kernel.import_step(source)
+    assert result.document_id is not None
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+
+    backend.display_document(result.document_id)
+
+    tree = kernel.get_document_tree(result.document_id)
+    assert lifecycle.xcaf_prepare_count == 1
+    assert set(lifecycle.presentations) == {
+        node.object_id for node in tree.presentation_nodes
+    }
+    assert len(lifecycle.presentations) == 3
+    repeated = [
+        node
+        for node in tree.presentation_nodes
+        if node.product_name == "Repeated Product"
+    ]
+    backend.select_objects(result.document_id, (repeated[1].object_id,))
+    assert selection.selected_object_ids == (repeated[1].object_id,)
+
+
+def test_xcaf_registry_bind_failure_restores_previous_multi_occurrence_selection(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "assembly.step"
+    write_xcaf_step_fixture(source)
+    kernel = OcpCadKernel()
+    assembly = kernel.import_step(source)
+    assert assembly.document_id is not None
+    replacement = kernel.create_box(2.0, 3.0, 4.0)
+    backend = OcpCadViewportBackend(kernel)
+    lifecycle = FakeManagedLifecycle()
+    selection = FakeManagedSelection()
+    backend._lifecycle = lifecycle
+    backend._selection = selection
+    backend._input = FakeInput()
+    backend.display_document(assembly.document_id)
+    old_registry = lifecycle.registry
+    assert old_registry is not None and len(old_registry.presentations) == 3
+    selection.fail_next_bind = True
+
+    with pytest.raises(RuntimeError, match="managed bind"):
+        backend.display_document(replacement)
+
+    assert lifecycle.registry is old_registry
+    assert backend._document_id == assembly.document_id
+    assert selection.document_id == assembly.document_id
 
 
 def test_ocp_backend_preserves_old_document_when_selection_bind_fails() -> None:

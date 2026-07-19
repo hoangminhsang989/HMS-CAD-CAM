@@ -248,6 +248,10 @@ class OcpCadKernel:
             occurrence_id,
         )
 
+    def _resolve_xcaf_presentation_sources(self, document_id: CadDocumentId):
+        """Resolve native XCAF presentation data only for the OCP viewer."""
+        return self._documents.resolve_xcaf_presentation_sources(document_id)
+
     def _import(
         self,
         source_path: str | Path,
