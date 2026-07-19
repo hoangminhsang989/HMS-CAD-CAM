@@ -136,6 +136,13 @@ class ToolpathArtifactId(_CamUuidId):
     PREFIX: ClassVar[str] = "toolpath_artifact"
 
 
+@dataclass(frozen=True, slots=True)
+class ToolpathEventId(_CamUuidId):
+    """Stable identity of one event occurrence in a toolpath artifact."""
+
+    PREFIX: ClassVar[str] = "toolpath_event"
+
+
 CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     CamJobId,
     SetupId,
@@ -149,4 +156,5 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     GeometryReferenceId,
     FixtureInstanceId,
     ToolpathArtifactId,
+    ToolpathEventId,
 )
