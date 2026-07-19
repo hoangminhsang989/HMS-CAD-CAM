@@ -6,15 +6,15 @@
 - Giai đoạn 3–4: Session Lock, Autosave, Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
 - Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state đã hoàn thành.
 - Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và persistence đã hoàn thành.
-- Giai đoạn 7A.1–7B.3: CAM Foundation và planar-face Facing đã hoàn thành.
-- Commit mới nhất: `4ed93a4`.
-- Toàn bộ pytest: **479 passed**.
+- Giai đoạn 7A.1–7B.5: CAM Foundation, UI, Facing, Contour 2D và Pocket v1 đã hoàn thành.
+- Commit mới nhất: `d8f44d7`.
+- Toàn bộ pytest: **534 passed**.
 
 ## Kiến trúc và dữ liệu dự án
 
 - `ProjectService` là API dự án duy nhất được UI sử dụng.
 - Dự án là thư mục `.HMS`; manifest dùng JSON UTF-8 và dữ liệu chính dùng SQLite.
-- SQLite schema hiện tại: **v4**.
+- SQLite schema hiện tại: **v4**; Pocket v1 không yêu cầu migration.
 - File CAD nguồn được giữ nguyên trong `source/`, không bị chỉnh sửa.
 - Tác vụ I/O và import CAD chạy ngoài UI thread.
 - CAD API công khai chỉ trao đổi ID và model thuần Python, bất biến.
@@ -35,10 +35,12 @@
 - CAM có ID mạnh, unit tường minh, `GeometryReference` bền vững, Job, Setup, WCS, Stock, tooling và machine model.
 - Operation Tree, Dependency DAG và Toolpath IR hỗ trợ dirty propagation, stale-token policy và fingerprint xác định.
 - CAM editable state là dữ liệu chính trong SQLite v4; artifact là derived data dưới `toolpaths/`.
-- Facing 2.5D hỗ trợ biên Stock BOX và persistent planar FACE; selected face là target plane, top lấy từ Stock BOX.
+- CAM hiện có Facing 2.5D, Planar Face Facing, 2D Contour và Pocket v1.
+- Facing hỗ trợ biên Stock BOX và persistent planar FACE; selected face là target plane, top lấy từ Stock BOX.
 - OCP planar-face resolver hỗ trợ repeated/nested XCAF occurrence và fail-closed khi reference không còn hợp lệ.
-- Boundary v1 hỗ trợ outer loop LINE/ARC, polygon lõm đơn giản và raster clipping theo boundary thật.
-- Bind/Rebind/Clear, recompute giữ artifact VALID cũ khi lỗi, viewer và persistence lifecycle đã hoạt động.
+- 2D Contour hỗ trợ persistent outer loop LINE/ARC, offset, depth passes, lead và fail-closed validation.
+- Pocket Geometry, Strategy, Viewer, UI và Persistence v1 đã hoàn thành cho một outer loop, không island.
+- Bind/Rebind/Clear, recompute giữ artifact VALID cũ khi lỗi và stale result không được publish/display.
 - Save, Open, Save As, Autosave và Recovery giữ nguyên persistent `GeometryReference`.
 
 ## Tree, persistence và session
@@ -54,7 +56,5 @@
 - Measurement BREP hỗ trợ tọa độ vertex, khoảng cách, edge, circle/arc, diện tích, thể tích và AABB.
 - Measurement là read-only, không làm dirty project hoặc kích hoạt autosave.
 - Hình học chuẩn hóa chưa được lưu vào `model/`; ứng dụng vẫn import lại nguồn bất biến khi mở dự án.
-- Chưa có component editing hoặc thay đổi cấu trúc assembly.
-- Chưa có assembly constraints.
-- Chưa hỗ trợ inner loops, spline, Pocket, Contour, Post Processor hoặc G-code.
-- Chưa triển khai Setup Sheet.
+- Chưa có component editing, thay đổi cấu trúc assembly hoặc assembly constraints.
+- Chưa có Drilling, Simulation, Collision, Post Processor, G-code hoặc Setup Sheet; CAM chưa hỗ trợ island, rest machining hay adaptive clearing.
