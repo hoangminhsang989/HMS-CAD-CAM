@@ -205,6 +205,32 @@ class SimulationCacheStore:
     def cache_root(self, project_root: Path) -> Path:
         return project_root / SIMULATION_CACHE_DIRECTORY
 
+    def _existing_cache_root(self, project_root: Path) -> Path | None:
+        """Return a real in-project cache root without following links/junctions."""
+        cache_parent = project_root / "cache"
+        cache_root = self.cache_root(project_root)
+        try:
+            if (
+                not project_root.is_dir()
+                or self._is_link(project_root)
+                or not cache_parent.is_dir()
+                or self._is_link(cache_parent)
+                or not cache_root.is_dir()
+                or self._is_link(cache_root)
+            ):
+                return None
+            project_resolved = project_root.resolve(strict=True)
+            cache_parent_resolved = cache_parent.resolve(strict=True)
+            cache_root_resolved = cache_root.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        if (
+            cache_parent_resolved.parent != project_resolved
+            or cache_root_resolved.parent != cache_parent_resolved
+        ):
+            return None
+        return cache_root
+
     def write(
         self,
         project_root: Path,
@@ -261,9 +287,13 @@ class SimulationCacheStore:
         artifact_fingerprint: ContentFingerprint,
         input_fingerprint: DependencyFingerprint,
     ) -> SimulationCacheLoad:
-        operation_root = (
-            self.cache_root(project_root) / _operation_directory_name(operation_id)
-        )
+        cache_root = self._existing_cache_root(project_root)
+        if cache_root is None:
+            return SimulationCacheLoad(
+                SimulationCacheStatus.MISSING,
+                message="cache missing or unsafe",
+            )
+        operation_root = cache_root / _operation_directory_name(operation_id)
         if not operation_root.is_dir() or self._is_link(operation_root):
             return SimulationCacheLoad(
                 SimulationCacheStatus.MISSING,
@@ -310,9 +340,13 @@ class SimulationCacheStore:
         artifact_fingerprint: ContentFingerprint,
     ) -> SimulationCacheLoad:
         """Discover the newest valid policy/result for one current artifact."""
-        operation_root = (
-            self.cache_root(project_root) / _operation_directory_name(operation_id)
-        )
+        cache_root = self._existing_cache_root(project_root)
+        if cache_root is None:
+            return SimulationCacheLoad(
+                SimulationCacheStatus.MISSING,
+                message="cache missing or unsafe",
+            )
+        operation_root = cache_root / _operation_directory_name(operation_id)
         if not operation_root.is_dir() or self._is_link(operation_root):
             return SimulationCacheLoad(
                 SimulationCacheStatus.MISSING,
@@ -363,8 +397,8 @@ class SimulationCacheStore:
         source_project_id: UUID,
         target_project_id: UUID,
     ) -> tuple[SimulationCacheMetadata, ...]:
-        source_cache = self.cache_root(source_root)
-        if not source_cache.is_dir() or self._is_link(source_cache):
+        source_cache = self._existing_cache_root(source_root)
+        if source_cache is None:
             return ()
         copied: list[SimulationCacheMetadata] = []
         for metadata_path in sorted(source_cache.glob(f"*/*{_METADATA_SUFFIX}")):
@@ -380,10 +414,11 @@ class SimulationCacheStore:
         return tuple(copied)
 
     def delete_operation(self, project_root: Path, operation_id: OperationId) -> None:
-        operation_root = (
-            self.cache_root(project_root) / _operation_directory_name(operation_id)
-        )
-        cache_root = self.cache_root(project_root).resolve(strict=False)
+        existing_cache_root = self._existing_cache_root(project_root)
+        if existing_cache_root is None:
+            return
+        operation_root = existing_cache_root / _operation_directory_name(operation_id)
+        cache_root = existing_cache_root.resolve(strict=True)
         resolved = operation_root.resolve(strict=False)
         if resolved.parent != cache_root or not operation_root.is_dir() or self._is_link(operation_root):
             return
@@ -403,8 +438,8 @@ class SimulationCacheStore:
     ) -> None:
         if maximum_entries_per_operation < 1:
             raise ValueError("Simulation cache retention must be positive")
-        cache_root = self.cache_root(project_root)
-        if not cache_root.is_dir() or self._is_link(cache_root):
+        cache_root = self._existing_cache_root(project_root)
+        if cache_root is None:
             return
         for operation_root in cache_root.iterdir():
             if not operation_root.is_dir() or self._is_link(operation_root):

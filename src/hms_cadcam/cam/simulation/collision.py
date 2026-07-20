@@ -123,7 +123,11 @@ def run_collision_analysis(
     collision_count = warning_count = error_count = 0
     all_points = tuple(sample.world_pose.position for sample in sampling.samples)
     bounds = Bounds3.from_points(all_points)
-    if artifact.unit is not envelope.unit or scene.stock.bounds.minimum.unit is not envelope.unit:
+    targets = (scene.stock, *scene.fixtures)
+    if artifact.unit is not envelope.unit or any(
+        target is not None and target.bounds.minimum.unit is not envelope.unit
+        for target in targets
+    ):
         raise SimulationSamplingError(SimulationIssueCode.UNIT_MISMATCH, "Collision scene unit mismatch")
 
     def add_issue(issue: SimulationIssue) -> None:
@@ -131,7 +135,6 @@ def run_collision_analysis(
             raise SimulationSamplingError(SimulationIssueCode.SAMPLE_LIMIT, "Simulation issue limit exceeded")
         issues.append(issue)
 
-    targets = (scene.stock, *scene.fixtures)
     groups = _groups(envelope)
     broad_total = sum(
         len(segment.sample_indices)
@@ -246,8 +249,9 @@ def run_collision_analysis(
                                 len(issues),
                             )
                         evidence = backend.narrow_intersects(target, primitive, sample.world_pose, request.sampling_policy.geometric_tolerance)
-                        if evidence is None:
-                            add_issue(_issue(request=request, code=SimulationIssueCode.FAILED, category=SimulationIssueCategory.CLEARANCE_WARNING, severity=DiagnosticSeverity.WARNING, message="clearance.unproven", segment=segment, sample_index=sample.index, point=sample.world_pose.position, target=target, extra=(("envelope", label), ("proof", "none"))))
+                        if evidence is None or not evidence.exact:
+                            proof = "none" if evidence is None else "approximate"
+                            add_issue(_issue(request=request, code=SimulationIssueCode.FAILED, category=SimulationIssueCategory.CLEARANCE_WARNING, severity=DiagnosticSeverity.WARNING, message="clearance.unproven", segment=segment, sample_index=sample.index, point=sample.world_pose.position, target=target, extra=(("envelope", label), ("proof", proof))))
                             warning_count += 1
                             continue
                         code: SimulationIssueCode | None = None

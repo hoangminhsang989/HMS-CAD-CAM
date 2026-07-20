@@ -13,9 +13,10 @@ from hms_cadcam.cam.toolpath import MotionClass, Pose, SpindleState
 from hms_cadcam.cam.toolpath.events import CoolantState
 from hms_cadcam.cam.toolpath.geometry import Bounds3
 from hms_cadcam.cam.simulation import (
-    CollisionScene, CollisionTarget, CollisionTargetKind, EnvelopePrimitive,
+    CollisionEvidence, CollisionScene, CollisionTarget, CollisionTargetKind, EnvelopePrimitive,
     EnvelopePrimitiveKind, EnvelopeSupport, InMemoryAabbBackend, SampledSegment,
-    SamplingOutput, SimulationIssueCategory, SimulationRequest, SimulationSample,
+    SamplingOutput, SimulationIssueCategory, SimulationIssueCode, SimulationRequest, SimulationSample,
+    SimulationSamplingError,
     SimulationSamplingPolicy, SimulationStatus, ToolEnvelope, build_tool_envelope,
     run_collision_analysis,
 )
@@ -73,6 +74,23 @@ def test_tool_envelope_includes_cutter_shank_and_holder_without_defaults():
         build_tool_envelope(tool=tool, assembly=assembly, holder=None)
 
 
+def test_tool_envelope_allows_no_exposed_shank_when_stickout_ends_at_cutter():
+    tool, holder, _assembly = _tooling()
+    assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "No exposed shank",
+        tool,
+        _mm(20),
+        _mm(80),
+        holder,
+    )
+
+    envelope = build_tool_envelope(tool=tool, assembly=assembly, holder=holder)
+
+    assert envelope.cutter and envelope.holder
+    assert envelope.shank == ()
+
+
 def test_cutting_cutter_stock_is_allowed_but_fixture_is_collision():
     request = _request()
     target_bounds = Bounds3(Point3(-2, -2, -2, LengthUnit.MM), Point3(2, 2, 3, LengthUnit.MM))
@@ -110,3 +128,56 @@ def test_broad_overlap_without_narrow_proof_is_clearance_warning():
     result = run_collision_analysis(request=request, artifact=_artifact_stub(request), sampling=_sampling(), envelope=_envelope(), scene=CollisionScene(CollisionTarget("stock", CollisionTargetKind.STOCK, bounds)), backend=BroadOnly(), result_id=SimulationResultId.new())
     assert result.status is SimulationStatus.WARN
     assert result.issues[0].category is SimulationIssueCategory.CLEARANCE_WARNING
+
+
+def test_non_exact_narrow_evidence_remains_a_clearance_warning():
+    class ApproximateBackend:
+        def broad_overlap(self, target, candidate): return True
+        def narrow_intersects(self, target, primitive, pose, tolerance):
+            return CollisionEvidence(False, 0.0, target.entity_id)
+
+    request = _request(safe_height=None)
+    bounds = Bounds3(
+        Point3(-2, -2, -2, LengthUnit.MM),
+        Point3(2, 2, 3, LengthUnit.MM),
+    )
+    result = run_collision_analysis(
+        request=request,
+        artifact=_artifact_stub(request),
+        sampling=_sampling(),
+        envelope=_envelope(),
+        scene=CollisionScene(CollisionTarget("stock", CollisionTargetKind.STOCK, bounds)),
+        backend=ApproximateBackend(),
+        result_id=SimulationResultId.new(),
+    )
+
+    assert result.status is SimulationStatus.WARN
+    assert result.issues[0].category is SimulationIssueCategory.CLEARANCE_WARNING
+
+
+def test_fixture_unit_mismatch_fails_closed_before_collision_analysis():
+    request = _request(safe_height=None)
+    stock_bounds = Bounds3(
+        Point3(100, 100, 100, LengthUnit.MM),
+        Point3(110, 110, 110, LengthUnit.MM),
+    )
+    fixture_bounds = Bounds3(
+        Point3(-2, -2, -2, LengthUnit.INCH),
+        Point3(2, 2, 3, LengthUnit.INCH),
+    )
+
+    with pytest.raises(SimulationSamplingError) as raised:
+        run_collision_analysis(
+            request=request,
+            artifact=_artifact_stub(request),
+            sampling=_sampling(),
+            envelope=_envelope(),
+            scene=CollisionScene(
+                CollisionTarget("stock", CollisionTargetKind.STOCK, stock_bounds),
+                (CollisionTarget("fixture", CollisionTargetKind.FIXTURE, fixture_bounds),),
+            ),
+            backend=InMemoryAabbBackend(),
+            result_id=SimulationResultId.new(),
+        )
+
+    assert raised.value.code is SimulationIssueCode.UNIT_MISMATCH

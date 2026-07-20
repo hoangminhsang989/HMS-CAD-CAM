@@ -150,3 +150,32 @@ def test_cache_stale_source_is_not_current(tmp_path) -> None:
         result.input_fingerprint,
     )
     assert stale.status is SimulationCacheStatus.STALE
+
+
+def test_cache_parent_link_or_junction_is_never_read_or_deleted(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "linked-cache.HMS"
+    root.mkdir()
+    project_id = uuid4()
+    result = _result()
+    store = SimulationCacheStore()
+    metadata = store.write(root, project_id, result)
+    operation_root = next((root / "cache" / "simulation").iterdir())
+    metadata_path = operation_root / f"{metadata.cache_key}.metadata.json"
+    original_is_link = store._is_link
+
+    monkeypatch.setattr(
+        store,
+        "_is_link",
+        lambda path: path == root / "cache" / "simulation" or original_is_link(path),
+    )
+    loaded = store.load_current(
+        root,
+        project_id,
+        result.operation_id,
+        result.artifact_fingerprint,
+        result.input_fingerprint,
+    )
+    store.delete_operation(root, result.operation_id)
+
+    assert loaded.status is not SimulationCacheStatus.VALID
+    assert metadata_path.is_file()

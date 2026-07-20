@@ -315,6 +315,7 @@ class ProjectService:
         if changed != before:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
+            self._remove_deleted_operation_simulations(session, before, changed)
         return session
 
     def apply_cam_mutation(
@@ -329,6 +330,7 @@ class ProjectService:
         if changed != before:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
+            self._remove_deleted_operation_simulations(session, before, changed)
         return session
 
     def execute_cam_command(
@@ -354,6 +356,7 @@ class ProjectService:
         if changed != before:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
+            self._remove_deleted_operation_simulations(session, before, changed)
         return changed
 
     @property
@@ -740,6 +743,36 @@ class ProjectService:
         self._simulation_runs.clear_result(operation_id)
         if delete_cache:
             self._simulation_cache.delete_operation(session.root_path, operation_id)
+
+    def _remove_deleted_operation_simulations(
+        self,
+        session: ProjectSession,
+        before: CamProjectSnapshot,
+        after: CamProjectSnapshot,
+    ) -> None:
+        """Remove derived runtime/cache state for operations deleted by any parent mutation."""
+        before_ids = {
+            operation.operation_id
+            for job in before.jobs
+            for setup in job.setups
+            for operation in setup.operation_tree.operations
+        }
+        after_ids = {
+            operation.operation_id
+            for job in after.jobs
+            for setup in job.setups
+            for operation in setup.operation_tree.operations
+        }
+        for operation_id in sorted(before_ids - after_ids, key=str):
+            self._simulation_runs.clear_result(operation_id)
+            try:
+                self._simulation_cache.delete_operation(session.root_path, operation_id)
+            except (OSError, RuntimeError):
+                logger.warning(
+                    "Không thể xóa simulation cache của operation %s",
+                    operation_id,
+                    exc_info=True,
+                )
 
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""

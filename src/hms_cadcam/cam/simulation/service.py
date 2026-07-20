@@ -192,15 +192,31 @@ class SimulationRuntimeService:
             envelope = build_tool_envelope(tool=tool, assembly=assembly, holder=holder)
             candidate = run_collision_analysis(request=request, artifact=artifact, sampling=sampling, envelope=envelope, scene=scene, backend=backend, result_id=SimulationResultId.new(), cancellation=cancellation)
         except SimulationSamplingError as error:
+            self.abort(request.operation_id, token)
             return SimulationExecution(False, None, error.code, str(error))
         except UnsupportedToolGeometryError as error:
+            self.abort(request.operation_id, token)
             return SimulationExecution(False, None, error.code, str(error))
         except SimulationPreflightError as error:
+            self.abort(request.operation_id, token)
             return SimulationExecution(False, None, error.code, str(error))
         except (CamValidationError, ValueError, RuntimeError) as error:
+            self.abort(request.operation_id, token)
+            return SimulationExecution(False, None, SimulationIssueCode.FAILED, str(error))
+        except Exception as error:
+            self.abort(request.operation_id, token)
             return SimulationExecution(False, None, SimulationIssueCode.FAILED, str(error))
         try:
             live_request = current_request() if current_request is not None else request
         except Exception as error:
+            self.abort(request.operation_id, token)
             return SimulationExecution(False, None, SimulationIssueCode.FAILED, str(error))
-        return self.publish(request=request, token=token, candidate=candidate, current_request=live_request)
+        execution = self.publish(
+            request=request,
+            token=token,
+            candidate=candidate,
+            current_request=live_request,
+        )
+        if not execution.accepted:
+            self.abort(request.operation_id, token)
+        return execution

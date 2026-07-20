@@ -120,7 +120,11 @@ def build_tool_envelope(*, tool: ToolDefinition, assembly: ToolAssembly, holder:
     cutting_end = max(item.axial_end for item in cutter)
     if assembly.stickout.value < cutting_end or assembly.stickout.value > cutting_end + shank.length.value + 1.0e-9:
         raise CamValidationError("Tool stickout is inconsistent with shank geometry")
-    shank_profile = (_primitive(EnvelopePrimitiveKind.CYLINDER, cutting_end, assembly.stickout.value, shank.diameter.value / 2.0, unit, "shank", EnvelopeSupport.GEOMETRY_FAITHFUL),)
+    shank_profile = (
+        (_primitive(EnvelopePrimitiveKind.CYLINDER, cutting_end, assembly.stickout.value, shank.diameter.value / 2.0, unit, "shank", EnvelopeSupport.GEOMETRY_FAITHFUL),)
+        if assembly.stickout.value > cutting_end
+        else ()
+    )
     holder_profile: tuple[EnvelopePrimitive, ...] = ()
     if assembly.holder_id is None:
         raise CamValidationError("Simulation requires an explicit holder definition")

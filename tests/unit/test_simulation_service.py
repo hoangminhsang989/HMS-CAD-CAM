@@ -113,6 +113,7 @@ def test_cancelled_recompute_preserves_previous_published_result():
         backend=InMemoryAabbBackend(), cancellation=lambda: True)
     assert not cancelled.accepted and cancelled.code is SimulationIssueCode.CANCELLED
     assert service.get(operation.operation_id) is previous
+    assert operation.operation_id not in service._tokens
 
 
 def test_project_switch_clears_runtime_registry_without_persistence():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 
 import pytest
 
@@ -126,3 +127,26 @@ def test_autosave_and_recovery_copy_cache_without_dirty_load(tmp_path) -> None:
     recovered_cache = opener.load_cached_simulation(recovered_inputs)
     assert recovered_cache.status is SimulationCacheStatus.VALID
     assert not recovered.is_dirty
+
+
+def test_removing_parent_job_deletes_orphaned_operation_cache(tmp_path) -> None:
+    service, _session, operation, _artifact, inputs, scene = _project(tmp_path)
+    _publish_cache(service, inputs, scene)
+    operation_cache = (
+        service.current_project.root_path
+        / "cache"
+        / "simulation"
+        / hashlib.sha256(str(operation.operation_id).encode("ascii")).hexdigest()[:32]
+    )
+    assert operation_cache.is_dir()
+
+    service.stage_cam_snapshot(
+        dataclasses.replace(
+            service.cam_snapshot,
+            jobs=(),
+            active_job_id=None,
+            artifacts=(),
+        )
+    )
+
+    assert not operation_cache.exists()
