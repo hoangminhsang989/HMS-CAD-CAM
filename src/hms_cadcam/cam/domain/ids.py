@@ -165,6 +165,13 @@ class PostProcessorDefinitionId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class ProductionControllerProfileId(_CamUuidId):
+    """Identity of one versioned production-controller profile."""
+
+    PREFIX: ClassVar[str] = "production_controller_profile"
+
+
+@dataclass(frozen=True, slots=True)
 class PostRequestId(_CamUuidId):
     """Identity of one post-processing request envelope."""
 
@@ -202,6 +209,7 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     SimulationRequestId,
     SimulationResultId,
     PostProcessorDefinitionId,
+    ProductionControllerProfileId,
     PostRequestId,
     PostResultId,
     NCProgramId,

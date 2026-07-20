@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from uuid import uuid4
 
@@ -42,6 +44,25 @@ def test_inverse_time_is_fail_closed():
     # The source artifact's typed event stream is the only lowering input;
     # inverse-time cannot be represented by a post-v1 record.
     assert request.lowering_policy.allow_arc_to_line is False
+
+
+def test_scalar_post_maximum_feed_is_enforced_without_quantity_attribute_access():
+    source = source_snapshot()
+    definition = canonical_definition()
+    limited = replace(
+        definition,
+        capabilities=replace(definition.capabilities, maximum_feed=99.0),
+    )
+    request = PostRequest(
+        source.project_id,
+        source.operation.operation_id,
+        source.artifact.artifact_id,
+        limited,
+        simulation_gate_policy=SimulationGatePolicy(SimulationGateMode.OPTIONAL),
+    )
+
+    with pytest.raises(CamValidationError, match="exceeds post limit"):
+        lower_toolpath(request, source)
 
 
 @pytest.mark.parametrize("process", ("tapping", "reaming", "boring"))

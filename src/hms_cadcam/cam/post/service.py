@@ -15,7 +15,8 @@ from hms_cadcam.cam.post.adapter import PostProcessorAdapter
 from hms_cadcam.cam.post.dummy import CanonicalDummyAdapter
 from hms_cadcam.cam.post.lowering import PostSourceSnapshot, lower_toolpath
 from hms_cadcam.cam.post.model import (
-    PostDiagnostic, PostDiagnosticCode, PostRequest, PostResult, PostResultStatus,
+    FeedModeRecord, PostDiagnostic, PostDiagnosticCode, PostRequest, PostResult,
+    PostResultStatus,
 )
 from hms_cadcam.cam.post.validation import validate_request
 
@@ -38,7 +39,7 @@ class PostExecution:
 def build_post_input_fingerprint(request: PostRequest, source: PostSourceSnapshot) -> DependencyFingerprint:
     """Build the identity fingerprint from current semantic inputs only."""
     simulation = source.simulation_result
-    return DependencyFingerprint.from_payload({
+    payload = {
         "algorithm_version": request.algorithm_version,
         "project_id": str(source.project_id),
         "operation": {"id": str(source.operation.operation_id), "revision": source.operation.revision.to_dict(), "enabled": source.operation.enabled, "strategy_key": source.operation.strategy_key, "strategy_version": source.operation.strategy_version},
@@ -53,7 +54,10 @@ def build_post_input_fingerprint(request: PostRequest, source: PostSourceSnapsho
         "simulation_gate_policy": request.simulation_gate_policy.to_dict(),
         "simulation_fingerprint": simulation.result_fingerprint.to_dict() if simulation else None,
         "expected_simulation_input_fingerprint": source.expected_simulation_input_fingerprint.to_dict() if source.expected_simulation_input_fingerprint else None,
-    })
+    }
+    if request.program_context is not None:
+        payload["production_program_context"] = request.program_context.to_dict()
+    return DependencyFingerprint.from_payload(payload)
 
 
 class PostRuntimeService:
@@ -124,10 +128,15 @@ class PostRuntimeService:
         self.invalidate_all()
 
     def post(self, request: PostRequest, source: PostSourceSnapshot, adapter: PostProcessorAdapter | None = None, *, current_source: Callable[[], PostSourceSnapshot] | None = None) -> PostExecution:
-        if adapter is None and request.post_definition.adapter_key != "canonical_dummy":
-            diagnostic = PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.adapter_unavailable")
-            return PostExecution(False, None, (diagnostic,), PostResultStatus.BLOCKED)
-        adapter = adapter or CanonicalDummyAdapter()
+        if adapter is None:
+            if request.post_definition.adapter_key == "canonical_dummy":
+                adapter = CanonicalDummyAdapter()
+            elif request.post_definition.adapter_key == "fanuc_robodrill_21i_worknc_v1":
+                from hms_cadcam.cam.post.fanuc_robodrill_21i import FanucRobodrill21iAdapter
+                adapter = FanucRobodrill21iAdapter(request.post_definition)
+            else:
+                diagnostic = PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.adapter_unavailable")
+                return PostExecution(False, None, (diagnostic,), PostResultStatus.BLOCKED)
         token = self.begin(request, source)
         try:
             diagnostics = list(validate_request(request, request.post_definition))
@@ -167,7 +176,10 @@ class PostRuntimeService:
                 return PostExecution(False, None, (PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.STALE_RESULT, "post.input_changed"),), PostResultStatus.STALE)
             output_checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
             sim = source.simulation_result
-            result = PostResult.create(result_id=PostResultId.new(), project_id=source.project_id, operation_id=source.operation.operation_id, artifact_id=source.artifact.artifact_id, artifact_fingerprint=source.artifact.artifact_fingerprint, input_fingerprint=token.input_fingerprint, post_definition_id=request.post_definition.definition_id, post_definition_version=request.post_definition.definition_version, post_definition_fingerprint=request.post_definition.fingerprint, setup_id=source.setup.setup_id, setup_revision=source.setup.revision, setup_fingerprint=ContentFingerprint.from_payload(source.setup.to_dict()), tool_assembly_id=source.assembly.assembly_id, tool_assembly_fingerprint=source.assembly.content_fingerprint, tool_fingerprint=source.tool.content_fingerprint if source.tool else None, holder_id=source.holder.holder_id if source.holder else None, holder_fingerprint=source.holder.content_fingerprint if source.holder else None, machine_id=source.machine.machine_id if source.machine else None, machine_fingerprint=source.machine.content_fingerprint if source.machine else None, simulation_fingerprint=sim.result_fingerprint if sim else None, program_ir_fingerprint=program.program_fingerprint, output_checksum=output_checksum, canonical_text=text, status=PostResultStatus.PUBLISHED, diagnostics=tuple(diagnostics), statistics=program.statistics)
+            profile = request.post_definition.production_profile
+            context = request.program_context
+            feed_modes = tuple(sorted({record.mode for record in program.records if isinstance(record, FeedModeRecord)}, key=lambda item: item.value))
+            result = PostResult.create(result_id=PostResultId.new(), project_id=source.project_id, operation_id=source.operation.operation_id, artifact_id=source.artifact.artifact_id, artifact_fingerprint=source.artifact.artifact_fingerprint, input_fingerprint=token.input_fingerprint, post_definition_id=request.post_definition.definition_id, post_definition_version=request.post_definition.definition_version, post_definition_fingerprint=request.post_definition.fingerprint, setup_id=source.setup.setup_id, setup_revision=source.setup.revision, setup_fingerprint=ContentFingerprint.from_payload(source.setup.to_dict()), tool_assembly_id=source.assembly.assembly_id, tool_assembly_fingerprint=source.assembly.content_fingerprint, tool_fingerprint=source.tool.content_fingerprint if source.tool else None, holder_id=source.holder.holder_id if source.holder else None, holder_fingerprint=source.holder.content_fingerprint if source.holder else None, machine_id=source.machine.machine_id if source.machine else None, machine_fingerprint=source.machine.content_fingerprint if source.machine else None, simulation_fingerprint=sim.result_fingerprint if sim else None, program_ir_fingerprint=program.program_fingerprint, output_checksum=output_checksum, canonical_text=text, status=PostResultStatus.PUBLISHED, diagnostics=tuple(diagnostics), statistics=program.statistics, production_profile_id=profile.profile_id if profile else None, production_profile_version=profile.profile_version if profile else None, production_profile_fingerprint=profile.fingerprint if profile else None, tool_binding_fingerprint=context.tool_binding.fingerprint if context else None, program_context_fingerprint=context.fingerprint if context else None, validated_unit=program.unit if profile else None, validated_feed_modes=feed_modes if profile else ())
             if not self.publish(request, token, result, current_input=build_post_input_fingerprint(request, current)):
                 return PostExecution(False, None, (PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.STALE_RESULT, "post.publish_stale"),), PostResultStatus.STALE)
             return PostExecution(True, result, tuple(diagnostics), PostResultStatus.PUBLISHED)

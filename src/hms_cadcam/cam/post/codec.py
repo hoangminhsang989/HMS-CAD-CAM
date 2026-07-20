@@ -10,7 +10,7 @@ from hms_cadcam.cam.domain.errors import CamValidationError, UnsupportedCamSchem
 from hms_cadcam.cam.domain.ids import (
     HolderDefinitionId, MachineDefinitionId, NCProgramId, OperationId,
     PostProcessorDefinitionId, PostRequestId, PostResultId, SetupId,
-    ToolAssemblyId, ToolDefinitionId, ToolpathArtifactId,
+    ProductionControllerProfileId, ToolAssemblyId, ToolDefinitionId, ToolpathArtifactId,
 )
 from hms_cadcam.cam.domain.machine import MachineKind, OperationCapability, SpindleDirection, TappingMode
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
@@ -30,6 +30,11 @@ from hms_cadcam.cam.post.model import (
     RapidMotionRecord, SemanticMarkerRecord, SimulationGateMode, SimulationGatePolicy,
     SpindleDirectionRecord, SpindleStartRecord, SpindleStopRecord, ToolActivationRecord,
     UnitsRecord, WorkOffsetRecord, NCRecordUnion,
+)
+from hms_cadcam.cam.post.profile import (
+    PROGRAM_CONTEXT_FORMAT, PRODUCTION_PROFILE_FORMAT, TOOL_BINDING_FORMAT,
+    ControllerToolBinding, ProductionControllerProfile, ProductionProgramContext,
+    profile_from_dict, profile_to_dict,
 )
 
 T = TypeVar("T")
@@ -197,31 +202,43 @@ def capabilities_from_dict(data: dict[str, Any]) -> PostProcessorCapabilities:
 
 
 def definition_to_dict(value: PostProcessorDefinition) -> dict[str, Any]:
-    return {"format": POST_FORMAT, "format_version": POST_VERSION, "definition_id": str(value.definition_id),
+    data = {"format": POST_FORMAT, "format_version": POST_VERSION, "definition_id": str(value.definition_id),
             "definition_version": value.definition_version, "adapter_key": value.adapter_key, "adapter_version": value.adapter_version,
             "capabilities": capabilities_to_dict(value.capabilities), "numeric_precision": value.numeric_precision,
             "newline": value.newline, "encoding": value.encoding, "maximum_line_length": value.maximum_line_length,
             "maximum_program_size": value.maximum_program_size, "allow_comments": value.allow_comments,
             "comment_prefix": value.comment_prefix, "display_name": value.display_name, "schema_version": value.schema_version}
+    if value.production_profile is not None:
+        data["production_profile"] = profile_to_dict(value.production_profile)
+    return data
 
 
 def definition_from_dict(data: dict[str, Any]) -> PostProcessorDefinition:
+    fields = {"definition_id", "definition_version", "adapter_key", "adapter_version", "capabilities", "numeric_precision", "newline", "encoding", "maximum_line_length", "maximum_program_size", "allow_comments", "comment_prefix", "display_name", "schema_version"}
+    if "production_profile" in data:
+        fields.add("production_profile")
     _strict(data, format_name=POST_FORMAT, version=POST_VERSION,
-            fields={"definition_id", "definition_version", "adapter_key", "adapter_version", "capabilities", "numeric_precision", "newline", "encoding", "maximum_line_length", "maximum_program_size", "allow_comments", "comment_prefix", "display_name", "schema_version"})
-    return PostProcessorDefinition(_id(PostProcessorDefinitionId, data["definition_id"], "Post definition"), data["definition_version"], data["adapter_key"], data["adapter_version"], capabilities_from_dict(data["capabilities"]), data["numeric_precision"], data["newline"], data["encoding"], data["maximum_line_length"], data["maximum_program_size"], data["allow_comments"], data["comment_prefix"], data["display_name"], data["schema_version"])
+            fields=fields)
+    return PostProcessorDefinition(_id(PostProcessorDefinitionId, data["definition_id"], "Post definition"), data["definition_version"], data["adapter_key"], data["adapter_version"], capabilities_from_dict(data["capabilities"]), data["numeric_precision"], data["newline"], data["encoding"], data["maximum_line_length"], data["maximum_program_size"], data["allow_comments"], data["comment_prefix"], data["display_name"], data["schema_version"], profile_from_dict(data["production_profile"]) if "production_profile" in data else None)
 
 
 def request_to_dict(value: PostRequest) -> dict[str, Any]:
-    return {"format": POST_FORMAT, "format_version": POST_VERSION, "request_id": str(value.request_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "post_definition": definition_to_dict(value.post_definition), "lowering_policy": policy_to_dict(value.lowering_policy), "simulation_gate_policy": simulation_gate_policy_to_dict(value.simulation_gate_policy), "algorithm_version": value.algorithm_version}
+    data = {"format": POST_FORMAT, "format_version": POST_VERSION, "request_id": str(value.request_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "post_definition": definition_to_dict(value.post_definition), "lowering_policy": policy_to_dict(value.lowering_policy), "simulation_gate_policy": simulation_gate_policy_to_dict(value.simulation_gate_policy), "algorithm_version": value.algorithm_version}
+    if value.program_context is not None:
+        data["program_context"] = value.program_context.to_dict()
+    return data
 
 
 def request_from_dict(data: dict[str, Any]) -> PostRequest:
-    _strict(data, format_name=POST_FORMAT, version=POST_VERSION, fields={"request_id", "project_id", "operation_id", "artifact_id", "post_definition", "lowering_policy", "simulation_gate_policy", "algorithm_version"})
+    fields = {"request_id", "project_id", "operation_id", "artifact_id", "post_definition", "lowering_policy", "simulation_gate_policy", "algorithm_version"}
+    if "program_context" in data:
+        fields.add("program_context")
+    _strict(data, format_name=POST_FORMAT, version=POST_VERSION, fields=fields)
     try:
         project_id = UUID(data["project_id"])
     except (TypeError, ValueError) as error:
         raise CamValidationError("Project ID payload is invalid") from error
-    return PostRequest(project_id, _id(OperationId, data["operation_id"], "Operation"), _id(ToolpathArtifactId, data["artifact_id"], "Artifact"), definition_from_dict(data["post_definition"]), policy_from_dict(data["lowering_policy"]), simulation_gate_policy_from_dict(data["simulation_gate_policy"]), _id(PostRequestId, data["request_id"], "Post request"), data["algorithm_version"])
+    return PostRequest(project_id, _id(OperationId, data["operation_id"], "Operation"), _id(ToolpathArtifactId, data["artifact_id"], "Artifact"), definition_from_dict(data["post_definition"]), policy_from_dict(data["lowering_policy"]), simulation_gate_policy_from_dict(data["simulation_gate_policy"]), _id(PostRequestId, data["request_id"], "Post request"), data["algorithm_version"], ProductionProgramContext.from_dict(data["program_context"]) if "program_context" in data else None)
 
 
 def _common_record(value: NCRecord) -> dict[str, Any]:
@@ -324,33 +341,48 @@ def _strict_record(data: dict[str, Any], fields: set[str]) -> None:
 
 
 def program_to_dict(value: NCProgramIR) -> dict[str, Any]:
-    return {"format": NC_PROGRAM_FORMAT, "format_version": NC_PROGRAM_VERSION, "program_id": str(value.program_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "artifact_fingerprint": value.artifact_fingerprint.to_dict(), "strategy_key": value.strategy_key, "strategy_version": value.strategy_version, "unit": value.unit.value, "coordinate_mode": value.coordinate_mode.value, "plane": value.plane.value, "setup_id": str(value.setup_id), "setup_revision": value.setup_revision.to_dict(), "wcs": value.wcs.to_dict(), "work_offset": value.work_offset.to_dict() if value.work_offset else None, "tool_assembly_id": str(value.tool_assembly_id), "tool_assembly_fingerprint": value.tool_assembly_fingerprint.to_dict(), "records": [record_to_dict(item) for item in value.records], "diagnostics": [diagnostic_to_dict(item) for item in value.diagnostics], "statistics": statistics_to_dict(value.statistics), "program_fingerprint": value.program_fingerprint.to_dict() if value.program_fingerprint else None}
+    data = {"format": NC_PROGRAM_FORMAT, "format_version": NC_PROGRAM_VERSION, "program_id": str(value.program_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "artifact_fingerprint": value.artifact_fingerprint.to_dict(), "strategy_key": value.strategy_key, "strategy_version": value.strategy_version, "unit": value.unit.value, "coordinate_mode": value.coordinate_mode.value, "plane": value.plane.value, "setup_id": str(value.setup_id), "setup_revision": value.setup_revision.to_dict(), "wcs": value.wcs.to_dict(), "work_offset": value.work_offset.to_dict() if value.work_offset else None, "tool_assembly_id": str(value.tool_assembly_id), "tool_assembly_fingerprint": value.tool_assembly_fingerprint.to_dict(), "records": [record_to_dict(item) for item in value.records], "diagnostics": [diagnostic_to_dict(item) for item in value.diagnostics], "statistics": statistics_to_dict(value.statistics), "program_fingerprint": value.program_fingerprint.to_dict() if value.program_fingerprint else None}
+    if value.production_context is not None:
+        data["production_context"] = value.production_context.to_dict()
+    return data
 
 
 def program_from_dict(data: dict[str, Any]) -> NCProgramIR:
-    _strict(data, format_name=NC_PROGRAM_FORMAT, version=NC_PROGRAM_VERSION, fields={"program_id", "project_id", "operation_id", "artifact_id", "artifact_fingerprint", "strategy_key", "strategy_version", "unit", "coordinate_mode", "plane", "setup_id", "setup_revision", "wcs", "work_offset", "tool_assembly_id", "tool_assembly_fingerprint", "records", "diagnostics", "statistics", "program_fingerprint"})
+    fields = {"program_id", "project_id", "operation_id", "artifact_id", "artifact_fingerprint", "strategy_key", "strategy_version", "unit", "coordinate_mode", "plane", "setup_id", "setup_revision", "wcs", "work_offset", "tool_assembly_id", "tool_assembly_fingerprint", "records", "diagnostics", "statistics", "program_fingerprint"}
+    if "production_context" in data:
+        fields.add("production_context")
+    _strict(data, format_name=NC_PROGRAM_FORMAT, version=NC_PROGRAM_VERSION, fields=fields)
     if not isinstance(data["records"], list) or not isinstance(data["diagnostics"], list):
         raise CamValidationError("Program collections must be lists")
     try:
         project_id = UUID(data["project_id"])
     except (TypeError, ValueError) as error:
         raise CamValidationError("Program project ID is invalid") from error
-    return NCProgramIR.create(program_id=_id(NCProgramId, data["program_id"], "Program"), project_id=project_id, operation_id=_id(OperationId, data["operation_id"], "Operation"), artifact_id=_id(ToolpathArtifactId, data["artifact_id"], "Artifact"), artifact_fingerprint=_fp(data["artifact_fingerprint"]), strategy_key=data["strategy_key"], strategy_version=data["strategy_version"], unit=_enum(LengthUnit, data["unit"], "Unit"), coordinate_mode=_enum(CoordinateMode, data["coordinate_mode"], "Coordinate mode"), plane=_enum(Plane, data["plane"], "Plane"), setup_id=_id(SetupId, data["setup_id"], "Setup"), setup_revision=Revision.from_dict(data["setup_revision"]), wcs=WcsFrame.from_dict(data["wcs"]), work_offset=WorkOffset.from_dict(data["work_offset"]) if data["work_offset"] else None, tool_assembly_id=_id(ToolAssemblyId, data["tool_assembly_id"], "Tool assembly"), tool_assembly_fingerprint=_typed_fp(data["tool_assembly_fingerprint"]), records=tuple(record_from_dict(item) for item in data["records"]), diagnostics=tuple(diagnostic_from_dict(item) for item in data["diagnostics"]), statistics=statistics_from_dict(data["statistics"]), program_fingerprint=_fp(data["program_fingerprint"]) if data["program_fingerprint"] else None)
+    return NCProgramIR.create(program_id=_id(NCProgramId, data["program_id"], "Program"), project_id=project_id, operation_id=_id(OperationId, data["operation_id"], "Operation"), artifact_id=_id(ToolpathArtifactId, data["artifact_id"], "Artifact"), artifact_fingerprint=_fp(data["artifact_fingerprint"]), strategy_key=data["strategy_key"], strategy_version=data["strategy_version"], unit=_enum(LengthUnit, data["unit"], "Unit"), coordinate_mode=_enum(CoordinateMode, data["coordinate_mode"], "Coordinate mode"), plane=_enum(Plane, data["plane"], "Plane"), setup_id=_id(SetupId, data["setup_id"], "Setup"), setup_revision=Revision.from_dict(data["setup_revision"]), wcs=WcsFrame.from_dict(data["wcs"]), work_offset=WorkOffset.from_dict(data["work_offset"]) if data["work_offset"] else None, tool_assembly_id=_id(ToolAssemblyId, data["tool_assembly_id"], "Tool assembly"), tool_assembly_fingerprint=_typed_fp(data["tool_assembly_fingerprint"]), records=tuple(record_from_dict(item) for item in data["records"]), diagnostics=tuple(diagnostic_from_dict(item) for item in data["diagnostics"]), statistics=statistics_from_dict(data["statistics"]), program_fingerprint=_fp(data["program_fingerprint"]) if data["program_fingerprint"] else None, production_context=ProductionProgramContext.from_dict(data["production_context"]) if "production_context" in data else None)
 
 
 def result_to_dict(value: PostResult) -> dict[str, Any]:
-    return {"format": POST_RESULT_FORMAT, "format_version": POST_VERSION, "result_id": str(value.result_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "artifact_fingerprint": value.artifact_fingerprint.to_dict(), "input_fingerprint": value.input_fingerprint.to_dict(), "post_definition_id": str(value.post_definition_id), "post_definition_version": value.post_definition_version, "post_definition_fingerprint": value.post_definition_fingerprint.to_dict(), "setup_id": str(value.setup_id), "setup_revision": value.setup_revision.to_dict(), "setup_fingerprint": value.setup_fingerprint.to_dict(), "tool_assembly_id": str(value.tool_assembly_id), "tool_assembly_fingerprint": value.tool_assembly_fingerprint.to_dict(), "tool_fingerprint": value.tool_fingerprint.to_dict() if value.tool_fingerprint else None, "holder_id": str(value.holder_id) if value.holder_id else None, "holder_fingerprint": value.holder_fingerprint.to_dict() if value.holder_fingerprint else None, "machine_id": str(value.machine_id) if value.machine_id else None, "machine_fingerprint": value.machine_fingerprint.to_dict() if value.machine_fingerprint else None, "simulation_fingerprint": value.simulation_fingerprint.to_dict() if value.simulation_fingerprint else None, "program_ir_fingerprint": value.program_ir_fingerprint.to_dict() if value.program_ir_fingerprint else None, "output_checksum": value.output_checksum, "canonical_text": value.canonical_text, "status": value.status.value, "diagnostics": [diagnostic_to_dict(item) for item in value.diagnostics], "statistics": statistics_to_dict(value.statistics), "result_fingerprint": value.result_fingerprint.to_dict() if value.result_fingerprint else None, "schema_version": value.schema_version}
+    data = {"format": POST_RESULT_FORMAT, "format_version": POST_VERSION, "result_id": str(value.result_id), "project_id": str(value.project_id), "operation_id": str(value.operation_id), "artifact_id": str(value.artifact_id), "artifact_fingerprint": value.artifact_fingerprint.to_dict(), "input_fingerprint": value.input_fingerprint.to_dict(), "post_definition_id": str(value.post_definition_id), "post_definition_version": value.post_definition_version, "post_definition_fingerprint": value.post_definition_fingerprint.to_dict(), "setup_id": str(value.setup_id), "setup_revision": value.setup_revision.to_dict(), "setup_fingerprint": value.setup_fingerprint.to_dict(), "tool_assembly_id": str(value.tool_assembly_id), "tool_assembly_fingerprint": value.tool_assembly_fingerprint.to_dict(), "tool_fingerprint": value.tool_fingerprint.to_dict() if value.tool_fingerprint else None, "holder_id": str(value.holder_id) if value.holder_id else None, "holder_fingerprint": value.holder_fingerprint.to_dict() if value.holder_fingerprint else None, "machine_id": str(value.machine_id) if value.machine_id else None, "machine_fingerprint": value.machine_fingerprint.to_dict() if value.machine_fingerprint else None, "simulation_fingerprint": value.simulation_fingerprint.to_dict() if value.simulation_fingerprint else None, "program_ir_fingerprint": value.program_ir_fingerprint.to_dict() if value.program_ir_fingerprint else None, "output_checksum": value.output_checksum, "canonical_text": value.canonical_text, "status": value.status.value, "diagnostics": [diagnostic_to_dict(item) for item in value.diagnostics], "statistics": statistics_to_dict(value.statistics), "result_fingerprint": value.result_fingerprint.to_dict() if value.result_fingerprint else None, "schema_version": value.schema_version}
+    if value.production_profile_id is not None:
+        data.update(production_profile_id=str(value.production_profile_id), production_profile_version=value.production_profile_version, production_profile_fingerprint=value.production_profile_fingerprint.to_dict(), tool_binding_fingerprint=value.tool_binding_fingerprint.to_dict(), program_context_fingerprint=value.program_context_fingerprint.to_dict(), validated_unit=value.validated_unit.value, validated_feed_modes=[item.value for item in value.validated_feed_modes])
+    return data
 
 
 def result_from_dict(data: dict[str, Any]) -> PostResult:
-    _strict(data, format_name=POST_RESULT_FORMAT, version=POST_VERSION, fields={"result_id", "project_id", "operation_id", "artifact_id", "artifact_fingerprint", "input_fingerprint", "post_definition_id", "post_definition_version", "post_definition_fingerprint", "setup_id", "setup_revision", "setup_fingerprint", "tool_assembly_id", "tool_assembly_fingerprint", "tool_fingerprint", "holder_id", "holder_fingerprint", "machine_id", "machine_fingerprint", "simulation_fingerprint", "program_ir_fingerprint", "output_checksum", "canonical_text", "status", "diagnostics", "statistics", "result_fingerprint", "schema_version"})
+    fields = {"result_id", "project_id", "operation_id", "artifact_id", "artifact_fingerprint", "input_fingerprint", "post_definition_id", "post_definition_version", "post_definition_fingerprint", "setup_id", "setup_revision", "setup_fingerprint", "tool_assembly_id", "tool_assembly_fingerprint", "tool_fingerprint", "holder_id", "holder_fingerprint", "machine_id", "machine_fingerprint", "simulation_fingerprint", "program_ir_fingerprint", "output_checksum", "canonical_text", "status", "diagnostics", "statistics", "result_fingerprint", "schema_version"}
+    production_fields = {"production_profile_id", "production_profile_version", "production_profile_fingerprint", "tool_binding_fingerprint", "program_context_fingerprint", "validated_unit", "validated_feed_modes"}
+    if "production_profile_id" in data:
+        fields |= production_fields
+    _strict(data, format_name=POST_RESULT_FORMAT, version=POST_VERSION, fields=fields)
     if not isinstance(data["diagnostics"], list):
         raise CamValidationError("Result diagnostics must be a list")
     try:
         project_id = UUID(data["project_id"])
     except (TypeError, ValueError) as error:
         raise CamValidationError("Result project ID is invalid") from error
-    return PostResult.create(result_id=_id(PostResultId, data["result_id"], "Result"), project_id=project_id, operation_id=_id(OperationId, data["operation_id"], "Operation"), artifact_id=_id(ToolpathArtifactId, data["artifact_id"], "Artifact"), artifact_fingerprint=_fp(data["artifact_fingerprint"]), input_fingerprint=DependencyFingerprint.from_dict(data["input_fingerprint"]), post_definition_id=_id(PostProcessorDefinitionId, data["post_definition_id"], "Post definition"), post_definition_version=data["post_definition_version"], post_definition_fingerprint=_fp(data["post_definition_fingerprint"]), setup_id=_id(SetupId, data["setup_id"], "Setup"), setup_revision=Revision.from_dict(data["setup_revision"]), setup_fingerprint=_fp(data["setup_fingerprint"]), tool_assembly_id=_id(ToolAssemblyId, data["tool_assembly_id"], "Tool assembly"), tool_assembly_fingerprint=_typed_fp(data["tool_assembly_fingerprint"]), tool_fingerprint=_fp(data["tool_fingerprint"]) if data["tool_fingerprint"] else None, holder_id=_id(HolderDefinitionId, data["holder_id"], "Holder") if data["holder_id"] else None, holder_fingerprint=_fp(data["holder_fingerprint"]) if data["holder_fingerprint"] else None, machine_id=_id(MachineDefinitionId, data["machine_id"], "Machine") if data["machine_id"] else None, machine_fingerprint=_fp(data["machine_fingerprint"]) if data["machine_fingerprint"] else None, simulation_fingerprint=_fp(data["simulation_fingerprint"]) if data["simulation_fingerprint"] else None, program_ir_fingerprint=_fp(data["program_ir_fingerprint"]) if data["program_ir_fingerprint"] else None, output_checksum=data["output_checksum"], canonical_text=data["canonical_text"], status=_enum(PostResultStatus, data["status"], "Result status"), diagnostics=tuple(diagnostic_from_dict(item) for item in data["diagnostics"]), statistics=statistics_from_dict(data["statistics"]), result_fingerprint=_fp(data["result_fingerprint"]) if data["result_fingerprint"] else None, schema_version=data["schema_version"])
+    if "validated_feed_modes" in data and not isinstance(data["validated_feed_modes"], list):
+        raise CamValidationError("Validated feed-mode payload is invalid")
+    return PostResult.create(result_id=_id(PostResultId, data["result_id"], "Result"), project_id=project_id, operation_id=_id(OperationId, data["operation_id"], "Operation"), artifact_id=_id(ToolpathArtifactId, data["artifact_id"], "Artifact"), artifact_fingerprint=_fp(data["artifact_fingerprint"]), input_fingerprint=DependencyFingerprint.from_dict(data["input_fingerprint"]), post_definition_id=_id(PostProcessorDefinitionId, data["post_definition_id"], "Post definition"), post_definition_version=data["post_definition_version"], post_definition_fingerprint=_fp(data["post_definition_fingerprint"]), setup_id=_id(SetupId, data["setup_id"], "Setup"), setup_revision=Revision.from_dict(data["setup_revision"]), setup_fingerprint=_fp(data["setup_fingerprint"]), tool_assembly_id=_id(ToolAssemblyId, data["tool_assembly_id"], "Tool assembly"), tool_assembly_fingerprint=_typed_fp(data["tool_assembly_fingerprint"]), tool_fingerprint=_fp(data["tool_fingerprint"]) if data["tool_fingerprint"] else None, holder_id=_id(HolderDefinitionId, data["holder_id"], "Holder") if data["holder_id"] else None, holder_fingerprint=_fp(data["holder_fingerprint"]) if data["holder_fingerprint"] else None, machine_id=_id(MachineDefinitionId, data["machine_id"], "Machine") if data["machine_id"] else None, machine_fingerprint=_fp(data["machine_fingerprint"]) if data["machine_fingerprint"] else None, simulation_fingerprint=_fp(data["simulation_fingerprint"]) if data["simulation_fingerprint"] else None, program_ir_fingerprint=_fp(data["program_ir_fingerprint"]) if data["program_ir_fingerprint"] else None, output_checksum=data["output_checksum"], canonical_text=data["canonical_text"], status=_enum(PostResultStatus, data["status"], "Result status"), diagnostics=tuple(diagnostic_from_dict(item) for item in data["diagnostics"]), statistics=statistics_from_dict(data["statistics"]), result_fingerprint=_fp(data["result_fingerprint"]) if data["result_fingerprint"] else None, schema_version=data["schema_version"], production_profile_id=_id(ProductionControllerProfileId, data["production_profile_id"], "Production profile") if "production_profile_id" in data else None, production_profile_version=data.get("production_profile_version"), production_profile_fingerprint=_fp(data["production_profile_fingerprint"]) if "production_profile_fingerprint" in data else None, tool_binding_fingerprint=_fp(data["tool_binding_fingerprint"]) if "tool_binding_fingerprint" in data else None, program_context_fingerprint=_fp(data["program_context_fingerprint"]) if "program_context_fingerprint" in data else None, validated_unit=_enum(LengthUnit, data["validated_unit"], "Validated unit") if "validated_unit" in data else None, validated_feed_modes=tuple(_enum(FeedMode, item, "Validated feed mode") for item in data.get("validated_feed_modes", [])))
 
 
 def _program_payload(value: NCProgramIR) -> dict[str, Any]:
@@ -375,7 +407,7 @@ def compute_result_fingerprint(value: PostResult) -> ContentFingerprint:
     return ContentFingerprint.from_payload(_result_payload(value))
 
 
-def dumps(value: PostRequest | NCProgramIR | PostResult | PostProcessorDefinition) -> str:
+def dumps(value: PostRequest | NCProgramIR | PostResult | PostProcessorDefinition | ProductionControllerProfile | ControllerToolBinding | ProductionProgramContext) -> str:
     if isinstance(value, PostRequest):
         payload = request_to_dict(value)
     elif isinstance(value, NCProgramIR):
@@ -384,12 +416,18 @@ def dumps(value: PostRequest | NCProgramIR | PostResult | PostProcessorDefinitio
         payload = result_to_dict(value)
     elif isinstance(value, PostProcessorDefinition):
         payload = definition_to_dict(value)
+    elif isinstance(value, ProductionControllerProfile):
+        payload = profile_to_dict(value)
+    elif isinstance(value, ControllerToolBinding):
+        payload = value.to_dict()
+    elif isinstance(value, ProductionProgramContext):
+        payload = value.to_dict()
     else:
         raise CamValidationError("Unsupported post codec value")
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
-def loads(text: str) -> PostRequest | NCProgramIR | PostResult | PostProcessorDefinition:
+def loads(text: str) -> PostRequest | NCProgramIR | PostResult | PostProcessorDefinition | ProductionControllerProfile | ControllerToolBinding | ProductionProgramContext:
     if not isinstance(text, str):
         raise CamValidationError("Post codec input must be text")
     try:
@@ -403,6 +441,12 @@ def loads(text: str) -> PostRequest | NCProgramIR | PostResult | PostProcessorDe
         return program_from_dict(data)
     if format_name == POST_RESULT_FORMAT:
         return result_from_dict(data)
+    if format_name == PRODUCTION_PROFILE_FORMAT:
+        return profile_from_dict(data)
+    if format_name == TOOL_BINDING_FORMAT:
+        return ControllerToolBinding.from_dict(data)
+    if format_name == PROGRAM_CONTEXT_FORMAT:
+        return ProductionProgramContext.from_dict(data)
     if format_name == POST_FORMAT:
         if "request_id" in data:
             return request_from_dict(data)

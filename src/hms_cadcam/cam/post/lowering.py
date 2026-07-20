@@ -9,7 +9,7 @@ from uuid import UUID
 
 from hms_cadcam.cam.domain.errors import CamValidationError
 from hms_cadcam.cam.domain.machine import (
-    MachineCompatibilityStatus, MachineCoolantCapability, MachineDefinition,
+    MachineAxisType, MachineCompatibilityStatus, MachineCoolantCapability, MachineDefinition,
     MachineEvidence, OperationCapability, SpindleDirection, TappingMode,
     assess_machine_compatibility,
 )
@@ -207,6 +207,23 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
     if any(item.severity is DiagnosticSeverity.ERROR for item in diagnostics):
         raise CamValidationError("Post source preflight failed")
     capabilities = request.post_definition.capabilities
+    production_profile = request.post_definition.production_profile
+    if production_profile is not None:
+        machine = source.machine
+        if machine is None:
+            raise CamValidationError("Production post requires an explicit machine definition")
+        if machine.kind is not production_profile.machine_type or machine.unit not in production_profile.supported_units:
+            raise CamValidationError("Machine kind/unit is incompatible with production profile")
+        linear_axes = tuple(axis for axis in machine.axes if axis.axis_type is MachineAxisType.LINEAR)
+        if len(linear_axes) != 3 or {axis.name.upper() for axis in linear_axes} != set(production_profile.axes):
+            raise CamValidationError("Production profile requires exact X/Y/Z linear axes")
+        if machine.manufacturer is None or machine.manufacturer.casefold() != "fanuc":
+            raise CamValidationError("Production profile requires a FANUC machine definition")
+        if machine.model is None or production_profile.machine_family.casefold() not in machine.model.casefold():
+            raise CamValidationError("Machine model is incompatible with production profile")
+        context = request.program_context
+        if context is None or context.tool_binding.tool_assembly_fingerprint != source.assembly.content_fingerprint:
+            raise CamValidationError("Production tool binding is missing or stale")
     if source.operation.strategy_key not in capabilities.supported_operation_strategies:
         raise CamValidationError("Operation strategy is unsupported by post definition")
     if source.artifact.unit not in capabilities.supported_units:
@@ -270,7 +287,7 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
                                   "mm_per_minute" if source.artifact.unit is LengthUnit.MM else "inch_per_minute")
             if event.feed_rate.unit.value != expected_feed_unit:
                 raise CamValidationError("Motion feed unit does not match artifact unit")
-            if capabilities.maximum_feed is not None and event.feed_rate.unit is capabilities.maximum_feed.unit and event.feed_rate.value > capabilities.maximum_feed.value:
+            if capabilities.maximum_feed is not None and event.feed_rate.value > capabilities.maximum_feed:
                 raise CamValidationError("Motion feed exceeds post limit")
             if source.machine is not None and event.feed_rate.unit is source.machine.capabilities.maximum_feed.unit and event.feed_rate.value > source.machine.capabilities.maximum_feed.value:
                 raise CamValidationError("Motion feed exceeds machine limit")
@@ -290,7 +307,7 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
                                   "mm_per_minute" if source.artifact.unit is LengthUnit.MM else "inch_per_minute")
             if event.feed_rate.unit.value != expected_feed_unit:
                 raise CamValidationError("Arc feed unit does not match artifact unit")
-            if capabilities.maximum_feed is not None and event.feed_rate.unit is capabilities.maximum_feed.unit and event.feed_rate.value > capabilities.maximum_feed.value:
+            if capabilities.maximum_feed is not None and event.feed_rate.value > capabilities.maximum_feed:
                 raise CamValidationError("Arc feed exceeds post limit")
             if active_feed is not required_mode:
                 records.append(FeedModeRecord(sequence, required_mode))
@@ -335,4 +352,4 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
         else:
             raise CamValidationError(f"Unsupported toolpath event at index {event_index}")
     records.append(ProgramEndRecord(len(records)))
-    return NCProgramIR.create(program_id=NCProgramId.new(), project_id=source.project_id, operation_id=source.operation.operation_id, artifact_id=source.artifact.artifact_id, artifact_fingerprint=source.artifact.artifact_fingerprint, strategy_key=source.operation.strategy_key, strategy_version=source.operation.strategy_version, unit=source.artifact.unit, coordinate_mode=CoordinateMode.ABSOLUTE, plane=Plane.XY, setup_id=source.setup.setup_id, setup_revision=source.setup.revision, wcs=source.setup.wcs, work_offset=source.setup.work_offset, tool_assembly_id=source.assembly.assembly_id, tool_assembly_fingerprint=source.assembly.content_fingerprint, records=tuple(records), diagnostics=diagnostics)
+    return NCProgramIR.create(program_id=NCProgramId.new(), project_id=source.project_id, operation_id=source.operation.operation_id, artifact_id=source.artifact.artifact_id, artifact_fingerprint=source.artifact.artifact_fingerprint, strategy_key=source.operation.strategy_key, strategy_version=source.operation.strategy_version, unit=source.artifact.unit, coordinate_mode=CoordinateMode.ABSOLUTE, plane=Plane.XY, setup_id=source.setup.setup_id, setup_revision=source.setup.revision, wcs=source.setup.wcs, work_offset=source.setup.work_offset, tool_assembly_id=source.assembly.assembly_id, tool_assembly_fingerprint=source.assembly.content_fingerprint, records=tuple(records), diagnostics=diagnostics, production_context=request.program_context)

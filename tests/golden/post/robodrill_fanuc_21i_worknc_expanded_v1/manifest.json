@@ -1,0 +1,13 @@
+{
+  "facing.fn": "cf2182f92a1330f28cd9f6630d97e0c559d0b5265772e2c270c04d54bce1dc18",
+  "planar_face_facing.fn": "ce97ee475c626ac35ed36fc48b1a220530bc1c4848aa57dc53746af8280c7968",
+  "contour_line.fn": "6794e09b4ca0996797f61a0a992a3c3cc0893d034be2cf1ed80f06656b377e30",
+  "contour_g02.fn": "3658ffbfea17d7e1c9fcf3a930b1aedff1cede383daaaf3f777703d421a3a5ed",
+  "contour_g03.fn": "1745efdffdd83a1f51a168a083ea490690c2b72ef6cf4caf975ab9edf17b2181",
+  "arc_over_180.fn": "bd9e6aa210d831799e2c7f3928903178470d7b5eefb4cb5d77893e013e42b0f7",
+  "pocket.fn": "ca3546c9ca3dc053de552aeafce4395438301435d3b9227fc16154271e66dba4",
+  "drilling_expanded.fn": "f3a0ed2842363f214c6613631811c0459de94a87f7b55e077d03883eb2d06c56",
+  "drilling_peck_expanded.fn": "9ca410ad344320de70f6a6db7e0e21f8413f4734cdfbef1a029f1b558bb8f619",
+  "reaming_controlled_retract.fn": "2247bec453cf9a3209d7eb9f44bbca881c92c4a9f40ad2cc79c08e7e2fd3fb09",
+  "boring_controlled_retract.fn": "89e65828bdd30b1364d5535fb9cab6636f4647df7e0b0cb52bd27fd01e82dc7d"
+}

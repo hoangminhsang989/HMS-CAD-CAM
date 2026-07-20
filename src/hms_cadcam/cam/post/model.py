@@ -12,7 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias
 from uuid import UUID
 
 from hms_cadcam.cam.domain.errors import CamInvariantError, CamUnitError, CamValidationError, UnsupportedCamSchemaError
@@ -21,6 +21,7 @@ from hms_cadcam.cam.domain.ids import (
     NCProgramId,
     OperationId,
     PostProcessorDefinitionId,
+    ProductionControllerProfileId,
     PostRequestId,
     PostResultId,
     SetupId,
@@ -42,6 +43,9 @@ from hms_cadcam.cam.toolpath.events import (
     SpindleState,
 )
 from hms_cadcam.cam.toolpath.geometry import Pose, validate_arc
+
+if TYPE_CHECKING:
+    from hms_cadcam.cam.post.profile import ProductionControllerProfile, ProductionProgramContext
 
 
 POST_FORMAT = "HMS_CAM_POST"
@@ -400,6 +404,7 @@ class PostProcessorDefinition:
     comment_prefix: str = ";"
     display_name: str | None = None
     schema_version: int = POST_VERSION
+    production_profile: ProductionControllerProfile | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != POST_VERSION or type(self.definition_version) is not int or self.definition_version <= 0 or type(self.adapter_version) is not int or self.adapter_version <= 0:
@@ -417,6 +422,16 @@ class PostProcessorDefinition:
             raise CamValidationError("Post comment policy is invalid")
         if self.display_name is not None:
             object.__setattr__(self, "display_name", _text(self.display_name, "Post display name", maximum=255))
+        if self.production_profile is not None:
+            from hms_cadcam.cam.post.profile import ProductionControllerProfile
+            if not isinstance(self.production_profile, ProductionControllerProfile):
+                raise CamValidationError("Production controller profile is invalid")
+            if self.production_profile.adapter_key != self.adapter_key or self.production_profile.adapter_version != self.adapter_version:
+                raise CamInvariantError("Production profile and adapter identity differ")
+            if self.newline != self.production_profile.newline or self.encoding.casefold() != self.production_profile.encoding.casefold():
+                raise CamInvariantError("Production profile and definition text policies differ")
+            if self.maximum_line_length != self.production_profile.maximum_line_length or self.maximum_program_size != self.production_profile.maximum_program_size:
+                raise CamInvariantError("Production profile and definition size policies differ")
 
     @property
     def fingerprint(self) -> ContentFingerprint:
@@ -443,6 +458,7 @@ class PostRequest:
     simulation_gate_policy: SimulationGatePolicy = SimulationGatePolicy()
     request_id: PostRequestId = None  # type: ignore[assignment]
     algorithm_version: int = POST_VERSION
+    program_context: ProductionProgramContext | None = None
 
     def __post_init__(self) -> None:
         if self.algorithm_version != POST_VERSION:
@@ -456,10 +472,18 @@ class PostRequest:
             object.__setattr__(self, "request_id", PostRequestId.new())
         if not isinstance(self.request_id, PostRequestId):
             raise CamValidationError("Post request ID is invalid")
+        if self.program_context is not None:
+            from hms_cadcam.cam.post.profile import ProductionProgramContext
+            if not isinstance(self.program_context, ProductionProgramContext):
+                raise CamValidationError("Production program context is invalid")
+            if self.post_definition.production_profile is None:
+                raise CamInvariantError("Production context requires a production profile")
+        elif self.post_definition.production_profile is not None:
+            raise CamInvariantError("Production profile requires a program context")
 
     @property
     def input_policy_fingerprint(self) -> DependencyFingerprint:
-        return DependencyFingerprint.from_payload({
+        payload = {
             "algorithm_version": self.algorithm_version,
             "project_id": str(self.project_id),
             "operation_id": str(self.operation_id),
@@ -467,7 +491,10 @@ class PostRequest:
             "post_definition": self.post_definition.fingerprint.to_dict(),
             "lowering_policy": self.lowering_policy.fingerprint.to_dict(),
             "simulation_gate_policy": self.simulation_gate_policy.fingerprint.to_dict(),
-        })
+        }
+        if self.program_context is not None:
+            payload["program_context"] = self.program_context.to_dict()
+        return DependencyFingerprint.from_payload(payload)
 
     def to_dict(self) -> dict[str, Any]:
         from hms_cadcam.cam.post.codec import request_to_dict
@@ -762,6 +789,7 @@ class NCProgramIR:
     statistics: PostStatistics
     program_fingerprint: ContentFingerprint | None = None
     schema_version: int = NC_PROGRAM_VERSION
+    production_context: ProductionProgramContext | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != NC_PROGRAM_VERSION:
@@ -780,6 +808,12 @@ class NCProgramIR:
             raise CamValidationError("Program setup/WCS provenance is invalid")
         if not isinstance(self.work_offset, WorkOffset):
             raise CamValidationError("Program work offset is invalid")
+        if self.production_context is not None:
+            from hms_cadcam.cam.post.profile import ProductionProgramContext
+            if not isinstance(self.production_context, ProductionProgramContext):
+                raise CamValidationError("Program production context is invalid")
+            if self.production_context.safe_z.unit is not self.unit:
+                raise CamUnitError("Program production-context unit mismatch")
         if not isinstance(self.records, tuple) or any(not isinstance(item, NCRecord) for item in self.records):
             raise CamValidationError("Program records must be an immutable typed tuple")
         if any(record.sequence_index != index for index, record in enumerate(self.records)):
@@ -844,6 +878,13 @@ class PostResult:
     statistics: PostStatistics
     result_fingerprint: ContentFingerprint | None = None
     schema_version: int = POST_VERSION
+    production_profile_id: ProductionControllerProfileId | None = None
+    production_profile_version: int | None = None
+    production_profile_fingerprint: ContentFingerprint | None = None
+    tool_binding_fingerprint: ContentFingerprint | None = None
+    program_context_fingerprint: ContentFingerprint | None = None
+    validated_unit: LengthUnit | None = None
+    validated_feed_modes: tuple[FeedMode, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != POST_VERSION:
@@ -878,6 +919,27 @@ class PostResult:
             raise CamInvariantError("Result output checksum verification failed")
         if self.status is PostResultStatus.PUBLISHED and (self.canonical_text is None or self.output_checksum is None or self.program_ir_fingerprint is None):
             raise CamInvariantError("Published result requires canonical output and IR fingerprint")
+        production_values = (
+            self.production_profile_id, self.production_profile_version,
+            self.production_profile_fingerprint, self.tool_binding_fingerprint,
+            self.program_context_fingerprint, self.validated_unit,
+        )
+        if any(value is not None for value in production_values):
+            if any(value is None for value in production_values):
+                raise CamInvariantError("Production result provenance must be complete")
+            if not isinstance(self.production_profile_id, ProductionControllerProfileId) or type(self.production_profile_version) is not int or self.production_profile_version <= 0:
+                raise CamValidationError("Production result profile identity is invalid")
+            if any(not isinstance(value, ContentFingerprint) for value in (self.production_profile_fingerprint, self.tool_binding_fingerprint, self.program_context_fingerprint)):
+                raise CamValidationError("Production result fingerprint is invalid")
+            if not isinstance(self.validated_unit, LengthUnit) or self.validated_unit is LengthUnit.UNKNOWN:
+                raise CamValidationError("Production result validated unit is invalid")
+            if not self.validated_feed_modes:
+                raise CamInvariantError("Production result requires validated feed modes")
+        elif self.validated_feed_modes:
+            raise CamInvariantError("Neutral result cannot carry production feed metadata")
+        if not isinstance(self.validated_feed_modes, tuple) or any(not isinstance(item, FeedMode) for item in self.validated_feed_modes) or len(set(self.validated_feed_modes)) != len(self.validated_feed_modes):
+            raise CamValidationError("Result validated feed modes are invalid")
+        object.__setattr__(self, "validated_feed_modes", tuple(sorted(self.validated_feed_modes, key=lambda item: item.value)))
         if not isinstance(self.diagnostics, tuple) or any(not isinstance(item, PostDiagnostic) for item in self.diagnostics):
             raise CamValidationError("Result diagnostics are invalid")
         object.__setattr__(self, "diagnostics", tuple(sorted(self.diagnostics, key=lambda item: (item.severity.value, item.code.value, item.event_index if item.event_index is not None else -1, item.record_index if item.record_index is not None else -1, item.evidence))))

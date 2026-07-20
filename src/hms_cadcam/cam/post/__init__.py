@@ -6,3 +6,16 @@ from hms_cadcam.cam.post.lowering import PostSourceSnapshot, lower_toolpath, val
 from hms_cadcam.cam.post.model import *
 from hms_cadcam.cam.post.service import PostComputationToken, PostExecution, PostRuntimeService, build_post_input_fingerprint
 from hms_cadcam.cam.post.validation import validate_output, validate_program_ir, validate_request
+from hms_cadcam.cam.post.profile import (
+    ArcOutputMode, ArcPolicy, BlockNumberPolicy, ControllerToolBinding,
+    CoolantCodeMapping, CutterCompensationPolicy, DwellPolicy,
+    NumericFormatPolicy, ProductionControllerProfile, ProductionProgramContext,
+    ProgramNumberPolicy, SafeSequenceToken, SpindleCodeMapping,
+    ToolActivationPolicy, WorkOffsetMapping, profile_from_dict, profile_to_dict,
+    sanitize_comment_fragment,
+)
+from hms_cadcam.cam.post.fanuc_robodrill_21i import (
+    ADAPTER_KEY as FANUC_ROBODRILL_21I_ADAPTER_KEY,
+    PROFILE_KEY as FANUC_ROBODRILL_21I_PROFILE_KEY,
+    FanucRobodrill21iAdapter, robodrill_21i_definition, robodrill_21i_profile,
+)
