@@ -27,3 +27,18 @@ dist/
 temp/
 cache/
 autosave/
+
+# Tài liệu tham khảo bên ngoài: chỉ giữ README, ghi chú và metadata trong Git.
+# File tải về/nhị phân được đặt trong external/ hoặc assets/ và giữ cục bộ.
+docs/references/**/external/*
+!docs/references/**/external/.gitkeep
+docs/references/**/assets/*
+!docs/references/**/assets/.gitkeep
+docs/references/**/*.pdf
+docs/references/**/*.zip
+docs/references/**/*.7z
+docs/references/**/*.rar
+docs/references/**/*.chm
+docs/references/**/*.exe
+docs/references/**/*.msi
+docs/references/**/*.iso
