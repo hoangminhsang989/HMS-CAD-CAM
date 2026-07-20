@@ -235,7 +235,7 @@ class OcpCadViewportBackend:
             "lead_in", "pocket_cutting", "cutting", "lead_out", "link",
             "retract", "synchronized_descent", "synchronized_retract",
             "final_retract", "reaming_approach", "reaming_descent",
-            "controlled_retract",
+            "boring_approach", "boring_descent", "controlled_retract",
         )}
         movements = tuple(
             event for event in artifact.events
@@ -267,6 +267,8 @@ class OcpCadViewportBackend:
             "final_retract": (0.65, 0.35, 1.0),
             "reaming_approach": (1.0, 0.7, 0.1),
             "reaming_descent": (0.15, 0.95, 0.25),
+            "boring_approach": (1.0, 0.62, 0.08),
+            "boring_descent": (0.2, 1.0, 0.3),
             "controlled_retract": (0.95, 0.3, 0.75),
             "dwell": (1.0, 0.2, 0.2),
             "synchronization_begin": (1.0, 0.85, 0.15),

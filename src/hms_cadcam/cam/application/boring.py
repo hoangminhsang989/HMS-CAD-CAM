@@ -264,12 +264,22 @@ class BoringGenerator:
                 else SpindleState.COUNTERCLOCKWISE
             )
             coolant_state = _coolant_state(strategy.coolant)
+            boring_geometry = inputs.tool.cutting_geometry
+            assert isinstance(boring_geometry, BoringBarGeometry)
+            boring_geometry_payload = boring_geometry.to_dict()
             marker_metadata = (
+                ("assembly_fingerprint", inputs.assembly.content_fingerprint.digest),
                 ("clearance_height", format(
                     strategy.clearance_height.value, ".17g"
                 )),
                 ("coolant", strategy.coolant.value),
                 ("dwell_seconds", format(strategy.dwell_seconds, ".17g")),
+                ("expected_assembly_fingerprint",
+                 operation.tool_assembly.expected_fingerprint.digest),
+                ("expected_holder_fingerprint",
+                 inputs.assembly.expected_holder_fingerprint.digest),
+                ("expected_tool_fingerprint",
+                 inputs.assembly.expected_tool_fingerprint.digest),
                 ("feed_per_revolution", format(
                     strategy.feed_per_revolution.value, ".17g"
                 )),
@@ -279,8 +289,12 @@ class BoringGenerator:
                     strategy.finished_bore_diameter.value, ".17g"
                 )),
                 ("format", "hms_boring_process_v1"),
+                ("holder_fingerprint", inputs.holder.content_fingerprint.digest),
+                ("holder_id", str(inputs.holder.holder_id)),
+                ("hole_count", str(len(inputs.holes))),
                 ("length_unit", strategy.unit.value),
                 ("metadata_version", "1"),
+                ("operation_family", operation.family.value),
                 ("pre_bore_diameter", format(
                     strategy.pre_bore_diameter.value, ".17g"
                 )),
@@ -293,6 +307,21 @@ class BoringGenerator:
                 ("spindle_direction", strategy.spindle_direction.value),
                 ("strategy_key", "boring_v1"),
                 ("strategy_version", str(strategy.strategy_version)),
+                ("tool_context_fingerprint", tool_context_fingerprint.digest),
+                ("tool_family", inputs.tool.family.value),
+                ("tool_fingerprint", inputs.tool.content_fingerprint.digest),
+                ("tool_geometry_kind", boring_geometry_payload["kind"]),
+                ("tool_geometry_version", str(
+                    boring_geometry_payload["geometry_version"]
+                )),
+                ("tool_id", str(inputs.tool.tool_id)),
+                ("tool_assembly_id", str(inputs.assembly.assembly_id)),
+                ("tool_maximum_bore_diameter", format(
+                    boring_geometry.maximum_bore_diameter.value, ".17g"
+                )),
+                ("tool_minimum_bore_diameter", format(
+                    boring_geometry.minimum_bore_diameter.value, ".17g"
+                )),
                 ("top_z", format(strategy.top_z.value, ".17g")),
             )
             for hole_index, hole in enumerate(inputs.holes):
