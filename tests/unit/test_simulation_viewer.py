@@ -680,6 +680,34 @@ def test_ocp_show_hide_source_independence_selection_lookup_remove_and_clear(mon
     backend.clear_simulations()
 
 
+def test_ocp_issue_focus_uses_marker_metadata_without_cad_selection(monkeypatch) -> None:
+    backend, _native_context = _ocp_backend(monkeypatch)
+    operation, artifact, wcs, _, _, result, context = _fixture(
+        (SimulationIssueCode.FAILED,)
+    )
+    backend.bind_simulation_project(context.project_id, 7)
+    assert backend.display_simulation(result, artifact, wcs, context)
+    marker = backend.get_simulation_presentations()[0].markers[0]
+    assert backend.focus_simulation_issue(
+        project_id=context.project_id,
+        operation_id=operation.operation_id,
+        result_id=result.result_id,
+        marker_id=marker.marker_id,
+    )
+    assert backend._focused_simulation_marker[:2] == (
+        operation.operation_id,
+        marker.marker_id,
+    )
+    assert not backend.focus_simulation_issue(
+        project_id=context.project_id,
+        operation_id=operation.operation_id,
+        result_id=SimulationResultId.new(),
+        marker_id=marker.marker_id,
+    )
+    backend.clear_simulation_issue_focus()
+    assert backend._focused_simulation_marker is None
+
+
 def test_ocp_conversion_and_display_failure_keep_previous_overlay(monkeypatch) -> None:
     backend, native_context = _ocp_backend(monkeypatch)
     operation, artifact, wcs, _, _, first, first_context = _fixture(

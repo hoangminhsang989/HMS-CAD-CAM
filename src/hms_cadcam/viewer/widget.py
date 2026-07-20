@@ -238,6 +238,34 @@ class CadViewportWidget(QWidget):
             self._report_backend_error("lookup simulation issue", error)
             return None
 
+    def focus_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> bool:
+        """Highlight one current simulation marker without CAD selection."""
+        callback = getattr(self._backend, "focus_simulation_issue", None)
+        if not callable(callback) or self._closed:
+            return False
+        try:
+            return bool(callback(
+                project_id=project_id,
+                operation_id=operation_id,
+                result_id=result_id,
+                marker_id=marker_id,
+            ))
+        except Exception as error:
+            self._report_backend_error("focus simulation issue", error)
+            return False
+
+    def clear_simulation_issue_focus(self) -> None:
+        callback = getattr(self._backend, "clear_simulation_issue_focus", None)
+        if callable(callback):
+            self._invoke("clear simulation issue focus", callback, clear_error=True)
+
     def remove_simulation(self, operation_id: OperationId) -> None:
         callback = getattr(self._backend, "remove_simulation", None)
         if callable(callback):

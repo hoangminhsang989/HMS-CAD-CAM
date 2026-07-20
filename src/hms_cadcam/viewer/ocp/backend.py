@@ -167,6 +167,9 @@ class OcpCadViewportBackend:
         self._toolpath_metadata: dict[OperationId, ToolpathPresentation] = {}
         self._simulations: dict[OperationId, tuple[AIS_Shape, ...]] = {}
         self._simulation_marker_objects: dict[OperationId, dict[int, str]] = {}
+        self._focused_simulation_marker: tuple[
+            OperationId, str, AIS_Shape
+        ] | None = None
         self._simulation_registry = SimulationPresentationRegistry()
 
     def get_status(self) -> ViewportStatus:
@@ -607,6 +610,9 @@ class OcpCadViewportBackend:
         if candidate is None:
             return False
         operation_id = candidate.key.operation_id
+        focused_marker = getattr(self, "_focused_simulation_marker", None)
+        if focused_marker is not None and focused_marker[0] == operation_id:
+            self.clear_simulation_issue_focus()
         previous_metadata = self._simulation_registry.current(operation_id)
         previous_objects = self._simulations.get(operation_id, ())
         previous_marker_objects = self._simulation_marker_objects.get(
@@ -715,8 +721,76 @@ class OcpCadViewportBackend:
             )
         return None
 
+    def focus_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> bool:
+        """Highlight one current marker without activating CAD selection."""
+        marker = self.lookup_simulation_issue(
+            project_id=project_id,
+            operation_id=operation_id,
+            result_id=result_id,
+            marker_id=marker_id,
+        )
+        if marker is None:
+            return False
+        native_ids = self._simulation_marker_objects.get(operation_id, {})
+        native = next(
+            (
+                item
+                for item in self._simulations.get(operation_id, ())
+                if native_ids.get(id(item)) == marker_id
+            ),
+            None,
+        )
+        if native is None:
+            return False
+        self.clear_simulation_issue_focus()
+        context = self._lifecycle.context
+        context.SetColor(
+            native,
+            Quantity_Color(1.0, 1.0, 0.0, Quantity_TOC_RGB),
+            False,
+        )
+        context.UpdateCurrentViewer()
+        self._focused_simulation_marker = (operation_id, marker_id, native)
+        return True
+
+    def clear_simulation_issue_focus(self) -> None:
+        focused = getattr(self, "_focused_simulation_marker", None)
+        if focused is None:
+            return
+        operation_id, marker_id, native = focused
+        metadata = self._simulation_registry.current(operation_id)
+        marker = (
+            next(
+                (item for item in metadata.markers if item.marker_id == marker_id),
+                None,
+            )
+            if metadata is not None
+            else None
+        )
+        if marker is not None and self._lifecycle.initialized:
+            self._lifecycle.context.SetColor(
+                native,
+                Quantity_Color(
+                    *_simulation_marker_color(marker),
+                    Quantity_TOC_RGB,
+                ),
+                False,
+            )
+            self._lifecycle.context.UpdateCurrentViewer()
+        self._focused_simulation_marker = None
+
     def remove_simulation(self, operation_id: OperationId) -> None:
         """Remove one overlay atomically and invalidate its marker identities."""
+        focused_marker = getattr(self, "_focused_simulation_marker", None)
+        if focused_marker is not None and focused_marker[0] == operation_id:
+            self.clear_simulation_issue_focus()
         objects = self._simulations.get(operation_id, ())
         metadata = self._simulation_registry.current(operation_id)
         if not objects and metadata is None:
@@ -745,6 +819,7 @@ class OcpCadViewportBackend:
 
     def clear_simulations(self) -> None:
         """Clear every project overlay while leaving source toolpaths untouched."""
+        self.clear_simulation_issue_focus()
         simulations = getattr(self, "_simulations", None)
         simulation_registry = getattr(self, "_simulation_registry", None)
         if simulations is None or simulation_registry is None:

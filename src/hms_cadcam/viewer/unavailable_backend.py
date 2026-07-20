@@ -127,6 +127,19 @@ class UnavailableCadViewportBackend:
         del project_id, operation_id, result_id, marker_id
         return None
 
+    def focus_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> bool:
+        return False
+
+    def clear_simulation_issue_focus(self) -> None:
+        return None
+
     def remove_simulation(self, operation_id: OperationId) -> None:
         del operation_id
 

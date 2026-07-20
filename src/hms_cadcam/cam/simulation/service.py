@@ -77,7 +77,12 @@ def build_simulation_request(*, operation: Operation, artifact: ToolpathArtifact
         _source_error(SimulationIssueCode.UNSUPPORTED_GEOMETRY, "Simulation v1 supports BOX stock only")
     if artifact.unit is not setup.wcs.origin.unit or tool.unit is not artifact.unit or assembly.unit is not artifact.unit:
         _source_error(SimulationIssueCode.UNIT_MISMATCH, "Simulation inputs use incompatible length units")
-    if assembly.assembly_id != artifact.tool_assembly_id or assembly.content_fingerprint != artifact.tool_assembly_fingerprint:
+    assembly_fingerprint = ContentFingerprint.from_payload(assembly.to_dict())
+    legacy_assembly_fingerprint = assembly.content_fingerprint
+    if assembly.assembly_id != artifact.tool_assembly_id or artifact.tool_assembly_fingerprint not in {
+        assembly_fingerprint,
+        legacy_assembly_fingerprint,
+    }:
         _source_error(SimulationIssueCode.TOOL_STALE, "Tool assembly provenance is stale")
     if assembly.tool_id != tool.tool_id or assembly.expected_tool_revision != tool.revision or assembly.expected_tool_fingerprint != tool.content_fingerprint:
         _source_error(SimulationIssueCode.TOOL_STALE, "Tool definition provenance is stale")
@@ -99,7 +104,7 @@ def build_simulation_request(*, operation: Operation, artifact: ToolpathArtifact
         "tool_assembly": assembly.to_dict(), "tool": tool.to_dict(), "holder": holder.to_dict(),
         "machine": machine.to_dict() if machine else None, "policy": policy.to_dict(), "safe_height": safe_height,
     })
-    return SimulationRequest(request_id=SimulationRequestId.new(), operation_id=operation.operation_id, operation_revision=operation.revision, artifact_id=artifact.artifact_id, artifact_fingerprint=artifact.artifact_fingerprint, input_fingerprint=request_input, setup_id=setup.setup_id, setup_revision=setup.revision, wcs_fingerprint=wcs_fp, stock_fingerprint=stock_fp, fixture_fingerprints=fixture_fps, tool_assembly_id=assembly.assembly_id, tool_assembly_fingerprint=assembly.content_fingerprint, tool_id=tool.tool_id, tool_fingerprint=tool.content_fingerprint, holder_id=holder.holder_id, holder_fingerprint=holder.content_fingerprint, machine_id=machine.machine_id if machine else None, machine_fingerprint=machine.content_fingerprint if machine else None, unit=artifact.unit, sampling_policy=policy, safe_height=safe_height)
+    return SimulationRequest(request_id=SimulationRequestId.new(), operation_id=operation.operation_id, operation_revision=operation.revision, artifact_id=artifact.artifact_id, artifact_fingerprint=artifact.artifact_fingerprint, input_fingerprint=request_input, setup_id=setup.setup_id, setup_revision=setup.revision, wcs_fingerprint=wcs_fp, stock_fingerprint=stock_fp, fixture_fingerprints=fixture_fps, tool_assembly_id=assembly.assembly_id, tool_assembly_fingerprint=assembly_fingerprint, tool_id=tool.tool_id, tool_fingerprint=tool.content_fingerprint, holder_id=holder.holder_id, holder_fingerprint=holder.content_fingerprint, machine_id=machine.machine_id if machine else None, machine_fingerprint=machine.content_fingerprint if machine else None, unit=artifact.unit, sampling_policy=policy, safe_height=safe_height)
 
 
 class SimulationRuntimeService:
@@ -151,6 +156,18 @@ class SimulationRuntimeService:
     def mark_stale(self, operation_id: OperationId) -> None:
         """Drop a result when its source operation/artifact input changes."""
         self.remove(operation_id)
+
+    def abort(
+        self,
+        operation_id: OperationId,
+        token: SimulationComputationToken,
+    ) -> bool:
+        """Invalidate one active computation without dropping its prior result."""
+        with self._lock:
+            if self._tokens.get(operation_id) != token:
+                return False
+            self._tokens.pop(operation_id, None)
+            return True
 
     def publish(self, *, request: SimulationRequest, token: SimulationComputationToken, candidate: SimulationResult, current_request: SimulationRequest | None = None) -> SimulationExecution:
         with self._lock:

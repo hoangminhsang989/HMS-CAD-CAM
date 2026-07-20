@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import replace
 from typing import Callable
 from uuid import UUID
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QSplitter, QToolBar, QTreeWidget, QTreeWidgetItem,
+    QApplication, QMessageBox, QPushButton, QSplitter, QToolBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -64,11 +65,25 @@ from hms_cadcam.cam.application import (
     basic_tapping_resources,
 )
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
+from hms_cadcam.cam.simulation import (
+    CollisionBackend, CollisionScene, SimulationCacheStatus,
+    SimulationInputSnapshot, SimulationIssueCode, SimulationPreflightError,
+    SimulationProgress, SimulationRunHandle, SimulationRunRecord,
+    SimulationSamplingPolicy, build_tool_envelope,
+)
+from hms_cadcam.viewer.simulation import (
+    SimulationDisplayContext, SimulationDisplayPolicy,
+)
+from hms_cadcam.ui.simulation_ui import (
+    SimulationIssueSelection, SimulationPanel,
+)
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
 _JOB_ROLE = int(Qt.ItemDataRole.UserRole) + 22
 _SETUP_ROLE = int(Qt.ItemDataRole.UserRole) + 23
+
+logger = logging.getLogger(__name__)
 
 
 class CamWorkspace(QWidget):
@@ -92,6 +107,9 @@ class CamWorkspace(QWidget):
                  ] | None = None,
                  drilling_resolver: Callable[
                      [DrillGeometryInput, DrillDepthDefinition], ResolvedDrillingGeometry
+                 ] | None = None,
+                 simulation_scene_builder: Callable[
+                     [SimulationInputSnapshot], tuple[CollisionScene, CollisionBackend]
                  ] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
@@ -109,6 +127,13 @@ class CamWorkspace(QWidget):
         self._pocket_resolver = pocket_resolver
         self._drilling_pick_provider = drilling_pick_provider
         self._drilling_resolver = drilling_resolver
+        self._simulation_scene_builder = simulation_scene_builder
+        self._simulation_policies: dict[
+            OperationId, tuple[SimulationSamplingPolicy, SimulationDisplayPolicy]
+        ] = {}
+        self._simulation_cache_attempts: set[tuple[OperationId, str]] = set()
+        self._simulation_handle: SimulationRunHandle | None = None
+        self._simulation_project_id: UUID | None = None
         self._picked_reference: GeometryReference | None = None
         self._picked_hole_reference: HoleReference | None = None
         self._picked_hole_source: HoleReference | HolePattern | None = None
@@ -144,10 +169,12 @@ class CamWorkspace(QWidget):
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         self.tree.itemChanged.connect(self._item_changed)
         self.editor = _CamPropertiesEditor(self._apply_properties)
+        self.simulation_panel = SimulationPanel()
         splitter = QSplitter()
         splitter.addWidget(self.tree)
         splitter.addWidget(self.editor)
-        splitter.setSizes([360, 340])
+        splitter.addWidget(self.simulation_panel)
+        splitter.setSizes([320, 340, 390])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.toolbar = QToolBar("Lệnh CAM")
@@ -155,6 +182,21 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
+        self.simulation_panel.run_requested.connect(self._run_simulation)
+        self.simulation_panel.cancel_requested.connect(self._cancel_simulation)
+        self.simulation_panel.clear_requested.connect(self._clear_simulation_result)
+        self.simulation_panel.visibility_requested.connect(
+            self._set_simulation_visibility
+        )
+        self.simulation_panel.policy_applied.connect(
+            self._apply_simulation_policy
+        )
+        self.simulation_panel.issue_focus_requested.connect(
+            self._focus_simulation_issue
+        )
+        self.simulation_panel.issue_selection_cleared.connect(
+            self._clear_simulation_issue_focus
+        )
         for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
@@ -202,6 +244,16 @@ class CamWorkspace(QWidget):
 
     def bind_project(self, session: object) -> None:
         """Clear old identities before rendering a new project snapshot."""
+        self._simulation_handle = None
+        self._simulation_project_id = None
+        self._simulation_policies.clear()
+        self._simulation_cache_attempts.clear()
+        self.simulation_panel.clear_source()
+        self.simulation_panel.set_policy(
+            SimulationSamplingPolicy(),
+            SimulationDisplayPolicy(),
+        )
+        self._clear_simulation_issue_focus()
         self._selected_key = None
         self._picked_reference = None
         self._picked_hole_reference = None
@@ -225,6 +277,7 @@ class CamWorkspace(QWidget):
             self._render(None)
             return
         self._generation = self._service.cam_generation
+        self._simulation_project_id = session.manifest.project_id
         self._render(None)
 
     def refresh(self, preserve: tuple[str, str] | None = None) -> None:
@@ -363,6 +416,8 @@ class CamWorkspace(QWidget):
         self._stash_active_operation_draft()
         self._active_editor_operation_id = None
         self._active_editor_strategy_key = None
+        self.simulation_panel.clear_source()
+        self._clear_simulation_issue_focus()
         kind = item.data(0, _KIND_ROLE)
         job = self._find_job(item)
         setup = self._find_setup(item, job)
@@ -483,6 +538,7 @@ class CamWorkspace(QWidget):
                             self._remove_toolpath(previous)
                 else:
                     self._remove_displayed_toolpath()
+                self._bind_simulation_operation(operation, artifact)
         else:
             self._picked_reference = None
             self.editor.clear()
@@ -499,6 +555,471 @@ class CamWorkspace(QWidget):
         if self._displayed_operation_id is not None:
             self._remove_toolpath(self._displayed_operation_id)
             self._displayed_operation_id = None
+
+    def _bind_simulation_operation(
+        self,
+        operation: Operation,
+        artifact: object | None,
+    ) -> None:
+        policies = self._simulation_policies.get(
+            operation.operation_id,
+            (SimulationSamplingPolicy(), SimulationDisplayPolicy()),
+        )
+        self.simulation_panel.set_policy(*policies)
+        if artifact is None:
+            self.simulation_panel.show_unavailable(
+                operation.operation_id,
+                "sim.source_missing: ToolpathArtifact chưa COMPLETE/current",
+            )
+            return
+        try:
+            inputs = self._service.capture_simulation_inputs(
+                operation.operation_id,
+                sampling_policy=policies[0],
+            )
+            build_tool_envelope(
+                tool=inputs.tool,
+                assembly=inputs.assembly,
+                holder=inputs.holder,
+            )
+            if any(
+                fixture.enabled
+                and (
+                    fixture.geometry_reference.kind
+                    not in {GeometryReferenceKind.BODY, GeometryReferenceKind.OCCURRENCE}
+                    or fixture.geometry_reference.geometry_kind
+                    is not GeometryRepresentationKind.BREP
+                )
+                for fixture in inputs.setup.fixtures
+            ):
+                raise SimulationPreflightError(
+                    SimulationIssueCode.UNSUPPORTED_GEOMETRY,
+                    "Fixture geometry is unsupported",
+                )
+        except SimulationPreflightError as error:
+            self.simulation_panel.show_unavailable(
+                operation.operation_id,
+                f"{error.code.value}: {error}",
+            )
+            return
+        except (RuntimeError, TypeError, ValueError) as error:
+            self.simulation_panel.show_unavailable(
+                operation.operation_id,
+                f"sim.unsupported_geometry: {error}",
+            )
+            return
+        if self._simulation_scene_builder is not None:
+            try:
+                # Validate native stock/fixture ownership on the owner thread
+                # before enabling Run. The scene is rebuilt at execution time
+                # so this validation never retains native handles in UI state.
+                self._simulation_scene_builder(inputs)
+            except SimulationPreflightError as error:
+                self.simulation_panel.show_unavailable(
+                    operation.operation_id,
+                    f"{error.code.value}: {error}",
+                )
+                return
+            except (RuntimeError, TypeError, ValueError) as error:
+                self.simulation_panel.show_unavailable(
+                    operation.operation_id,
+                    f"sim.source_unsupported: {error}",
+                )
+                return
+        can_run = (
+            self._simulation_scene_builder is not None
+            and operation.enabled
+            and operation.artifact_state.status is ArtifactStatus.VALID
+        )
+        self.simulation_panel.show_source(inputs, can_run=can_run)
+        record = self._service.simulation_runs.record(operation.operation_id)
+        result = self._service.simulation_runs.result(operation.operation_id)
+        if (
+            result is not None
+            and result.artifact_fingerprint == inputs.request.artifact_fingerprint
+            and result.input_fingerprint == inputs.request.input_fingerprint
+        ):
+            self.simulation_panel.set_run_record(record)
+            self.simulation_panel.set_result(
+                result,
+                self._simulation_presentation(operation.operation_id),
+                current=True,
+            )
+            return
+        cache_key = (operation.operation_id, inputs.request.artifact_fingerprint.digest)
+        if cache_key in self._simulation_cache_attempts:
+            if record is not None:
+                self.simulation_panel.set_run_record(record)
+            return
+        self._simulation_cache_attempts.add(cache_key)
+        loaded = self._service.load_cached_simulation_for_source(
+            operation.operation_id,
+            inputs.request.artifact_fingerprint,
+        )
+        if loaded.status is not SimulationCacheStatus.VALID or loaded.result is None:
+            self.simulation_panel.set_cache_diagnostic(
+                loaded.message or loaded.status.value
+            )
+            return
+        cached_result = loaded.result
+        cached_policies = (cached_result.sampling_policy, policies[1])
+        try:
+            cached_inputs = self._service.capture_simulation_inputs(
+                operation.operation_id,
+                sampling_policy=cached_result.sampling_policy,
+            )
+        except (RuntimeError, TypeError, ValueError):
+            self.simulation_panel.set_cache_diagnostic("cache stale")
+            return
+        if cached_inputs.request.input_fingerprint != cached_result.input_fingerprint:
+            self.simulation_panel.set_cache_diagnostic("cache stale")
+            return
+        # A cache result retains the original request UUID.  Rebind the
+        # freshly captured immutable request to that UUID for the runtime
+        # provenance check; request identity/fingerprints remain unchanged.
+        cached_inputs = replace(
+            cached_inputs,
+            request=replace(
+                cached_inputs.request,
+                request_id=cached_result.request_id,
+            ),
+        )
+        self._simulation_policies[operation.operation_id] = cached_policies
+        self.simulation_panel.set_policy(*cached_policies)
+        self.simulation_panel.show_source(cached_inputs, can_run=can_run)
+        if not self._service.simulation_runs.restore_cached(
+            cached_inputs.request,
+            cached_result,
+            state_callback=self._simulation_state_changed,
+        ):
+            self.simulation_panel.set_cache_diagnostic("cache stale")
+            return
+        self._display_simulation_result(cached_inputs, cached_result)
+
+    def _run_simulation(self) -> None:
+        operation = self._selected_operation()
+        if operation is None or self._simulation_scene_builder is None:
+            return
+        controller = self._service.simulation_runs
+        if (
+            self._simulation_handle is not None
+            and controller.is_active(self._simulation_handle.request.operation_id)
+        ):
+            return
+        sampling = self.simulation_panel.sampling_policy
+        try:
+            inputs = self._service.capture_simulation_inputs(
+                operation.operation_id,
+                sampling_policy=sampling,
+            )
+            # OCP geometry is resolved here, on the UI/owner thread, and is never
+            # passed to a worker or retained by the runtime record.
+            scene, backend = self._simulation_scene_builder(inputs)
+            handle = controller.start(
+                inputs.request,
+                state_callback=self._simulation_state_changed,
+            )
+        except SimulationPreflightError as error:
+            self.simulation_panel.show_unavailable(
+                operation.operation_id,
+                f"{error.code.value}: {error}",
+            )
+            return
+        except (RuntimeError, TypeError, ValueError) as error:
+            self.simulation_panel.show_unavailable(
+                operation.operation_id,
+                f"sim.unsupported_geometry: {error}",
+            )
+            return
+        self._simulation_handle = handle
+        project_id = self._simulation_project_id
+        generation = self._generation
+        QTimer.singleShot(
+            0,
+            lambda: self._execute_simulation(
+                handle,
+                inputs,
+                scene,
+                backend,
+                project_id,
+                generation,
+            ),
+        )
+
+    def _execute_simulation(
+        self,
+        handle: SimulationRunHandle,
+        inputs: SimulationInputSnapshot,
+        scene: CollisionScene,
+        backend: CollisionBackend,
+        project_id: UUID | None,
+        generation: int | None,
+    ) -> None:
+        controller = self._service.simulation_runs
+
+        def current_request():
+            try:
+                return self._service.capture_simulation_inputs(
+                    handle.request.operation_id,
+                    sampling_policy=handle.request.sampling_policy,
+                ).request
+            except Exception as error:
+                raise SimulationPreflightError(
+                    SimulationIssueCode.STALE_RESULT,
+                    "Simulation inputs changed before publish",
+                ) from error
+
+        execution = controller.execute(
+            handle,
+            snapshot=inputs,
+            scene=scene,
+            backend=backend,
+            current_request=current_request,
+            progress_callback=self._simulation_progress_changed,
+            state_callback=self._simulation_state_changed,
+        )
+        if not self._simulation_callback_is_current(
+            handle,
+            project_id,
+            generation,
+        ):
+            return
+        self.simulation_panel.set_run_record(
+            controller.record(handle.request.operation_id)
+        )
+        if not execution.accepted or execution.result is None:
+            code = execution.code.value if execution.code is not None else "sim.failed"
+            self.message.emit(f"Simulation: {code} · {execution.message or ''}")
+            return
+        try:
+            self._service.persist_simulation_result(execution.result)
+        except Exception as error:
+            logger.warning("Không thể ghi simulation cache", exc_info=True)
+            self.simulation_panel.set_cache_diagnostic(
+                f"cache write failure: {error}"
+            )
+        displayed = self._display_simulation_result(inputs, execution.result)
+        if displayed:
+            self.message.emit(
+                f"Simulation {execution.result.status.value.upper()} đã publish và hiển thị."
+            )
+        else:
+            self.message.emit(
+                "Simulation result đã publish nhưng overlay mới không thể hiển thị; overlay cũ được giữ."
+            )
+
+    def _simulation_progress_changed(self, progress: SimulationProgress) -> None:
+        handle = self._simulation_handle
+        if handle is None or handle.request.request_id != progress.request_id:
+            return
+        panel_inputs = self.simulation_panel.inputs
+        if (
+            panel_inputs is not None
+            and panel_inputs.operation.operation_id == handle.request.operation_id
+        ):
+            self.simulation_panel.set_progress(progress)
+        # Native narrow phase stays on its owner thread. Pump bounded event slices
+        # so Cancel/project-switch can invalidate the request cooperatively.
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 5)
+
+    def _simulation_state_changed(self, record: SimulationRunRecord) -> None:
+        inputs = self.simulation_panel.inputs
+        if inputs is None or inputs.operation.operation_id != record.operation_id:
+            return
+        self.simulation_panel.set_run_record(record)
+
+    def _cancel_simulation(self) -> None:
+        handle = self._simulation_handle
+        if handle is None:
+            return
+        if self._service.simulation_runs.cancel(handle.request.operation_id):
+            record = self._service.simulation_runs.record(
+                handle.request.operation_id
+            )
+            self.simulation_panel.set_run_record(record)
+
+    def _apply_simulation_policy(
+        self,
+        sampling: SimulationSamplingPolicy,
+        display: SimulationDisplayPolicy,
+    ) -> None:
+        operation = self._selected_operation()
+        if operation is None:
+            return
+        self._simulation_policies[operation.operation_id] = (sampling, display)
+        self._service.simulation_runs.mark_stale(
+            operation.operation_id,
+            "Sampling policy changed",
+        )
+        viewport = self._simulation_viewport()
+        if viewport is not None and callable(getattr(viewport, "remove_simulation", None)):
+            viewport.remove_simulation(operation.operation_id)
+        self.simulation_panel.mark_result_stale(
+            "STALE / NON-CURRENT · sampling policy changed"
+        )
+        artifact = self._service.load_toolpath_artifact(operation.operation_id)
+        self._bind_simulation_operation(operation, artifact)
+
+    def _clear_simulation_result(self) -> None:
+        operation = self._selected_operation()
+        if operation is None:
+            return
+        self._service.clear_simulation_result(
+            operation.operation_id,
+            delete_cache=True,
+        )
+        viewport = self._simulation_viewport()
+        if viewport is not None and callable(getattr(viewport, "remove_simulation", None)):
+            viewport.remove_simulation(operation.operation_id)
+        self.simulation_panel.clear_result_display()
+
+    def _set_simulation_visibility(self, visible: bool) -> None:
+        operation = self._selected_operation()
+        viewport = self._simulation_viewport()
+        if (
+            operation is None
+            or viewport is None
+            or not callable(getattr(viewport, "set_simulation_visibility", None))
+        ):
+            return
+        viewport.set_simulation_visibility(operation.operation_id, visible)
+        presentation = self._simulation_presentation(operation.operation_id)
+        if presentation is not None:
+            self.simulation_panel.source_labels["overlay"].setText(
+                f"{presentation.displayed_path_point_count} / "
+                f"{presentation.total_path_point_count} points · "
+                f"{presentation.displayed_marker_count} / "
+                f"{presentation.total_marker_count} markers · "
+                f"{'visible' if presentation.visible else 'hidden'}"
+            )
+
+    def _focus_simulation_issue(self, selection: object) -> None:
+        if not isinstance(selection, SimulationIssueSelection):
+            return
+        result = self._service.simulation_runs.result(selection.operation_id)
+        viewport = self._simulation_viewport()
+        if (
+            result is None
+            or viewport is None
+            or selection.marker_id is None
+            or self._simulation_project_id is None
+            or not callable(getattr(viewport, "focus_simulation_issue", None))
+        ):
+            return
+        viewport.focus_simulation_issue(
+            project_id=self._simulation_project_id,
+            operation_id=selection.operation_id,
+            result_id=result.result_id,
+            marker_id=selection.marker_id,
+        )
+
+    def _clear_simulation_issue_focus(self) -> None:
+        viewport = self._simulation_viewport()
+        if viewport is not None and callable(
+            getattr(viewport, "clear_simulation_issue_focus", None)
+        ):
+            viewport.clear_simulation_issue_focus()
+
+    def _display_simulation_result(
+        self,
+        inputs: SimulationInputSnapshot,
+        result,
+    ) -> bool:
+        viewport = self._simulation_viewport()
+        session = self._service.current_project
+        if viewport is None or not isinstance(session, ProjectSession):
+            self.simulation_panel.set_result(result, None, current=True)
+            return False
+        generation = self._service.cam_generation
+        request = viewport.request_simulation_display(
+            inputs.operation.operation_id,
+            generation=generation,
+        )
+        context = SimulationDisplayContext(
+            project_id=session.manifest.project_id,
+            project_generation=generation,
+            operation_id=inputs.operation.operation_id,
+            operation_revision=inputs.operation.revision,
+            operation_exists=True,
+            operation_enabled=inputs.operation.enabled,
+            artifact_id=inputs.artifact.artifact_id,
+            artifact_fingerprint=inputs.artifact.artifact_fingerprint,
+            simulation_input_fingerprint=result.input_fingerprint,
+            current_result_id=result.result_id,
+            current_result_fingerprint=result.result_fingerprint,
+        )
+        self._service.simulation_runs.report_rendering(
+            result.request_id,
+            processed=0,
+            total=1,
+            callback=self._simulation_progress_changed,
+        )
+        displayed = viewport.display_simulation(
+            result,
+            inputs.artifact,
+            inputs.setup.wcs,
+            context,
+            request,
+            self.simulation_panel.display_policy,
+        )
+        self._service.simulation_runs.report_rendering(
+            result.request_id,
+            processed=1,
+            total=1,
+            callback=self._simulation_progress_changed,
+        )
+        presentation = self._simulation_presentation(inputs.operation.operation_id)
+        current = (
+            self._service.simulation_runs.result(inputs.operation.operation_id)
+            is result
+        )
+        self.simulation_panel.set_result(
+            result,
+            presentation if displayed else None,
+            current=current,
+        )
+        return displayed
+
+    def _simulation_presentation(self, operation_id: OperationId):
+        viewport = self._simulation_viewport()
+        if viewport is None:
+            return None
+        return next(
+            (
+                value
+                for value in viewport.simulation_presentations
+                if value.key.operation_id == operation_id
+            ),
+            None,
+        )
+
+    def _simulation_viewport(self):
+        return (
+            self._toolpath_display.__self__
+            if self._toolpath_display is not None
+            and hasattr(self._toolpath_display, "__self__")
+            else None
+        )
+
+    def _simulation_callback_is_current(
+        self,
+        handle: SimulationRunHandle,
+        project_id: UUID | None,
+        generation: int | None,
+    ) -> bool:
+        session = self._service.current_project
+        if (
+            not isinstance(session, ProjectSession)
+            or project_id is None
+            or session.manifest.project_id != project_id
+            or generation != self._generation
+            or generation != self._service.cam_generation
+        ):
+            return False
+        record = self._service.simulation_runs.record(
+            handle.request.operation_id
+        )
+        return record is not None and record.request_id == handle.request.request_id
 
     def create_job(self) -> None:
         if not self._service.has_project:
@@ -722,6 +1243,14 @@ class CamWorkspace(QWidget):
         if not self._service.has_project:
             self._update_generate_action()
             return
+        if force_invalidate:
+            self._service.simulation_runs.cancel_all(stale=True)
+            viewport = self._simulation_viewport()
+            if viewport is not None:
+                viewport.clear_simulations()
+            self.simulation_panel.mark_result_stale(
+                "STALE / NON-CURRENT · CAD source reimported"
+            )
         if (
             self._face_resolver is not None
             or self._profile_resolver is not None
@@ -1703,6 +2232,10 @@ class CamWorkspace(QWidget):
             changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
         if changed is not None:
             if removed_operation_id is not None:
+                self._service.clear_simulation_result(
+                    removed_operation_id,
+                    delete_cache=True,
+                )
                 self._remove_toolpath(removed_operation_id)
                 self._toolpath_visibility.pop(removed_operation_id, None)
                 if self._displayed_operation_id == removed_operation_id:

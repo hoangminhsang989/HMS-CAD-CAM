@@ -21,6 +21,7 @@ def test_unicode_create_import_open_and_save_as(tmp_path) -> None:
     assert {path.name for path in root.iterdir()} == {
         "autosave",
         "backups",
+        "cache",
         "project.hms.json",
         "project.db",
         "session.lock",
@@ -29,6 +30,7 @@ def test_unicode_create_import_open_and_save_as(tmp_path) -> None:
             "toolpaths",
     }
     assert (root / "temp" / OWNED_DIRECTORY_METADATA_FILENAME).is_file()
+    assert (root / "cache" / "simulation").is_dir()
     source = tmp_path / "nguồn mẫu.step"
     source.write_bytes(b"original cad source\x00\x01")
     original_hash = digest(source)
@@ -77,6 +79,7 @@ def test_confirmed_overwrite_replaces_complete_project(tmp_path) -> None:
     assert {path.name for path in replacement.root_path.iterdir()} == {
         "autosave",
         "backups",
+        "cache",
         "project.hms.json",
         "project.db",
         "session.lock",
@@ -87,3 +90,4 @@ def test_confirmed_overwrite_replaces_complete_project(tmp_path) -> None:
     assert (
         replacement.root_path / "temp" / OWNED_DIRECTORY_METADATA_FILENAME
     ).is_file()
+    assert (replacement.root_path / "cache" / "simulation").is_dir()

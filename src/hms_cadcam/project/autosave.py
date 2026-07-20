@@ -22,9 +22,11 @@ from hms_cadcam.project.constants import (
     AUTOSAVE_LATEST_FORMAT,
     AUTOSAVE_LATEST_VERSION,
     AUTOSAVE_METADATA_FILENAME,
+    CACHE_DIRECTORY,
     DATABASE_FILENAME,
     MANIFEST_FILENAME,
     OWNED_DIRECTORY_METADATA_FILENAME,
+    SIMULATION_CACHE_SUBDIRECTORY,
 )
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.cad_state_store import CadViewStateStore
@@ -332,10 +334,27 @@ class AutosaveManager:
         if self._is_link_or_junction(snapshot_path) or not snapshot_path.is_dir():
             raise AutosaveSnapshotError("Autosave snapshot must be a real directory")
         entries = tuple(snapshot_path.iterdir())
-        if {path.name for path in entries} != expected_names:
+        names = {path.name for path in entries}
+        if names not in (expected_names, expected_names | {CACHE_DIRECTORY}):
             raise AutosaveSnapshotError("Autosave snapshot file set is incomplete")
         if any(self._is_link_or_junction(path) for path in entries):
             raise AutosaveSnapshotError("Autosave snapshot cannot contain links or junctions")
+        cache_root = snapshot_path / CACHE_DIRECTORY
+        if cache_root.exists():
+            simulation_root = cache_root / SIMULATION_CACHE_SUBDIRECTORY
+            if (
+                not cache_root.is_dir()
+                or not simulation_root.is_dir()
+                or self._is_link_or_junction(cache_root)
+                or self._is_link_or_junction(simulation_root)
+                or {path.name for path in cache_root.iterdir()}
+                != {SIMULATION_CACHE_SUBDIRECTORY}
+                or any(
+                    self._is_link_or_junction(path)
+                    for path in simulation_root.rglob("*")
+                )
+            ):
+                raise AutosaveSnapshotError("Autosave simulation cache is invalid")
         data = json.loads(
             (snapshot_path / AUTOSAVE_METADATA_FILENAME).read_text(encoding="utf-8")
         )

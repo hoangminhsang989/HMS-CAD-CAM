@@ -13,11 +13,13 @@ from uuid import uuid4
 from hms_cadcam.project.constants import (
     AUTOSAVE_DIRECTORY,
     BACKUPS_DIRECTORY,
+    CACHE_DIRECTORY,
     OWNED_DIRECTORY_METADATA_FILENAME,
     PROJECT_SUFFIX,
     SOURCE_DIRECTORY,
     TEMP_DIRECTORY,
     TOOLPATHS_DIRECTORY,
+    SIMULATION_CACHE_SUBDIRECTORY,
 )
 from hms_cadcam.project.exceptions import (
     ProjectAlreadyExistsError,
@@ -152,6 +154,9 @@ def create_runtime_directories(project_root: Path) -> None:
     (project_root / AUTOSAVE_DIRECTORY).mkdir()
     (project_root / BACKUPS_DIRECTORY).mkdir()
     (project_root / TOOLPATHS_DIRECTORY).mkdir()
+    cache_root = project_root / CACHE_DIRECTORY
+    cache_root.mkdir()
+    (cache_root / SIMULATION_CACHE_SUBDIRECTORY).mkdir()
     temp_root = project_root / TEMP_DIRECTORY
     temp_root.mkdir()
     write_owned_directory_metadata(temp_root, OwnedDirectoryPurpose.TEMP_ROOT)

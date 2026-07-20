@@ -32,6 +32,8 @@ from hms_cadcam.cam.adapters import (
     OcpDrillingGeometryResolver,
     OcpPlanarFaceResolver,
 )
+from hms_cadcam.cam.adapters.ocp_simulation import OcpSimulationCollisionBackend
+from hms_cadcam.cam.simulation import CollisionBackend, CollisionScene, SimulationInputSnapshot
 from hms_cadcam.cam.application import DrillingGeometryResolver, PocketGeometryResolver
 from hms_cadcam.cam.domain import (
     DrillDepthDefinition, DrillGeometryInput, GeometryReference,
@@ -67,6 +69,7 @@ from hms_cadcam.ui.cam_geometry_adapter import (
 from hms_cadcam.ui.project_controller import ProjectUiController
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
+from hms_cadcam.ui.simulation_geometry_adapter import ActiveOcpFixtureResolver
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
@@ -76,6 +79,13 @@ _DOCUMENT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 _OBJECT_NODE_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 _PLACEHOLDER_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 _TOPOLOGY_GROUP_ROLE = int(Qt.ItemDataRole.UserRole) + 5
+
+
+class _NoFixtureResolver:
+    """Fail closed if a supposedly fixture-free scene unexpectedly resolves one."""
+
+    def resolve_fixture(self, _reference: GeometryReference):
+        raise RuntimeError("Fixture resolver was not configured")
 
 
 class MainWindow(QMainWindow):
@@ -147,6 +157,7 @@ class MainWindow(QMainWindow):
             pocket_resolver=self._resolve_pocket_geometry_reference,
             drilling_pick_provider=self._current_drilling_reference,
             drilling_resolver=self._resolve_drilling_geometry,
+            simulation_scene_builder=self._build_simulation_scene,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_dock = QDockWidget("CAM Workspace", self)
@@ -414,6 +425,41 @@ class MainWindow(QMainWindow):
     ) -> ResolvedDrillingGeometry:
         resolver = DrillingGeometryResolver(self._drilling_geometry_resolver())
         return resolver.resolve(geometry, depth)
+
+    def _build_simulation_scene(
+        self,
+        inputs: SimulationInputSnapshot,
+    ) -> tuple[CollisionScene, CollisionBackend]:
+        """Resolve native collision geometry only on the active UI owner thread."""
+        if not isinstance(self._cad_kernel, OcpCadKernel):
+            raise RuntimeError("Open CASCADE simulation backend is unavailable")
+        enabled_fixtures = tuple(
+            fixture for fixture in inputs.setup.fixtures if fixture.enabled
+        )
+        if enabled_fixtures:
+            document_id = self.cad_controller.active_document_id
+            source_id = self.cad_controller.active_source_id
+            persistent_map = self.cad_controller.persistent_object_map
+            tree = self.cad_controller.active_tree
+            if (
+                document_id is None
+                or source_id is None
+                or persistent_map is None
+                or tree is None
+            ):
+                raise RuntimeError("Fixture geometry is not owned by the active CAD document")
+            resolver = ActiveOcpFixtureResolver(
+                self._cad_kernel,
+                document_id,
+                source_id,
+                persistent_map,
+                tree,
+                inputs.artifact.unit,
+            )
+        else:
+            resolver = _NoFixtureResolver()
+        backend = OcpSimulationCollisionBackend()
+        return backend.build_scene(setup=inputs.setup, resolver=resolver), backend
 
     def _build_cad_toolbar(self) -> None:
         toolbar = QToolBar("CAD Viewer", self)

@@ -101,7 +101,22 @@ def _groups(envelope: ToolEnvelope) -> tuple[tuple[str, tuple[EnvelopePrimitive,
     return (("cutter", envelope.cutter), ("shank", envelope.shank), ("holder", envelope.holder))
 
 
-def run_collision_analysis(*, request: SimulationRequest, artifact: ToolpathArtifact, sampling: SamplingOutput, envelope: ToolEnvelope, scene: CollisionScene, backend: CollisionBackend, result_id: SimulationResultId, cancellation: Callable[[], bool] | None = None) -> SimulationResult:
+CollisionProgress = Callable[[int, int, int], None]
+
+
+def run_collision_analysis(
+    *,
+    request: SimulationRequest,
+    artifact: ToolpathArtifact,
+    sampling: SamplingOutput,
+    envelope: ToolEnvelope,
+    scene: CollisionScene,
+    backend: CollisionBackend,
+    result_id: SimulationResultId,
+    cancellation: Callable[[], bool] | None = None,
+    broad_progress: CollisionProgress | None = None,
+    narrow_progress: CollisionProgress | None = None,
+) -> SimulationResult:
     if scene.stock is None:
         raise SimulationSamplingError(SimulationIssueCode.STOCK_MISSING, "Collision scene has no stock")
     issues: list[SimulationIssue] = []
@@ -116,6 +131,23 @@ def run_collision_analysis(*, request: SimulationRequest, artifact: ToolpathArti
             raise SimulationSamplingError(SimulationIssueCode.SAMPLE_LIMIT, "Simulation issue limit exceeded")
         issues.append(issue)
 
+    targets = (scene.stock, *scene.fixtures)
+    groups = _groups(envelope)
+    broad_total = sum(
+        len(segment.sample_indices)
+        * sum(len(primitives) for _label, primitives in groups)
+        * len(targets)
+        for segment in sampling.segments
+    )
+    broad_processed = 0
+    narrow_total = 0
+    if broad_progress is not None:
+        broad_progress(0, broad_total, 0)
+
+    # The broad phase is intentionally a complete, native-free workload pass.
+    # Candidate identities are counted rather than retained so the hard memory
+    # budget is not bypassed for long toolpaths. The narrow pass repeats the
+    # inexpensive AABB predicate before invoking the ownership-bound backend.
     for segment in sampling.segments:
         if cancellation is not None and cancellation():
             raise SimulationSamplingError(SimulationIssueCode.CANCELLED, "Collision analysis cancelled")
@@ -127,16 +159,92 @@ def run_collision_analysis(*, request: SimulationRequest, artifact: ToolpathArti
                     warning_count += 1
                     break
         for segment_sample_index, sample in enumerate(segment_samples):
-            for label, primitives in _groups(envelope):
+            for _label, primitives in groups:
                 for primitive in primitives:
                     p_bounds = primitive_bounds(primitive, sample.world_pose, request.sampling_policy.geometric_tolerance)
                     if segment_sample_index > 0:
                         previous_bounds = primitive_bounds(primitive, segment_samples[segment_sample_index - 1].world_pose, request.sampling_policy.geometric_tolerance)
                         p_bounds = Bounds3.union((previous_bounds, p_bounds))
-                    targets = (scene.stock, *scene.fixtures)
+                    for target in targets:
+                        broad_processed += 1
+                        if target is not None and backend.broad_overlap(target, p_bounds):
+                            narrow_total += 1
+                        if broad_progress is not None and (
+                            broad_processed == broad_total
+                            or broad_processed
+                            % min(
+                                request.sampling_policy.chunk_size,
+                                request.sampling_policy.cancellation_check_interval,
+                            )
+                            == 0
+                        ):
+                            broad_progress(broad_processed, broad_total, len(issues))
+                        if (
+                            broad_processed
+                            % request.sampling_policy.cancellation_check_interval
+                            == 0
+                            and cancellation is not None
+                            and cancellation()
+                        ):
+                            raise SimulationSamplingError(
+                                SimulationIssueCode.CANCELLED,
+                                "Collision broad phase cancelled",
+                            )
+
+    narrow_processed = 0
+    if narrow_progress is not None:
+        narrow_progress(0, narrow_total, len(issues))
+    for segment in sampling.segments:
+        segment_samples = tuple(
+            sampling.samples[index] for index in segment.sample_indices
+        )
+        for segment_sample_index, sample in enumerate(segment_samples):
+            for label, primitives in groups:
+                for primitive in primitives:
+                    p_bounds = primitive_bounds(
+                        primitive,
+                        sample.world_pose,
+                        request.sampling_policy.geometric_tolerance,
+                    )
+                    if segment_sample_index > 0:
+                        previous_bounds = primitive_bounds(
+                            primitive,
+                            segment_samples[segment_sample_index - 1].world_pose,
+                            request.sampling_policy.geometric_tolerance,
+                        )
+                        p_bounds = Bounds3.union((previous_bounds, p_bounds))
                     for target in targets:
                         if target is None or not backend.broad_overlap(target, p_bounds):
                             continue
+                        narrow_processed += 1
+                        if (
+                            narrow_processed
+                            % request.sampling_policy.cancellation_check_interval
+                            == 0
+                            and cancellation is not None
+                            and cancellation()
+                        ):
+                            raise SimulationSamplingError(
+                                SimulationIssueCode.CANCELLED,
+                                "Collision narrow phase cancelled",
+                            )
+                        if narrow_progress is not None and (
+                            narrow_processed == narrow_total
+                            or narrow_processed
+                            % min(
+                                request.sampling_policy.chunk_size,
+                                request.sampling_policy.cancellation_check_interval,
+                            )
+                            == 0
+                        ):
+                            # Report before entering the native narrow-phase call.
+                            # This keeps UI event pumping and cooperative cancel
+                            # bounded even when the candidate proves no collision.
+                            narrow_progress(
+                                narrow_processed,
+                                narrow_total,
+                                len(issues),
+                            )
                         evidence = backend.narrow_intersects(target, primitive, sample.world_pose, request.sampling_policy.geometric_tolerance)
                         if evidence is None:
                             add_issue(_issue(request=request, code=SimulationIssueCode.FAILED, category=SimulationIssueCategory.CLEARANCE_WARNING, severity=DiagnosticSeverity.WARNING, message="clearance.unproven", segment=segment, sample_index=sample.index, point=sample.world_pose.position, target=target, extra=(("envelope", label), ("proof", "none"))))
@@ -163,6 +271,13 @@ def run_collision_analysis(*, request: SimulationRequest, artifact: ToolpathArti
                             add_issue(_issue(request=request, code=code, category=category, severity=severity, message=code.value.replace("sim.", ""), segment=segment, sample_index=sample.index, point=sample.world_pose.position, target=target, extra=(("envelope", label), ("proof", "exact"))))
                             collision_count += 1
                             error_count += 1
+    if narrow_progress is not None:
+        narrow_progress(narrow_processed, narrow_total, len(issues))
+    if cancellation is not None and cancellation():
+        raise SimulationSamplingError(
+            SimulationIssueCode.CANCELLED,
+            "Collision analysis cancelled",
+        )
     status = SimulationStatus.FAIL if error_count or collision_count else (SimulationStatus.WARN if warning_count else SimulationStatus.PASS)
     stats = SimulationStatistics(len(sampling.samples), len(sampling.segments), collision_count, warning_count, error_count, bounds)
     return SimulationResult.create(result_id=result_id, request=request, status=status, issues=tuple(issues), statistics=stats)

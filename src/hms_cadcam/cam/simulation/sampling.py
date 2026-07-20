@@ -86,10 +86,27 @@ def _arc_count(event: ArcMove, policy: SimulationSamplingPolicy) -> int:
     return max(1, math.ceil(abs(event.sweep_radians) / max_angle))
 
 
-def sample_toolpath(*, artifact: ToolpathArtifact, wcs: WcsFrame, policy: SimulationSamplingPolicy, cancellation: Callable[[], bool] | None = None) -> SamplingOutput:
+SamplingProgress = Callable[[int, int], None]
+
+
+def sample_toolpath(
+    *,
+    artifact: ToolpathArtifact,
+    wcs: WcsFrame,
+    policy: SimulationSamplingPolicy,
+    cancellation: Callable[[], bool] | None = None,
+    progress: SamplingProgress | None = None,
+) -> SamplingOutput:
     """Sample every movement with exact endpoints and deterministic deduplication."""
     if artifact.unit is not wcs.origin.unit:
         raise SimulationSamplingError(SimulationIssueCode.UNIT_MISMATCH, "Toolpath and WCS units differ")
+    movement_count = sum(
+        isinstance(event, (RapidMove, LinearMove, ArcMove))
+        for event in artifact.events
+    )
+    processed_movements = 0
+    if progress is not None:
+        progress(0, movement_count)
     samples: list[SimulationSample] = [SimulationSample(0, artifact.initial_pose, pose_to_world(artifact.initial_pose, wcs), ())]
     segments: list[SampledSegment] = []
     spindle = SpindleState.OFF
@@ -102,6 +119,8 @@ def sample_toolpath(*, artifact: ToolpathArtifact, wcs: WcsFrame, policy: Simula
         checks += 1
         if checks % policy.cancellation_check_interval == 0 and _cancelled(cancellation):
             raise SimulationSamplingError(SimulationIssueCode.CANCELLED, "Simulation sampling cancelled")
+        if checks % policy.cancellation_check_interval == 0 and progress is not None:
+            progress(processed_movements, movement_count)
         world = pose_to_world(pose, wcs)
         previous = samples[-1]
         if same_pose(previous.world_pose, world, policy.geometric_tolerance):
@@ -142,6 +161,9 @@ def sample_toolpath(*, artifact: ToolpathArtifact, wcs: WcsFrame, policy: Simula
             indices.append(append_pose(pose, provenance))
         segments.append(SampledSegment(event_index, str(event.event_id), event.kind.value, event.motion_class, spindle, coolant, tuple(indices), len(segments)))
         current = event.end
+        processed_movements += 1
+        if progress is not None:
+            progress(processed_movements, movement_count)
     if _cancelled(cancellation):
         raise SimulationSamplingError(SimulationIssueCode.CANCELLED, "Simulation sampling cancelled")
     return SamplingOutput(tuple(samples), tuple(segments))

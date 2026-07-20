@@ -98,6 +98,17 @@ class CadViewportBackend(Protocol):
         marker_id: str,
     ) -> SimulationIssueMarker | None: ...
 
+    def focus_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> bool: ...
+
+    def clear_simulation_issue_focus(self) -> None: ...
+
     def remove_simulation(self, operation_id: OperationId) -> None: ...
 
     def clear_simulations(self) -> None: ...

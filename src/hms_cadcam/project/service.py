@@ -47,8 +47,20 @@ from hms_cadcam.cam.domain import (
 )
 from hms_cadcam.cam.application.contour import ContourComputeResult
 from hms_cadcam.cam.domain.operation import ComputationToken
-from hms_cadcam.cam.domain.revision import DependencyFingerprint
+from hms_cadcam.cam.domain.revision import ContentFingerprint, DependencyFingerprint
 from hms_cadcam.cam.toolpath import ToolpathArtifact, ToolpathPublishResult
+from hms_cadcam.cam.simulation import (
+    SimulationCacheLoad,
+    SimulationCacheStatus,
+    SimulationCacheStore,
+    SimulationInputSnapshot,
+    SimulationIssueCode,
+    SimulationPreflightError,
+    SimulationResult,
+    SimulationRunController,
+    SimulationSamplingPolicy,
+    build_simulation_request,
+)
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
@@ -69,6 +81,7 @@ class ProjectService:
         autosave: AutosaveManager,
         recovery: RecoveryManager,
         cam_application: CamApplicationService | None = None,
+        simulation_cache: SimulationCacheStore | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -80,6 +93,10 @@ class ProjectService:
         self._autosave = autosave
         self._recovery = recovery
         self._cam_application = cam_application or CamApplicationService()
+        self._simulation_runs = SimulationRunController(
+            self._cam_application.simulation_service
+        )
+        self._simulation_cache = simulation_cache or SimulationCacheStore()
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -245,6 +262,19 @@ class ProjectService:
         self._session_locks.acquire(assessment.project_root, manifest.project_id)
         try:
             self._recovery.recover(current)
+            if current.snapshot is not None:
+                try:
+                    self._simulation_cache.copy_valid_entries(
+                        current.snapshot.path,
+                        assessment.project_root,
+                        assessment.project_id,
+                        assessment.project_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Không thể phục hồi simulation cache từ autosave",
+                        exc_info=True,
+                    )
             session = self._loader.load(assessment.project_root)
             return self._complete_activation(session)
         except Exception:
@@ -262,6 +292,7 @@ class ProjectService:
     def save(self) -> ProjectSession:
         """Persist the current project."""
         current = self._require_current()
+        self.flush_simulation_cache()
         current.cam_snapshot = self._cam_application.snapshot
         session = self._saver.save(current)
         self._cam_application.mark_persisted(session.cam_snapshot)
@@ -283,6 +314,7 @@ class ProjectService:
         session.cam_snapshot = changed
         if changed != before:
             session.is_dirty = True
+            self._simulation_runs.cancel_all(stale=True)
         return session
 
     def apply_cam_mutation(
@@ -296,6 +328,7 @@ class ProjectService:
         session.cam_snapshot = changed
         if changed != before:
             session.is_dirty = True
+            self._simulation_runs.cancel_all(stale=True)
         return session
 
     def execute_cam_command(
@@ -320,6 +353,7 @@ class ProjectService:
         session.cam_snapshot = changed
         if changed != before:
             session.is_dirty = True
+            self._simulation_runs.cancel_all(stale=True)
         return changed
 
     @property
@@ -343,6 +377,10 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if result.accepted or session.cam_snapshot != session.persisted_cam_snapshot:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(
+                operation_id,
+                "Source ToolpathArtifact was recomputed",
+            )
         return result
 
     def compute_facing(self, operation_id: OperationId,
@@ -360,6 +398,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_contour(self, operation_id: OperationId,
@@ -377,6 +416,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_pocket(self, operation_id: OperationId,
@@ -394,6 +434,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_drilling(
@@ -419,6 +460,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_tapping(
@@ -446,6 +488,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_reaming(
@@ -473,6 +516,7 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def compute_boring(
@@ -500,12 +544,202 @@ class ProjectService:
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
         return result
 
     def load_toolpath_artifact(self, operation_id: OperationId) -> ToolpathArtifact | None:
         """Load one verified derived artifact for presentation; never expose its path."""
         session = self._require_current()
         return self._cam_application.load_artifact(session.root_path, operation_id)
+
+    @property
+    def simulation_runs(self) -> SimulationRunController:
+        """Return the runtime-only, project-bound simulation run controller."""
+        self._require_current()
+        return self._simulation_runs
+
+    def capture_simulation_inputs(
+        self,
+        operation_id: OperationId,
+        *,
+        sampling_policy: SimulationSamplingPolicy | None = None,
+        safe_height: float | None = None,
+    ) -> SimulationInputSnapshot:
+        """Capture one immutable, native-free simulation input boundary."""
+        self._require_current()
+        snapshot = self._cam_application.snapshot
+        operation = None
+        setup = None
+        for job in snapshot.jobs:
+            for candidate_setup in job.setups:
+                candidate = next(
+                    (
+                        value
+                        for value in candidate_setup.operation_tree.operations
+                        if value.operation_id == operation_id
+                    ),
+                    None,
+                )
+                if candidate is not None:
+                    operation = candidate
+                    setup = candidate_setup
+                    break
+            if operation is not None:
+                break
+        if operation is None or setup is None:
+            raise SimulationPreflightError(
+                SimulationIssueCode.SOURCE_MISSING,
+                "Simulation source operation is missing",
+            )
+        artifact = self.load_toolpath_artifact(operation_id)
+        if artifact is None:
+            raise SimulationPreflightError(
+                SimulationIssueCode.SOURCE_MISSING,
+                "Simulation source ToolpathArtifact is missing",
+            )
+        assembly = next(
+            (
+                value
+                for value in snapshot.tool_assemblies
+                if value.assembly_id == operation.tool_assembly.assembly_id
+            ),
+            None,
+        )
+        if assembly is None:
+            raise SimulationPreflightError(
+                SimulationIssueCode.TOOL_MISSING,
+                "Simulation tool assembly is missing",
+            )
+        tool = next(
+            (
+                value
+                for value in snapshot.tool_definitions
+                if value.tool_id == assembly.tool_id
+            ),
+            None,
+        )
+        if tool is None:
+            raise SimulationPreflightError(
+                SimulationIssueCode.TOOL_MISSING,
+                "Simulation tool definition is missing",
+            )
+        holder = next(
+            (
+                value
+                for value in snapshot.holder_definitions
+                if value.holder_id == assembly.holder_id
+            ),
+            None,
+        )
+        machine = next(
+            (
+                value
+                for value in snapshot.machine_definitions
+                if value.machine_id == artifact.machine_id
+            ),
+            None,
+        )
+        effective_safe_height = safe_height
+        if effective_safe_height is None:
+            parameters = dict(operation.parameters.values)
+            candidate_height = parameters.get("clearance_height")
+            if type(candidate_height) in {int, float}:
+                effective_safe_height = float(candidate_height)
+        request = build_simulation_request(
+            operation=operation,
+            artifact=artifact,
+            setup=setup,
+            tool=tool,
+            assembly=assembly,
+            holder=holder,
+            machine=machine,
+            sampling_policy=sampling_policy,
+            safe_height=effective_safe_height,
+        )
+        return SimulationInputSnapshot(
+            operation,
+            artifact,
+            setup,
+            tool,
+            assembly,
+            holder,
+            machine,
+            request,
+        )
+
+    def load_cached_simulation(
+        self,
+        inputs: SimulationInputSnapshot,
+    ) -> SimulationCacheLoad:
+        """Load one matching cache entry without changing project dirty state."""
+        session = self._require_current()
+        return self._simulation_cache.load_current(
+            session.root_path,
+            session.manifest.project_id,
+            inputs.operation.operation_id,
+            inputs.request.artifact_fingerprint,
+            inputs.request.input_fingerprint,
+        )
+
+    def load_cached_simulation_for_source(
+        self,
+        operation_id: OperationId,
+        artifact_fingerprint: ContentFingerprint,
+    ) -> SimulationCacheLoad:
+        """Discover a cached result before restoring its sampling policy."""
+        session = self._require_current()
+        return self._simulation_cache.load_latest_for_source(
+            session.root_path,
+            session.manifest.project_id,
+            operation_id,
+            artifact_fingerprint,
+        )
+
+    def persist_simulation_result(
+        self,
+        result: SimulationResult,
+    ) -> None:
+        """Persist a derived current result outside SQLite."""
+        session = self._require_current()
+        current = self._simulation_runs.result(result.operation_id)
+        if current is not result:
+            raise SimulationPreflightError(
+                SimulationIssueCode.STALE_RESULT,
+                "Simulation result is no longer current for this project",
+            )
+        self._simulation_cache.write(
+            session.root_path,
+            session.manifest.project_id,
+            result,
+        )
+
+    def flush_simulation_cache(self) -> tuple[str, ...]:
+        """Flush every current runtime result; cache failure never corrupts Save."""
+        session = self._require_current()
+        failures: list[str] = []
+        for result in self._simulation_runs.results():
+            try:
+                self._simulation_cache.write(
+                    session.root_path,
+                    session.manifest.project_id,
+                    result,
+                )
+            except Exception as error:
+                failures.append(str(error))
+                logger.warning("Không thể flush simulation cache", exc_info=True)
+        return tuple(failures)
+
+    def clear_simulation_result(
+        self,
+        operation_id: OperationId,
+        *,
+        delete_cache: bool = False,
+    ) -> None:
+        """Clear runtime result without touching its ToolpathArtifact."""
+        session = self._require_current()
+        self._simulation_runs.clear_result(operation_id)
+        if delete_cache:
+            self._simulation_cache.delete_operation(session.root_path, operation_id)
 
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""
@@ -549,10 +783,21 @@ class ProjectService:
             cam_snapshot=self._cam_application.snapshot,
             persisted_cam_snapshot=session.persisted_cam_snapshot,
         )
-        return self._autosave.create_snapshot(
+        self.flush_simulation_cache()
+        autosave_snapshot = self._autosave.create_snapshot(
             snapshot_session,
             self._session_locks.session_id,
         )
+        try:
+            self._simulation_cache.copy_valid_entries(
+                session.root_path,
+                autosave_snapshot.path,
+                session.manifest.project_id,
+                session.manifest.project_id,
+            )
+        except Exception:
+            logger.warning("Không thể sao chép simulation cache vào autosave", exc_info=True)
+        return autosave_snapshot
 
     def save_as(
         self,
@@ -568,12 +813,22 @@ class ProjectService:
             return self.save()
         self._cleanup_staging(parent_dir)
         self._ensure_overwrite_target_available(parent_dir, project_name, overwrite)
+        self.flush_simulation_cache()
         session = self._saver.save_as(
             current,
             parent_dir,
             project_name,
             overwrite=overwrite,
         )
+        try:
+            self._simulation_cache.copy_valid_entries(
+                current.root_path,
+                session.root_path,
+                current.manifest.project_id,
+                session.manifest.project_id,
+            )
+        except Exception:
+            logger.warning("Không thể sao chép simulation cache khi Save As", exc_info=True)
         return self._activate(session)
 
     def close_project(self, discard_changes: bool = False) -> None:
@@ -583,6 +838,7 @@ class ProjectService:
         if self._current_project.is_dirty and not discard_changes:
             raise UnsavedChangesError("Current project contains unsaved changes")
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
+        self._simulation_runs.bind_project(None, None)
         self._session_locks.release(self._current_project.root_path)
         self._current_project = None
         self._cam_application.clear()
@@ -624,6 +880,10 @@ class ProjectService:
                 raise
         self._current_project = session
         self._cam_application.load(session.cam_snapshot)
+        self._simulation_runs.bind_project(
+            session.manifest.project_id,
+            self._cam_application.generation,
+        )
         session.cam_snapshot = self._cam_application.snapshot
         session.persisted_cam_snapshot = self._cam_application.snapshot
         try:
