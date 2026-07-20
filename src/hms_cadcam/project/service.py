@@ -61,6 +61,14 @@ from hms_cadcam.cam.simulation import (
     SimulationSamplingPolicy,
     build_simulation_request,
 )
+from hms_cadcam.cam.post.export_model import NCExportRequest
+from hms_cadcam.cam.post.export_service import (
+    NCExportExecution,
+    NCExportService,
+    NCExportSourceSnapshot,
+)
+from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreError
+from hms_cadcam.cam.post.service import PostRuntimeService
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
@@ -82,6 +90,7 @@ class ProjectService:
         recovery: RecoveryManager,
         cam_application: CamApplicationService | None = None,
         simulation_cache: SimulationCacheStore | None = None,
+        nc_export_service: NCExportService | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -97,6 +106,7 @@ class ProjectService:
             self._cam_application.simulation_service
         )
         self._simulation_cache = simulation_cache or SimulationCacheStore()
+        self._nc_export_service = nc_export_service or NCExportService()
         self._current_project: ProjectSession | None = None
 
     @classmethod
@@ -108,6 +118,7 @@ class ProjectService:
         cad_state_store = CadViewStateStore()
         cam_repository = CamSqliteRepository()
         artifact_store = ToolpathArtifactStore()
+        nc_artifact_store = NCArtifactStore()
         session_locks = SessionLockManager()
         autosave = AutosaveManager(
             manifest_store,
@@ -115,6 +126,7 @@ class ProjectService:
             database,
             cad_state_store,
             cam_repository,
+            nc_artifact_store,
         )
         return cls(
             creator=ProjectCreator(manifest_store, validator, database),
@@ -133,6 +145,7 @@ class ProjectService:
                 cad_state_store,
                 cam_repository,
                 artifact_store,
+                nc_artifact_store,
             ),
             validator=validator,
             database=database,
@@ -147,6 +160,7 @@ class ProjectService:
                 session_locks,
             ),
             cam_application=CamApplicationService(artifact_store),
+            nc_export_service=NCExportService(nc_artifact_store),
         )
 
     @property
@@ -275,6 +289,18 @@ class ProjectService:
                         "Không thể phục hồi simulation cache từ autosave",
                         exc_info=True,
                     )
+                try:
+                    self._nc_export_service.store.copy_workspace(
+                        current.snapshot.path,
+                        assessment.project_root,
+                        assessment.project_id,
+                        assessment.project_id,
+                    )
+                except (OSError, NCArtifactStoreError):
+                    logger.warning(
+                        "Không thể phục hồi NC artifact từ autosave",
+                        exc_info=True,
+                    )
             session = self._loader.load(assessment.project_root)
             return self._complete_activation(session)
         except Exception:
@@ -316,6 +342,7 @@ class ProjectService:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
             self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
         return session
 
     def apply_cam_mutation(
@@ -331,6 +358,7 @@ class ProjectService:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
             self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
         return session
 
     def execute_cam_command(
@@ -357,6 +385,7 @@ class ProjectService:
             session.is_dirty = True
             self._simulation_runs.cancel_all(stale=True)
             self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
         return changed
 
     @property
@@ -364,6 +393,42 @@ class ProjectService:
         """Return the active CAM project generation for stale-signal guards."""
         self._require_current()
         return self._cam_application.generation
+
+    @property
+    def nc_export_service(self) -> NCExportService:
+        """Return the project-bound non-UI NC export application service."""
+        self._require_current()
+        return self._nc_export_service
+
+    @property
+    def post_service(self) -> PostRuntimeService:
+        """Return the current project-scoped Post runtime service."""
+        self._require_current()
+        return self._cam_application.post_runtime
+
+    def export_nc(
+        self,
+        request: NCExportRequest,
+        source: NCExportSourceSnapshot,
+        *,
+        current_source: Callable[[], NCExportSourceSnapshot] | None = None,
+    ) -> NCExportExecution:
+        """Export one current production PostResult through the project lifecycle."""
+        session = self._require_current()
+        if request.project_id != session.manifest.project_id:
+            raise ProjectError("NC export request belongs to another project")
+        if source.project_generation != self._cam_application.generation:
+            raise ProjectError("NC export source belongs to an inactive project generation")
+        return self._nc_export_service.export(
+            session.root_path,
+            request,
+            source,
+            current_source=current_source,
+            current_project_generation=lambda: self._cam_application.generation,
+            current_post_result=lambda: self._cam_application.post_runtime.current(
+                source.post_request
+            ),
+        )
 
     def register_toolpath_artifact(
         self,
@@ -384,6 +449,7 @@ class ProjectService:
                 operation_id,
                 "Source ToolpathArtifact was recomputed",
             )
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_facing(self, operation_id: OperationId,
@@ -402,6 +468,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_contour(self, operation_id: OperationId,
@@ -420,6 +487,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_pocket(self, operation_id: OperationId,
@@ -438,6 +506,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_drilling(
@@ -464,6 +533,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_tapping(
@@ -492,6 +562,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_reaming(
@@ -520,6 +591,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def compute_boring(
@@ -548,6 +620,7 @@ class ProjectService:
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
         return result
 
     def load_toolpath_artifact(self, operation_id: OperationId) -> ToolpathArtifact | None:
@@ -774,6 +847,31 @@ class ProjectService:
                     exc_info=True,
                 )
 
+    def _reconcile_nc_artifacts(
+        self, session: ProjectSession, snapshot: CamProjectSnapshot
+    ) -> None:
+        """Invalidate managed NC entries whose operation/toolpath source changed."""
+        current = {
+            item.operation_id: (item.artifact_id, item.artifact_fingerprint)
+            for item in snapshot.artifacts
+        }
+        try:
+            self._nc_export_service.store.reconcile_sources(
+                session.root_path,
+                session.manifest.project_id,
+                current,
+            )
+        except (OSError, NCArtifactStoreError):
+            logger.warning("Không thể cập nhật trạng thái NC artifact", exc_info=True)
+            return
+        # Refresh the in-memory view without treating a persistence load as a
+        # project edit. Post results remain runtime-only and are not regenerated.
+        self._nc_export_service.bind_project(
+            session.root_path,
+            session.manifest.project_id,
+            self._cam_application.generation,
+        )
+
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""
         session = self._require_current()
@@ -875,6 +973,7 @@ class ProjectService:
         self._session_locks.release(self._current_project.root_path)
         self._current_project = None
         self._cam_application.clear()
+        self._nc_export_service.bind_project(None, None, None)
 
     def recent_projects(self) -> tuple[RecentProjectEntry, ...]:
         """Return recently opened project paths."""
@@ -914,6 +1013,11 @@ class ProjectService:
         self._current_project = session
         self._cam_application.load(session.cam_snapshot)
         self._simulation_runs.bind_project(
+            session.manifest.project_id,
+            self._cam_application.generation,
+        )
+        self._nc_export_service.bind_project(
+            session.root_path,
             session.manifest.project_id,
             self._cam_application.generation,
         )

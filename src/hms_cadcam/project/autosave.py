@@ -27,6 +27,8 @@ from hms_cadcam.project.constants import (
     MANIFEST_FILENAME,
     OWNED_DIRECTORY_METADATA_FILENAME,
     SIMULATION_CACHE_SUBDIRECTORY,
+    POST_DIRECTORY,
+    NC_DIRECTORY,
 )
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.cad_state_store import CadViewStateStore
@@ -46,6 +48,7 @@ from hms_cadcam.project.models import (
 from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.persistence import CamSqliteRepository
+from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreError
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SNAPSHOT_PREFIX = "snapshot-"
@@ -203,12 +206,14 @@ class AutosaveManager:
         database: ProjectDatabase,
         cad_state_store: CadViewStateStore | None = None,
         cam_repository: CamSqliteRepository | None = None,
+        nc_artifact_store: NCArtifactStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
         self._database = database
         self._cad_state_store = cad_state_store or CadViewStateStore()
         self._cam_repository = cam_repository or CamSqliteRepository()
+        self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
         self._operation_lock = threading.Lock()
 
     def create_snapshot(
@@ -276,6 +281,12 @@ class AutosaveManager:
                         (record.source_id for record in session.manifest.source_files),
                     )
                     self._cam_repository.replace_all(connection, session.cam_snapshot)
+                self._nc_artifact_store.copy_workspace(
+                    session.root_path,
+                    staging,
+                    session.manifest.project_id,
+                    session.manifest.project_id,
+                )
                 metadata = AutosaveMetadata(
                     format=AUTOSAVE_FORMAT,
                     format_version=AUTOSAVE_FORMAT_VERSION,
@@ -335,8 +346,11 @@ class AutosaveManager:
             raise AutosaveSnapshotError("Autosave snapshot must be a real directory")
         entries = tuple(snapshot_path.iterdir())
         names = {path.name for path in entries}
-        if names not in (expected_names, expected_names | {CACHE_DIRECTORY}):
+        optional_names = {CACHE_DIRECTORY, POST_DIRECTORY, NC_DIRECTORY}
+        if not expected_names.issubset(names) or names - expected_names - optional_names:
             raise AutosaveSnapshotError("Autosave snapshot file set is incomplete")
+        if (POST_DIRECTORY in names) != (NC_DIRECTORY in names):
+            raise AutosaveSnapshotError("Autosave NC artifact layout is incomplete")
         if any(self._is_link_or_junction(path) for path in entries):
             raise AutosaveSnapshotError("Autosave snapshot cannot contain links or junctions")
         cache_root = snapshot_path / CACHE_DIRECTORY
@@ -370,6 +384,11 @@ class AutosaveManager:
         if manifest.project_id != metadata.project_id:
             raise AutosaveSnapshotError("Autosave project identity differs from manifest")
         self._database.validate(snapshot_path / DATABASE_FILENAME)
+        if POST_DIRECTORY in names:
+            try:
+                self._nc_artifact_store.inspect(snapshot_path, metadata.project_id)
+            except NCArtifactStoreError as error:
+                raise AutosaveSnapshotError("Autosave NC artifacts are invalid") from error
         return metadata
 
     @staticmethod

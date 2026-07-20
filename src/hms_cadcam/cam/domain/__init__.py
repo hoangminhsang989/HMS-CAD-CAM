@@ -158,6 +158,9 @@ from hms_cadcam.cam.domain.ids import (
     PostRequestId,
     PostResultId,
     NCProgramId,
+    NCExportRequestId,
+    NCExportResultId,
+    NCArtifactId,
 )
 from hms_cadcam.cam.domain.dependency import (
     DependencyEdge,
@@ -443,6 +446,9 @@ __all__ = [
     "PostRequestId",
     "PostResultId",
     "NCProgramId",
+    "NCExportRequestId",
+    "NCExportResultId",
+    "NCArtifactId",
     "UnsupportedCamSchemaError",
     "TurningInsertGeometry",
     "ValidationDiagnostic",

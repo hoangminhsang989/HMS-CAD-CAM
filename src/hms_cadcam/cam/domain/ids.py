@@ -192,6 +192,27 @@ class NCProgramId(_CamUuidId):
     PREFIX: ClassVar[str] = "nc_program"
 
 
+@dataclass(frozen=True, slots=True)
+class NCExportRequestId(_CamUuidId):
+    """Identity of one NC file-export request envelope."""
+
+    PREFIX: ClassVar[str] = "nc_export_request"
+
+
+@dataclass(frozen=True, slots=True)
+class NCExportResultId(_CamUuidId):
+    """Identity of one NC file-export result."""
+
+    PREFIX: ClassVar[str] = "nc_export_result"
+
+
+@dataclass(frozen=True, slots=True)
+class NCArtifactId(_CamUuidId):
+    """Identity of one project-managed production NC artifact."""
+
+    PREFIX: ClassVar[str] = "nc_artifact"
+
+
 CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     CamJobId,
     SetupId,
@@ -213,4 +234,7 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     PostRequestId,
     PostResultId,
     NCProgramId,
+    NCExportRequestId,
+    NCExportResultId,
+    NCArtifactId,
 )

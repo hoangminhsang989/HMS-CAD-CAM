@@ -24,6 +24,7 @@ from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.persistence import (
     CamSqliteRepository, ToolpathArtifactStore, ToolpathArtifactStoreError,
 )
+from hms_cadcam.cam.post.export_store import NCArtifactStore
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class ProjectSaver:
         cad_state_store: CadViewStateStore,
         cam_repository: CamSqliteRepository | None = None,
         artifact_store: ToolpathArtifactStore | None = None,
+        nc_artifact_store: NCArtifactStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -47,9 +49,13 @@ class ProjectSaver:
         self._cad_state_store = cad_state_store
         self._cam_repository = cam_repository or CamSqliteRepository()
         self._artifact_store = artifact_store or ToolpathArtifactStore()
+        self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
 
     def save(self, session: ProjectSession) -> ProjectSession:
         """Validate and atomically save the current manifest."""
+        self._nc_artifact_store.flush(
+            session.root_path, session.manifest.project_id
+        )
         manifest = session.manifest.with_modified_time()
         self._validator.validate_manifest(manifest)
         database_path = session.root_path / DATABASE_FILENAME
@@ -156,6 +162,12 @@ class ProjectSaver:
                 session.cam_snapshot.artifacts,
             )
             staged_cam = replace(session.cam_snapshot, artifacts=copied_artifacts)
+            self._nc_artifact_store.copy_workspace(
+                session.root_path,
+                staging,
+                session.manifest.project_id,
+                manifest.project_id,
+            )
             with self._cad_state_store.transaction(
                 staging / DATABASE_FILENAME
             ) as connection:
