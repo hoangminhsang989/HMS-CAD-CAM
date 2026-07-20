@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -10,6 +12,7 @@ from hms_cadcam.cam.post import (
     ExportOverwritePolicy,
     SimulationGateMode,
 )
+from hms_cadcam.cam.domain import ToolpathArtifactId
 from hms_cadcam.cam.post.service import PostRuntimeService
 from hms_cadcam.ui.post_ui import (
     PostPanelDraft,
@@ -18,6 +21,7 @@ from hms_cadcam.ui.post_ui import (
     sanitize_post_filename,
 )
 from tests.unit._post_fixtures import source_snapshot
+from tests.unit.test_fanuc_robodrill_21i_runtime import _runtime_source
 
 
 class _ExportRuntime:
@@ -94,4 +98,36 @@ def test_panel_keeps_generate_disabled_until_safe_z_and_apply() -> None:
     panel.gate_combo.setCurrentText("OPTIONAL")
     assert panel.apply_draft()
     assert panel.generate_button.isEnabled()
+    panel.deleteLater()
+
+
+def test_panel_refreshes_output_projection_after_sync_generation() -> None:
+    QApplication.instance() or QApplication([])
+    source = _runtime_source()
+    panel = PostProcessorPanel(_Service(source))
+    panel.set_operation(source.operation.operation_id, generation=1, operation_name="Facing")
+    panel.safe_z_spin.setValue(10.0)
+    panel.gate_combo.setCurrentText("OPTIONAL")
+    assert panel.apply_draft()
+    result = panel.generate_sync()
+    assert result is not None
+    assert panel.state.output_bytes == len(result.canonical_text.encode("utf-8"))
+    assert panel.state.output_checksum == result.output_checksum
+    panel.deleteLater()
+
+
+def test_panel_marks_post_stale_when_operation_artifact_changes() -> None:
+    QApplication.instance() or QApplication([])
+    source = _runtime_source()
+    service = _Service(source)
+    panel = PostProcessorPanel(service)
+    panel.set_operation(source.operation.operation_id, generation=1, operation_name="Facing")
+    panel.safe_z_spin.setValue(10.0)
+    panel.gate_combo.setCurrentText("OPTIONAL")
+    assert panel.apply_draft()
+    assert panel.generate_sync() is not None
+    changed_artifact = replace(source.artifact, artifact_id=ToolpathArtifactId.new(), artifact_fingerprint=None)
+    service.source = replace(source, artifact=changed_artifact)
+    panel.set_operation(source.operation.operation_id, generation=1, operation_name="Facing")
+    assert panel.state.post_status.value == "stale"
     panel.deleteLater()

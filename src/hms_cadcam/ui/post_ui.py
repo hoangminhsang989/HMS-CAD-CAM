@@ -304,6 +304,7 @@ class PostProcessorPanel(QWidget):
         self._applied: PostPanelDraft | None = None
         self._request: PostRequest | None = None
         self._result: PostResult | None = None
+        self._post_stale_hint = False
         self._last_export = None
         self._active_thread: QThread | None = None
         self._active_worker: _PostWorker | None = None
@@ -460,11 +461,15 @@ class PostProcessorPanel(QWidget):
         self._source = None; self._operation_id = None; self._generation = None
         self._operation_name = ""
         self._draft = None; self._applied = None; self._request = None; self._result = None; self._last_export = None
+        self._post_stale_hint = False
         self.state = PostPanelState()
         self.preview.clear(); self._show_diagnostics(())
         self._set_enabled(False)
 
     def set_operation(self, operation_id: object, *, generation: int | None = None, operation_name: str | None = None) -> None:
+        previous_operation_id = self._operation_id
+        previous_result = self._result
+        previous_source = self._source
         self._cancel_worker()
         self._request_epoch += 1
         self._operation_id = operation_id
@@ -479,6 +484,15 @@ class PostProcessorPanel(QWidget):
             self.message.emit(f"Post source unavailable: {error}")
             return
         self._source = source
+        self._post_stale_hint = bool(
+            previous_result is not None
+            and previous_operation_id == operation_id
+            and previous_source is not None
+            and (
+                source.artifact.artifact_id != previous_result.artifact_id
+                or source.artifact.artifact_fingerprint != previous_result.artifact_fingerprint
+            )
+        )
         self._draft = self._default_draft(source)
         self._applied = self._draft
         self._apply_widgets(self._draft)
@@ -637,6 +651,8 @@ class PostProcessorPanel(QWidget):
             self.progress_changed.emit(PostProgressPhase.STALE)
             return
         self._result = execution.result
+        self._post_stale_hint = False
+        self._refresh_state()
         self._show_diagnostics(execution.diagnostics)
         self._set_status(PostGenerationStatus.CURRENT)
         self.progress_changed.emit(PostProgressPhase.COMPLETED)
@@ -661,6 +677,8 @@ class PostProcessorPanel(QWidget):
         if self._generation is not None and self._generation != self._service.cam_generation:
             self._set_status(PostGenerationStatus.STALE); self.progress_changed.emit(PostProgressPhase.STALE); return None
         self._result = execution.result
+        self._post_stale_hint = False
+        self._refresh_state()
         self._show_diagnostics(execution.diagnostics)
         self._set_status(PostGenerationStatus.CURRENT); self.progress_changed.emit(PostProgressPhase.COMPLETED)
         self.show_preview()
@@ -805,7 +823,7 @@ class PostProcessorPanel(QWidget):
                 result = None
         managed = next((entry for entry in self._service.nc_export_service.artifacts() if entry.operation_id == source.operation.operation_id), None)
         status = ManagedArtifactUiStatus.MISSING if managed is None else ManagedArtifactUiStatus(managed.status.value)
-        post_status = PostGenerationStatus.CURRENT if result is not None and result.status is PostResultStatus.PUBLISHED else (self.state.post_status if self.state.post_status in {PostGenerationStatus.GENERATING, PostGenerationStatus.VALIDATING} else PostGenerationStatus.MISSING)
+        post_status = PostGenerationStatus.STALE if self._post_stale_hint else (PostGenerationStatus.CURRENT if result is not None and result.status is PostResultStatus.PUBLISHED else (self.state.post_status if self.state.post_status in {PostGenerationStatus.GENERATING, PostGenerationStatus.VALIDATING} else PostGenerationStatus.MISSING))
         sim = source.simulation_result
         sim_status = "MISSING" if sim is None else (
             "STALE" if sim.operation_id != source.operation.operation_id
