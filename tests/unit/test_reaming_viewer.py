@@ -159,6 +159,24 @@ def test_reaming_presentation_is_native_free_and_controller_neutral() -> None:
     )
 
 
+def test_mixed_strategy_provenance_cannot_bypass_reaming_validation() -> None:
+    artifact, _strategy_value = _reaming_artifact()
+    events = list(artifact.events)
+    rapid_index = next(
+        index for index, event in enumerate(events)
+        if event.provenance == "ream.hole.0.rapid"
+    )
+    events[rapid_index] = replace(
+        events[rapid_index],
+        provenance="tap.hole.0.rapid",
+    )
+
+    with pytest.raises(ValueError, match="strategy provenance"):
+        ToolpathPresentation.from_artifact(
+            _unchecked_artifact(artifact, events=tuple(events))
+        )
+
+
 @pytest.mark.parametrize(
     "failure",
     (

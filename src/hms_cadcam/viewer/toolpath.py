@@ -424,7 +424,9 @@ def _strategy_key(artifact: ToolpathArtifact) -> str:
         "tap": "tapping_v1",
     }
     matches = tuple(known[prefix] for prefix in sorted(prefixes) if prefix in known)
-    return matches[0] if len(matches) == 1 else "unknown"
+    if len(matches) > 1:
+        raise ValueError("Toolpath contains mixed strategy provenance")
+    return matches[0] if matches else "unknown"
 
 
 def _pass_count(artifact: ToolpathArtifact) -> int:
