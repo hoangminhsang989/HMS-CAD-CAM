@@ -7,51 +7,44 @@
 - Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state đã hoàn thành.
 - Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và persistence đã hoàn thành.
 - Giai đoạn 7A.1–7B.9: CAM Foundation, UI, Facing, Contour 2D, Pocket, Drilling, Tapping, Reaming và Boring v1 đã hoàn thành.
-- Boring commits: `808a232` Foundation; `881dbbb` Viewer/Recompute; `1843689` UI/Persistence.
-- Review Boring v1 không phát hiện lỗi có bằng chứng; HEAD vẫn `1843689`, không tạo commit review.
-- Toàn bộ pytest: **805 passed**; SQLite schema: **v4**; worktree sạch.
+- Simulation/Collision v1 đã hoàn thành và review ổn định; review commit: `6fdbd45`.
 
-## Kiến trúc và dữ liệu dự án
+## Lịch sử Simulation/Collision
 
-- `ProjectService` là API dự án duy nhất được UI sử dụng; manifest JSON UTF-8 và dữ liệu chính dùng SQLite.
-- Dự án là thư mục `.HMS`; file CAD nguồn giữ nguyên trong `source/`, không bị chỉnh sửa.
-- Tác vụ I/O và import CAD chạy ngoài UI thread; cache có thể xóa và tái tạo.
-- CAD API chỉ trao đổi ID/model thuần Python; object OCP, `TDF_Label`, `TopoDS`, AIS và runtime ID chỉ ở adapter nội bộ.
+- `64e049b` — Simulation/Collision Foundation 7C.1.
+- `bfb1ea5` — Simulation Viewer Integration 7C.2.
+- `c4588ce` — Simulation UI + External Cache 7C.3.
+- `6fdbd45` — Review và ổn định Simulation/Collision v1.
 
-## CAD Kernel, import và Viewer
+## Simulation/Collision v1
 
-- Open CASCADE tích hợp qua `cadquery-ocp-novtk`; hỗ trợ STEP/STP, BREP, IGES/IGS và STL.
-- STEP part/assembly XCAF hỗ trợ hierarchy lồng nhau, repeated occurrence và transform `parent × local`.
-- Viewer/tree/selection/appearance tách theo occurrence; user override thắng source và có thể reset.
-- CAD Viewer hỗ trợ camera, Fit All, hướng nhìn chuẩn và ba display mode.
-- Import lỗi, worker cũ hoặc signal đến muộn không thay document hiện tại.
+- Request/result/issue/statistics immutable, versioned; codec nghiêm ngặt và deterministic.
+- Sampling LINE/ARC; transform WCS/world; fixed tool-axis policy.
+- Envelope cutter/shank/holder; stock BOX; fixture BODY/OCCURRENCE.
+- Pipeline broad/narrow; kết quả PASS/WARN/FAIL; runtime publish nguyên tử.
+- Guard stale/cancel/project; semantic path overlay, collision/gouge/warning markers.
+- Decimation deterministic; issue metadata/focus; Simulation panel và progress.
+- Cooperative cancellation; Show/Hide/Clear overlay; external cache; Save/Open, Save As, Autosave/Recovery.
 
-## CAM Foundation và Boring v1
+## Review đã sửa
 
-- CAM có ID mạnh, unit tường minh, `GeometryReference` bền vững, Job, Setup, WCS, Stock, tooling, machine model và Toolpath IR.
-- CAM editable state là dữ liệu chính trong SQLite v4; artifact là derived data dưới `toolpaths/`.
-- Boring v1 dùng `boring_v1`, `ToolFamily.BORING_BAR`, `BoringBarGeometry` versioned và `pre_bore_diameter` bắt buộc.
-- Radial stock và feed-per-minute dẫn xuất; feed-per-revolution là nguồn chính; controlled axial retract.
-- Holder/shank clearance fail-closed; multi-BREP resolver all-or-nothing, re-resolve từng reference, không partial/auto-rebind.
-- Semantic presentation, provenance validation, atomic viewer replacement/rollback và stale guards đã hoàn thành.
-- CAM tree/editor hỗ trợ Bind/Rebind/Clear, Apply/Generate/Recompute, Show/Hide, Save/Open, Save As, Autosave/Recovery.
+- Fixture unit mismatch; approximate narrow evidence; computation token release.
+- Cache link/junction restoration; orphan cache cleanup khi xóa operation cha.
+- Zero exposed shank khi stickout đúng bằng cutter end.
 
 ## CAM hiện có
 
-- Facing; Planar Face Facing; 2D Contour; Pocket v1; Drilling v1; Tapping v1; Reaming v1; Boring v1.
-- Facing hỗ trợ Stock BOX và persistent planar FACE; Contour hỗ trợ outer loop LINE/ARC; Pocket v1 không island.
-- Drilling/Tapping/Reaming hỗ trợ persistent hole geometry, explicit/multi-hole và Viewer/Recompute/persistence.
-- Feed-per-revolution, semantic spindle/coolant/dwell và provenance fail-closed áp dụng cho các operation liên quan.
+- Facing; Planar Face Facing; 2D Contour; Pocket v1; Drilling v1; Tapping v1; Reaming v1; Boring v1; Simulation/Collision v1.
 
-## Persistence và giới hạn
+## Giới hạn hiện tại
 
-- Save/Open/Save As, Autosave/Recovery giữ CAM editable state và artifact metadata trong SQLite v4; COMPUTING được normalize khi load.
-- Persistent XCAF key dùng `source_id`, occurrence path có phiên bản và product fingerprint; CAD view state cũ vẫn được hỗ trợ.
-- Measurement BREP là read-only; hình học chuẩn hóa chưa lưu vào `model/`; ứng dụng import lại nguồn bất biến khi mở dự án.
-- Chưa có Simulation, Collision đầy đủ, Post Processor hoặc G-code.
+- PASS chỉ có nghĩa không phát hiện vấn đề trong phạm vi/resolution v1.
+- Chưa có stock removal, animation, machine kinematics/IK, continuous exact collision guarantee, Post Processor hoặc G-code.
 
-## Kiểm tra gần nhất
+## Kiến trúc, dữ liệu và kiểm tra
 
-- Boring/domain/viewer/recompute/UI/tooling/resolver: **154 passed**; GUI Windows/PySide6/OCP thật: đạt.
-- `pip check`, package imports, `compileall`, UTF-8 source/text và `git diff --check`: đạt.
-- Một lần pytest gặp quyền `%TEMP%`; chạy lại với `--basetemp` trong workspace đạt đầy đủ, không phải lỗi dự án.
+- `ProjectService` là API dự án duy nhất được UI sử dụng; manifest JSON UTF-8 và dữ liệu chính dùng SQLite v4.
+- Dự án là thư mục `.HMS`; file CAD nguồn giữ nguyên trong `source/`; cache có thể xóa và tái tạo.
+- Tác vụ I/O/import CAD chạy ngoài UI thread; OCP chỉ ở adapter nội bộ; CAD Viewer và XCAF persistence đã ổn định.
+- Toàn bộ pytest: **887 passed**; CAM/CAD/XCAF regression mục tiêu: **544 passed**.
+- GUI Windows/PySide6/OCP thật: đạt; worktree sạch tại review commit `6fdbd45`.
