@@ -49,6 +49,7 @@ from hms_cadcam.cam.application.reaming import (
 from hms_cadcam.cam.application.boring import (
     BoringComputeResult, BoringGenerationError, BoringGenerator,
 )
+from hms_cadcam.cam.simulation.service import SimulationRuntimeService
 
 
 class CamApplicationService:
@@ -61,6 +62,7 @@ class CamApplicationService:
         self._persisted = CamProjectSnapshot()
         self._selection = CamSelection()
         self._generation = 0
+        self._simulation = SimulationRuntimeService()
 
     @property
     def snapshot(self) -> CamProjectSnapshot:
@@ -80,6 +82,7 @@ class CamApplicationService:
             self._persisted = _clone_snapshot(snapshot)
             self._selection = CamSelection()
             self._generation += 1
+            self._simulation.bind_project(self._generation, self._generation)
 
     def apply(self, mutation: Callable[[CamProjectSnapshot], CamProjectSnapshot]) -> CamProjectSnapshot:
         """Apply one validated mutation atomically in memory."""
@@ -95,6 +98,7 @@ class CamApplicationService:
                 if metadata.operation_id in operation_ids
             ))
             self._snapshot = _clone_snapshot(candidate)
+            self._simulation.invalidate_all()
             return _clone_snapshot(self._snapshot)
 
     def execute(
@@ -132,6 +136,7 @@ class CamApplicationService:
             self._persisted = empty
             self._selection = CamSelection()
             self._generation += 1
+            self._simulation.clear()
 
     @property
     def selection(self) -> "CamSelection":
@@ -143,6 +148,11 @@ class CamApplicationService:
         """Identify the active project so queued UI callbacks can be rejected."""
         with self._lock:
             return self._generation
+
+    @property
+    def simulation_service(self) -> SimulationRuntimeService:
+        """Return the project-scoped, runtime-only simulation registry."""
+        return self._simulation
 
     def select(self, selection: "CamSelection", *, generation: int | None = None) -> bool:
         """Select CAM identities, rejecting a callback from an older project."""

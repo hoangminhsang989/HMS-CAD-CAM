@@ -151,6 +151,8 @@ from hms_cadcam.cam.domain.ids import (
     ToolDefinitionId,
     ToolpathArtifactId,
     ToolpathEventId,
+    SimulationRequestId,
+    SimulationResultId,
 )
 from hms_cadcam.cam.domain.dependency import (
     DependencyEdge,
@@ -429,6 +431,8 @@ __all__ = [
     "ToolLibraryPort",
     "ToolpathArtifactId",
     "ToolpathEventId",
+    "SimulationRequestId",
+    "SimulationResultId",
     "UnsupportedCamSchemaError",
     "TurningInsertGeometry",
     "ValidationDiagnostic",

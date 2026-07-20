@@ -143,6 +143,20 @@ class ToolpathEventId(_CamUuidId):
     PREFIX: ClassVar[str] = "toolpath_event"
 
 
+@dataclass(frozen=True, slots=True)
+class SimulationRequestId(_CamUuidId):
+    """Identity of one simulation request envelope."""
+
+    PREFIX: ClassVar[str] = "simulation_request"
+
+
+@dataclass(frozen=True, slots=True)
+class SimulationResultId(_CamUuidId):
+    """Identity of one published simulation result."""
+
+    PREFIX: ClassVar[str] = "simulation_result"
+
+
 CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     CamJobId,
     SetupId,
@@ -157,4 +171,6 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     FixtureInstanceId,
     ToolpathArtifactId,
     ToolpathEventId,
+    SimulationRequestId,
+    SimulationResultId,
 )
