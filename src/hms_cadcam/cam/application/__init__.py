@@ -43,6 +43,13 @@ from hms_cadcam.cam.application.reaming import (
     ReamingHole,
     ReamingInputs,
 )
+from hms_cadcam.cam.application.boring import (
+    BoringComputeResult,
+    BoringGenerationError,
+    BoringGenerator,
+    BoringHole,
+    BoringInputs,
+)
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult,
     PocketGenerationError,
@@ -64,6 +71,8 @@ __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "Con
            "TappingGenerator", "TappingHole", "TappingInputs",
            "ReamingComputeResult", "ReamingGenerationError", "ReamingGenerator",
            "ReamingHole", "ReamingInputs",
+           "BoringComputeResult", "BoringGenerationError", "BoringGenerator",
+           "BoringHole", "BoringInputs",
            "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels", "resolve_box_facing_region",
            "resolve_profile_in_setup"]

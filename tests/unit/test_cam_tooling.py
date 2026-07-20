@@ -9,6 +9,7 @@ from hms_cadcam.cam.domain import (
     Angle,
     AngleUnit,
     BallEndGeometry,
+    BoringBarGeometry,
     BullNoseGeometry,
     CamInvariantError,
     CamUnitError,
@@ -71,6 +72,10 @@ def _geometry_cases():
         (ToolFamily.FACE_MILL, cylinder),
         (ToolFamily.REAMER, cylinder),
         (ToolFamily.TAP, TapGeometry(_mm(8.0), _mm(20.0), _mm(1.25), ToolHand.RIGHT)),
+        (
+            ToolFamily.BORING_BAR,
+            BoringBarGeometry(_mm(12.0), _mm(30.0), _mm(20.0), ToolHand.RIGHT),
+        ),
         (
             ToolFamily.TURNING_INSERT,
             TurningInsertGeometry(_mm(12.7), _mm(4.0), _mm(0.8)),
@@ -163,6 +168,98 @@ def test_future_tool_version_is_rejected() -> None:
 
     with pytest.raises(UnsupportedCamSchemaError):
         ToolDefinition.from_dict(payload)
+
+
+@pytest.mark.parametrize("unit", (LengthUnit.MM, LengthUnit.INCH))
+def test_boring_bar_geometry_is_versioned_and_round_trips(unit) -> None:
+    length = lambda value: Length(value, unit)
+    geometry = BoringBarGeometry(
+        length(0.5), length(1.25), length(2.0), ToolHand.LEFT
+    )
+    tool = _tool(ToolFamily.BORING_BAR, geometry, unit)
+
+    restored = ToolDefinition.from_dict(tool.to_dict())
+
+    assert restored == tool
+    assert restored.content_fingerprint == tool.content_fingerprint
+    assert geometry.to_dict()["geometry_version"] == 1
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    (
+        lambda: BoringBarGeometry(_mm(0), _mm(20), _mm(10), ToolHand.RIGHT),
+        lambda: BoringBarGeometry(_mm(12), _mm(10), _mm(10), ToolHand.RIGHT),
+        lambda: BoringBarGeometry(_mm(10), _inch(1), _mm(10), ToolHand.RIGHT),
+        lambda: BoringBarGeometry(_mm(10), _mm(20), _mm(0), ToolHand.RIGHT),
+        lambda: BoringBarGeometry(_mm(10), _mm(20), _mm(10), "right"),
+    ),
+)
+def test_invalid_boring_bar_geometry_fails_closed(geometry) -> None:
+    with pytest.raises((CamInvariantError, CamUnitError, CamValidationError)):
+        geometry()
+
+
+def test_boring_bar_future_geometry_version_and_wrong_family_are_rejected() -> None:
+    geometry = BoringBarGeometry(
+        _mm(12), _mm(30), _mm(20), ToolHand.RIGHT
+    )
+    payload = geometry.to_dict()
+    payload["geometry_version"] = 2
+    with pytest.raises(UnsupportedCamSchemaError):
+        BoringBarGeometry.from_dict(payload)
+    with pytest.raises(CamInvariantError):
+        _tool(ToolFamily.END_MILL, geometry)
+    with pytest.raises(CamInvariantError):
+        _tool(
+            ToolFamily.BORING_BAR,
+            CylindricalGeometry(_mm(12), _mm(20)),
+        )
+
+
+def test_existing_tool_payload_shape_is_unchanged_by_boring_variant() -> None:
+    tool = _tool()
+    payload = tool.to_dict()
+
+    assert set(payload["cutting_geometry"]) == {
+        "kind", "diameter", "flute_length",
+    }
+    assert ToolDefinition.from_dict(payload).content_fingerprint == tool.content_fingerprint
+
+
+def test_legacy_end_mill_payload_and_fingerprint_remain_stable() -> None:
+    payload = {
+        "format": "HMS_CAM_TOOL_DEFINITION",
+        "format_version": 1,
+        "tool_id": (
+            "tool_definition:12345678-1234-4234-8234-123456789abc"
+        ),
+        "name": "Legacy end mill",
+        "family": "end_mill",
+        "unit": "mm",
+        "cutting_geometry": {
+            "kind": "cylindrical",
+            "diameter": {"value": 10.0, "unit": "mm"},
+            "flute_length": {"value": 20.0, "unit": "mm"},
+        },
+        "overall_length": {"value": 100.0, "unit": "mm"},
+        "usable_length": {"value": 30.0, "unit": "mm"},
+        "shank": {
+            "diameter": {"value": 10.0, "unit": "mm"},
+            "length": {"value": 70.0, "unit": "mm"},
+        },
+        "revision": {"value": 2},
+        "coolant_capabilities": [],
+        "manufacturer": None,
+        "model": None,
+    }
+
+    restored = ToolDefinition.from_dict(payload)
+
+    assert restored.to_dict() == payload
+    assert restored.content_fingerprint.digest == (
+        "e541cce77c6e39e760ef022aa6aace97a9248c016e69274a2648770791509183"
+    )
 
 
 def test_holder_stepped_profile_is_continuous_and_round_trips() -> None:

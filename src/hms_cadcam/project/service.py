@@ -37,7 +37,7 @@ from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.application import (
     CamApplicationService, DrillingComputeResult, FacingComputeResult, PocketComputeResult,
-    ReamingComputeResult, TappingComputeResult,
+    BoringComputeResult, ReamingComputeResult, TappingComputeResult,
 )
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.domain import (
@@ -466,6 +466,33 @@ class ProjectService:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
         result = self._cam_application.compute_reaming(
+            session.root_path,
+            operation_id,
+            geometry_resolver=geometry_resolver,
+        )
+        session.cam_snapshot = self._cam_application.snapshot
+        if session.cam_snapshot != before:
+            session.is_dirty = True
+        return result
+
+    def compute_boring(
+        self,
+        operation_id: OperationId,
+        *,
+        expected_generation: int | None = None,
+        geometry_resolver: Callable[
+            [DrillGeometryInput, DrillDepthDefinition], ResolvedDrillingGeometry
+        ] | None = None,
+    ) -> BoringComputeResult:
+        """Generate/publish one Boring operation through the project gateway."""
+        session = self._require_current()
+        if (
+            expected_generation is not None
+            and expected_generation != self._cam_application.generation
+        ):
+            raise RuntimeError("CAM command belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        result = self._cam_application.compute_boring(
             session.root_path,
             operation_id,
             geometry_resolver=geometry_resolver,

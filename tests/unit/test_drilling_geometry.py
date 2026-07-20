@@ -21,11 +21,16 @@ from hms_cadcam.cam.adapters.ocp_drilling import DrillingGeometryResolutionError
 from hms_cadcam.cam.application import DrillingGeometryResolver
 from hms_cadcam.cam.domain import (
     DiagnosticCode,
+    DiagnosticSeverity,
     DrillDepthDefinition,
     DrillGeometryInput,
     DrillingRegion,
     DrillValidationError,
     GeometryReferenceId,
+    GeometryReference,
+    GeometryReferenceKind,
+    GeometryRepresentationKind,
+    GeometryFingerprint,
     GeometryResolutionStatus,
     HoleLocation,
     HolePattern,
@@ -35,6 +40,8 @@ from hms_cadcam.cam.domain import (
     LengthUnit,
     Point3,
     Revision,
+    ResolvedHoleLocation,
+    ValidationDiagnostic,
     Vector3,
 )
 from hms_cadcam.viewer.models import SelectionMetadata, SelectionMode
@@ -59,6 +66,56 @@ def _point(
         None,
         unit,
     )
+
+
+def _persistent_vertex(
+    x: float,
+    *,
+    source_id=None,
+    occurrence_path: str = "root/part:1",
+) -> HoleLocation:
+    source_id = source_id or uuid4()
+    position = Point3(x, 0, 5, LengthUnit.MM)
+    reference = GeometryReference(
+        GeometryReferenceId.new(),
+        "hms_persistent_geometry",
+        1,
+        source_id,
+        GeometryReferenceKind.VERTEX,
+        GeometryRepresentationKind.BREP,
+        GeometryFingerprint.from_payload({
+            "x": x,
+            "occurrence_path": occurrence_path,
+        }),
+        Revision(0),
+        occurrence_path=occurrence_path,
+        subshape_selector=f"vertex:{x}:{occurrence_path}",
+    )
+    hole_reference = HoleReference(
+        reference,
+        Vector3(0, 0, 1),
+        Point3(0, 0, 5, LengthUnit.MM),
+        LengthUnit.MM,
+    )
+    return HoleLocation(
+        position,
+        Vector3(0, 0, 1),
+        Point3(0, 0, 5, LengthUnit.MM),
+        None,
+        LengthUnit.MM,
+        HoleSourceKind.BREP_VERTEX,
+        hole_reference,
+    )
+
+
+class _PatternReferenceResolver:
+    def __init__(self, responses) -> None:
+        self.responses = responses
+        self.calls = []
+
+    def resolve(self, reference: HoleReference) -> ResolvedHoleLocation:
+        self.calls.append(reference)
+        return self.responses[reference.reference.reference_id]
 
 
 def _context(
@@ -109,6 +166,122 @@ def test_single_explicit_hole_point_and_region_codec_round_trip() -> None:
             pattern=HolePattern((_point(8, 9),), LengthUnit.MM),
         )
     assert mismatch.value.code is DiagnosticCode.DRILL_SOURCE_MISMATCH
+
+
+@pytest.mark.parametrize("consumer", ("drilling", "tapping", "reaming"))
+def test_multi_brep_pattern_is_fully_reresolved_for_hole_strategies(consumer) -> None:
+    del consumer
+    source_id = uuid4()
+    locations = (
+        _persistent_vertex(4, source_id=source_id, occurrence_path="root/part:2"),
+        _persistent_vertex(1, source_id=source_id, occurrence_path="root/part:1"),
+    )
+    pattern = HolePattern(locations, LengthUnit.MM)
+    responses = {
+        location.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, location
+        )
+        for location in pattern.locations
+    }
+    port = _PatternReferenceResolver(responses)
+
+    result = DrillingGeometryResolver(port).resolve(
+        DrillGeometryInput(pattern, LengthUnit.MM), _depth()
+    )
+
+    assert result.status is GeometryResolutionStatus.RESOLVED
+    assert result.region is not None and result.region.pattern == pattern
+    assert tuple(port.calls) == tuple(
+        location.reference for location in pattern.locations
+    )
+    assert tuple(
+        item.reference.reference.occurrence_path
+        for item in result.region.pattern.locations
+    ) == ("root/part:1", "root/part:2")
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    (
+        (GeometryResolutionStatus.STALE, DiagnosticCode.DRILL_GEOMETRY_STALE),
+        (
+            GeometryResolutionStatus.SOURCE_MISMATCH,
+            DiagnosticCode.DRILL_SOURCE_MISMATCH,
+        ),
+    ),
+)
+def test_one_failed_pattern_reference_rejects_the_whole_pattern(status, code) -> None:
+    first = _persistent_vertex(1)
+    second = _persistent_vertex(4, source_id=first.reference.reference.source_id)
+    pattern = HolePattern((first, second), LengthUnit.MM)
+    failed_id = pattern.locations[0].reference.reference.reference_id
+    responses = {
+        location.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, location
+        )
+        for location in pattern.locations
+    }
+    responses[failed_id] = ResolvedHoleLocation(
+        status,
+        diagnostics=(ValidationDiagnostic(
+            DiagnosticSeverity.ERROR, code, "failed reference"
+        ),),
+    )
+    port = _PatternReferenceResolver(responses)
+
+    result = DrillingGeometryResolver(port).resolve(
+        DrillGeometryInput(pattern, LengthUnit.MM), _depth()
+    )
+
+    assert result.status is status
+    assert result.region is None
+    assert result.diagnostics[0].code is code
+    assert len(port.calls) == 1
+
+
+def test_pattern_reresolution_rejects_cross_occurrence_and_new_duplicate() -> None:
+    source_id = uuid4()
+    first = _persistent_vertex(
+        1, source_id=source_id, occurrence_path="root/part:1"
+    )
+    second = _persistent_vertex(
+        4, source_id=source_id, occurrence_path="root/part:2"
+    )
+    pattern = HolePattern((first, second), LengthUnit.MM)
+    crossed = replace(
+        first,
+        reference=second.reference,
+        position=second.position,
+    )
+    cross_port = _PatternReferenceResolver({
+        first.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, crossed
+        ),
+        second.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, second
+        ),
+    })
+    mismatch = DrillingGeometryResolver(cross_port).resolve(
+        DrillGeometryInput(pattern, LengthUnit.MM), _depth()
+    )
+    assert mismatch.status is GeometryResolutionStatus.SOURCE_MISMATCH
+    assert mismatch.region is None
+
+    duplicate_second = replace(second, position=first.position)
+    duplicate_port = _PatternReferenceResolver({
+        first.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, first
+        ),
+        second.reference.reference.reference_id: ResolvedHoleLocation(
+            GeometryResolutionStatus.RESOLVED, duplicate_second
+        ),
+    })
+    duplicate = DrillingGeometryResolver(duplicate_port).resolve(
+        DrillGeometryInput(pattern, LengthUnit.MM), _depth()
+    )
+    assert duplicate.status is GeometryResolutionStatus.INVALID
+    assert duplicate.region is None
+    assert duplicate.diagnostics[0].code is DiagnosticCode.DRILL_DUPLICATE_LOCATION
 
 
 def test_explicit_pattern_is_canonical_unique_and_fingerprint_stable() -> None:
@@ -301,6 +474,7 @@ def test_repeated_xcaf_occurrences_cannot_cross_resolve(tmp_path) -> None:
     assert len(repeated) == 2
     references = []
     positions = []
+    locations = []
     for node in repeated:
         local_vertices = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(
@@ -329,9 +503,17 @@ def test_repeated_xcaf_occurrences_cannot_cross_resolve(tmp_path) -> None:
         assert result.location is not None
         references.append(reference)
         positions.append(result.location.position)
+        locations.append(result.location)
     assert references[0].reference.occurrence_path != references[1].reference.occurrence_path
     assert references[0].fingerprint != references[1].fingerprint
     assert positions[0] != positions[1]
+    pattern = HolePattern(tuple(locations), LengthUnit.MM)
+    resolved_pattern = DrillingGeometryResolver(resolver).resolve(
+        DrillGeometryInput(pattern, LengthUnit.MM), _depth()
+    )
+    assert resolved_pattern.status is GeometryResolutionStatus.RESOLVED
+    assert resolved_pattern.region is not None
+    assert resolved_pattern.region.pattern == pattern
 
 
 def test_reference_fingerprint_ignores_editable_id_and_public_model_is_ocp_free() -> None:

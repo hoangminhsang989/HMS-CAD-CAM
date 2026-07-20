@@ -106,6 +106,14 @@ from hms_cadcam.cam.domain.reaming import (
     ReamingStrategy,
     ReamingValidationError,
 )
+from hms_cadcam.cam.domain.boring import (
+    BORING_STRATEGY_KEY,
+    BORING_STRATEGY_VERSION,
+    BoringCoolantMode,
+    BoringRetractPolicy,
+    BoringStrategy,
+    BoringValidationError,
+)
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
     KinematicChain,
@@ -201,6 +209,7 @@ from hms_cadcam.cam.domain.spatial import (
 )
 from hms_cadcam.cam.domain.tooling import (
     BallEndGeometry,
+    BoringBarGeometry,
     BullNoseGeometry,
     ChamferGeometry,
     CustomCuttingGeometry,
@@ -283,6 +292,7 @@ __all__ = [
     "CuttingGeometry",
     "CuttingGeometryKind",
     "CylindricalGeometry",
+    "BoringBarGeometry",
     "DrillGeometry",
     "DRILLING_STRATEGY_KEY",
     "DRILLING_STRATEGY_VERSION",
@@ -306,6 +316,12 @@ __all__ = [
     "ReamingRetractPolicy",
     "ReamingStrategy",
     "ReamingValidationError",
+    "BORING_STRATEGY_KEY",
+    "BORING_STRATEGY_VERSION",
+    "BoringCoolantMode",
+    "BoringRetractPolicy",
+    "BoringStrategy",
+    "BoringValidationError",
     "FeedRate",
     "FeedUnit",
     "FixtureInstance",

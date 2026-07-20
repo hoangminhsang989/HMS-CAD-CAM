@@ -10,6 +10,7 @@ from hms_cadcam.cam.domain.errors import (
     CamInvariantError,
     CamUnitError,
     CamValidationError,
+    UnsupportedCamSchemaError,
 )
 from hms_cadcam.cam.domain.ids import (
     HolderDefinitionId,
@@ -28,6 +29,7 @@ _TOOL_FORMAT = "HMS_CAM_TOOL_DEFINITION"
 _HOLDER_FORMAT = "HMS_CAM_HOLDER_DEFINITION"
 _ASSEMBLY_FORMAT = "HMS_CAM_TOOL_ASSEMBLY"
 _VERSION = 1
+_BORING_BAR_GEOMETRY_VERSION = 1
 
 
 def _name(value: str, subject: str) -> str:
@@ -112,6 +114,7 @@ class ToolFamily(StrEnum):
     FACE_MILL = "face_mill"
     REAMER = "reamer"
     TAP = "tap"
+    BORING_BAR = "boring_bar"
     TURNING_INSERT = "turning_insert"
     CUSTOM = "custom"
 
@@ -141,6 +144,7 @@ class CuttingGeometryKind(StrEnum):
     DRILL = "drill"
     CHAMFER = "chamfer"
     TAP = "tap"
+    BORING_BAR = "boring_bar"
     TURNING_INSERT = "turning_insert"
     CUSTOM = "custom"
 
@@ -180,6 +184,7 @@ class CuttingGeometry:
             CuttingGeometryKind.DRILL: DrillGeometry,
             CuttingGeometryKind.CHAMFER: ChamferGeometry,
             CuttingGeometryKind.TAP: TapGeometry,
+            CuttingGeometryKind.BORING_BAR: BoringBarGeometry,
             CuttingGeometryKind.TURNING_INSERT: TurningInsertGeometry,
             CuttingGeometryKind.CUSTOM: CustomCuttingGeometry,
         }[kind]
@@ -504,6 +509,87 @@ class TapGeometry(CuttingGeometry):
 
 
 @dataclass(frozen=True, slots=True)
+class BoringBarGeometry(CuttingGeometry):
+    """Controller-neutral access envelope for one axial boring bar/head."""
+
+    minimum_bore_diameter: Length
+    maximum_bore_diameter: Length
+    cutting_length: Length
+    hand: ToolHand
+    kind: ClassVar[CuttingGeometryKind] = CuttingGeometryKind.BORING_BAR
+    SERIALIZATION_VERSION: ClassVar[int] = _BORING_BAR_GEOMETRY_VERSION
+
+    def __post_init__(self) -> None:
+        for value, subject in (
+            (self.minimum_bore_diameter, "Boring minimum bore diameter"),
+            (self.maximum_bore_diameter, "Boring maximum bore diameter"),
+            (self.cutting_length, "Boring cutting length"),
+        ):
+            _positive_length(value, subject)
+        if len({item.unit for item in self.dimensions}) != 1:
+            raise CamUnitError("Boring bar dimensions must use one unit")
+        if self.maximum_bore_diameter.value < self.minimum_bore_diameter.value:
+            raise CamInvariantError(
+                "Boring maximum bore diameter cannot be below the minimum"
+            )
+        if not isinstance(self.hand, ToolHand):
+            raise CamValidationError("Boring bar hand is invalid")
+
+    @property
+    def dimensions(self) -> tuple[Length, ...]:
+        return (
+            self.minimum_bore_diameter,
+            self.maximum_bore_diameter,
+            self.cutting_length,
+        )
+
+    @property
+    def axial_cutting_length(self) -> Length:
+        return self.cutting_length
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind.value,
+            "geometry_version": _BORING_BAR_GEOMETRY_VERSION,
+            "minimum_bore_diameter": _length_dict(self.minimum_bore_diameter),
+            "maximum_bore_diameter": _length_dict(self.maximum_bore_diameter),
+            "cutting_length": _length_dict(self.cutting_length),
+            "hand": self.hand.value,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BoringBarGeometry":
+        if not isinstance(data, dict) or set(data) != {
+            "kind",
+            "geometry_version",
+            "minimum_bore_diameter",
+            "maximum_bore_diameter",
+            "cutting_length",
+            "hand",
+        }:
+            raise CamValidationError("Boring bar geometry payload is malformed")
+        if data["kind"] != cls.kind.value:
+            raise CamValidationError("Boring bar geometry kind mismatch")
+        if (
+            type(data["geometry_version"]) is not int
+            or data["geometry_version"] != _BORING_BAR_GEOMETRY_VERSION
+        ):
+            raise UnsupportedCamSchemaError(
+                "Unsupported boring bar geometry version"
+            )
+        try:
+            hand = ToolHand(data["hand"])
+        except (TypeError, ValueError) as error:
+            raise CamValidationError("Boring bar hand payload is invalid") from error
+        return cls(
+            _length_from_dict(data["minimum_bore_diameter"]),
+            _length_from_dict(data["maximum_bore_diameter"]),
+            _length_from_dict(data["cutting_length"]),
+            hand,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TurningInsertGeometry(CuttingGeometry):
     """Minimal turning-insert envelope, not a full ISO insert model."""
 
@@ -645,6 +731,7 @@ _FAMILY_GEOMETRY: dict[ToolFamily, tuple[type[CuttingGeometry], ...]] = {
     ToolFamily.FACE_MILL: (CylindricalGeometry,),
     ToolFamily.REAMER: (CylindricalGeometry,),
     ToolFamily.TAP: (TapGeometry,),
+    ToolFamily.BORING_BAR: (BoringBarGeometry,),
     ToolFamily.TURNING_INSERT: (TurningInsertGeometry,),
     ToolFamily.CUSTOM: (CustomCuttingGeometry,),
 }

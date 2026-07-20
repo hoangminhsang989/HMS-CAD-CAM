@@ -11,19 +11,22 @@ import pytest
 
 from hms_cadcam.cam.domain import (
     AffineTransform, Angle, AngleUnit, ArtifactState, ArtifactStatus, BoxStock,
-    CamJob, CamJobId, CamNodeId, ContentFingerprint, CylindricalGeometry,
+    BoringBarGeometry, BoringStrategy, CamJob, CamJobId, CamNodeId,
+    ContentFingerprint, CylindricalGeometry,
     DependencyEdge, DependencyFingerprint, DiagnosticCode, DirtyReason, FeedRate, FeedUnit,
     GeometryFingerprint, GeometryInputId, GeometryInputRole, GeometryReference,
     GeometryReferenceId, GeometryReferenceKind, GeometryRepresentationKind,
+    DrillDepthDefinition, DrillGeometryInput, HoleLocation, HolePattern,
     HolderDefinition, HolderDefinitionId, HolderSection, KinematicChain,
     KinematicMount, KinematicNode, KinematicSide, Length, LengthUnit,
     MachineAxis, MachineAxisType, MachineCapabilities, MachineDefinition,
     MachineDefinitionId, MachineKind, Operation, OperationCapability,
     OperationFamily, OperationGeometryInput, OperationId, OperationParameterSet,
     OperationTree, Point3, Revision, Setup, SetupId, SetupKind, ShankGeometry,
-    SourceScope, SpindleCapability, SpindleSpeed, ToolAssembly, ToolAssemblyId,
+    SourceScope, SpindleCapability, SpindleDirection, SpindleSpeed,
+    ToolAssembly, ToolAssemblyId,
     ToolAssemblyReference, ToolDefinition, ToolDefinitionId, ToolFamily,
-    ToolpathArtifactId, Vector3, WcsFrame, WorkEnvelope, WorkOffset,
+    ToolHand, ToolpathArtifactId, Vector3, WcsFrame, WorkEnvelope, WorkOffset,
 )
 from hms_cadcam.cam.persistence import (
     CamPersistencePayloadError, CamProjectSnapshot, CamSqliteRepository,
@@ -177,6 +180,84 @@ def test_editable_state_tooling_machine_tree_and_repeated_geometry_round_trip(tm
     inputs = restored.jobs[0].setups[0].operation_tree.operations[0].geometry_inputs
     assert inputs[0].input_id != inputs[1].input_id
     assert inputs[0].reference.occurrence_path != inputs[1].reference.occurrence_path
+
+
+def test_boring_strategy_and_tooling_round_trip_in_sqlite_v4(tmp_path):
+    path = tmp_path / "project.db"
+    ProjectDatabase().initialize(path)
+    snapshot, operation = _snapshot()
+    unit = LengthUnit.MM
+    point = Point3(0, 0, 0, unit)
+    pattern = HolePattern((HoleLocation(
+        point, Vector3(0, 0, 1), point, None, unit,
+    ),), unit)
+    strategy = BoringStrategy(
+        unit,
+        DrillGeometryInput(pattern, unit),
+        DrillDepthDefinition(unit, Length(0, unit), Length(-10, unit)),
+        Length(20, unit),
+        Length(18, unit),
+        SpindleSpeed(600),
+        FeedRate(0.1, FeedUnit.MM_PER_REVOLUTION),
+        Length(8, unit),
+        Length(3, unit),
+        SpindleDirection.CLOCKWISE,
+    )
+    holder = snapshot.holder_definitions[0]
+    tool = ToolDefinition(
+        ToolDefinitionId.new(), "Boring bar", ToolFamily.BORING_BAR, unit,
+        BoringBarGeometry(
+            Length(15, unit), Length(25, unit), Length(20, unit),
+            ToolHand.RIGHT,
+        ),
+        Length(80, unit), Length(30, unit),
+        ShankGeometry(Length(12, unit), Length(50, unit)),
+    )
+    assembly = ToolAssembly.create(
+        ToolAssemblyId.new(), "Boring assembly", tool,
+        Length(25, unit), Length(60, unit), holder,
+    )
+    boring_operation = dataclasses.replace(
+        operation,
+        family=OperationFamily.DRILLING,
+        tool_assembly=ToolAssemblyReference.from_assembly(assembly),
+        geometry_inputs=(),
+        parameters=strategy.to_operation_parameters(),
+    )
+    job = snapshot.jobs[0]
+    setup = job.setups[0]
+    tree = OperationTree(
+        setup.setup_id,
+        setup.operation_tree.root_id,
+        setup.operation_tree.nodes,
+        (boring_operation,),
+        setup.operation_tree.dependency_graph,
+        setup.operation_tree.revision,
+    )
+    changed_setup = dataclasses.replace(setup, operation_tree=tree)
+    changed_job = CamJob(
+        job.job_id,
+        job.name,
+        revision=job.revision,
+        setups=(changed_setup,),
+        active_setup_id=job.active_setup_id,
+    )
+    candidate = dataclasses.replace(
+        snapshot,
+        jobs=(changed_job,),
+        tool_definitions=(tool,),
+        tool_assemblies=(assembly,),
+    )
+
+    restored = _persist(path, candidate).load(path)
+
+    restored_operation = restored.jobs[0].setups[0].operation_tree.operations[0]
+    assert BoringStrategy.from_operation_parameters(
+        restored_operation.parameters
+    ) == strategy
+    assert restored.tool_definitions == (tool,)
+    assert restored.tool_assemblies == (assembly,)
+    assert ProjectDatabase().current_schema_version(path) == 4
 
 
 def test_computing_state_is_persisted_as_dirty_without_runtime_token(tmp_path):

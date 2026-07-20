@@ -68,9 +68,57 @@ class DrillingGeometryResolver:
             )
         source = geometry_input.source
         if isinstance(source, HolePattern):
-            pattern = source
+            resolved_locations = []
+            for location in source.locations:
+                reference = location.reference
+                if reference is None:
+                    resolved_locations.append(location)
+                    continue
+                if self._reference_resolver is None:
+                    return _failure(
+                        GeometryResolutionStatus.MISSING,
+                        DiagnosticCode.DRILL_GEOMETRY_MISSING,
+                        "Persistent drilling pattern cannot be resolved",
+                    )
+                try:
+                    resolved = self._reference_resolver.resolve(reference)
+                except Exception:
+                    logger.exception(
+                        "Persistent drilling pattern reference resolver failed"
+                    )
+                    return _failure(
+                        GeometryResolutionStatus.INVALID,
+                        DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                        "Persistent drilling pattern could not be resolved safely",
+                    )
+                if not isinstance(resolved, ResolvedHoleLocation):
+                    return _failure(
+                        GeometryResolutionStatus.INVALID,
+                        DiagnosticCode.DRILL_UNSUPPORTED_GEOMETRY,
+                        "Drilling pattern resolver returned an invalid result",
+                    )
+                if resolved.status is not GeometryResolutionStatus.RESOLVED:
+                    return ResolvedDrillingGeometry(
+                        resolved.status,
+                        diagnostics=resolved.diagnostics,
+                    )
+                current = resolved.location
+                assert current is not None
+                if current.reference != reference:
+                    return _failure(
+                        GeometryResolutionStatus.SOURCE_MISMATCH,
+                        DiagnosticCode.DRILL_SOURCE_MISMATCH,
+                        "Resolved pattern hole does not match its persistent reference",
+                    )
+                resolved_locations.append(current)
+            try:
+                pattern = HolePattern(tuple(resolved_locations), geometry_input.unit)
+            except DrillValidationError as error:
+                return _failure(
+                    GeometryResolutionStatus.INVALID, error.code, str(error)
+                )
             source_fingerprint = GeometryFingerprint.from_payload({
-                "explicit_pattern": source.fingerprint.to_dict(),
+                "explicit_pattern": pattern.fingerprint.to_dict(),
             })
         else:
             if not isinstance(source, HoleReference) or self._reference_resolver is None:
