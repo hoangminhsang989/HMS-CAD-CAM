@@ -157,6 +157,34 @@ class SimulationResultId(_CamUuidId):
     PREFIX: ClassVar[str] = "simulation_result"
 
 
+@dataclass(frozen=True, slots=True)
+class PostProcessorDefinitionId(_CamUuidId):
+    """Identity of one versioned post-processor definition."""
+
+    PREFIX: ClassVar[str] = "post_definition"
+
+
+@dataclass(frozen=True, slots=True)
+class PostRequestId(_CamUuidId):
+    """Identity of one post-processing request envelope."""
+
+    PREFIX: ClassVar[str] = "post_request"
+
+
+@dataclass(frozen=True, slots=True)
+class PostResultId(_CamUuidId):
+    """Identity of one post-processing result."""
+
+    PREFIX: ClassVar[str] = "post_result"
+
+
+@dataclass(frozen=True, slots=True)
+class NCProgramId(_CamUuidId):
+    """Identity of one controller-neutral single-operation NC program IR."""
+
+    PREFIX: ClassVar[str] = "nc_program"
+
+
 CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     CamJobId,
     SetupId,
@@ -173,4 +201,8 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     ToolpathEventId,
     SimulationRequestId,
     SimulationResultId,
+    PostProcessorDefinitionId,
+    PostRequestId,
+    PostResultId,
+    NCProgramId,
 )

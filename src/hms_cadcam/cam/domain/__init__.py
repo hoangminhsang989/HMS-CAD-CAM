@@ -153,6 +153,10 @@ from hms_cadcam.cam.domain.ids import (
     ToolpathEventId,
     SimulationRequestId,
     SimulationResultId,
+    PostProcessorDefinitionId,
+    PostRequestId,
+    PostResultId,
+    NCProgramId,
 )
 from hms_cadcam.cam.domain.dependency import (
     DependencyEdge,
@@ -433,6 +437,10 @@ __all__ = [
     "ToolpathEventId",
     "SimulationRequestId",
     "SimulationResultId",
+    "PostProcessorDefinitionId",
+    "PostRequestId",
+    "PostResultId",
+    "NCProgramId",
     "UnsupportedCamSchemaError",
     "TurningInsertGeometry",
     "ValidationDiagnostic",

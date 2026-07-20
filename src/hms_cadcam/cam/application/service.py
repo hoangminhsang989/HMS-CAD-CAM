@@ -50,6 +50,7 @@ from hms_cadcam.cam.application.boring import (
     BoringComputeResult, BoringGenerationError, BoringGenerator,
 )
 from hms_cadcam.cam.simulation.service import SimulationRuntimeService
+from hms_cadcam.cam.post.service import PostRuntimeService
 
 
 class CamApplicationService:
@@ -63,6 +64,7 @@ class CamApplicationService:
         self._selection = CamSelection()
         self._generation = 0
         self._simulation = SimulationRuntimeService()
+        self._post = PostRuntimeService()
 
     @property
     def snapshot(self) -> CamProjectSnapshot:
@@ -83,6 +85,7 @@ class CamApplicationService:
             self._selection = CamSelection()
             self._generation += 1
             self._simulation.bind_project(self._generation, self._generation)
+            self._post.clear()
 
     def apply(self, mutation: Callable[[CamProjectSnapshot], CamProjectSnapshot]) -> CamProjectSnapshot:
         """Apply one validated mutation atomically in memory."""
@@ -99,6 +102,7 @@ class CamApplicationService:
             ))
             self._snapshot = _clone_snapshot(candidate)
             self._simulation.invalidate_all()
+            self._post.invalidate_all()
             return _clone_snapshot(self._snapshot)
 
     def execute(
@@ -137,6 +141,7 @@ class CamApplicationService:
             self._selection = CamSelection()
             self._generation += 1
             self._simulation.clear()
+            self._post.clear()
 
     @property
     def selection(self) -> "CamSelection":
@@ -153,6 +158,16 @@ class CamApplicationService:
     def simulation_service(self) -> SimulationRuntimeService:
         """Return the project-scoped, runtime-only simulation registry."""
         return self._simulation
+
+    @property
+    def post_runtime(self) -> PostRuntimeService:
+        """Return the project-scoped, runtime-only post registry."""
+        return self._post
+
+    @property
+    def post_service(self) -> PostRuntimeService:
+        """Compatibility name matching the simulation-service accessor."""
+        return self._post
 
     def select(self, selection: "CamSelection", *, generation: int | None = None) -> bool:
         """Select CAM identities, rejecting a callback from an older project."""
@@ -316,6 +331,7 @@ class CamApplicationService:
             artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
             staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
             self._snapshot = _replace_operation(staged, result.operation)
+            self._post.mark_stale(operation_id)
             return result
 
     def load_artifact(self, project_root: Path, operation_id: OperationId) -> ToolpathArtifact | None:
@@ -336,6 +352,7 @@ class CamApplicationService:
             operation = _find_operation(self._snapshot, operation_id)
             changed = replace(operation, artifact_state=operation.artifact_state.mark_dirty(reason))
             self._snapshot = _replace_operation(self._snapshot, changed)
+            self._post.mark_stale(operation_id)
             return _clone_snapshot(self._snapshot)
 
     def compute_facing(
@@ -401,6 +418,7 @@ class CamApplicationService:
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return FacingComputeResult(publish.operation, publish.artifact, True)
             except (FacingGenerationError, ToolpathArtifactStoreError) as error:
                 if isinstance(error, FacingGenerationError):
@@ -481,6 +499,7 @@ class CamApplicationService:
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return ContourComputeResult(publish.operation, publish.artifact, True)
             except (ContourGenerationError, ToolpathArtifactStoreError) as error:
                 diagnostic = (error.diagnostic if isinstance(error, ContourGenerationError) else
@@ -561,6 +580,7 @@ class CamApplicationService:
                                   if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return PocketComputeResult(publish.operation, publish.artifact, True)
             except (PocketGenerationError, ToolpathArtifactStoreError) as error:
                 diagnostic = (error.diagnostic if isinstance(error, PocketGenerationError) else
@@ -676,6 +696,7 @@ class CamApplicationService:
                 )
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return DrillingComputeResult(
                     publish.operation, publish.artifact, True
                 )
@@ -813,6 +834,7 @@ class CamApplicationService:
                 )
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return TappingComputeResult(
                     publish.operation, publish.artifact, True
                 )
@@ -952,6 +974,7 @@ class CamApplicationService:
                 )
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return ReamingComputeResult(
                     publish.operation, publish.artifact, True
                 )
@@ -1096,6 +1119,7 @@ class CamApplicationService:
                 )
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._post.mark_stale(operation_id)
                 return BoringComputeResult(
                     publish.operation, publish.artifact, True
                 )
