@@ -35,6 +35,13 @@ from hms_cadcam.cam.application.tapping import (
     TappingHole,
     TappingInputs,
 )
+from hms_cadcam.cam.application.reaming import (
+    ReamingComputeResult,
+    ReamingGenerationError,
+    ReamingGenerator,
+    ReamingHole,
+    ReamingInputs,
+)
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult,
     PocketGenerationError,
@@ -53,6 +60,8 @@ __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "Con
            "DrillingGeometryResolver", "DrillingHole", "DrillingInputs",
            "drilling_peck_levels", "TappingComputeResult", "TappingGenerationError",
            "TappingGenerator", "TappingHole", "TappingInputs",
+           "ReamingComputeResult", "ReamingGenerationError", "ReamingGenerator",
+           "ReamingHole", "ReamingInputs",
            "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels", "resolve_box_facing_region",
            "resolve_profile_in_setup"]

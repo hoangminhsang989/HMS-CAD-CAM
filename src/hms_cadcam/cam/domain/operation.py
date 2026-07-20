@@ -192,6 +192,23 @@ class DiagnosticCode(StrEnum):
     TAP_UNSAFE_CLEARANCE = "tap.unsafe_clearance"
     TAP_GENERATION_FAILED = "tap.generation_failed"
     TAP_STALE_RESULT = "tap.stale_result"
+    REAM_INVALID_PARAMETERS = "ream.invalid_parameters"
+    REAM_GEOMETRY_MISSING = "ream.geometry_missing"
+    REAM_GEOMETRY_STALE = "ream.geometry_stale"
+    REAM_GEOMETRY_AMBIGUOUS = "ream.geometry_ambiguous"
+    REAM_SOURCE_MISMATCH = "ream.source_mismatch"
+    REAM_TOOL_MISSING = "ream.tool_missing"
+    REAM_TOOL_STALE = "ream.tool_stale"
+    REAM_UNSUPPORTED_TOOL = "ream.unsupported_tool"
+    REAM_DIAMETER_MISMATCH = "ream.diameter_mismatch"
+    REAM_PREHOLE_MISSING = "ream.prehole_missing"
+    REAM_PREHOLE_INVALID = "ream.prehole_invalid"
+    REAM_STOCK_INVALID = "ream.stock_invalid"
+    REAM_MACHINE_INCOMPATIBLE = "ream.machine_incompatible"
+    REAM_DEPTH_INVALID = "ream.depth_invalid"
+    REAM_UNSAFE_CLEARANCE = "ream.unsafe_clearance"
+    REAM_GENERATION_FAILED = "ream.generation_failed"
+    REAM_STALE_RESULT = "ream.stale_result"
 
 
 @dataclass(frozen=True, slots=True)

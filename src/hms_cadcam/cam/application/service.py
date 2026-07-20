@@ -16,6 +16,7 @@ from hms_cadcam.cam.domain import (
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
     ResolvedPocketGeometry, SetupId, StockDefinition, ToolAssembly,
+    ReamingStrategy, ReamingValidationError,
     TappingStrategy, TappingValidationError, ToolDefinition,
     ValidationDiagnostic, WcsFrame, WorkOffset,
 )
@@ -40,6 +41,9 @@ from hms_cadcam.cam.application.drilling import (
 )
 from hms_cadcam.cam.application.tapping import (
     TappingComputeResult, TappingGenerationError, TappingGenerator,
+)
+from hms_cadcam.cam.application.reaming import (
+    ReamingComputeResult, ReamingGenerationError, ReamingGenerator,
 )
 
 
@@ -832,6 +836,145 @@ class CamApplicationService:
                 )
                 self._snapshot = _replace_operation(self._snapshot, failed)
                 return TappingComputeResult(failed, None, False, (diagnostic,))
+
+    def compute_reaming(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        geometry_resolver: Callable[
+            [DrillGeometryInput, DrillDepthDefinition], ResolvedDrillingGeometry
+        ] | None = None,
+    ) -> ReamingComputeResult:
+        """Synchronously compute/publish Reaming with the shared stale contract."""
+        with self._lock:
+            before_compute = _clone_snapshot(self._snapshot)
+            operation = _find_operation(self._snapshot, operation_id)
+            setup = next(
+                setup for job in self._snapshot.jobs for setup in job.setups
+                if setup.setup_id == operation.setup_id
+            )
+            assembly = next((
+                item for item in self._snapshot.tool_assemblies
+                if item.assembly_id == operation.tool_assembly.assembly_id
+            ), None)
+            tool = None if assembly is None else next((
+                item for item in self._snapshot.tool_definitions
+                if item.tool_id == assembly.tool_id
+            ), None)
+            machine_id = (
+                operation.machine_requirement.machine_id
+                if operation.machine_requirement else None
+            )
+            machine = next((
+                item for item in self._snapshot.machine_definitions
+                if item.machine_id == machine_id
+            ), None)
+            generator = ReamingGenerator()
+            try:
+                if geometry_resolver is None:
+                    raise ReamingGenerationError(
+                        DiagnosticCode.REAM_GEOMETRY_MISSING,
+                        "Reaming requires a resolvable geometry input.",
+                    )
+                try:
+                    strategy = ReamingStrategy.from_operation_parameters(
+                        operation.parameters
+                    )
+                    resolved = geometry_resolver(strategy.geometry, strategy.depth)
+                except ReamingGenerationError:
+                    raise
+                except ReamingValidationError as error:
+                    raise ReamingGenerationError(error.code, str(error)) from error
+                except (RuntimeError, TypeError, ValueError) as error:
+                    raise ReamingGenerationError(
+                        DiagnosticCode.REAM_INVALID_PARAMETERS,
+                        str(error) or "Reaming geometry resolution failed.",
+                    ) from error
+                inputs = generator.resolve_inputs(
+                    operation,
+                    setup,
+                    assembly=assembly,
+                    tool=tool,
+                    machine=machine,
+                    resolved_geometry=resolved,
+                )
+                if operation.artifact_state.status is ArtifactStatus.VALID:
+                    operation = replace(
+                        operation,
+                        artifact_state=operation.artifact_state.mark_dirty(
+                            DirtyReason.PARAMETERS_CHANGED
+                        ),
+                    )
+                    inputs = replace(inputs, operation=operation)
+                    self._snapshot = _replace_operation(self._snapshot, operation)
+                computing, token = generator.begin(inputs)
+                self._snapshot = _replace_operation(
+                    self._snapshot, computing.operation
+                )
+                candidate = generator.generate(computing)
+                current = _find_operation(self._snapshot, operation_id)
+                publish = publish_toolpath(
+                    current, candidate, token, inputs.input_fingerprint
+                )
+                if not publish.accepted or publish.artifact is None:
+                    self._snapshot = _replace_operation(
+                        self._snapshot, publish.operation
+                    )
+                    diagnostic = ValidationDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        DiagnosticCode.REAM_STALE_RESULT,
+                        "Reaming result is stale and was not published.",
+                    )
+                    return ReamingComputeResult(
+                        publish.operation, None, False, (diagnostic,)
+                    )
+                metadata = self._artifact_store.publish(
+                    project_root, publish.artifact
+                )
+                artifacts = tuple(
+                    item for item in self._snapshot.artifacts
+                    if item.operation_id != operation_id
+                )
+                staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
+                self._snapshot = _replace_operation(staged, publish.operation)
+                return ReamingComputeResult(
+                    publish.operation, publish.artifact, True
+                )
+            except (ReamingGenerationError, ToolpathArtifactStoreError) as error:
+                diagnostic = (
+                    error.diagnostic
+                    if isinstance(error, ReamingGenerationError)
+                    else ValidationDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        DiagnosticCode.REAM_GENERATION_FAILED,
+                        "Reaming toolpath file could not be published safely.",
+                    )
+                )
+                original = _find_operation(before_compute, operation_id)
+                if original.artifact_state.status is ArtifactStatus.VALID:
+                    self._snapshot = before_compute
+                    return ReamingComputeResult(
+                        original, None, False, (diagnostic,)
+                    )
+                current = _find_operation(self._snapshot, operation_id)
+                state = current.artifact_state
+                if state.status is ArtifactStatus.COMPUTING and state.token is not None:
+                    state, _ = state.fail(state.token, (diagnostic,))
+                else:
+                    state = replace(
+                        state,
+                        status=ArtifactStatus.FAILED,
+                        token=None,
+                        diagnostics=(diagnostic,),
+                    )
+                failed = replace(
+                    current,
+                    artifact_state=state,
+                    diagnostics=(*current.diagnostics, diagnostic),
+                )
+                self._snapshot = _replace_operation(self._snapshot, failed)
+                return ReamingComputeResult(failed, None, False, (diagnostic,))
 
     def _mutate_job(self, job_id: CamJobId, mutation: Callable[[CamJob], object]) -> CamProjectSnapshot:
         """Clone an aggregate first so failed validation cannot leak partial state."""

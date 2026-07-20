@@ -98,6 +98,14 @@ from hms_cadcam.cam.domain.tapping import (
     TappingSynchronizationPolicy,
     TappingValidationError,
 )
+from hms_cadcam.cam.domain.reaming import (
+    REAMING_STRATEGY_KEY,
+    REAMING_STRATEGY_VERSION,
+    ReamingCoolantMode,
+    ReamingRetractPolicy,
+    ReamingStrategy,
+    ReamingValidationError,
+)
 from hms_cadcam.cam.domain.job import CamJob
 from hms_cadcam.cam.domain.machine import (
     KinematicChain,
@@ -292,6 +300,12 @@ __all__ = [
     "TappingStrategy",
     "TappingSynchronizationPolicy",
     "TappingValidationError",
+    "REAMING_STRATEGY_KEY",
+    "REAMING_STRATEGY_VERSION",
+    "ReamingCoolantMode",
+    "ReamingRetractPolicy",
+    "ReamingStrategy",
+    "ReamingValidationError",
     "FeedRate",
     "FeedUnit",
     "FixtureInstance",
