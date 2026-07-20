@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import replace
+from uuid import UUID
 
 from OCP.AIS import AIS_Shape
 from OCP.BRep import BRep_Builder
@@ -24,7 +25,8 @@ from hms_cadcam.cad.models import (
     CadObjectId,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel
-from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.domain import OperationId, SimulationResultId, WcsFrame
+from hms_cadcam.cam.simulation.model import SimulationResult, SimulationStatus
 from hms_cadcam.cam.toolpath import ArcMove, LinearMove, RapidMove, ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
@@ -41,6 +43,16 @@ from hms_cadcam.viewer.ocp.input_controller import OcpInputController
 from hms_cadcam.viewer.ocp.lifecycle import OcpViewportLifecycle
 from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
 from hms_cadcam.viewer.ocp.selection import OcpSelectionController
+from hms_cadcam.viewer.simulation import (
+    SimulationDisplayContext,
+    SimulationDisplayPolicy,
+    SimulationDisplayRequest,
+    SimulationIssueMarker,
+    SimulationMarkerKind,
+    SimulationPathSemantic,
+    SimulationPresentation,
+    SimulationPresentationRegistry,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 
 _VIEW_DIRECTIONS = {
@@ -54,6 +66,82 @@ _VIEW_DIRECTIONS = {
         V3d_TypeOfOrientation.V3d_TypeOfOrientation_Zup_AxoRight
     ),
 }
+
+_SIMULATION_STATUS_COLORS = {
+    SimulationStatus.PASS: (0.1, 0.85, 0.25),
+    SimulationStatus.WARN: (1.0, 0.72, 0.05),
+    SimulationStatus.FAIL: (1.0, 0.12, 0.08),
+}
+_SIMULATION_PATH_COLORS = {
+    SimulationPathSemantic.RAPID: (0.25, 0.58, 1.0),
+    SimulationPathSemantic.CUTTING: (0.15, 1.0, 0.3),
+    SimulationPathSemantic.LINK: (1.0, 0.82, 0.18),
+    SimulationPathSemantic.RETRACT: (0.92, 0.25, 0.95),
+    SimulationPathSemantic.APPROACH: (1.0, 0.62, 0.08),
+}
+
+
+def _simulation_marker_color(
+    marker: SimulationIssueMarker,
+) -> tuple[float, float, float]:
+    if marker.kind is SimulationMarkerKind.GOUGE:
+        return (1.0, 0.0, 0.72)
+    if marker.kind in {
+        SimulationMarkerKind.RAPID_BELOW_SAFE,
+        SimulationMarkerKind.CLEARANCE_WARNING,
+    }:
+        return (1.0, 0.72, 0.05)
+    if marker.kind in {
+        SimulationMarkerKind.INVALID,
+        SimulationMarkerKind.UNSUPPORTED,
+    }:
+        return (0.75, 0.75, 0.75)
+    return (1.0, 0.08, 0.05)
+
+
+def _simulation_marker_shape(marker: SimulationIssueMarker) -> AIS_Shape | None:
+    anchor = marker.anchor_point
+    if anchor is None and marker.bounds is None:
+        return None
+    if marker.bounds is None:
+        assert anchor is not None
+        return AIS_Shape(
+            BRepBuilderAPI_MakeVertex(gp_Pnt(anchor.x, anchor.y, anchor.z)).Vertex()
+        )
+    minimum, maximum = marker.bounds.minimum, marker.bounds.maximum
+    corners = (
+        (minimum.x, minimum.y, minimum.z),
+        (maximum.x, minimum.y, minimum.z),
+        (maximum.x, maximum.y, minimum.z),
+        (minimum.x, maximum.y, minimum.z),
+        (minimum.x, minimum.y, maximum.z),
+        (maximum.x, minimum.y, maximum.z),
+        (maximum.x, maximum.y, maximum.z),
+        (minimum.x, maximum.y, maximum.z),
+    )
+    edges = (
+        (0, 1), (1, 2), (2, 3), (3, 0),
+        (4, 5), (5, 6), (6, 7), (7, 4),
+        (0, 4), (1, 5), (2, 6), (3, 7),
+    )
+    compound, builder = TopoDS_Compound(), BRep_Builder()
+    builder.MakeCompound(compound)
+    for first, second in edges:
+        start, end = corners[first], corners[second]
+        if start == end:
+            continue
+        builder.Add(
+            compound,
+            BRepBuilderAPI_MakeEdge(gp_Pnt(*start), gp_Pnt(*end)).Edge(),
+        )
+    if anchor is not None:
+        builder.Add(
+            compound,
+            BRepBuilderAPI_MakeVertex(
+                gp_Pnt(anchor.x, anchor.y, anchor.z)
+            ).Vertex(),
+        )
+    return AIS_Shape(compound)
 
 
 class OcpCadViewportBackend:
@@ -77,6 +165,9 @@ class OcpCadViewportBackend:
         self._closed = False
         self._toolpaths: dict[OperationId, tuple[AIS_Shape, ...]] = {}
         self._toolpath_metadata: dict[OperationId, ToolpathPresentation] = {}
+        self._simulations: dict[OperationId, tuple[AIS_Shape, ...]] = {}
+        self._simulation_marker_objects: dict[OperationId, dict[int, str]] = {}
+        self._simulation_registry = SimulationPresentationRegistry()
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(
@@ -102,6 +193,7 @@ class OcpCadViewportBackend:
 
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
+        self.clear_simulations()
         self.clear_toolpaths()
         old_document_id = self._document_id
         old_tree = self._tree
@@ -214,6 +306,10 @@ class OcpCadViewportBackend:
         self.fit_all()
 
     def clear(self) -> None:
+        self.clear_simulations()
+        simulation_registry = getattr(self, "_simulation_registry", None)
+        if simulation_registry is not None:
+            simulation_registry.bind_project(None, None)
         self.clear_toolpaths()
         if self._selection is not None:
             self._selection.clear_document()
@@ -370,6 +466,33 @@ class OcpCadViewportBackend:
                     context.Erase(presentation, False)
             context.UpdateCurrentViewer()
             raise
+        simulation_registry = getattr(self, "_simulation_registry", None)
+        current_simulation = (
+            simulation_registry.current(operation_id)
+            if simulation_registry is not None
+            else None
+        )
+        if (
+            current_simulation is not None
+            and current_simulation.artifact_fingerprint != artifact.artifact_fingerprint
+        ):
+            try:
+                self.remove_simulation(operation_id)
+            except Exception:
+                if previous_metadata is None:
+                    self._toolpaths.pop(operation_id, None)
+                    metadata_registry.pop(operation_id, None)
+                else:
+                    self._toolpaths[operation_id] = previous
+                    metadata_registry[operation_id] = previous_metadata
+                for presentation in presentations:
+                    context.Remove(presentation, False)
+                for presentation in previous:
+                    context.Display(presentation, False)
+                    if previous_metadata is not None and not previous_metadata.visible:
+                        context.Erase(presentation, False)
+                context.UpdateCurrentViewer()
+                raise
 
     def get_toolpath_presentations(self) -> tuple[ToolpathPresentation, ...]:
         """Return deterministic native-free metadata for displayed CAM artifacts."""
@@ -406,6 +529,8 @@ class OcpCadViewportBackend:
         if not self._lifecycle.initialized:
             self._toolpaths.pop(operation_id, None)
             getattr(self, "_toolpath_metadata", {}).pop(operation_id, None)
+            if getattr(self, "_simulation_registry", None) is not None:
+                self.remove_simulation(operation_id)
             return
         context = self._lifecycle.context
         presentations = self._toolpaths.get(operation_id, ())
@@ -419,7 +544,382 @@ class OcpCadViewportBackend:
             context.UpdateCurrentViewer()
             raise
         self._toolpaths.pop(operation_id, None)
-        getattr(self, "_toolpath_metadata", {}).pop(operation_id, None)
+        metadata_registry = getattr(self, "_toolpath_metadata", {})
+        previous_metadata = metadata_registry.pop(operation_id, None)
+        try:
+            if getattr(self, "_simulation_registry", None) is not None:
+                self.remove_simulation(operation_id)
+        except Exception:
+            self._toolpaths[operation_id] = presentations
+            if previous_metadata is not None:
+                metadata_registry[operation_id] = previous_metadata
+            for presentation in presentations:
+                context.Display(presentation, False)
+                if previous_metadata is not None and not previous_metadata.visible:
+                    context.Erase(presentation, False)
+            context.UpdateCurrentViewer()
+            raise
+
+    def bind_simulation_project(
+        self,
+        project_id: UUID | None,
+        generation: int | None,
+    ) -> None:
+        """Bind overlay metadata to one project generation, clearing old native state."""
+        if (
+            project_id == self._simulation_registry.project_id
+            and generation == self._simulation_registry.generation
+        ):
+            return
+        self.clear_simulations()
+        self._simulation_registry.bind_project(project_id, generation)
+
+    def request_simulation_display(
+        self,
+        operation_id: OperationId,
+        *,
+        generation: int,
+    ) -> SimulationDisplayRequest | None:
+        return self._simulation_registry.request_display(
+            operation_id,
+            generation=generation,
+        )
+
+    def display_simulation(
+        self,
+        result: SimulationResult,
+        artifact: ToolpathArtifact,
+        wcs: WcsFrame,
+        context: SimulationDisplayContext,
+        request: SimulationDisplayRequest | None = None,
+        policy: SimulationDisplayPolicy | None = None,
+    ) -> bool:
+        """Atomically validate, render and replace one simulation overlay."""
+        self._require_initialized()
+        candidate = self._simulation_registry.prepare(
+            result=result,
+            artifact=artifact,
+            wcs=wcs,
+            context=context,
+            request=request,
+            policy=policy,
+        )
+        if candidate is None:
+            return False
+        operation_id = candidate.key.operation_id
+        previous_metadata = self._simulation_registry.current(operation_id)
+        previous_objects = self._simulations.get(operation_id, ())
+        previous_marker_objects = self._simulation_marker_objects.get(
+            operation_id,
+            {},
+        )
+        objects, marker_objects = self._build_simulation_candidate(candidate)
+        try:
+            committed = self._simulation_registry.commit(candidate, request=request)
+        except Exception:
+            self._discard_simulation_candidate(objects)
+            raise
+        if not committed:
+            self._discard_simulation_candidate(objects)
+            return False
+        self._simulations[operation_id] = objects
+        self._simulation_marker_objects[operation_id] = marker_objects
+        context_native = self._lifecycle.context
+        try:
+            for native in previous_objects:
+                context_native.Remove(native, False)
+            context_native.UpdateCurrentViewer()
+        except Exception as error:
+            self._simulation_registry.restore(operation_id, previous_metadata)
+            if previous_metadata is None:
+                self._simulations.pop(operation_id, None)
+                self._simulation_marker_objects.pop(operation_id, None)
+            else:
+                self._simulations[operation_id] = previous_objects
+                self._simulation_marker_objects[operation_id] = previous_marker_objects
+            cleanup_error = self._rollback_simulation_swap(
+                candidate_objects=objects,
+                previous_objects=previous_objects,
+                previous_visible=(
+                    previous_metadata.visible
+                    if previous_metadata is not None
+                    else True
+                ),
+            )
+            if cleanup_error is not None:
+                raise RuntimeError(
+                    "Simulation replacement rollback failed"
+                ) from error
+            raise
+        return True
+
+    def get_simulation_presentations(self) -> tuple[SimulationPresentation, ...]:
+        """Return only native-free current-result metadata."""
+        return self._simulation_registry.presentations
+
+    def set_simulation_visibility(
+        self,
+        operation_id: OperationId,
+        visible: bool,
+    ) -> None:
+        metadata = self._simulation_registry.current(operation_id)
+        if metadata is None:
+            return
+        context = self._lifecycle.context
+        objects = self._simulations.get(operation_id, ())
+        try:
+            for native in objects:
+                (context.Display if visible else context.Erase)(native, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            for native in objects:
+                (context.Display if metadata.visible else context.Erase)(native, False)
+            context.UpdateCurrentViewer()
+            raise
+        self._simulation_registry.set_visible(operation_id, visible)
+
+    def lookup_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> SimulationIssueMarker | None:
+        """Resolve marker metadata without producing a CAD GeometryReference."""
+        return self._simulation_registry.lookup_issue(
+            project_id=project_id,
+            operation_id=operation_id,
+            result_id=result_id,
+            marker_id=marker_id,
+        )
+
+    def lookup_native_simulation_marker(
+        self,
+        native: object,
+    ) -> SimulationIssueMarker | None:
+        """Selection foundation for a future issue controller/panel."""
+        native_id = id(native)
+        for operation_id, native_markers in self._simulation_marker_objects.items():
+            marker_id = native_markers.get(native_id)
+            if marker_id is None:
+                continue
+            metadata = self._simulation_registry.current(operation_id)
+            if metadata is None:
+                return None
+            return self.lookup_simulation_issue(
+                project_id=metadata.key.project_id,
+                operation_id=operation_id,
+                result_id=metadata.key.result_id,
+                marker_id=marker_id,
+            )
+        return None
+
+    def remove_simulation(self, operation_id: OperationId) -> None:
+        """Remove one overlay atomically and invalidate its marker identities."""
+        objects = self._simulations.get(operation_id, ())
+        metadata = self._simulation_registry.current(operation_id)
+        if not objects and metadata is None:
+            self._simulation_registry.remove(operation_id)
+            return
+        if not self._lifecycle.initialized:
+            self._simulations.pop(operation_id, None)
+            self._simulation_marker_objects.pop(operation_id, None)
+            self._simulation_registry.remove(operation_id)
+            return
+        context = self._lifecycle.context
+        try:
+            for native in objects:
+                context.Remove(native, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            for native in objects:
+                context.Display(native, False)
+                if metadata is not None and not metadata.visible:
+                    context.Erase(native, False)
+            context.UpdateCurrentViewer()
+            raise
+        self._simulations.pop(operation_id, None)
+        self._simulation_marker_objects.pop(operation_id, None)
+        self._simulation_registry.remove(operation_id)
+
+    def clear_simulations(self) -> None:
+        """Clear every project overlay while leaving source toolpaths untouched."""
+        simulations = getattr(self, "_simulations", None)
+        simulation_registry = getattr(self, "_simulation_registry", None)
+        if simulations is None or simulation_registry is None:
+            return
+        if not simulations:
+            self._simulation_marker_objects.clear()
+            simulation_registry.clear()
+            return
+        if not self._lifecycle.initialized:
+            self._simulations.clear()
+            self._simulation_marker_objects.clear()
+            self._simulation_registry.clear()
+            return
+        context = self._lifecycle.context
+        snapshot = dict(self._simulations)
+        metadata = {
+            item.key.operation_id: item
+            for item in self._simulation_registry.presentations
+        }
+        try:
+            for objects in snapshot.values():
+                for native in objects:
+                    context.Remove(native, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            for operation_id, objects in snapshot.items():
+                for native in objects:
+                    context.Display(native, False)
+                    if not metadata[operation_id].visible:
+                        context.Erase(native, False)
+            context.UpdateCurrentViewer()
+            raise
+        self._simulations.clear()
+        self._simulation_marker_objects.clear()
+        self._simulation_registry.clear()
+
+    def _build_simulation_candidate(
+        self,
+        metadata: SimulationPresentation,
+    ) -> tuple[tuple[AIS_Shape, ...], dict[int, str]]:
+        context = self._lifecycle.context
+        objects: list[AIS_Shape] = []
+        marker_objects: dict[int, str] = {}
+        try:
+            status_point = metadata.statistics.bounds.minimum
+            status_native = AIS_Shape(
+                BRepBuilderAPI_MakeVertex(
+                    gp_Pnt(status_point.x, status_point.y, status_point.z)
+                ).Vertex()
+            )
+            objects.append(status_native)
+            self._display_simulation_native(
+                status_native,
+                _SIMULATION_STATUS_COLORS[metadata.status],
+                metadata.visible,
+            )
+            for semantic in SimulationPathSemantic:
+                segments = tuple(
+                    item for item in metadata.path_segments
+                    if item.semantic is semantic
+                )
+                if not segments:
+                    continue
+                compound, builder = TopoDS_Compound(), BRep_Builder()
+                builder.MakeCompound(compound)
+                edge_count = 0
+                for segment in segments:
+                    for start, end in zip(segment.points, segment.points[1:]):
+                        if start == end:
+                            continue
+                        builder.Add(
+                            compound,
+                            BRepBuilderAPI_MakeEdge(
+                                gp_Pnt(start.x, start.y, start.z),
+                                gp_Pnt(end.x, end.y, end.z),
+                            ).Edge(),
+                        )
+                        edge_count += 1
+                if edge_count == 0:
+                    continue
+                native = AIS_Shape(compound)
+                objects.append(native)
+                self._display_simulation_native(
+                    native,
+                    _SIMULATION_PATH_COLORS[semantic],
+                    metadata.visible,
+                )
+            for marker in metadata.markers:
+                native = _simulation_marker_shape(marker)
+                if native is None:
+                    continue
+                objects.append(native)
+                marker_objects[id(native)] = marker.marker_id
+                self._display_simulation_native(
+                    native,
+                    _simulation_marker_color(marker),
+                    metadata.visible,
+                )
+            context.UpdateCurrentViewer()
+        except Exception:
+            cleanup_error = None
+            for native in objects:
+                try:
+                    context.Remove(native, False)
+                except Exception as error:
+                    cleanup_error = error
+            context.UpdateCurrentViewer()
+            if cleanup_error is not None:
+                raise RuntimeError(
+                    "Simulation candidate display cleanup failed"
+                ) from cleanup_error
+            raise
+        return tuple(objects), marker_objects
+
+    def _display_simulation_native(
+        self,
+        native: AIS_Shape,
+        color: tuple[float, float, float],
+        visible: bool,
+    ) -> None:
+        context = self._lifecycle.context
+        context.SetColor(
+            native,
+            Quantity_Color(*color, Quantity_TOC_RGB),
+            False,
+        )
+        context.Display(native, False)
+        # Simulation overlays must never enter the CAD topology picking path.
+        deactivate = getattr(context, "Deactivate", None)
+        if callable(deactivate):
+            deactivate(native)
+        if not visible:
+            context.Erase(native, False)
+
+    def _discard_simulation_candidate(
+        self,
+        objects: tuple[AIS_Shape, ...],
+    ) -> None:
+        context = self._lifecycle.context
+        cleanup_error = None
+        for native in objects:
+            try:
+                context.Remove(native, False)
+            except Exception as error:
+                cleanup_error = error
+        context.UpdateCurrentViewer()
+        if cleanup_error is not None:
+            raise RuntimeError("Simulation candidate discard failed") from cleanup_error
+
+    def _rollback_simulation_swap(
+        self,
+        *,
+        candidate_objects: tuple[AIS_Shape, ...],
+        previous_objects: tuple[AIS_Shape, ...],
+        previous_visible: bool,
+    ) -> Exception | None:
+        context = self._lifecycle.context
+        cleanup_error: Exception | None = None
+        for native in candidate_objects:
+            try:
+                context.Remove(native, False)
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+        for native in previous_objects:
+            try:
+                context.Display(native, False)
+                if not previous_visible:
+                    context.Erase(native, False)
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+        try:
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            cleanup_error = cleanup_error or error
+        return cleanup_error
 
     def fit_all(self) -> None:
         self._lifecycle.fit_all()
@@ -580,6 +1080,10 @@ class OcpCadViewportBackend:
     def close(self) -> None:
         if self._closed:
             return
+        self.clear_simulations()
+        simulation_registry = getattr(self, "_simulation_registry", None)
+        if simulation_registry is not None:
+            simulation_registry.bind_project(None, None)
         self.clear_toolpaths()
         self._closed = True
         if self._selection is not None:

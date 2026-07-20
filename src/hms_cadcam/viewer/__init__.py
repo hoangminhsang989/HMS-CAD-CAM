@@ -11,6 +11,19 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.simulation import (
+    SimulationDisplayContext,
+    SimulationDisplayPolicy,
+    SimulationDisplayRequest,
+    SimulationIssueEvidenceSummary,
+    SimulationIssueMarker,
+    SimulationMarkerKind,
+    SimulationPathSegment,
+    SimulationPathSemantic,
+    SimulationPresentation,
+    SimulationPresentationKey,
+    SimulationPresentationRegistry,
+)
 
 __all__ = [
     "CadViewportBackend",
@@ -20,6 +33,17 @@ __all__ = [
     "MouseButton",
     "SelectionMetadata",
     "SelectionMode",
+    "SimulationDisplayContext",
+    "SimulationDisplayPolicy",
+    "SimulationDisplayRequest",
+    "SimulationIssueEvidenceSummary",
+    "SimulationIssueMarker",
+    "SimulationMarkerKind",
+    "SimulationPathSegment",
+    "SimulationPathSemantic",
+    "SimulationPresentation",
+    "SimulationPresentationKey",
+    "SimulationPresentationRegistry",
     "ViewDirection",
     "ViewportStatus",
 ]

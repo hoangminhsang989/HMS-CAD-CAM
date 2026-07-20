@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
         self.setDockNestingEnabled(True)
         self.setStyleSheet(APP_STYLE)
         self._cad_kernel = cad_kernel
+        self._project_service = project_service
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self.project_controller = ProjectUiController(self, project_service)
@@ -554,6 +555,13 @@ class MainWindow(QMainWindow):
         else:
             source_id, source_path = source_binding
             self.cad_controller.bind_project(source_path, source_id=source_id)
+        if isinstance(session, ProjectSession):
+            self.viewport.bind_simulation_project(
+                session.manifest.project_id,
+                self._project_service.cam_generation,
+            )
+        else:
+            self.viewport.bind_simulation_project(None, None)
         self._update_project_display(session)
         self.cam_workspace.bind_project(session)
 

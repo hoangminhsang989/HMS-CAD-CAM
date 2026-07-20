@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from hms_cadcam.cad.models import CadDocumentId, CadObjectId
 from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.domain.ids import SimulationResultId
+from hms_cadcam.cam.domain.spatial import WcsFrame
+from hms_cadcam.cam.simulation.model import SimulationResult
 from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.models import (
@@ -16,6 +21,13 @@ from hms_cadcam.viewer.models import (
     ViewportStatus,
 )
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
+from hms_cadcam.viewer.simulation import (
+    SimulationDisplayContext,
+    SimulationDisplayPolicy,
+    SimulationDisplayRequest,
+    SimulationIssueMarker,
+    SimulationPresentation,
+)
 
 
 class UnavailableCadViewportBackend:
@@ -65,6 +77,61 @@ class UnavailableCadViewportBackend:
 
     def set_toolpath_visibility(self, operation_id: OperationId, visible: bool) -> None:
         del operation_id, visible
+
+    def bind_simulation_project(
+        self,
+        project_id: UUID | None,
+        generation: int | None,
+    ) -> None:
+        del project_id, generation
+
+    def request_simulation_display(
+        self,
+        operation_id: OperationId,
+        *,
+        generation: int,
+    ) -> SimulationDisplayRequest | None:
+        del operation_id, generation
+        return None
+
+    def display_simulation(
+        self,
+        result: SimulationResult,
+        artifact: ToolpathArtifact,
+        wcs: WcsFrame,
+        context: SimulationDisplayContext,
+        request: SimulationDisplayRequest | None = None,
+        policy: SimulationDisplayPolicy | None = None,
+    ) -> bool:
+        del result, artifact, wcs, context, request, policy
+        return False
+
+    def get_simulation_presentations(self) -> tuple[SimulationPresentation, ...]:
+        return ()
+
+    def set_simulation_visibility(
+        self,
+        operation_id: OperationId,
+        visible: bool,
+    ) -> None:
+        del operation_id, visible
+
+    def lookup_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> SimulationIssueMarker | None:
+        del project_id, operation_id, result_id, marker_id
+        return None
+
+    def remove_simulation(self, operation_id: OperationId) -> None:
+        del operation_id
+
+    def clear_simulations(self) -> None:
+        return None
 
     def fit_all(self) -> None:
         return None

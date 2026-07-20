@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
@@ -18,7 +19,8 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.models import CadDocumentId, CadObjectId
-from hms_cadcam.cam.domain import OperationId
+from hms_cadcam.cam.domain import OperationId, SimulationResultId, WcsFrame
+from hms_cadcam.cam.simulation.model import SimulationResult
 from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.factory import CadViewportBackendFactory
@@ -33,6 +35,13 @@ from hms_cadcam.viewer.models import (
     ViewportStatus,
 )
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
+from hms_cadcam.viewer.simulation import (
+    SimulationDisplayContext,
+    SimulationDisplayPolicy,
+    SimulationDisplayRequest,
+    SimulationIssueMarker,
+    SimulationPresentation,
+)
 
 _QT_MOUSE_BUTTONS = {
     Qt.MouseButton.LeftButton: MouseButton.LEFT,
@@ -146,6 +155,98 @@ class CadViewportWidget(QWidget):
         callback = getattr(self._backend, "set_toolpath_visibility", None)
         return bool(callable(callback) and self._invoke("toolpath visibility", callback,
                                                         operation_id, visible, clear_error=True))
+
+    def bind_simulation_project(
+        self,
+        project_id: UUID | None,
+        generation: int | None,
+    ) -> bool:
+        """Bind session-only overlays to the active project generation."""
+        callback = getattr(self._backend, "bind_simulation_project", None)
+        return bool(callable(callback) and self._invoke(
+            "bind simulation project", callback, project_id, generation,
+            clear_error=True,
+        ))
+
+    def request_simulation_display(
+        self,
+        operation_id: OperationId,
+        *,
+        generation: int,
+    ) -> SimulationDisplayRequest | None:
+        callback = getattr(self._backend, "request_simulation_display", None)
+        if not callable(callback):
+            return None
+        try:
+            return callback(operation_id, generation=generation)
+        except Exception as error:
+            self._report_backend_error("request simulation display", error)
+            return None
+
+    def display_simulation(
+        self,
+        result: SimulationResult,
+        artifact: ToolpathArtifact,
+        wcs: WcsFrame,
+        context: SimulationDisplayContext,
+        request: SimulationDisplayRequest | None = None,
+        policy: SimulationDisplayPolicy | None = None,
+    ) -> bool:
+        """Display one published result without running simulation from UI."""
+        self.initialize_viewport()
+        callback = getattr(self._backend, "display_simulation", None)
+        return bool(self._initialized and callable(callback) and self._invoke(
+            "display simulation", callback, result, artifact, wcs, context,
+            request, policy, clear_error=True,
+        ))
+
+    @property
+    def simulation_presentations(self) -> tuple[SimulationPresentation, ...]:
+        callback = getattr(self._backend, "get_simulation_presentations", None)
+        return callback() if callable(callback) else ()
+
+    def set_simulation_visibility(
+        self,
+        operation_id: OperationId,
+        visible: bool,
+    ) -> bool:
+        callback = getattr(self._backend, "set_simulation_visibility", None)
+        return bool(callable(callback) and self._invoke(
+            "simulation visibility", callback, operation_id, visible,
+            clear_error=True,
+        ))
+
+    def lookup_simulation_issue(
+        self,
+        *,
+        project_id: UUID,
+        operation_id: OperationId,
+        result_id: SimulationResultId,
+        marker_id: str,
+    ) -> SimulationIssueMarker | None:
+        callback = getattr(self._backend, "lookup_simulation_issue", None)
+        if not callable(callback):
+            return None
+        try:
+            return callback(
+                project_id=project_id,
+                operation_id=operation_id,
+                result_id=result_id,
+                marker_id=marker_id,
+            )
+        except Exception as error:
+            self._report_backend_error("lookup simulation issue", error)
+            return None
+
+    def remove_simulation(self, operation_id: OperationId) -> None:
+        callback = getattr(self._backend, "remove_simulation", None)
+        if callable(callback):
+            self._invoke("remove simulation", callback, operation_id, clear_error=True)
+
+    def clear_simulations(self) -> None:
+        callback = getattr(self._backend, "clear_simulations", None)
+        if callable(callback):
+            self._invoke("clear simulations", callback, clear_error=True)
 
     def fit_all(self) -> None:
         """Fit the displayed document into the current widget."""
