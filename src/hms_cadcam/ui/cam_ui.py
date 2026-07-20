@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cam.domain import (
-    ArtifactStatus, BoxStock, CamJobId, CamNodeId, ContentFingerprint,
+    ArtifactStatus, BoringBarGeometry, BoringCoolantMode,
+    BoringRetractPolicy, BoringStrategy, BoringValidationError,
+    BoxStock, CamJobId, CamNodeId, ContentFingerprint,
     ContourCutDirection, ContourParameters, ContourProfileSource, ContourSide,
     DiagnosticCode, DirtyReason, DrillApproachPolicy, DrillDepthDefinition,
     DrillGeometryInput,
@@ -28,7 +30,8 @@ from hms_cadcam.cam.domain import (
     GeometryReferenceKind, GeometryRepresentationKind, GeometryResolutionStatus,
     HolePattern, HoleReference,
     Length, LengthUnit,
-    MachineRequirement, Operation, OperationCapability, OperationFamily,
+    MachineKind, MachineRequirement, Operation, OperationCapability,
+    OperationFamily,
     OperationGeometryInput,
     OperationId, OperationParameterSet, Point3,
     PocketCuttingDirection, PocketDepthDefinition, PocketEntryPolicy,
@@ -48,10 +51,13 @@ from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
+    BoringGenerationError,
+    BoringGenerator,
     ReamingGenerationError,
     ReamingGenerator,
     TappingGenerationError,
     TappingGenerator,
+    basic_boring_resources,
     basic_drilling_resources,
     basic_mill_resources,
     basic_reaming_resources,
@@ -107,6 +113,7 @@ class CamWorkspace(QWidget):
         self._picked_hole_reference: HoleReference | None = None
         self._picked_hole_source: HoleReference | HolePattern | None = None
         self._picked_reference_resolved = False
+        self._geometry_resolution_error = ""
         self._pocket_drafts: dict[
             OperationId, tuple[dict[str, object], GeometryReference | None]
         ] = {}
@@ -119,6 +126,10 @@ class CamWorkspace(QWidget):
             tuple[dict[str, object], HoleReference | HolePattern | None],
         ] = {}
         self._reaming_drafts: dict[
+            OperationId,
+            tuple[dict[str, object], HoleReference | HolePattern | None],
+        ] = {}
+        self._boring_drafts: dict[
             OperationId,
             tuple[dict[str, object], HoleReference | HolePattern | None],
         ] = {}
@@ -144,7 +155,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
-        for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -161,6 +172,10 @@ class CamWorkspace(QWidget):
                 "Tạo REAMER Tool/Machine cơ bản",
                 self.create_basic_reaming_resources,
             ),
+            "boring_resources": (
+                "Tạo BORING BAR Tool/Machine cơ bản",
+                self.create_basic_boring_resources,
+            ),
             "group": ("Thêm Group", self.add_group),
             "operation": ("Thêm Facing 2.5D", self.add_operation),
             "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
@@ -168,6 +183,7 @@ class CamWorkspace(QWidget):
             "drilling_operation": ("Thêm Drilling", self.add_drilling_operation),
             "tapping_operation": ("Thêm Tapping", self.add_tapping_operation),
             "reaming_operation": ("Thêm Reaming", self.add_reaming_operation),
+            "boring_operation": ("Thêm Boring", self.add_boring_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
             "pick": ("Bind/Rebind geometry", self.pick_geometry),
@@ -191,10 +207,12 @@ class CamWorkspace(QWidget):
         self._picked_hole_reference = None
         self._picked_hole_source = None
         self._picked_reference_resolved = False
+        self._geometry_resolution_error = ""
         self._pocket_drafts.clear()
         self._drilling_drafts.clear()
         self._tapping_drafts.clear()
         self._reaming_drafts.clear()
+        self._boring_drafts.clear()
         self._toolpath_visibility.clear()
         self._active_editor_operation_id = None
         self._active_editor_strategy_key = None
@@ -289,7 +307,7 @@ class CamWorkspace(QWidget):
                     if machine is None:
                         status += " · MACHINE MISSING"
                 is_hole_operation = operation.strategy_key in {
-                    "drilling_v1", "tapping_v1", "reaming_v1",
+                    "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                 }
                 if operation.geometry_inputs:
                     status += (
@@ -374,7 +392,7 @@ class CamWorkspace(QWidget):
                     if len(operation.geometry_inputs) == 1 else None
                 )
                 if operation.strategy_key in {
-                    "drilling_v1", "tapping_v1", "reaming_v1",
+                    "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                 }:
                     try:
                         hole_strategy = _hole_strategy(operation)
@@ -389,8 +407,15 @@ class CamWorkspace(QWidget):
                     ):
                         self._set_picked_hole_source(source)
                 self._picked_reference_resolved = self._resolve_picked_reference()
-                self.editor.show_node(node.name, operation, self._service.cam_snapshot.tool_assemblies,
-                                      self._service.cam_snapshot.machine_definitions)
+                snapshot = self._service.cam_snapshot
+                self.editor.show_node(
+                    node.name,
+                    operation,
+                    snapshot.tool_assemblies,
+                    snapshot.machine_definitions,
+                    snapshot.tool_definitions,
+                    snapshot.holder_definitions,
+                )
                 if operation.strategy_key == "pocket_2_5d":
                     saved = self._pocket_drafts.get(operation.operation_id)
                     if saved is not None:
@@ -423,8 +448,16 @@ class CamWorkspace(QWidget):
                         self._picked_reference_resolved = self._resolve_picked_reference()
                     self._active_editor_operation_id = operation.operation_id
                     self._active_editor_strategy_key = operation.strategy_key
+                elif operation.strategy_key == "boring_v1":
+                    saved = self._boring_drafts.get(operation.operation_id)
+                    if saved is not None:
+                        self.editor.restore_boring_state(saved[0])
+                        self._set_picked_hole_source(saved[1])
+                        self._picked_reference_resolved = self._resolve_picked_reference()
+                    self._active_editor_operation_id = operation.operation_id
+                    self._active_editor_strategy_key = operation.strategy_key
                 if operation.strategy_key in {
-                    "drilling_v1", "tapping_v1", "reaming_v1",
+                    "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                 }:
                     self.editor.show_hole_source(
                         self._picked_hole_source,
@@ -562,13 +595,30 @@ class CamWorkspace(QWidget):
         if changed is not None:
             self.refresh(self._selected_key)
 
+    def create_basic_boring_resources(self) -> None:
+        """Create one project-owned BORING_BAR and compatible milling machine."""
+        if not self._service.has_project:
+            return
+        unit = _length_unit(self._service.current_project)
+        tool, holder, assembly, machine = basic_boring_resources(unit)
+
+        def add_resources(app):
+            app.add_tool_definition(tool)
+            app.add_holder_definition(holder)
+            app.add_tool_assembly(assembly)
+            return app.add_machine_definition(machine)
+
+        changed = self._execute(add_resources)
+        if changed is not None:
+            self.refresh(self._selected_key)
+
     def pick_geometry(self) -> None:
         """Explicitly bind the current unambiguous CAD selection."""
         operation = self._selected_operation()
         is_hole_operation = (
             operation is not None
             and operation.strategy_key in {
-                "drilling_v1", "tapping_v1", "reaming_v1",
+                "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
             }
         )
         provider = (
@@ -617,7 +667,10 @@ class CamWorkspace(QWidget):
             self._picked_hole_reference = previous_hole
             self._picked_hole_source = previous_hole_source
             self._picked_reference_resolved = previous_status
-            self._error("Persistent geometry could not be resolved unambiguously.")
+            self._error(
+                self._geometry_resolution_error
+                or "Persistent geometry could not be resolved unambiguously."
+            )
             return
         if is_hole_operation:
             self.editor.show_hole_source(self._picked_hole_source, True)
@@ -633,7 +686,7 @@ class CamWorkspace(QWidget):
         if (operation is not None
                 and operation.strategy_key in {
                     "contour_2d", "drilling_v1", "pocket_2_5d", "tapping_v1",
-                    "reaming_v1",
+                    "reaming_v1", "boring_v1",
                 }
                 and operation.geometry_inputs):
             item = self.tree.currentItem()
@@ -652,8 +705,9 @@ class CamWorkspace(QWidget):
         self._picked_hole_reference = None
         self._picked_hole_source = None
         self._picked_reference_resolved = False
+        self._geometry_resolution_error = ""
         if operation is not None and operation.strategy_key in {
-            "drilling_v1", "tapping_v1", "reaming_v1",
+            "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
         }:
             self.editor.show_hole_source(None)
         else:
@@ -680,7 +734,7 @@ class CamWorkspace(QWidget):
                             continue
                         if (
                             operation.strategy_key not in {
-                                "drilling_v1", "tapping_v1", "reaming_v1",
+                                "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                             }
                             and len(operation.geometry_inputs) != 1
                         ):
@@ -696,7 +750,7 @@ class CamWorkspace(QWidget):
                         elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
                             resolver = self._profile_resolver
                         elif operation.strategy_key in {
-                            "drilling_v1", "tapping_v1", "reaming_v1",
+                            "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                         }:
                             try:
                                 hole_strategy = _hole_strategy(operation)
@@ -717,7 +771,7 @@ class CamWorkspace(QWidget):
                             result = (
                                 resolver(hole_strategy.geometry, hole_strategy.depth)
                                 if operation.strategy_key in {
-                                    "drilling_v1", "tapping_v1", "reaming_v1",
+                                    "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
                                 }
                                 else resolver(operation.geometry_inputs[0].reference)
                             )
@@ -741,12 +795,13 @@ class CamWorkspace(QWidget):
         self._update_generate_action()
 
     def _resolve_picked_reference(self) -> bool:
+        self._geometry_resolution_error = ""
         if self._picked_hole_source is not None:
             if self._drilling_resolver is None:
                 return True
             operation = self._selected_operation()
             if operation is None or operation.strategy_key not in {
-                "drilling_v1", "tapping_v1", "reaming_v1",
+                "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
             }:
                 return False
             try:
@@ -756,9 +811,30 @@ class CamWorkspace(QWidget):
                     self._picked_hole_source.unit,
                 )
                 result = self._drilling_resolver(geometry, current.depth)
-            except (RuntimeError, TypeError, ValueError):
+            except (RuntimeError, TypeError, ValueError) as error:
+                if operation.strategy_key == "boring_v1":
+                    self._geometry_resolution_error = (
+                        f"bore.geometry_missing: {error}"
+                    )
                 return False
-            return getattr(result, "status", None) is GeometryResolutionStatus.RESOLVED
+            status = getattr(result, "status", None)
+            if status is GeometryResolutionStatus.RESOLVED:
+                return True
+            if operation.strategy_key == "boring_v1":
+                code = {
+                    GeometryResolutionStatus.MISSING: "bore.geometry_missing",
+                    GeometryResolutionStatus.STALE: "bore.geometry_stale",
+                    GeometryResolutionStatus.TOPOLOGY_CHANGED: "bore.geometry_stale",
+                    GeometryResolutionStatus.AMBIGUOUS: "bore.geometry_ambiguous",
+                    GeometryResolutionStatus.SOURCE_MISMATCH: "bore.source_mismatch",
+                }.get(status, "bore.invalid_parameters")
+                diagnostics = getattr(result, "diagnostics", ())
+                message = (
+                    diagnostics[0].message
+                    if diagnostics else "Boring geometry resolve thất bại."
+                )
+                self._geometry_resolution_error = f"{code}: {message}"
+            return False
         if self._picked_reference is None:
             return False
         is_contour = (self._picked_reference.subshape_selector or "").startswith("hms_profile_v1:")
@@ -818,6 +894,11 @@ class CamWorkspace(QWidget):
         elif self._active_editor_strategy_key == "reaming_v1":
             self._reaming_drafts[operation_id] = (
                 self.editor.reaming_state(),
+                self._picked_hole_source,
+            )
+        elif self._active_editor_strategy_key == "boring_v1":
+            self._boring_drafts[operation_id] = (
+                self.editor.boring_state(),
                 self._picked_hole_source,
             )
 
@@ -1123,6 +1204,98 @@ class CamWorkspace(QWidget):
         if changed:
             self.refresh(("operation", str(node_id)))
 
+    def add_boring_operation(self) -> None:
+        """Add one validated Boring operation with an explicit pre-bore value."""
+        context = self._tree_context()
+        if context is None:
+            return
+        if self._drilling_pick_provider is None or self._drilling_resolver is None:
+            self._error("bore.geometry_missing: Boring geometry adapter chưa sẵn sàng.")
+            return
+        job_id, setup_id, _tree, parent_id = context
+        snapshot = self._service.cam_snapshot
+        setup = next(
+            value for job in snapshot.jobs for value in job.setups
+            if value.setup_id == setup_id
+        )
+        generation = self._generation
+        try:
+            hole_source = self._drilling_pick_provider(setup.wcs.z_axis)
+            if not isinstance(hole_source, (HoleReference, HolePattern)):
+                raise ValueError("bore.geometry_missing: Hole source không hợp lệ.")
+            strategy = _default_boring_strategy(setup, hole_source)
+            resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
+            assembly = _find_drilling_assembly(snapshot, ToolFamily.BORING_BAR)
+            if assembly is None:
+                raise ValueError("bore.tool_missing: Chưa có Tool Assembly BORING_BAR.")
+            tool = next((
+                value for value in snapshot.tool_definitions
+                if value.tool_id == assembly.tool_id
+            ), None)
+            holder = next((
+                value for value in snapshot.holder_definitions
+                if value.holder_id == assembly.holder_id
+            ), None)
+            machine = next((
+                value for value in snapshot.machine_definitions
+                if value.kind in {MachineKind.MILL, MachineKind.MILL_TURN}
+                and OperationCapability.DRILLING in value.capabilities.operations
+                and any(
+                    spindle.minimum_speed.value
+                    <= strategy.spindle_rpm.value
+                    <= spindle.maximum_speed.value
+                    and strategy.spindle_direction in spindle.directions
+                    for spindle in value.spindles
+                )
+            ), None)
+            if machine is None:
+                raise ValueError(
+                    "bore.machine_incompatible: Chưa có máy phay hỗ trợ drilling."
+                )
+            node_id, operation_id = CamNodeId.new(), OperationId.new()
+            requirement = MachineRequirement(
+                machine.machine_id,
+                machine.revision,
+                machine.content_fingerprint,
+                machine.unit,
+                (OperationCapability.DRILLING,),
+            )
+            operation = Operation(
+                operation_id,
+                node_id,
+                OperationFamily.DRILLING,
+                setup_id,
+                ToolAssemblyReference.from_assembly(assembly),
+                _hole_geometry_inputs((), hole_source),
+                strategy.to_operation_parameters(),
+                requirement,
+            )
+            BoringGenerator().resolve_inputs(
+                operation,
+                setup,
+                assembly=assembly,
+                tool=tool,
+                holder=holder,
+                machine=machine,
+                resolved_geometry=resolved,
+            )
+        except BoringGenerationError as error:
+            self._error(f"{error.code.value}: {error}")
+            return
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._error(str(error))
+            return
+        if generation is None or generation != self._service.cam_generation:
+            self._error("bore.stale_result: Phiên tạo Boring đã stale.")
+            return
+        changed = self._execute(lambda app: app.update_tree(
+            job_id,
+            setup_id,
+            lambda value: value.add_operation(parent_id, "Boring", operation),
+        ))
+        if changed:
+            self.refresh(("operation", str(node_id)))
+
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
@@ -1133,9 +1306,76 @@ class CamWorkspace(QWidget):
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is None or operation.strategy_key not in {
             "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
-            "tapping_v1", "reaming_v1",
+            "tapping_v1", "reaming_v1", "boring_v1",
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "boring_v1":
+            generation = self._generation
+            draft = self.editor.boring_draft(
+                setup.wcs.origin.unit,
+                self._picked_hole_source,
+            )
+            machine_id = (
+                operation.machine_requirement.machine_id
+                if operation.machine_requirement else None
+            )
+            if (
+                draft is None
+                or draft.to_operation_parameters() != operation.parameters
+                or self.editor.tool.currentData()
+                != str(operation.tool_assembly.assembly_id)
+                or self.editor.machine.currentData()
+                != (str(machine_id) if machine_id else None)
+                or self._picked_hole_source is None
+                or not _operation_matches_hole_source(
+                    operation, self._picked_hole_source,
+                )
+                or not self._picked_reference_resolved
+                or not operation.enabled
+            ):
+                self._error(
+                    "bore.invalid_parameters: Draft Boring chưa hợp lệ "
+                    "hoặc chưa được Áp dụng."
+                )
+                return
+            result = self._service.compute_boring(
+                operation.operation_id,
+                expected_generation=generation,
+                geometry_resolver=self._drilling_resolver,
+            )
+            current = self._selected_operation()
+            try:
+                service_generation = self._service.cam_generation
+            except (ProjectError, RuntimeError):
+                service_generation = None
+            if (
+                generation != self._generation
+                or generation != service_generation
+                or current is None
+                or current.operation_id != operation.operation_id
+            ):
+                self._error(
+                    "bore.stale_result: Kết quả Boring đã stale và không "
+                    "được hiển thị."
+                )
+                return
+            if result.accepted and result.artifact is not None:
+                self.message.emit(
+                    "Boring đã Generate và publish artifact hợp lệ."
+                )
+                self.editor.set_error("")
+                failure_message = None
+            else:
+                failure_message = (
+                    f"{result.diagnostics[0].code.value}: "
+                    f"{result.diagnostics[0].message}"
+                    if result.diagnostics
+                    else "bore.generation_failed: Boring generation thất bại."
+                )
+            self.refresh(self._selected_key)
+            if failure_message is not None:
+                self._error(failure_message)
             return
         if operation.strategy_key == "reaming_v1":
             generation = self._generation
@@ -1671,6 +1911,126 @@ class CamWorkspace(QWidget):
                     tree_mutation = lambda tree: tree.rename_node(
                         node_id, str(values["name"])
                     ).replace_operation(changed_operation)
+                elif current is not None and current.strategy_key == "boring_v1":
+                    unit = setup.wcs.origin.unit
+                    if self._picked_hole_source is None:
+                        raise ValueError(
+                            "bore.geometry_missing: Boring thiếu hole geometry."
+                        )
+                    parameters = self.editor.boring_draft(
+                        unit,
+                        self._picked_hole_source,
+                    )
+                    if parameters is None:
+                        raise ValueError(
+                            self.editor.boring_draft_error
+                            or "bore.invalid_parameters: Thông số Boring chưa hợp lệ."
+                        )
+                    if self._drilling_resolver is None:
+                        raise ValueError(
+                            "bore.geometry_missing: Boring resolver chưa sẵn sàng."
+                        )
+                    resolved = self._drilling_resolver(
+                        parameters.geometry,
+                        parameters.depth,
+                    )
+                    snapshot = self._service.cam_snapshot
+                    assembly = next((
+                        value for value in snapshot.tool_assemblies
+                        if str(value.assembly_id) == values["tool_id"]
+                    ), None)
+                    if assembly is None:
+                        raise ValueError(
+                            "bore.tool_missing: Boring thiếu Tool Assembly."
+                        )
+                    tool = next((
+                        value for value in snapshot.tool_definitions
+                        if value.tool_id == assembly.tool_id
+                    ), None)
+                    holder = next((
+                        value for value in snapshot.holder_definitions
+                        if value.holder_id == assembly.holder_id
+                    ), None)
+                    machine = next((
+                        value for value in snapshot.machine_definitions
+                        if str(value.machine_id) == values["machine_id"]
+                    ), None)
+                    if machine is None:
+                        raise ValueError(
+                            "bore.machine_incompatible: Boring thiếu Machine."
+                        )
+                    requirement = MachineRequirement(
+                        machine.machine_id,
+                        machine.revision,
+                        machine.content_fingerprint,
+                        machine.unit,
+                        (OperationCapability.DRILLING,),
+                    )
+                    geometry_inputs = _hole_geometry_inputs(
+                        current.geometry_inputs,
+                        self._picked_hole_source,
+                    )
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    validation_operation = replace(
+                        current,
+                        parameters=parameter_set,
+                        tool_assembly=tool_reference,
+                        machine_requirement=requirement,
+                        geometry_inputs=geometry_inputs,
+                        enabled=True,
+                    )
+                    try:
+                        BoringGenerator().resolve_inputs(
+                            validation_operation,
+                            setup,
+                            assembly=assembly,
+                            tool=tool,
+                            holder=holder,
+                            machine=machine,
+                            resolved_geometry=resolved,
+                        )
+                    except BoringGenerationError as error:
+                        raise ValueError(
+                            f"{error.code.value}: {error}"
+                        ) from error
+                    parameter_changed = parameter_set != current.parameters
+                    geometry_changed = geometry_inputs != current.geometry_inputs
+                    tool_changed = tool_reference != current.tool_assembly
+                    machine_changed = requirement != current.machine_requirement
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if any((
+                        parameter_changed,
+                        geometry_changed,
+                        tool_changed,
+                        machine_changed,
+                        enabled_changed,
+                    )):
+                        if geometry_changed:
+                            reason = DirtyReason.GEOMETRY_CHANGED
+                        elif tool_changed:
+                            reason = DirtyReason.TOOL_CHANGED
+                        elif machine_changed:
+                            reason = DirtyReason.MACHINE_CHANGED
+                        elif parameter_changed:
+                            reason = DirtyReason.PARAMETERS_CHANGED
+                        else:
+                            reason = DirtyReason.UPSTREAM_CHANGED
+                        changed_operation = replace(
+                            current,
+                            parameters=parameter_set,
+                            tool_assembly=tool_reference,
+                            machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs,
+                            enabled=enabled,
+                            revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason),
+                        )
+                    tree_mutation = lambda tree: tree.rename_node(
+                        node_id, str(values["name"])
+                    ).replace_operation(changed_operation)
                 elif current is not None and current.strategy_key == "reaming_v1":
                     unit = setup.wcs.origin.unit
                     if self._picked_hole_source is None:
@@ -2006,11 +2366,17 @@ class CamWorkspace(QWidget):
                 self.refresh(self._selected_key)
         except (RuntimeError, TypeError, ValueError) as error:
             message = str(error)
-            if self._active_editor_strategy_key == "reaming_v1":
+            if self._active_editor_strategy_key in {"reaming_v1", "boring_v1"}:
+                strategy_key = self._active_editor_strategy_key
                 operation_id = self._active_editor_operation_id
                 self._active_editor_operation_id = None
                 if operation_id is not None:
-                    self._reaming_drafts.pop(operation_id, None)
+                    drafts = (
+                        self._reaming_drafts
+                        if strategy_key == "reaming_v1"
+                        else self._boring_drafts
+                    )
+                    drafts.pop(operation_id, None)
                 self.refresh(self._selected_key)
             self.editor.set_error(message)
 
@@ -2054,7 +2420,9 @@ class CamWorkspace(QWidget):
             self.message.emit("Đã cập nhật CAM; dự án có thay đổi chưa lưu.")
             return result
         except Exception as error:
-            if self._active_editor_strategy_key in {"tapping_v1", "reaming_v1"}:
+            if self._active_editor_strategy_key in {
+                "tapping_v1", "reaming_v1", "boring_v1",
+            }:
                 strategy_key = self._active_editor_strategy_key
                 operation_id = self._active_editor_operation_id
                 self._active_editor_operation_id = None
@@ -2063,6 +2431,8 @@ class CamWorkspace(QWidget):
                         self._tapping_drafts
                         if strategy_key == "tapping_v1"
                         else self._reaming_drafts
+                        if strategy_key == "reaming_v1"
+                        else self._boring_drafts
                     )
                     drafts.pop(operation_id, None)
                 self.refresh(self._selected_key)
@@ -2164,6 +2534,25 @@ class CamWorkspace(QWidget):
                     and self.editor.machine.currentData()
                     == (str(machine_id) if machine_id else None)
                 )
+            if operation.strategy_key == "boring_v1":
+                draft = self.editor.boring_draft(
+                    setup.wcs.origin.unit,
+                    self._picked_hole_source,
+                )
+                return bool(
+                    operation.enabled
+                    and draft is not None
+                    and draft.to_operation_parameters() == operation.parameters
+                    and self._picked_hole_source is not None
+                    and _operation_matches_hole_source(
+                        operation, self._picked_hole_source,
+                    )
+                    and self._picked_reference_resolved
+                    and self.editor.tool.currentData()
+                    == str(operation.tool_assembly.assembly_id)
+                    and self.editor.machine.currentData()
+                    == (str(machine_id) if machine_id else None)
+                )
             draft = self.editor.facing_draft(setup.wcs.origin.unit)
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
@@ -2185,6 +2574,10 @@ class _CamPropertiesEditor(QWidget):
         self._commit = commit
         self._tapping_draft_error = ""
         self._reaming_draft_error = ""
+        self._boring_draft_error = ""
+        self._tool_definitions_by_id = {}
+        self._holders_by_id = {}
+        self._assemblies_by_id = {}
         self._fields = {key: QLineEdit() for key in ("name", "offset", "x", "y", "z", "a", "b", "c")}
         self._facing_fields = {key: QLineEdit() for key in (
             "top", "target", "stepdown", "stepover", "allowance", "clearance", "retract",
@@ -2207,6 +2600,11 @@ class _CamPropertiesEditor(QWidget):
             "top", "final", "clearance", "retract", "diameter", "pre_hole",
             "spindle", "feed_per_revolution", "dwell", "tolerance",
         )}
+        self._boring_fields = {key: QLineEdit() for key in (
+            "top", "final", "clearance", "retract", "finished_diameter",
+            "pre_bore", "spindle", "feed_per_revolution", "dwell",
+            "tolerance",
+        )}
         self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
         self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
         self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
@@ -2223,6 +2621,13 @@ class _CamPropertiesEditor(QWidget):
         self.reaming_coolant = QComboBox(); self.reaming_coolant.addItems([item.value for item in ReamingCoolantMode])
         self.reaming_derived = QLabel("—")
         self.reaming_derived.setWordWrap(True)
+        self.boring_spindle_direction = QComboBox(); self.boring_spindle_direction.addItems([item.value for item in SpindleDirection])
+        self.boring_retract_policy = QComboBox(); self.boring_retract_policy.addItems([item.value for item in BoringRetractPolicy])
+        self.boring_coolant = QComboBox(); self.boring_coolant.addItems([item.value for item in BoringCoolantMode])
+        self.boring_derived = QLabel("—")
+        self.boring_derived.setWordWrap(True)
+        self.boring_tool_details = QLabel("—")
+        self.boring_tool_details.setWordWrap(True)
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
@@ -2307,6 +2712,24 @@ class _CamPropertiesEditor(QWidget):
         ):
             form.addRow(label, self._reaming_fields[key])
         form.addRow("Derived (read-only)", self.reaming_derived)
+        form.addRow("Boring spindle direction", self.boring_spindle_direction)
+        form.addRow("Boring retract policy", self.boring_retract_policy)
+        form.addRow("Boring coolant", self.boring_coolant)
+        for label, key in (
+            ("Boring Top Z", "top"),
+            ("Boring final depth Z", "final"),
+            ("Boring clearance Z", "clearance"),
+            ("Boring retract Z", "retract"),
+            ("Finished bore diameter", "finished_diameter"),
+            ("Pre-bore diameter (required)", "pre_bore"),
+            ("Boring spindle RPM", "spindle"),
+            ("Boring feed per revolution", "feed_per_revolution"),
+            ("Boring dwell (s, optional)", "dwell"),
+            ("Boring tolerance", "tolerance"),
+        ):
+            form.addRow(label, self._boring_fields[key])
+        form.addRow("Boring derived (read-only)", self.boring_derived)
+        form.addRow("BORING_BAR current", self.boring_tool_details)
         form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
         form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
@@ -2323,13 +2746,19 @@ class _CamPropertiesEditor(QWidget):
         for field in self._reaming_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
             field.textChanged.connect(self._update_reaming_preview)
+        for field in self._boring_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
+            field.textChanged.connect(self._update_boring_preview)
         for combo in (self.boundary_source, self.direction, self.profile_source, self.contour_side,
                       self.contour_direction, self.pocket_entry, self.pocket_direction,
                       self.drilling_cycle, self.drilling_retract,
                       self.tapping_hand, self.tapping_mode,
                       self.reaming_spindle_direction, self.reaming_retract_policy,
-                      self.reaming_coolant, self.tool, self.machine):
+                      self.reaming_coolant, self.boring_spindle_direction,
+                      self.boring_retract_policy, self.boring_coolant,
+                      self.tool, self.machine):
             combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
+        self.tool.currentIndexChanged.connect(self._update_boring_tool_details)
         self.finishing_pass.toggled.connect(lambda _checked: self.draft_changed.emit())
         self.multiple_depth_passes.toggled.connect(lambda _checked: self.draft_changed.emit())
 
@@ -2341,7 +2770,15 @@ class _CamPropertiesEditor(QWidget):
         for field in self._drilling_fields.values(): field.clear()
         for field in self._tapping_fields.values(): field.clear()
         for field in self._reaming_fields.values(): field.clear()
+        for field in self._boring_fields.values(): field.clear()
         self.reaming_derived.setText("—")
+        self.boring_derived.setText("—")
+        self.boring_tool_details.setText("—")
+        self.tool.clear(); self.machine.clear()
+        self._tool_definitions_by_id = {}
+        self._holders_by_id = {}
+        self._assemblies_by_id = {}
+        self.boring_tool_details.setText("—")
         self.status.setText("—"); self.toolpath_metadata.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -2361,11 +2798,33 @@ class _CamPropertiesEditor(QWidget):
         else:
             self.status.setText(f"UNSUPPORTED — stock {setup.stock.kind.value}")
 
-    def show_node(self, name: str, operation: Operation | None, assemblies=(), machines=()) -> None:
+    def show_node(
+        self,
+        name: str,
+        operation: Operation | None,
+        assemblies=(),
+        machines=(),
+        tools=(),
+        holders=(),
+    ) -> None:
         self.clear(); self._fields["name"].setText(name); self.enabled.setChecked(True if operation is None else operation.enabled)
         self.status.setText("GROUP" if operation is None else operation.artifact_state.status.value.upper())
         self.tool.clear(); self.machine.clear()
-        for value in assemblies: self.tool.addItem(value.name, str(value.assembly_id))
+        self._tool_definitions_by_id = {value.tool_id: value for value in tools}
+        self._holders_by_id = {value.holder_id: value for value in holders}
+        self._assemblies_by_id = {
+            str(value.assembly_id): value for value in assemblies
+        }
+        visible_assemblies = assemblies
+        if operation is not None and operation.strategy_key == "boring_v1":
+            boring_tool_ids = {
+                value.tool_id for value in tools
+                if value.family is ToolFamily.BORING_BAR
+            }
+            visible_assemblies = tuple(
+                value for value in assemblies if value.tool_id in boring_tool_ids
+            )
+        for value in visible_assemblies: self.tool.addItem(value.name, str(value.assembly_id))
         for value in machines: self.machine.addItem(value.name, str(value.machine_id))
         self.tool.setCurrentIndex(-1); self.machine.setCurrentIndex(-1)
         if operation is not None and operation.strategy_key == "facing_2_5d":
@@ -2504,6 +2963,40 @@ class _CamPropertiesEditor(QWidget):
                     str(operation.machine_requirement.machine_id)
                 ))
             self._update_reaming_preview()
+        elif operation is not None and operation.strategy_key == "boring_v1":
+            parameters = BoringStrategy.from_operation_parameters(
+                operation.parameters
+            )
+            values = {
+                "top": parameters.top_z.value,
+                "final": parameters.final_depth.value,
+                "clearance": parameters.clearance_height.value,
+                "retract": parameters.retract_height.value,
+                "finished_diameter": parameters.finished_bore_diameter.value,
+                "pre_bore": parameters.pre_bore_diameter.value,
+                "spindle": parameters.spindle_rpm.value,
+                "feed_per_revolution": parameters.feed_per_revolution.value,
+                "dwell": parameters.dwell_seconds,
+                "tolerance": parameters.tolerance.value,
+            }
+            for key, value in values.items():
+                self._boring_fields[key].setText(str(value))
+            self.boring_spindle_direction.setCurrentText(
+                parameters.spindle_direction.value
+            )
+            self.boring_retract_policy.setCurrentText(
+                parameters.retract_policy.value
+            )
+            self.boring_coolant.setCurrentText(parameters.coolant.value)
+            self.tool.setCurrentIndex(self.tool.findData(
+                str(operation.tool_assembly.assembly_id)
+            ))
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(self.machine.findData(
+                    str(operation.machine_requirement.machine_id)
+                ))
+            self._update_boring_preview()
+            self._update_boring_tool_details()
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -2544,6 +3037,25 @@ class _CamPropertiesEditor(QWidget):
                 f" · {value.spindle_direction.value if value.spindle_direction else '?'}"
                 f" · {value.retract_policy.value if value.retract_policy else '?'}"
                 f" · {value.coolant_mode.value if value.coolant_mode else '?'}"
+            )
+        if value.strategy_key == "boring_v1":
+            def number(item) -> str:
+                return "?" if item is None else f"{item.value:g}"
+
+            tapping = (
+                f" · {value.hole_count} hole"
+                f" · D{number(value.finished_bore_diameter)}"
+                f" · pre-bore {number(value.pre_bore_diameter)}"
+                f" · radial stock {number(value.radial_stock)}"
+                f" · feed/rev {number(value.feed_per_revolution)}"
+                f" · feed/min {number(value.feed_per_minute)}"
+                f" · {number(value.spindle_speed)} RPM"
+                f" · {value.spindle_direction.value if value.spindle_direction else '?'}"
+                f" · {value.retract_policy.value if value.retract_policy else '?'}"
+                f" · {value.coolant_mode.value if value.coolant_mode else '?'}"
+                f" · tool {value.boring_tool_family.value if value.boring_tool_family else '?'}"
+                f" · access {number(value.minimum_bore_diameter)}-"
+                f"{number(value.maximum_bore_diameter)}"
             )
         self.toolpath_metadata.setText(
             f"{value.operation_id} · {value.strategy_key} · {value.pass_count} pass · "
@@ -2712,6 +3224,42 @@ class _CamPropertiesEditor(QWidget):
         self.enabled.setChecked(bool(state.get("enabled", False)))
         self._update_reaming_preview()
 
+    def boring_state(self) -> dict[str, object]:
+        """Capture one transient Boring draft without derived/runtime values."""
+        return {
+            "name": self._fields["name"].text(),
+            "fields": {
+                key: field.text() for key, field in self._boring_fields.items()
+            },
+            "spindle_direction": self.boring_spindle_direction.currentText(),
+            "retract_policy": self.boring_retract_policy.currentText(),
+            "coolant": self.boring_coolant.currentText(),
+            "tool_id": self.tool.currentData(),
+            "machine_id": self.machine.currentData(),
+            "enabled": self.enabled.isChecked(),
+        }
+
+    def restore_boring_state(self, state: dict[str, object]) -> None:
+        """Restore one unapplied Boring draft by stable operation ID."""
+        fields = state.get("fields")
+        if not isinstance(fields, dict):
+            return
+        self._fields["name"].setText(str(state.get("name", "")))
+        for key, field in self._boring_fields.items():
+            field.setText(str(fields.get(key, "")))
+        self.boring_spindle_direction.setCurrentText(
+            str(state.get("spindle_direction", ""))
+        )
+        self.boring_retract_policy.setCurrentText(
+            str(state.get("retract_policy", ""))
+        )
+        self.boring_coolant.setCurrentText(str(state.get("coolant", "")))
+        self.tool.setCurrentIndex(self.tool.findData(state.get("tool_id")))
+        self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
+        self.enabled.setChecked(bool(state.get("enabled", False)))
+        self._update_boring_preview()
+        self._update_boring_tool_details()
+
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
                       **{key: field.text() for key, field in self._facing_fields.items()},
@@ -2720,6 +3268,7 @@ class _CamPropertiesEditor(QWidget):
                       **{f"drilling_{key}": field.text() for key, field in self._drilling_fields.items()},
                       **{f"tapping_{key}": field.text() for key, field in self._tapping_fields.items()},
                       **{f"reaming_{key}": field.text() for key, field in self._reaming_fields.items()},
+                      **{f"boring_{key}": field.text() for key, field in self._boring_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
@@ -2735,6 +3284,9 @@ class _CamPropertiesEditor(QWidget):
                       "reaming_spindle_direction": self.reaming_spindle_direction.currentText(),
                       "reaming_retract_policy": self.reaming_retract_policy.currentText(),
                       "reaming_coolant": self.reaming_coolant.currentText(),
+                      "boring_spindle_direction": self.boring_spindle_direction.currentText(),
+                      "boring_retract_policy": self.boring_retract_policy.currentText(),
+                      "boring_coolant": self.boring_coolant.currentText(),
                       "finishing_pass": self.finishing_pass.isChecked(),
                       "multiple_depth_passes": self.multiple_depth_passes.isChecked()})
 
@@ -3081,6 +3633,194 @@ class _CamPropertiesEditor(QWidget):
         except ValueError as error:
             self.reaming_derived.setText(str(error) or "ream.invalid_parameters")
 
+    def boring_draft(
+        self,
+        unit: LengthUnit,
+        hole_source: HoleReference | HolePattern | None,
+    ) -> BoringStrategy | None:
+        """Build an immutable Boring draft without mutating project state."""
+        self._boring_draft_error = ""
+        try:
+            if hole_source is None or hole_source.unit is not unit:
+                self._boring_draft_error = (
+                    "bore.geometry_missing: Boring thiếu hole geometry hợp lệ."
+                )
+                return None
+            pre_bore_text = self._boring_fields["pre_bore"].text().strip()
+            if not pre_bore_text:
+                self._boring_draft_error = (
+                    "bore.prebore_missing: Pre-bore diameter là bắt buộc."
+                )
+                return None
+            dwell_text = self._boring_fields["dwell"].text().strip()
+            feed_unit = (
+                FeedUnit.MM_PER_REVOLUTION
+                if unit is LengthUnit.MM
+                else FeedUnit.INCH_PER_REVOLUTION
+            )
+            return BoringStrategy(
+                unit=unit,
+                geometry=DrillGeometryInput(hole_source, unit),
+                depth=DrillDepthDefinition(
+                    unit,
+                    Length(float(self._boring_fields["top"].text()), unit),
+                    Length(float(self._boring_fields["final"].text()), unit),
+                ),
+                finished_bore_diameter=Length(
+                    float(self._boring_fields["finished_diameter"].text()),
+                    unit,
+                ),
+                pre_bore_diameter=Length(float(pre_bore_text), unit),
+                spindle_rpm=SpindleSpeed(
+                    float(self._boring_fields["spindle"].text())
+                ),
+                feed_per_revolution=FeedRate(
+                    float(self._boring_fields["feed_per_revolution"].text()),
+                    feed_unit,
+                ),
+                clearance_height=Length(
+                    float(self._boring_fields["clearance"].text()), unit,
+                ),
+                retract_height=Length(
+                    float(self._boring_fields["retract"].text()), unit,
+                ),
+                spindle_direction=SpindleDirection(
+                    self.boring_spindle_direction.currentText()
+                ),
+                retract_policy=BoringRetractPolicy(
+                    self.boring_retract_policy.currentText()
+                ),
+                coolant=BoringCoolantMode(self.boring_coolant.currentText()),
+                dwell_seconds=0.0 if not dwell_text else float(dwell_text),
+                tolerance=Length(
+                    float(self._boring_fields["tolerance"].text()), unit,
+                ),
+            )
+        except BoringValidationError as error:
+            self._boring_draft_error = f"{error.code.value}: {error}"
+            return None
+        except DrillValidationError as error:
+            code = (
+                "bore.depth_invalid"
+                if error.code in {
+                    DiagnosticCode.DRILL_INVALID_DEPTH,
+                    DiagnosticCode.DRILL_DEPTH_INVALID,
+                }
+                else "bore.invalid_parameters"
+            )
+            self._boring_draft_error = f"{code}: {error}"
+            return None
+        except (TypeError, ValueError) as error:
+            self._boring_draft_error = (
+                f"bore.invalid_parameters: "
+                f"{error or 'Thông số Boring không hợp lệ.'}"
+            )
+            return None
+
+    @property
+    def boring_draft_error(self) -> str:
+        """Return the stable diagnostic produced while parsing Boring."""
+        return self._boring_draft_error
+
+    def _update_boring_preview(self, *_args: object) -> None:
+        """Update derived Boring values without storing them as source data."""
+        try:
+            finished_text = self._boring_fields["finished_diameter"].text().strip()
+            pre_bore_text = self._boring_fields["pre_bore"].text().strip()
+            if not pre_bore_text:
+                self.boring_derived.setText(
+                    "bore.prebore_missing · pre-bore diameter là bắt buộc"
+                )
+                return
+            finished = float(finished_text)
+            pre_bore = float(pre_bore_text)
+            tolerance = float(self._boring_fields["tolerance"].text())
+            if not math.isfinite(finished) or finished <= 0.0:
+                raise ValueError(
+                    "bore.invalid_parameters · finished diameter phải > 0"
+                )
+            if (
+                not math.isfinite(pre_bore)
+                or pre_bore <= 0.0
+                or pre_bore >= finished
+            ):
+                raise ValueError(
+                    "bore.prebore_invalid · pre-bore phải > 0 và nhỏ hơn finished"
+                )
+            stock = (finished - pre_bore) / 2.0
+            if (
+                not math.isfinite(tolerance)
+                or tolerance <= 0.0
+                or stock <= tolerance
+                or stock >= finished / 2.0 - tolerance
+            ):
+                raise ValueError(
+                    "bore.stock_invalid · radial stock ngoài giới hạn tolerance"
+                )
+            rpm = float(self._boring_fields["spindle"].text())
+            feed_per_revolution = float(
+                self._boring_fields["feed_per_revolution"].text()
+            )
+            top = float(self._boring_fields["top"].text())
+            final = float(self._boring_fields["final"].text())
+            derived = (rpm, feed_per_revolution, top, final)
+            if any(not math.isfinite(value) for value in derived):
+                raise ValueError(
+                    "bore.invalid_parameters · derived input không hữu hạn"
+                )
+            if rpm <= 0.0 or feed_per_revolution <= 0.0:
+                raise ValueError(
+                    "bore.invalid_parameters · RPM/feed mỗi vòng phải > 0"
+                )
+            self.boring_derived.setText(
+                f"Radial stock: {stock:g} · Feed/min: "
+                f"{rpm * feed_per_revolution:g} · Cutting depth: {top - final:g}"
+            )
+        except ValueError as error:
+            self.boring_derived.setText(str(error) or "bore.invalid_parameters")
+
+    def _update_boring_tool_details(self, *_args: object) -> None:
+        """Expose the current BORING_BAR access envelope and provenance read-only."""
+        assembly = self._assemblies_by_id.get(str(self.tool.currentData()))
+        if assembly is None:
+            self.boring_tool_details.setText("bore.tool_missing · chưa chọn assembly")
+            return
+        tool = self._tool_definitions_by_id.get(assembly.tool_id)
+        holder = self._holders_by_id.get(assembly.holder_id)
+        if (
+            tool is None
+            or tool.family is not ToolFamily.BORING_BAR
+            or not isinstance(tool.cutting_geometry, BoringBarGeometry)
+        ):
+            self.boring_tool_details.setText(
+                "bore.unsupported_tool · chỉ chấp nhận BORING_BAR"
+            )
+            return
+        geometry = tool.cutting_geometry
+        current = (
+            tool.revision == assembly.expected_tool_revision
+            and tool.content_fingerprint == assembly.expected_tool_fingerprint
+            and holder is not None
+            and holder.revision == assembly.expected_holder_revision
+            and holder.content_fingerprint == assembly.expected_holder_fingerprint
+        )
+        holder_text = "MISSING" if holder is None else holder.name
+        holder_revision = "?" if holder is None else str(holder.revision.value)
+        holder_fingerprint = (
+            "?" if holder is None else holder.content_fingerprint.digest[:12]
+        )
+        self.boring_tool_details.setText(
+            f"{tool.family.value} · min D{geometry.minimum_bore_diameter.value:g} · "
+            f"max D{geometry.maximum_bore_diameter.value:g} · "
+            f"cut {geometry.cutting_length.value:g} · hand {geometry.hand.value} · "
+            f"unit {tool.unit.value} · shank D{tool.shank.diameter.value:g} · "
+            f"usable {tool.usable_length.value:g} · stickout {assembly.stickout.value:g} · "
+            f"assembly rev {assembly.revision.value}/fp {assembly.content_fingerprint.digest[:12]} · "
+            f"tool rev {tool.revision.value}/fp {tool.content_fingerprint.digest[:12]} · "
+            f"holder {holder_text} rev {holder_revision}/fp {holder_fingerprint} · "
+            f"snapshot {'CURRENT' if current else 'STALE'}"
+        )
+
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:
     return LengthUnit.INCH if session and session.manifest.units is UnitSystem.INCH else LengthUnit.MM
@@ -3284,14 +4024,62 @@ def _default_reaming_strategy(
     )
 
 
+def _default_boring_strategy(
+    setup: Setup,
+    hole_source: HoleReference | HolePattern,
+) -> BoringStrategy:
+    """Create a conservative D20 Boring draft with explicit D18 pre-bore."""
+    unit = setup.wcs.origin.unit
+    if hole_source.unit is not unit:
+        raise ValueError("bore.invalid_parameters: Hole source unit không khớp WCS.")
+    plane_origin = (
+        hole_source.plane_origin
+        if isinstance(hole_source, HoleReference)
+        else hole_source.locations[0].plane_origin
+    )
+    delta = Vector3(
+        plane_origin.x - setup.wcs.origin.x,
+        plane_origin.y - setup.wcs.origin.y,
+        plane_origin.z - setup.wcs.origin.z,
+    )
+    top_z = delta.dot(setup.wcs.z_axis)
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    feed_unit = (
+        FeedUnit.MM_PER_REVOLUTION
+        if unit is LengthUnit.MM else FeedUnit.INCH_PER_REVOLUTION
+    )
+    return BoringStrategy(
+        unit=unit,
+        geometry=DrillGeometryInput(hole_source, unit),
+        depth=DrillDepthDefinition(
+            unit,
+            Length(top_z, unit),
+            Length(top_z - 10.0 * scale, unit),
+        ),
+        finished_bore_diameter=Length(20.0 * scale, unit),
+        pre_bore_diameter=Length(18.0 * scale, unit),
+        spindle_rpm=SpindleSpeed(600.0),
+        feed_per_revolution=FeedRate(0.1 * scale, feed_unit),
+        clearance_height=Length(top_z + 8.0 * scale, unit),
+        retract_height=Length(top_z + 3.0 * scale, unit),
+        spindle_direction=SpindleDirection.CLOCKWISE,
+        retract_policy=BoringRetractPolicy.CONTROLLED_FEED,
+        coolant=BoringCoolantMode.OFF,
+        dwell_seconds=0.0,
+        tolerance=Length(1.0e-7 * scale, unit),
+    )
+
+
 def _hole_strategy(
     operation: Operation,
-) -> DrillingStrategy | TappingStrategy | ReamingStrategy:
+) -> DrillingStrategy | TappingStrategy | ReamingStrategy | BoringStrategy:
     """Decode one supported hole strategy without changing its binding."""
     if operation.strategy_key == "tapping_v1":
         return TappingStrategy.from_operation_parameters(operation.parameters)
     if operation.strategy_key == "reaming_v1":
         return ReamingStrategy.from_operation_parameters(operation.parameters)
+    if operation.strategy_key == "boring_v1":
+        return BoringStrategy.from_operation_parameters(operation.parameters)
     if operation.strategy_key == "drilling_v1":
         return DrillingStrategy.from_operation_parameters(operation.parameters)
     raise ValueError("Operation is not a supported hole strategy")

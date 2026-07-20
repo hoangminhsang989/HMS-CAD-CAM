@@ -1,7 +1,8 @@
 """Small validated project resources used by the 7B.1 creation dialog."""
 
 from hms_cadcam.cam.domain import (
-    AffineTransform, Angle, AngleUnit, CylindricalGeometry, DrillGeometry,
+    AffineTransform, Angle, AngleUnit, BoringBarGeometry, CylindricalGeometry,
+    DrillGeometry,
     FeedRate, FeedUnit, HolderDefinition,
     HolderDefinitionId, HolderSection, KinematicChain, KinematicMount,
     KinematicNode, KinematicSide, Length, LengthUnit, MachineAxis,
@@ -13,6 +14,74 @@ from hms_cadcam.cam.domain import (
     ToolFamily, ToolHand,
     Vector3, WorkEnvelope,
 )
+
+
+def _basic_drilling_machine(
+    unit: LengthUnit,
+    *,
+    name: str,
+    coolant: tuple[MachineCoolantCapability, ...] = (),
+) -> MachineDefinition:
+    """Create one controller-neutral MILL with the shared drilling contract."""
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    axis = MachineAxis(
+        "axis_x",
+        "longitudinal_motion",
+        MachineAxisType.LINEAR,
+        Vector3(1, 0, 0),
+        Length(-500, unit),
+        Length(500, unit),
+        Length(0, unit),
+    )
+    chain = KinematicChain((
+        KinematicNode(
+            "base", None, None, KinematicSide.FIXED, KinematicMount.NONE,
+            AffineTransform.identity(unit),
+        ),
+        KinematicNode(
+            "slide", "base", "axis_x", KinematicSide.TOOL,
+            KinematicMount.TOOL, AffineTransform.identity(unit),
+        ),
+    ))
+    feed_unit = (
+        FeedUnit.INCH_PER_MINUTE
+        if unit is LengthUnit.INCH else FeedUnit.MM_PER_MINUTE
+    )
+    capabilities = MachineCapabilities(
+        milling=True,
+        turning=False,
+        live_tooling=False,
+        probing=False,
+        tapping=False,
+        threading=False,
+        spindle_count=1,
+        maximum_feed=FeedRate(5000.0 * scale, feed_unit),
+        maximum_rapid=FeedRate(10000.0 * scale, feed_unit),
+        tool_capacity=12,
+        coolant=coolant,
+        operations=(OperationCapability.MILLING, OperationCapability.DRILLING),
+    )
+    return MachineDefinition(
+        MachineDefinitionId.new(),
+        name,
+        MachineKind.MILL,
+        unit,
+        (axis,),
+        (SpindleCapability(
+            "main",
+            SpindleSpeed(100),
+            SpindleSpeed(10000),
+            directions=(
+                SpindleDirection.CLOCKWISE,
+                SpindleDirection.COUNTERCLOCKWISE,
+            ),
+        ),),
+        capabilities,
+        chain,
+        WorkEnvelope(
+            Length(1000, unit), Length(500, unit), Length(500, unit),
+        ),
+    )
 
 
 def basic_mill_resources(unit: LengthUnit) -> tuple[
@@ -343,3 +412,66 @@ def basic_reaming_resources(unit: LengthUnit) -> tuple[
         ),
     )
     return reamer, holder, assembly, machine
+
+
+def basic_boring_resources(unit: LengthUnit) -> tuple[
+    ToolDefinition,
+    HolderDefinition,
+    ToolAssembly,
+    MachineDefinition,
+]:
+    """Create one right-hand boring bar and compatible milling machine bundle."""
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    tool = ToolDefinition(
+        ToolDefinitionId.new(),
+        "Dao tiện lỗ D15-D25 RH",
+        ToolFamily.BORING_BAR,
+        unit,
+        BoringBarGeometry(
+            Length(15.0 * scale, unit),
+            Length(25.0 * scale, unit),
+            Length(25.0 * scale, unit),
+            ToolHand.RIGHT,
+        ),
+        Length(90.0 * scale, unit),
+        Length(35.0 * scale, unit),
+        ShankGeometry(
+            Length(12.0 * scale, unit), Length(55.0 * scale, unit),
+        ),
+        coolant_capabilities=(
+            ToolCoolantCapability.FLOOD,
+            ToolCoolantCapability.MIST,
+            ToolCoolantCapability.THROUGH_TOOL,
+        ),
+    )
+    holder = HolderDefinition(
+        HolderDefinitionId.new(),
+        "Holder tiện lỗ cơ bản",
+        unit,
+        (HolderSection(
+            Length(0, unit),
+            Length(35.0 * scale, unit),
+            Length(30.0 * scale, unit),
+            Length(40.0 * scale, unit),
+        ),),
+        Length(0, unit),
+        interface="generic_taper",
+    )
+    assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "Cụm dao tiện lỗ D15-D25 RH",
+        tool,
+        Length(25.0 * scale, unit),
+        Length(70.0 * scale, unit),
+        holder,
+    )
+    machine = _basic_drilling_machine(
+        unit,
+        name="Máy phay tiện lỗ cơ bản",
+        coolant=(
+            MachineCoolantCapability.FLOOD,
+            MachineCoolantCapability.MIST,
+            MachineCoolantCapability.THROUGH_SPINDLE,
+        ),
+    )
+    return tool, holder, assembly, machine
