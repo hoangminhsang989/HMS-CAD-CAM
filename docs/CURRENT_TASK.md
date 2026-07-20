@@ -1,19 +1,27 @@
-# Nhiệm vụ hiện tại — Giai đoạn 5B
+# Nhiệm vụ tiếp theo — Giai đoạn 7D.3
 
-## Phạm vi
+## Multi-operation Program Assembly
 
-- Measurement chỉ cho BREP: tọa độ vertex, khoảng cách hai vertex, chiều dài
-  cạnh, bán kính/đường kính cạnh tròn, diện tích face, thể tích solid và bounding
-  dimensions theo các trục X/Y/Z.
-- Kết quả đo là dữ liệu thuần Python, read-only và không làm thay đổi dự án.
+7D.3 dự kiến mở rộng pipeline Post hiện có từ một operation sang một chương trình `.fn` gồm nhiều operation, nhưng chưa triển khai trong checkpoint trạng thái này.
 
-## Kiểm thử bắt buộc
+## Phạm vi dự kiến
 
-- Kiểm tra số đo box, cylinder, circular arc và tolerance tập trung.
-- Kiểm tra Ctrl-pair vertex, reset lifecycle, lỗi an toàn và public API không có OCP.
-- Chạy test measurement, CAD/viewer/integration, toàn bộ pytest và kiểm tra package.
+- Ghép nhiều operation thành một chương trình `.fn`.
+- Hỗ trợ nhiều tool section và quy tắc tool ordering rõ ràng.
+- Dùng chung header/footer ở cấp chương trình.
+- Phát tool-change sequence an toàn giữa các section.
+- Giữ provenance riêng cho từng operation và Toolpath artifact nguồn.
+- Áp dụng simulation/post gate cho toàn chương trình.
+- Giữ output và checksum deterministic.
+- Tái sử dụng pipeline project-managed artifact/export hiện có.
 
-## Ngoài phạm vi
+## Chưa thuộc 7D.3
 
-- Chưa hỗ trợ measurement STL.
-- Chưa triển khai assembly tree hoặc CAM.
+- Production Tapping.
+- Automatic tool optimization.
+- Direct CNC communication hoặc FTP/SFTP/HTTP/DNC.
+- 4/5-axis.
+- Stock removal.
+- Machine certification.
+
+Tài liệu này chỉ xác định phạm vi của nhiệm vụ tiếp theo; không xác nhận 7D.3 đã bắt đầu hoặc hoàn thành.
