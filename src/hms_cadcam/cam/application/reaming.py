@@ -256,12 +256,18 @@ class ReamingGenerator:
             )
             coolant_state = _coolant_state(strategy.coolant)
             marker_metadata = (
+                ("clearance_height", format(
+                    strategy.clearance_height.value, ".17g"
+                )),
                 ("coolant", strategy.coolant.value),
+                ("dwell_seconds", format(strategy.dwell_seconds, ".17g")),
                 ("feed_per_revolution", format(
                     strategy.feed_per_revolution.value, ".17g"
                 )),
                 ("feed_unit", strategy.feed_per_revolution.unit.value),
+                ("final_depth", format(strategy.final_depth.value, ".17g")),
                 ("format", "hms_reaming_process_v1"),
+                ("length_unit", strategy.unit.value),
                 ("metadata_version", "1"),
                 ("nominal_diameter", format(
                     strategy.nominal_diameter.value, ".17g"
@@ -270,11 +276,17 @@ class ReamingGenerator:
                     strategy.pre_hole_diameter.value, ".17g"
                 )),
                 ("retract_policy", strategy.retract_policy.value),
+                ("retract_height", format(
+                    strategy.retract_height.value, ".17g"
+                )),
                 ("rpm", format(strategy.spindle_speed.value, ".17g")),
                 ("spindle_direction", strategy.spindle_direction.value),
                 ("stock_per_side", format(
                     strategy.stock_per_side.value, ".17g"
                 )),
+                ("strategy_key", "reaming_v1"),
+                ("strategy_version", str(strategy.strategy_version)),
+                ("top_z", format(strategy.top_z.value, ".17g")),
             )
             for hole_index, hole in enumerate(inputs.holes):
                 clearance = Pose(Point3(

@@ -234,7 +234,8 @@ class OcpCadViewportBackend:
             "rapid", "approach", "peck_resume", "plunge", "plunge_link",
             "lead_in", "pocket_cutting", "cutting", "lead_out", "link",
             "retract", "synchronized_descent", "synchronized_retract",
-            "final_retract",
+            "final_retract", "reaming_approach", "reaming_descent",
+            "controlled_retract",
         )}
         movements = tuple(
             event for event in artifact.events
@@ -244,7 +245,8 @@ class OcpCadViewportBackend:
             groups[segment.semantic].append(event)
         annotation_groups = {key: [] for key in (
             "dwell", "synchronization_begin", "spindle_reversal",
-            "hole_complete", "synchronization_end",
+            "hole_complete", "synchronization_end", "process_begin",
+            "spindle_begin", "coolant_begin", "process_end",
         )}
         for annotation in metadata.annotations:
             annotation_groups[annotation.semantic].append(annotation.position)
@@ -263,11 +265,18 @@ class OcpCadViewportBackend:
             "synchronized_descent": (0.15, 0.95, 0.35),
             "synchronized_retract": (0.95, 0.35, 0.8),
             "final_retract": (0.65, 0.35, 1.0),
+            "reaming_approach": (1.0, 0.7, 0.1),
+            "reaming_descent": (0.15, 0.95, 0.25),
+            "controlled_retract": (0.95, 0.3, 0.75),
             "dwell": (1.0, 0.2, 0.2),
             "synchronization_begin": (1.0, 0.85, 0.15),
             "spindle_reversal": (1.0, 0.35, 0.1),
             "hole_complete": (0.25, 1.0, 0.85),
             "synchronization_end": (0.55, 0.85, 1.0),
+            "process_begin": (1.0, 0.9, 0.15),
+            "spindle_begin": (0.95, 0.55, 0.1),
+            "coolant_begin": (0.1, 0.75, 1.0),
+            "process_end": (0.3, 0.85, 1.0),
         }
         operation_id = artifact.source_operation_id
         previous = self._toolpaths.get(operation_id, ())
