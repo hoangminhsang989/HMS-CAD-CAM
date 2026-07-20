@@ -8,7 +8,12 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from hms_cadcam.cam.domain.ids import OperationId, PostResultId, ToolpathArtifactId
+from hms_cadcam.cam.domain.ids import (
+    OperationId,
+    PostResultId,
+    ProgramAssemblyResultId,
+    ToolpathArtifactId,
+)
 from hms_cadcam.cam.domain.revision import ContentFingerprint
 from hms_cadcam.cam.post.export_codec import json_bytes, loads
 from hms_cadcam.cam.post.export_model import (
@@ -415,6 +420,64 @@ class NCArtifactStore:
             raise NCArtifactStoreError(
                 NCExportDiagnosticCode.WRITE_FAILED,
                 "Managed NC artifact could not be cleared",
+            ) from error
+
+    def remove_assembly_artifact(
+        self,
+        project_root: Path,
+        project_id: UUID,
+        assembly_result_id: ProgramAssemblyResultId,
+    ) -> NCArtifactManifest:
+        """Explicitly remove exactly one managed assembly payload and sidecar."""
+        if not isinstance(assembly_result_id, ProgramAssemblyResultId):
+            raise ValueError("Assembly result identity is invalid")
+        root = self._project_root(project_root)
+        manifest_path = self.manifest_path(root)
+        if not manifest_path.exists():
+            return NCArtifactManifest(project_id)
+        try:
+            manifest = self.load(root, project_id)
+            removed = tuple(
+                item
+                for item in manifest.entries
+                if item.assembly_result_id == assembly_result_id
+            )
+            if not removed:
+                return manifest
+            remaining = NCArtifactManifest(
+                project_id,
+                tuple(
+                    item
+                    for item in manifest.entries
+                    if item.assembly_result_id != assembly_result_id
+                ),
+            )
+            published = self._write_manifest_and_sidecars(root, remaining)
+            for entry in removed:
+                for relative in (
+                    entry.output_relative_path,
+                    entry.metadata_relative_path,
+                ):
+                    path = self._relative_file(root, relative)
+                    if is_link_or_junction(path):
+                        raise NCArtifactStoreError(
+                            NCExportDiagnosticCode.PATH_ESCAPE,
+                            "Managed assembly artifact path is a link or junction",
+                        )
+                    if path.is_file():
+                        path.unlink()
+            return published
+        except NCArtifactStoreError:
+            raise
+        except PermissionError as error:
+            raise NCArtifactStoreError(
+                NCExportDiagnosticCode.PERMISSION_DENIED,
+                "Managed assembly artifact could not be cleared",
+            ) from error
+        except OSError as error:
+            raise NCArtifactStoreError(
+                NCExportDiagnosticCode.WRITE_FAILED,
+                "Managed assembly artifact could not be cleared",
             ) from error
 
     def reconcile_sources(

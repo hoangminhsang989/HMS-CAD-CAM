@@ -12,8 +12,8 @@ from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QApplication, QMessageBox, QPushButton, QSplitter, QToolBar, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QApplication, QMessageBox, QPushButton, QSplitter, QTabWidget, QToolBar,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from hms_cadcam.cam.domain import (
@@ -78,6 +78,7 @@ from hms_cadcam.ui.simulation_ui import (
     SimulationIssueSelection, SimulationPanel,
 )
 from hms_cadcam.ui.post_ui import PostProcessorPanel
+from hms_cadcam.ui.program_assembly_ui import ProgramAssemblyPanel
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
@@ -172,11 +173,16 @@ class CamWorkspace(QWidget):
         self.editor = _CamPropertiesEditor(self._apply_properties)
         self.simulation_panel = SimulationPanel()
         self.post_panel = PostProcessorPanel(service)
+        self.program_assembly_panel = ProgramAssemblyPanel(service)
+        self.post_tabs = QTabWidget()
+        self.post_tabs.setObjectName("CamPostTabs")
+        self.post_tabs.addTab(self.post_panel, "Post Processor")
+        self.post_tabs.addTab(self.program_assembly_panel, "Program Assembly")
         splitter = QSplitter()
         splitter.addWidget(self.tree)
         splitter.addWidget(self.editor)
         splitter.addWidget(self.simulation_panel)
-        splitter.addWidget(self.post_panel)
+        splitter.addWidget(self.post_tabs)
         splitter.setSizes([280, 320, 360, 460])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -201,6 +207,7 @@ class CamWorkspace(QWidget):
             self._clear_simulation_issue_focus
         )
         self.post_panel.message.connect(self.message.emit)
+        self.program_assembly_panel.message.connect(self.message.emit)
         for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
@@ -254,6 +261,7 @@ class CamWorkspace(QWidget):
         self._simulation_cache_attempts.clear()
         self.simulation_panel.clear_source()
         self.post_panel.bind_project(session)
+        self.program_assembly_panel.bind_project(session)
         self.simulation_panel.set_policy(
             SimulationSamplingPolicy(),
             SimulationDisplayPolicy(),
@@ -340,6 +348,8 @@ class CamWorkspace(QWidget):
             self.editor.clear()
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
+            self.program_assembly_panel.clear_selected_operation()
+        self.program_assembly_panel.refresh_sources()
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -415,6 +425,7 @@ class CamWorkspace(QWidget):
             self.editor.clear()
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
+            self.program_assembly_panel.clear_selected_operation()
             return
         self._selected_key = (item.data(0, _KIND_ROLE), item.data(0, _ID_ROLE))
         self._show_properties(item)
@@ -432,10 +443,12 @@ class CamWorkspace(QWidget):
             self.editor.show_job(job.name)
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
+            self.program_assembly_panel.clear_selected_operation()
         elif kind in {"setup", "stock"} and setup:
             self.editor.show_setup(setup)
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
+            self.program_assembly_panel.clear_selected_operation()
         elif kind in {"group", "operation"} and setup:
             node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
             operation = (
@@ -449,10 +462,15 @@ class CamWorkspace(QWidget):
                 self.editor.show_node(node.name, None)
                 self._remove_displayed_toolpath()
                 self.post_panel.clear_operation()
+                self.program_assembly_panel.clear_selected_operation()
             else:
                 self.post_panel.set_operation(
                     operation.operation_id,
                     generation=self._generation,
+                    operation_name=node.name,
+                )
+                self.program_assembly_panel.set_selected_operation(
+                    operation.operation_id,
                     operation_name=node.name,
                 )
                 self._picked_hole_reference = None
@@ -559,6 +577,7 @@ class CamWorkspace(QWidget):
             self.editor.clear()
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
+            self.program_assembly_panel.clear_selected_operation()
         self._update_generate_action()
 
     def _remove_toolpath(self, operation_id: OperationId) -> None:

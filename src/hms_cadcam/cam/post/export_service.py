@@ -9,7 +9,13 @@ from threading import RLock
 from typing import Callable
 from uuid import UUID, uuid4, uuid5
 
-from hms_cadcam.cam.domain.ids import NCArtifactId, NCExportResultId, OperationId, PostResultId
+from hms_cadcam.cam.domain.ids import (
+    NCArtifactId,
+    NCExportResultId,
+    OperationId,
+    PostResultId,
+    ProgramAssemblyResultId,
+)
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.post.export_model import (
@@ -244,6 +250,31 @@ class NCExportService:
         with self._lock:
             self._results.pop((project_id, operation_id), None)
             self._latest.pop((project_id, operation_id), None)
+            self._manifest = manifest
+        return manifest
+
+    def clear_managed_assembly_artifact(
+        self,
+        project_root: Path,
+        project_id: UUID,
+        assembly_result_id: ProgramAssemblyResultId,
+    ) -> NCArtifactManifest:
+        """Explicitly remove one assembly artifact without touching external files."""
+        if not isinstance(assembly_result_id, ProgramAssemblyResultId):
+            raise ValueError("Assembly result identity is invalid")
+        with self._lock:
+            project_bound = self._bound_project_id
+            root_bound = self._bound_root
+        if project_bound is not None and project_bound != project_id:
+            raise ValueError("Managed assembly artifact belongs to another project")
+        if root_bound is not None and root_bound.resolve() != project_root.resolve():
+            raise ValueError("Managed assembly artifact root belongs to another project")
+        manifest = self._store.remove_assembly_artifact(
+            project_root, project_id, assembly_result_id
+        )
+        with self._lock:
+            self._results.pop((project_id, assembly_result_id), None)
+            self._latest.pop((project_id, assembly_result_id), None)
             self._manifest = manifest
         return manifest
 
