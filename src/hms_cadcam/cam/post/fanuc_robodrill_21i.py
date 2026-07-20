@@ -9,11 +9,12 @@ from hms_cadcam.cam.domain.machine import MachineKind, OperationCapability, Spin
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.domain.units import LengthUnit
 from hms_cadcam.cam.post.fanuc_validation import fanuc_number, validate_fanuc_output, validate_fanuc_program
+from hms_cadcam.cam.post.assembly_model import ProgramAssemblyPlan, ProgramOperationSection
 from hms_cadcam.cam.post.model import *
 from hms_cadcam.cam.post.profile import (
     ArcOutputMode, ArcPolicy, BlockNumberPolicy, CoolantCodeMapping,
     CutterCompensationPolicy, DwellPolicy, NumericFormatPolicy,
-    ProductionControllerProfile, ProgramNumberPolicy, SafeSequenceToken,
+    ProductionControllerProfile, ProductionProgramContext, ProgramNumberPolicy, SafeSequenceToken,
     SpindleCodeMapping, ToolActivationPolicy, WorkOffsetMapping,
 )
 from hms_cadcam.cam.post.validation import validate_program_ir, validate_request
@@ -112,6 +113,178 @@ def _has_canonical_contract(definition: PostProcessorDefinition) -> bool:
     )
 
 
+def _single_program_header_lines(
+    context: ProductionProgramContext, profile: ProductionControllerProfile
+) -> list[str]:
+    numeric = profile.numeric_format
+    binding = context.tool_binding
+    return [
+        "%",
+        "(SHL-TECH)",
+        f"(FileName={context.file_name})",
+        "(DAO=" + binding.tool_comment
+        + ",R=" + fanuc_number(
+            context.tool_radius.value,
+            numeric.xyz_precision,
+            force_decimal_point=True,
+        )
+        + ",LUONGDU=" + fanuc_number(
+            context.stock_allowance.value,
+            numeric.xyz_precision,
+            force_decimal_point=True,
+        )
+        + ",CHIEUSAU=" + fanuc_number(
+            context.cut_depth.value,
+            numeric.xyz_precision,
+            force_decimal_point=True,
+        )
+        + ")",
+        "G90G80G49G40G17",
+    ]
+
+
+def _assembly_program_header_lines(plan: ProgramAssemblyPlan) -> list[str]:
+    context = plan.shared_context
+    lines = ["%", "(SHL-TECH)", f"(FileName={context.file_name})"]
+    if context.program_identity is not None:
+        lines.append(f"(PROGRAM={context.program_identity})")
+    lines.extend(f"({key.upper()}={value})" for key, value in context.global_metadata)
+    lines.append("G90G80G49G40G17")
+    return lines
+
+
+def _operation_section_lines(
+    program: NCProgramIR, profile: ProductionControllerProfile
+) -> list[str]:
+    context = program.production_context
+    assert context is not None
+    numeric = profile.numeric_format
+    force_xyz = lambda value: fanuc_number(
+        value, numeric.xyz_precision, force_decimal_point=True
+    )
+    force_ijk = lambda value: fanuc_number(
+        value, numeric.ijk_precision, force_decimal_point=True
+    )
+    binding = context.tool_binding
+    lines = [
+        "G91G28G0Z0",
+        f"M06T{binding.tool_station}",
+        "G90G40G54X0.Y0.",
+        f"G43Z{force_xyz(context.safe_z.value)}H{binding.length_offset}",
+    ]
+    if context.use_legacy_cutter_compensation:
+        assert binding.diameter_offset is not None
+        lines.append(f"G41D{binding.diameter_offset}")
+
+    current = (0.0, 0.0, context.safe_z.value)
+    positioned = False
+    pending_spindle: str | None = None
+    last_spindle_start = max(
+        (
+            index
+            for index, record in enumerate(program.records)
+            if isinstance(record, SpindleStartRecord)
+        ),
+        default=-1,
+    )
+    last_coolant_on = max(
+        (
+            index
+            for index, record in enumerate(program.records)
+            if isinstance(record, CoolantRecord) and record.state is not CoolantState.OFF
+        ),
+        default=-1,
+    )
+
+    def flush_spindle() -> None:
+        nonlocal pending_spindle
+        if pending_spindle is not None:
+            lines.append(pending_spindle)
+            pending_spindle = None
+
+    for index, record in enumerate(program.records):
+        if pending_spindle is not None and not (
+            isinstance(record, CoolantRecord) and record.state is not CoolantState.OFF
+        ):
+            flush_spindle()
+        if isinstance(record, SpindleStartRecord):
+            code = (
+                profile.spindle_mapping.clockwise
+                if record.direction is SpindleDirection.CLOCKWISE
+                else profile.spindle_mapping.counterclockwise
+            )
+            pending_spindle = code + "S" + fanuc_number(
+                record.speed.value, numeric.spindle_precision
+            )
+        elif isinstance(record, SpindleStopRecord):
+            if index < last_spindle_start:
+                lines.append(profile.spindle_mapping.stop)
+        elif isinstance(record, CoolantRecord):
+            if record.state is CoolantState.FLOOD:
+                lines.append(profile.coolant_mapping.flood)
+                flush_spindle()
+            elif index < last_coolant_on:
+                lines.append(profile.coolant_mapping.off)
+        elif isinstance(record, (RapidMotionRecord, LinearMotionRecord, ArcMotionRecord)):
+            flush_spindle()
+            if not positioned:
+                start = record.start.position
+                if (current[0], current[1]) != (start.x, start.y):
+                    lines.append(
+                        f"G00X{force_xyz(start.x)}Y{force_xyz(start.y)}"
+                        f"Z{force_xyz(context.safe_z.value)}"
+                    )
+                    current = (start.x, start.y, context.safe_z.value)
+                if current[2] != start.z:
+                    lines.append(
+                        f"G00X{force_xyz(start.x)}Y{force_xyz(start.y)}"
+                        f"Z{force_xyz(start.z)}"
+                    )
+                    current = (start.x, start.y, start.z)
+                positioned = True
+            end = record.end.position
+            if isinstance(record, RapidMotionRecord):
+                lines.append(
+                    f"G00X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}"
+                )
+            elif isinstance(record, LinearMotionRecord):
+                feed = fanuc_number(record.feed_rate.value, numeric.feed_precision)
+                lines.append(
+                    f"G01X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}F{feed}"
+                )
+            else:
+                code = (
+                    "G03"
+                    if record.sweep_radians * record.plane_normal.z > 0.0
+                    else "G02"
+                )
+                i_value = record.center.x - record.start.position.x
+                j_value = record.center.y - record.start.position.y
+                feed = fanuc_number(record.feed_rate.value, numeric.feed_precision)
+                lines.append(
+                    f"{code}X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}"
+                    f"I{force_ijk(i_value)}J{force_ijk(j_value)}F{feed}"
+                )
+            current = (end.x, end.y, end.z)
+        elif isinstance(record, DwellRecord):
+            raise ValueError("post.fanuc.dwell_unsupported")
+    flush_spindle()
+    if context.use_legacy_cutter_compensation:
+        lines.append("G40")
+    lines.extend(
+        (
+            profile.coolant_mapping.off,
+            profile.spindle_mapping.stop,
+            "G91G28G0Z0",
+        )
+    )
+    return lines
+
+
+def _program_footer_lines() -> list[str]:
+    return ["G28Y0.", "M30", "%"]
+
+
 class FanucRobodrill21iAdapter:
     """Machine-specific single-operation production adapter; it does not export files."""
 
@@ -148,85 +321,59 @@ class FanucRobodrill21iAdapter:
         profile = definition.production_profile
         context = program.production_context
         assert profile is not None and context is not None
-        numeric = profile.numeric_format
-        force_xyz = lambda value: fanuc_number(value, numeric.xyz_precision, force_decimal_point=True)
-        force_ijk = lambda value: fanuc_number(value, numeric.ijk_precision, force_decimal_point=True)
-        binding = context.tool_binding
+        lines = _single_program_header_lines(context, profile)
+        lines.extend(_operation_section_lines(program, profile))
+        lines.extend(_program_footer_lines())
+        return profile.newline.join(lines) + profile.newline
+
+    def format_program_header(self, plan: ProgramAssemblyPlan) -> tuple[str, ...]:
+        """Format only the global assembly header."""
+        return tuple(_assembly_program_header_lines(plan))
+
+    def format_operation_section(
+        self, section: ProgramOperationSection
+    ) -> tuple[str, ...]:
+        """Format one independent tool section without global delimiters/footer."""
+        profile = self._definition.production_profile
+        if profile is None:
+            raise ValueError("post.fanuc.profile_missing")
+        diagnostics = validate_fanuc_program(section.program_ir, self._definition)
+        if diagnostics:
+            raise ValueError(diagnostics[0].message_key)
+        operation_lines = _operation_section_lines(section.program_ir, profile)
         lines = [
-            "%",
-            "(SHL-TECH)",
-            f"(FileName={context.file_name})",
-            "(DAO=" + binding.tool_comment
-            + ",R=" + fanuc_number(context.tool_radius.value, numeric.xyz_precision, force_decimal_point=True)
-            + ",LUONGDU=" + fanuc_number(context.stock_allowance.value, numeric.xyz_precision, force_decimal_point=True)
-            + ",CHIEUSAU=" + fanuc_number(context.cut_depth.value, numeric.xyz_precision, force_decimal_point=True) + ")",
-            "G90G80G49G40G17",
-            "G91G28G0Z0",
-            f"M06T{binding.tool_station}",
-            "G90G40G54X0.Y0.",
-            f"G43Z{force_xyz(context.safe_z.value)}H{binding.length_offset}",
+            f"(OPERATION={section.operation_id},SECTION={section.order_index})",
+            *operation_lines[:4],
         ]
-        if context.use_legacy_cutter_compensation:
-            assert binding.diameter_offset is not None
-            lines.append(f"G41D{binding.diameter_offset}")
+        lines.extend(f"({key.upper()}={value})" for key, value in section.display_metadata)
+        lines.extend(operation_lines[4:])
+        return tuple(lines)
 
-        current = (0.0, 0.0, context.safe_z.value)
-        positioned = False
-        pending_spindle: str | None = None
-        last_spindle_start = max((index for index, record in enumerate(program.records) if isinstance(record, SpindleStartRecord)), default=-1)
-        last_coolant_on = max((index for index, record in enumerate(program.records) if isinstance(record, CoolantRecord) and record.state is not CoolantState.OFF), default=-1)
+    def format_program_footer(self) -> tuple[str, ...]:
+        """Format only the one global program footer."""
+        return tuple(_program_footer_lines())
 
-        def flush_spindle() -> None:
-            nonlocal pending_spindle
-            if pending_spindle is not None:
-                lines.append(pending_spindle)
-                pending_spindle = None
-
-        for index, record in enumerate(program.records):
-            if pending_spindle is not None and not (isinstance(record, CoolantRecord) and record.state is not CoolantState.OFF):
-                flush_spindle()
-            if isinstance(record, SpindleStartRecord):
-                code = profile.spindle_mapping.clockwise if record.direction is SpindleDirection.CLOCKWISE else profile.spindle_mapping.counterclockwise
-                pending_spindle = code + "S" + fanuc_number(record.speed.value, numeric.spindle_precision)
-            elif isinstance(record, SpindleStopRecord):
-                if index < last_spindle_start:
-                    lines.append(profile.spindle_mapping.stop)
-            elif isinstance(record, CoolantRecord):
-                if record.state is CoolantState.FLOOD:
-                    lines.append(profile.coolant_mapping.flood)
-                    flush_spindle()
-                elif index < last_coolant_on:
-                    lines.append(profile.coolant_mapping.off)
-            elif isinstance(record, (RapidMotionRecord, LinearMotionRecord, ArcMotionRecord)):
-                flush_spindle()
-                if not positioned:
-                    start = record.start.position
-                    if (current[0], current[1]) != (start.x, start.y):
-                        lines.append(f"G00X{force_xyz(start.x)}Y{force_xyz(start.y)}Z{force_xyz(context.safe_z.value)}")
-                        current = (start.x, start.y, context.safe_z.value)
-                    if current[2] != start.z:
-                        lines.append(f"G00X{force_xyz(start.x)}Y{force_xyz(start.y)}Z{force_xyz(start.z)}")
-                        current = (start.x, start.y, start.z)
-                    positioned = True
-                end = record.end.position
-                if isinstance(record, RapidMotionRecord):
-                    lines.append(f"G00X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}")
-                elif isinstance(record, LinearMotionRecord):
-                    feed = fanuc_number(record.feed_rate.value, numeric.feed_precision)
-                    lines.append(f"G01X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}F{feed}")
-                else:
-                    code = "G03" if record.sweep_radians * record.plane_normal.z > 0.0 else "G02"
-                    i_value = record.center.x - record.start.position.x
-                    j_value = record.center.y - record.start.position.y
-                    feed = fanuc_number(record.feed_rate.value, numeric.feed_precision)
-                    lines.append(f"{code}X{force_xyz(end.x)}Y{force_xyz(end.y)}Z{force_xyz(end.z)}I{force_ijk(i_value)}J{force_ijk(j_value)}F{feed}")
-                current = (end.x, end.y, end.z)
-            elif isinstance(record, DwellRecord):
-                raise ValueError("post.fanuc.dwell_unsupported")
-        flush_spindle()
-        if context.use_legacy_cutter_compensation:
-            lines.append("G40")
-        lines.extend((profile.coolant_mapping.off, profile.spindle_mapping.stop, "G91G28G0Z0", "G28Y0.", "M30", "%"))
+    def format_assembly(
+        self, plan: ProgramAssemblyPlan, definition: PostProcessorDefinition
+    ) -> str:
+        """Format one complete explicit-order multi-operation production program."""
+        if not _has_canonical_contract(definition):
+            raise ValueError("post.fanuc.definition_mismatch")
+        profile = definition.production_profile
+        assert profile is not None
+        if (
+            plan.post_definition_id != definition.definition_id
+            or plan.post_definition_fingerprint != definition.fingerprint
+            or plan.production_profile_id != profile.profile_id
+            or plan.production_profile_fingerprint != profile.fingerprint
+            or plan.adapter_key != ADAPTER_KEY
+            or plan.adapter_version != definition.adapter_version
+        ):
+            raise ValueError("assembly.profile_mismatch")
+        lines = list(self.format_program_header(plan))
+        for section in plan.sections:
+            lines.extend(self.format_operation_section(section))
+        lines.extend(self.format_program_footer())
         return profile.newline.join(lines) + profile.newline
 
     def validate_output(self, text: str, program: NCProgramIR, definition: PostProcessorDefinition) -> tuple[PostDiagnostic, ...]:

@@ -32,6 +32,17 @@ _STATISTICS_FORMAT = "HMS_CAM_TOOLPATH_STATISTICS"
 _DIAGNOSTIC_FORMAT = "HMS_CAM_TOOLPATH_DIAGNOSTIC"
 
 
+def _typed_fingerprint(data: Any) -> ContentFingerprint:
+    if not isinstance(data, dict):
+        raise CamValidationError("Toolpath fingerprint payload is malformed")
+    kind = data.get("kind")
+    if kind == ContentFingerprint.KIND:
+        return ContentFingerprint.from_dict(data)
+    if kind == DependencyFingerprint.KIND:
+        return DependencyFingerprint.from_dict(data)
+    raise CamValidationError("Unsupported toolpath fingerprint kind")
+
+
 def _strict(data: Any, format_name: str, fields: set[str]) -> None:
     if not isinstance(data, dict) or set(data) != {"format", "format_version", *fields}:
         raise CamValidationError(f"{format_name} payload is malformed")
@@ -264,7 +275,7 @@ def artifact_from_dict(data: dict[str, Any], *, max_events: int | None = None) -
             DependencyFingerprint.from_dict(data["input_fingerprint"]), CoordinateSpace(data["coordinate_space"]),
             LengthUnit(data["unit"]), SetupId.parse(data["setup_id"]), Revision.from_dict(data["setup_revision"]),
             ContentFingerprint.from_dict(data["wcs_fingerprint"]), ToolAssemblyId.parse(data["tool_assembly_id"]),
-            ContentFingerprint.from_dict(data["tool_assembly_fingerprint"]),
+            _typed_fingerprint(data["tool_assembly_fingerprint"]),
             MachineDefinitionId.parse(data["machine_id"]) if data["machine_id"] else None,
             ContentFingerprint.from_dict(data["machine_fingerprint"]) if data["machine_fingerprint"] else None,
             pose_from_dict(data["initial_pose"]), tuple(event_from_dict(item) for item in events),

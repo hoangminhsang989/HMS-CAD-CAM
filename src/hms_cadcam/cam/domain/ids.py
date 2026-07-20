@@ -193,6 +193,27 @@ class NCProgramId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class ProgramAssemblyRequestId(_CamUuidId):
+    """Identity of one multi-operation program-assembly request."""
+
+    PREFIX: ClassVar[str] = "program_assembly_request"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramAssemblyResultId(_CamUuidId):
+    """Identity of one published multi-operation program result."""
+
+    PREFIX: ClassVar[str] = "program_assembly_result"
+
+
+@dataclass(frozen=True, slots=True)
+class ProgramOperationSectionId(_CamUuidId):
+    """Identity of one ordered operation section inside an NC program."""
+
+    PREFIX: ClassVar[str] = "program_operation_section"
+
+
+@dataclass(frozen=True, slots=True)
 class NCExportRequestId(_CamUuidId):
     """Identity of one NC file-export request envelope."""
 
@@ -234,6 +255,9 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     PostRequestId,
     PostResultId,
     NCProgramId,
+    ProgramAssemblyRequestId,
+    ProgramAssemblyResultId,
+    ProgramOperationSectionId,
     NCExportRequestId,
     NCExportResultId,
     NCArtifactId,

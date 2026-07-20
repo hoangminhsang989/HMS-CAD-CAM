@@ -9,11 +9,12 @@ from threading import RLock
 from typing import Callable
 from uuid import UUID, uuid4, uuid5
 
-from hms_cadcam.cam.domain.ids import NCArtifactId, NCExportResultId, OperationId
+from hms_cadcam.cam.domain.ids import NCArtifactId, NCExportResultId, OperationId, PostResultId
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.post.export_model import (
     ExportTarget,
+    NCAssemblyExportRequest,
     NCArtifactManifest,
     NCArtifactManifestEntry,
     NCArtifactStatus,
@@ -32,6 +33,11 @@ from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreErr
 from hms_cadcam.cam.post.lowering import PostSourceSnapshot, validate_post_source
 from hms_cadcam.cam.post.model import PostRequest, PostResult, PostResultStatus
 from hms_cadcam.cam.post.service import build_post_input_fingerprint
+from hms_cadcam.cam.post.assembly_model import (
+    ProgramAssemblyRequest,
+    ProgramAssemblyResult,
+    ProgramAssemblyStatus,
+)
 
 
 _ARTIFACT_NAMESPACE = UUID("2792175b-a984-5c1c-8dd1-7d2200000001")
@@ -67,6 +73,34 @@ class NCExportSourceSnapshot:
                 ).to_dict(),
                 "post_result_id": str(self.post_result.result_id),
                 "post_result_fingerprint": self.post_result.result_fingerprint.to_dict(),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NCAssemblyExportSourceSnapshot:
+    """Runtime-only export source for one published multi-operation result."""
+
+    project_generation: int
+    post_request: ProgramAssemblyRequest
+    assembly_result: ProgramAssemblyResult
+
+    def __post_init__(self) -> None:
+        if type(self.project_generation) is not int or self.project_generation < 0:
+            raise ValueError("NC assembly export project generation is invalid")
+        if not isinstance(self.post_request, ProgramAssemblyRequest):
+            raise TypeError("NC assembly export request is invalid")
+        if not isinstance(self.assembly_result, ProgramAssemblyResult):
+            raise TypeError("NC assembly export result is invalid")
+
+    @property
+    def fingerprint(self) -> DependencyFingerprint:
+        return DependencyFingerprint.from_payload(
+            {
+                "project_generation": self.project_generation,
+                "assembly_request": self.post_request.input_fingerprint.to_dict(),
+                "assembly_result_id": str(self.assembly_result.result_id),
+                "assembly_result_fingerprint": self.assembly_result.result_fingerprint.to_dict(),
             }
         )
 
@@ -349,6 +383,276 @@ class NCExportService:
         )
         self._publish_runtime(request, token, completed, project_root)
         return NCExportExecution(True, completed, published, (), completed.status)
+
+    def export_assembly(
+        self,
+        project_root: Path,
+        request: NCAssemblyExportRequest,
+        source: NCAssemblyExportSourceSnapshot,
+        *,
+        current_source: Callable[[], NCAssemblyExportSourceSnapshot] | None = None,
+        current_project_generation: Callable[[], int] | None = None,
+    ) -> NCExportExecution:
+        """Publish an assembly through the existing managed artifact/export store."""
+        key = (request.project_id, request.assembly_result_id)
+        with self._lock:
+            self._generation += 1
+            token = NCExportToken(
+                uuid4(), self._generation, request.fingerprint, source.fingerprint
+            )
+            self._latest[key] = token
+        try:
+            filename, payload = self._validate_assembly(request, source)
+            entry = self._build_assembly_entry(request, source, filename, payload)
+        except NCExportSecurityError:
+            diagnostic = _diagnostic(
+                NCExportDiagnosticCode.FILENAME_INVALID, "export.filename_rejected"
+            )
+            return NCExportExecution(False, None, None, (diagnostic,), NCExportStatus.FAILED)
+        except Exception:
+            diagnostic = _diagnostic(
+                NCExportDiagnosticCode.INVALID_REQUEST, "export.assembly_preflight_failed"
+            )
+            return NCExportExecution(False, None, None, (diagnostic,), NCExportStatus.FAILED)
+        if not self._assembly_still_current(
+            request, source, token, current_source, current_project_generation
+        ):
+            diagnostic = _diagnostic(NCExportDiagnosticCode.POST_STALE, "export.prewrite_stale")
+            return NCExportExecution(False, None, None, (diagnostic,), NCExportStatus.STALE)
+        try:
+            published = self._store.publish(
+                project_root, entry, payload, request.overwrite_policy
+            )
+        except NCArtifactStoreError as error:
+            diagnostic = _diagnostic(error.code, "export.managed_write_failed")
+            return NCExportExecution(False, None, None, (diagnostic,), NCExportStatus.FAILED)
+        if not self._assembly_still_current(
+            request, source, token, current_source, current_project_generation
+        ):
+            diagnostic = _diagnostic(NCExportDiagnosticCode.POST_STALE, "export.postwrite_stale")
+            result = self._assembly_export_result(
+                request, source, published, NCExportStatus.STALE, (diagnostic,), 3, 3
+            )
+            with self._lock:
+                self._results[key] = result
+            return NCExportExecution(False, result, published, (diagnostic,), result.status)
+        managed = self._assembly_export_result(
+            request, source, published, NCExportStatus.PUBLISHED, (), 3, 3
+        )
+        with self._lock:
+            self._results[key] = managed
+        try:
+            manifest = self._store.inspect(project_root, request.project_id)
+        except NCArtifactStoreError:
+            manifest = None
+        if manifest is not None:
+            with self._lock:
+                self._manifest = manifest
+        if request.target is ExportTarget.PROJECT_MANAGED:
+            return NCExportExecution(True, managed, published, (), managed.status)
+        if request.target_directory is None:
+            diagnostic = _diagnostic(NCExportDiagnosticCode.TARGET_MISSING, "export.external_target_missing")
+            failed = self._assembly_export_result(
+                request, source, published, NCExportStatus.EXTERNAL_FAILED, (diagnostic,), 3, 3
+            )
+            with self._lock:
+                self._results[key] = failed
+            return NCExportExecution(False, failed, published, (diagnostic,), failed.status)
+        try:
+            external_path = self._store.export_external(
+                project_root,
+                published,
+                request.target_directory,
+                request.overwrite_policy,
+                create_target_directory=request.create_target_directory,
+            )
+        except NCArtifactStoreError as error:
+            diagnostic = _diagnostic(error.code, "export.external_write_failed")
+            failed = self._assembly_export_result(
+                request,
+                source,
+                published,
+                NCExportStatus.EXTERNAL_FAILED,
+                (diagnostic,),
+                3,
+                3,
+                target_identifier=_target_identifier(request.target_directory),
+            )
+            with self._lock:
+                self._results[key] = failed
+            return NCExportExecution(False, failed, published, (diagnostic,), failed.status)
+        completed = self._assembly_export_result(
+            request,
+            source,
+            published,
+            NCExportStatus.PUBLISHED_EXTERNAL,
+            (),
+            4,
+            4,
+            target_identifier=_target_identifier(request.target_directory),
+            external_path=external_path,
+        )
+        with self._lock:
+            self._results[key] = completed
+        return NCExportExecution(True, completed, published, (), completed.status)
+
+    @staticmethod
+    def _validate_assembly(
+        request: NCAssemblyExportRequest,
+        snapshot: NCAssemblyExportSourceSnapshot,
+    ) -> tuple[str, bytes]:
+        result = snapshot.assembly_result
+        source_request = snapshot.post_request
+        profile = source_request.post_definition.production_profile
+        if (
+            request.project_id != result.project_id
+            or request.assembly_result_id != result.result_id
+            or result.status is not ProgramAssemblyStatus.PUBLISHED
+            or result.canonical_text is None
+            or profile is None
+            or result.plan.post_definition_fingerprint != source_request.post_definition.fingerprint
+            or result.plan.production_profile_fingerprint != profile.fingerprint
+        ):
+            raise _NCExportPreflightError(
+                NCExportDiagnosticCode.POST_INVALID, "export.assembly_not_published"
+            )
+        filename = sanitize_export_filename(request.filename, profile.allowed_extensions)
+        context_filename = sanitize_export_filename(
+            result.plan.shared_context.file_name, profile.allowed_extensions
+        )
+        if filename.casefold() != context_filename.casefold():
+            raise _NCExportPreflightError(
+                NCExportDiagnosticCode.PROFILE_MISMATCH,
+                "export.filename_context_mismatch",
+            )
+        payload = result.canonical_text.encode(profile.encoding)
+        if (
+            payload.startswith(b"\xef\xbb\xbf")
+            or hashlib.sha256(payload).hexdigest() != result.output_checksum
+            or len(payload) > profile.maximum_program_size
+            or not result.canonical_text.endswith(profile.newline)
+        ):
+            raise _NCExportPreflightError(
+                NCExportDiagnosticCode.POST_INVALID, "export.canonical_bytes_invalid"
+            )
+        return filename, payload
+
+    @staticmethod
+    def _build_assembly_entry(
+        request: NCAssemblyExportRequest,
+        snapshot: NCAssemblyExportSourceSnapshot,
+        filename: str,
+        payload: bytes,
+    ) -> NCArtifactManifestEntry:
+        result = snapshot.assembly_result
+        plan = result.plan
+        profile = snapshot.post_request.post_definition.production_profile
+        assert profile is not None and result.result_fingerprint is not None
+        first = plan.sections[0]
+        digest = hashlib.sha256(payload).hexdigest()
+        artifact_id = NCArtifactId(
+            uuid5(
+                _ARTIFACT_NAMESPACE,
+                "|".join((str(request.project_id), str(result.result_id), filename.casefold(), digest)),
+            )
+        )
+        synthetic_post_result = PostResultId(
+            uuid5(_ARTIFACT_NAMESPACE, f"assembly-post-result|{result.result_id}")
+        )
+        return NCArtifactManifestEntry(
+            artifact_id=artifact_id,
+            project_id=request.project_id,
+            operation_id=first.operation_id,
+            source_artifact_id=first.artifact_id,
+            source_artifact_fingerprint=first.artifact_fingerprint,
+            post_result_id=synthetic_post_result,
+            post_input_fingerprint=result.input_fingerprint,
+            post_result_fingerprint=result.result_fingerprint,
+            post_definition_id=plan.post_definition_id,
+            production_profile_id=plan.production_profile_id,
+            production_profile_version=plan.production_profile_version,
+            production_profile_fingerprint=plan.production_profile_fingerprint,
+            tool_binding_fingerprint=first.tool_binding.fingerprint,
+            program_context_fingerprint=plan.shared_context.fingerprint,
+            output_relative_path=f"nc/{filename}",
+            metadata_relative_path=f"post/metadata/{artifact_id.value.hex}.json",
+            byte_length=len(payload),
+            sha256=digest,
+            newline=profile.newline,
+            encoding=profile.encoding,
+            extension=profile.allowed_extensions[0],
+            status=NCArtifactStatus.CURRENT,
+            post_diagnostics=(),
+            post_statistics=first.program_ir.statistics,
+            assembly_result_id=result.result_id,
+            assembly_result_fingerprint=result.result_fingerprint,
+            assembly_section_count=len(plan.sections),
+            assembly_operation_ids=tuple(item.operation_id for item in plan.sections),
+            assembly_section_ids=tuple(item.section_id for item in plan.sections),
+            assembly_source_artifact_fingerprints=tuple(
+                item.artifact_fingerprint for item in plan.sections
+            ),
+            assembly_tool_binding_fingerprints=tuple(
+                item.tool_binding.fingerprint for item in plan.sections
+            ),
+            assembly_operation_context_fingerprints=tuple(
+                item.operation_context_fingerprint for item in plan.sections
+            ),
+        )
+
+    def _assembly_still_current(
+        self,
+        request: NCAssemblyExportRequest,
+        source: NCAssemblyExportSourceSnapshot,
+        token: NCExportToken,
+        current_source: Callable[[], NCAssemblyExportSourceSnapshot] | None,
+        current_project_generation: Callable[[], int] | None,
+    ) -> bool:
+        key = (request.project_id, request.assembly_result_id)
+        with self._lock:
+            if self._latest.get(key) != token:
+                return False
+        try:
+            if current_project_generation is not None and current_project_generation() != source.project_generation:
+                return False
+            current = current_source() if current_source is not None else source
+            return current.fingerprint == token.source_fingerprint
+        except Exception:
+            return False
+
+    @staticmethod
+    def _assembly_export_result(
+        request: NCAssemblyExportRequest,
+        source: NCAssemblyExportSourceSnapshot,
+        entry: NCArtifactManifestEntry,
+        status: NCExportStatus,
+        diagnostics: tuple[NCExportDiagnostic, ...],
+        files_written: int,
+        verifications: int,
+        *,
+        target_identifier: str | None = None,
+        external_path: Path | None = None,
+    ) -> NCExportResult:
+        result = source.assembly_result
+        assert result.result_fingerprint is not None
+        return NCExportResult(
+            request_id=request.request_id,
+            result_id=NCExportResultId.new(),
+            artifact_id=entry.artifact_id,
+            source_post_result_id=entry.post_result_id,
+            source_post_input_fingerprint=result.input_fingerprint,
+            source_post_result_fingerprint=result.result_fingerprint,
+            production_profile_fingerprint=entry.production_profile_fingerprint,
+            project_managed_relative_path=entry.output_relative_path,
+            target_kind=request.target,
+            target_identifier=target_identifier,
+            byte_length=entry.byte_length,
+            sha256=entry.sha256,
+            status=status,
+            diagnostics=diagnostics,
+            statistics=NCExportStatistics(entry.byte_length, files_written, verifications),
+            external_path=external_path,
+        )
 
     @staticmethod
     def _validate(

@@ -22,6 +22,7 @@ from hms_cadcam.cam.post.fanuc_robodrill_21i import (
 from hms_cadcam.cam.post.export_model import (
     ExportOverwritePolicy,
     ExportTarget,
+    NCAssemblyExportRequest,
     NCArtifactManifest,
     NCArtifactManifestEntry,
     NCArtifactStatus,
@@ -34,6 +35,7 @@ from hms_cadcam.cam.post.export_model import (
 )
 from hms_cadcam.cam.post.export_service import (
     NCExportExecution,
+    NCAssemblyExportSourceSnapshot,
     NCExportService,
     NCExportSourceSnapshot,
     NCExportToken,
@@ -41,4 +43,28 @@ from hms_cadcam.cam.post.export_service import (
 from hms_cadcam.cam.post.export_store import (
     NCArtifactStore,
     NCArtifactStoreError,
+)
+from hms_cadcam.cam.post.assembly_model import (
+    ProgramAssemblyContext,
+    ProgramAssemblyDiagnostic,
+    ProgramAssemblyDiagnosticCode,
+    ProgramAssemblyOperationInput,
+    ProgramAssemblyOrderingPolicy,
+    ProgramAssemblyPlan,
+    ProgramAssemblyRequest,
+    ProgramAssemblyResult,
+    ProgramAssemblyStatistics,
+    ProgramAssemblyStatus,
+    ProgramOperationSection,
+)
+from hms_cadcam.cam.post.assembly_service import (
+    ProgramAssemblyComputationToken,
+    ProgramAssemblyExecution,
+    ProgramAssemblyService,
+    build_assembly_input_fingerprint,
+)
+from hms_cadcam.cam.post.assembly_validation import (
+    validate_assembly_output,
+    validate_assembly_plan,
+    validate_assembly_request,
 )

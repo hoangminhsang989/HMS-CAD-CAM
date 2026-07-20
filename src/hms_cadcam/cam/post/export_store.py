@@ -130,7 +130,11 @@ class NCArtifactStore:
                     payload = output.read_bytes()
                     if len(payload) != entry.byte_length or hashlib.sha256(payload).hexdigest() != entry.sha256:
                         status = NCArtifactStatus.TAMPERED
-                    elif current_ids is not None and entry.post_result_id not in current_ids:
+                    elif (
+                        current_ids is not None
+                        and entry.assembly_result_id is None
+                        and entry.post_result_id not in current_ids
+                    ):
                         status = NCArtifactStatus.STALE
             except (OSError, NCExportSecurityError):
                 status = NCArtifactStatus.TAMPERED
@@ -349,7 +353,13 @@ class NCArtifactStore:
         manifest = self.load(project_root, project_id)
         changed = tuple(
             replace(item, status=NCArtifactStatus.STALE, artifact_fingerprint=None)
-            if item.operation_id == operation_id and item.status is NCArtifactStatus.CURRENT
+            if (
+                (
+                    item.operation_id == operation_id
+                    or operation_id in item.assembly_operation_ids
+                )
+                and item.status is NCArtifactStatus.CURRENT
+            )
             else item
             for item in manifest.entries
         )
@@ -420,11 +430,21 @@ class NCArtifactStore:
         manifest = self.load(project_root, project_id)
         changed: list[NCArtifactManifestEntry] = []
         for item in manifest.entries:
-            source = current.get(item.operation_id)
-            stale = source is None or source != (
-                item.source_artifact_id,
-                item.source_artifact_fingerprint,
-            )
+            if item.assembly_result_id is not None:
+                stale = any(
+                    current.get(operation_id) is None
+                    or current[operation_id][1] != artifact_fingerprint
+                    for operation_id, artifact_fingerprint in zip(
+                        item.assembly_operation_ids,
+                        item.assembly_source_artifact_fingerprints,
+                    )
+                )
+            else:
+                source = current.get(item.operation_id)
+                stale = source is None or source != (
+                    item.source_artifact_id,
+                    item.source_artifact_fingerprint,
+                )
             changed.append(
                 replace(item, status=NCArtifactStatus.STALE, artifact_fingerprint=None)
                 if stale and item.status is NCArtifactStatus.CURRENT

@@ -22,6 +22,8 @@ from hms_cadcam.cam.domain.ids import (
     PostProcessorDefinitionId,
     PostResultId,
     ProductionControllerProfileId,
+    ProgramAssemblyResultId,
+    ProgramOperationSectionId,
     ToolpathArtifactId,
 )
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
@@ -241,6 +243,62 @@ class NCExportRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class NCAssemblyExportRequest:
+    """Export envelope for a published multi-operation assembly result."""
+
+    project_id: UUID
+    assembly_result_id: ProgramAssemblyResultId
+    filename: str
+    target: ExportTarget = ExportTarget.PROJECT_MANAGED
+    overwrite_policy: ExportOverwritePolicy = ExportOverwritePolicy.FAIL_IF_EXISTS
+    create_target_directory: bool = False
+    request_id: NCExportRequestId | None = None
+    schema_version: int = NC_EXPORT_VERSION
+    target_directory: Path | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.schema_version != NC_EXPORT_VERSION:
+            raise UnsupportedCamSchemaError("Unsupported NC assembly export version")
+        if not isinstance(self.project_id, UUID) or self.project_id.int == 0:
+            raise CamValidationError("NC assembly export project ID is invalid")
+        if not isinstance(self.assembly_result_id, ProgramAssemblyResultId):
+            raise CamValidationError("NC assembly export result ID is invalid")
+        object.__setattr__(self, "filename", _non_empty_text(self.filename, "NC assembly filename", maximum=512))
+        if not isinstance(self.target, ExportTarget) or not isinstance(self.overwrite_policy, ExportOverwritePolicy):
+            raise CamValidationError("NC assembly export policy is invalid")
+        if type(self.create_target_directory) is not bool:
+            raise CamValidationError("NC assembly export create-directory policy is invalid")
+        if self.request_id is None:
+            object.__setattr__(self, "request_id", NCExportRequestId.new())
+        if not isinstance(self.request_id, NCExportRequestId):
+            raise CamValidationError("NC assembly export request ID is invalid")
+        if self.target_directory is not None and not isinstance(self.target_directory, Path):
+            raise CamValidationError("NC assembly export target must be pathlib.Path")
+
+    @property
+    def fingerprint(self) -> DependencyFingerprint:
+        return DependencyFingerprint.from_payload(self.identity_payload())
+
+    def identity_payload(self) -> dict[str, Any]:
+        return {
+            "format": "HMS_CAM_NC_ASSEMBLY_EXPORT_REQUEST",
+            "format_version": self.schema_version,
+            "project_id": str(self.project_id),
+            "assembly_result_id": str(self.assembly_result_id),
+            "filename": self.filename,
+            "target": self.target.value,
+            "overwrite_policy": self.overwrite_policy.value,
+            "create_target_directory": self.create_target_directory,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.identity_payload(),
+            "request_id": str(self.request_id),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class NCArtifactManifestEntry:
     artifact_id: NCArtifactId
     project_id: UUID
@@ -268,6 +326,14 @@ class NCArtifactManifestEntry:
     post_statistics: PostStatistics
     artifact_fingerprint: ContentFingerprint | None = None
     schema_version: int = NC_EXPORT_VERSION
+    assembly_result_id: ProgramAssemblyResultId | None = None
+    assembly_result_fingerprint: ContentFingerprint | None = None
+    assembly_section_count: int | None = None
+    assembly_operation_ids: tuple[OperationId, ...] = ()
+    assembly_section_ids: tuple[ProgramOperationSectionId, ...] = ()
+    assembly_source_artifact_fingerprints: tuple[ContentFingerprint, ...] = ()
+    assembly_tool_binding_fingerprints: tuple[ContentFingerprint, ...] = ()
+    assembly_operation_context_fingerprints: tuple[ContentFingerprint, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != NC_EXPORT_VERSION:
@@ -317,6 +383,60 @@ class NCArtifactManifestEntry:
             raise CamValidationError("NC artifact post diagnostics are invalid")
         if not isinstance(self.post_statistics, PostStatistics):
             raise CamValidationError("NC artifact post statistics are invalid")
+        if self.assembly_result_id is not None and not isinstance(
+            self.assembly_result_id, ProgramAssemblyResultId
+        ):
+            raise CamValidationError("NC artifact assembly result identity is invalid")
+        assembly_fingerprints = tuple(
+            value
+            for value in (
+                self.assembly_result_fingerprint,
+                *self.assembly_source_artifact_fingerprints,
+                *self.assembly_tool_binding_fingerprints,
+                *self.assembly_operation_context_fingerprints,
+            )
+            if value is not None
+        )
+        if any(
+            not isinstance(value, (ContentFingerprint, DependencyFingerprint))
+            for value in assembly_fingerprints
+        ):
+            raise CamValidationError("NC artifact assembly fingerprints are invalid")
+        if any(not isinstance(value, OperationId) for value in self.assembly_operation_ids):
+            raise CamValidationError("NC artifact assembly operation IDs are invalid")
+        if any(
+            not isinstance(value, ProgramOperationSectionId)
+            for value in self.assembly_section_ids
+        ):
+            raise CamValidationError("NC artifact assembly section IDs are invalid")
+        if self.assembly_result_id is None and any(
+            (
+                self.assembly_result_fingerprint,
+                self.assembly_section_count,
+                self.assembly_operation_ids,
+                self.assembly_section_ids,
+                self.assembly_source_artifact_fingerprints,
+                self.assembly_tool_binding_fingerprints,
+                self.assembly_operation_context_fingerprints,
+            )
+        ):
+            raise CamInvariantError("Assembly metadata requires an assembly result ID")
+        if self.assembly_result_id is not None:
+            if self.assembly_result_fingerprint is None:
+                raise CamValidationError("Assembly result fingerprint is required")
+            if type(self.assembly_section_count) is not int or self.assembly_section_count <= 0:
+                raise CamValidationError("Assembly section count is invalid")
+            lengths = {
+                len(self.assembly_operation_ids),
+                len(self.assembly_section_ids),
+                len(self.assembly_source_artifact_fingerprints),
+                len(self.assembly_tool_binding_fingerprints),
+                len(self.assembly_operation_context_fingerprints),
+            }
+            if len(lengths) != 1 or not lengths or next(iter(lengths)) == 0:
+                raise CamInvariantError("Assembly manifest provenance is incomplete")
+            if self.assembly_section_count != next(iter(lengths)):
+                raise CamInvariantError("Assembly section count does not match provenance")
         calculated = ContentFingerprint.from_payload(self.identity_payload())
         if self.artifact_fingerprint is None:
             object.__setattr__(self, "artifact_fingerprint", calculated)
@@ -328,6 +448,18 @@ class NCArtifactManifestEntry:
 
         data = entry_to_dict(self, include_fingerprint=False)
         data.pop("status")
+        if self.assembly_result_id is None:
+            for key in (
+                "assembly_result_id",
+                "assembly_result_fingerprint",
+                "assembly_section_count",
+                "assembly_operation_ids",
+                "assembly_section_ids",
+                "assembly_source_artifact_fingerprints",
+                "assembly_tool_binding_fingerprints",
+                "assembly_operation_context_fingerprints",
+            ):
+                data.pop(key, None)
         return data
 
     def to_dict(self) -> dict[str, Any]:

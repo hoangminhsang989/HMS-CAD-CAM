@@ -15,6 +15,9 @@ from hms_cadcam.cam.domain.ids import (
     PostProcessorDefinitionId,
     PostResultId,
     ProductionControllerProfileId,
+    ProgramAssemblyResultId,
+    ProgramAssemblyResultId,
+    ProgramOperationSectionId,
     ToolpathArtifactId,
 )
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
@@ -36,6 +39,7 @@ from hms_cadcam.cam.post.export_model import (
     NCArtifactManifest,
     NCArtifactManifestEntry,
     NCArtifactStatus,
+    NCAssemblyExportRequest,
     NCExportDiagnostic,
     NCExportDiagnosticCode,
     NCExportRequest,
@@ -218,6 +222,25 @@ def entry_to_dict(
     }
     if include_fingerprint:
         data["artifact_fingerprint"] = value.artifact_fingerprint.to_dict()
+    if value.assembly_result_id is not None:
+        data.update(
+            {
+                "assembly_result_id": str(value.assembly_result_id),
+                "assembly_result_fingerprint": value.assembly_result_fingerprint.to_dict(),
+                "assembly_section_count": value.assembly_section_count,
+                "assembly_operation_ids": [str(item) for item in value.assembly_operation_ids],
+                "assembly_section_ids": [str(item) for item in value.assembly_section_ids],
+                "assembly_source_artifact_fingerprints": [
+                    item.to_dict() for item in value.assembly_source_artifact_fingerprints
+                ],
+                "assembly_tool_binding_fingerprints": [
+                    item.to_dict() for item in value.assembly_tool_binding_fingerprints
+                ],
+                "assembly_operation_context_fingerprints": [
+                    item.to_dict() for item in value.assembly_operation_context_fingerprints
+                ],
+            }
+        )
     return data
 
 
@@ -249,9 +272,39 @@ def entry_from_dict(data: dict[str, Any]) -> NCArtifactManifestEntry:
         "post_statistics",
         "artifact_fingerprint",
     }
-    _strict(data, NC_ARTIFACT_ENTRY_FORMAT, fields)
+    assembly_fields = {
+        "assembly_result_id",
+        "assembly_result_fingerprint",
+        "assembly_section_count",
+        "assembly_operation_ids",
+        "assembly_section_ids",
+        "assembly_source_artifact_fingerprints",
+        "assembly_tool_binding_fingerprints",
+        "assembly_operation_context_fingerprints",
+    }
+    if not isinstance(data, dict) or data.get("format") != NC_ARTIFACT_ENTRY_FORMAT:
+        raise CamValidationError("NC artifact entry payload is malformed")
+    if type(data.get("format_version")) is not int or data["format_version"] != NC_EXPORT_VERSION:
+        raise UnsupportedCamSchemaError("Unsupported NC artifact entry version")
+    if set(data) not in (
+        fields | {"format", "format_version"},
+        fields | assembly_fields | {"format", "format_version"},
+    ):
+        raise CamValidationError("NC artifact entry payload fields are invalid")
     if not isinstance(data["post_diagnostics"], list):
         raise CamValidationError("NC artifact diagnostics are malformed")
+    assembly_present = "assembly_result_id" in data
+    if assembly_present and any(
+        not isinstance(data.get(name), list)
+        for name in (
+            "assembly_operation_ids",
+            "assembly_section_ids",
+            "assembly_source_artifact_fingerprints",
+            "assembly_tool_binding_fingerprints",
+            "assembly_operation_context_fingerprints",
+        )
+    ):
+        raise CamValidationError("NC artifact assembly provenance is malformed")
     return NCArtifactManifestEntry(
         artifact_id=_id(NCArtifactId, data["artifact_id"], "NC artifact ID"),
         project_id=_uuid(data["project_id"], "Project ID"),
@@ -293,6 +346,44 @@ def entry_from_dict(data: dict[str, Any]) -> NCArtifactManifestEntry:
         post_statistics=post_statistics_from_dict(data["post_statistics"]),
         artifact_fingerprint=ContentFingerprint.from_dict(data["artifact_fingerprint"]),
         schema_version=data["format_version"],
+        assembly_result_id=(
+            _id(ProgramAssemblyResultId, data["assembly_result_id"], "Assembly result ID")
+            if assembly_present
+            else None
+        ),
+        assembly_result_fingerprint=(
+            ContentFingerprint.from_dict(data["assembly_result_fingerprint"])
+            if assembly_present
+            else None
+        ),
+        assembly_section_count=(
+            data["assembly_section_count"] if assembly_present else None
+        ),
+        assembly_operation_ids=(
+            tuple(_id(OperationId, item, "Assembly operation ID") for item in data["assembly_operation_ids"])
+            if assembly_present
+            else ()
+        ),
+        assembly_section_ids=(
+            tuple(_id(ProgramOperationSectionId, item, "Assembly section ID") for item in data["assembly_section_ids"])
+            if assembly_present
+            else ()
+        ),
+        assembly_source_artifact_fingerprints=(
+            tuple(ContentFingerprint.from_dict(item) for item in data["assembly_source_artifact_fingerprints"])
+            if assembly_present
+            else ()
+        ),
+        assembly_tool_binding_fingerprints=(
+            tuple(ContentFingerprint.from_dict(item) for item in data["assembly_tool_binding_fingerprints"])
+            if assembly_present
+            else ()
+        ),
+        assembly_operation_context_fingerprints=(
+            tuple(ContentFingerprint.from_dict(item) for item in data["assembly_operation_context_fingerprints"])
+            if assembly_present
+            else ()
+        ),
     )
 
 
@@ -409,6 +500,7 @@ def result_from_dict(data: dict[str, Any]) -> NCExportResult:
 
 ExportCodecValue = (
     NCExportRequest
+    | NCAssemblyExportRequest
     | NCExportResult
     | NCArtifactManifestEntry
     | NCArtifactManifest
@@ -418,6 +510,8 @@ ExportCodecValue = (
 def dumps(value: ExportCodecValue) -> str:
     if isinstance(value, NCExportRequest):
         payload = request_to_dict(value)
+    elif isinstance(value, NCAssemblyExportRequest):
+        payload = value.to_dict()
     elif isinstance(value, NCExportResult):
         payload = result_to_dict(value)
     elif isinstance(value, NCArtifactManifestEntry):
@@ -441,6 +535,34 @@ def loads(text: str) -> ExportCodecValue:
     format_name = data.get("format")
     if format_name == NC_EXPORT_FORMAT:
         return request_from_dict(data)
+    if format_name == "HMS_CAM_NC_ASSEMBLY_EXPORT_REQUEST":
+        fields = {
+            "project_id",
+            "assembly_result_id",
+            "filename",
+            "target",
+            "overwrite_policy",
+            "create_target_directory",
+            "request_id",
+        }
+        _strict(data, "HMS_CAM_NC_ASSEMBLY_EXPORT_REQUEST", fields)
+        try:
+            return NCAssemblyExportRequest(
+                project_id=_uuid(data["project_id"], "Project ID"),
+                assembly_result_id=_id(
+                    ProgramAssemblyResultId,
+                    data["assembly_result_id"],
+                    "Assembly result ID",
+                ),
+                filename=data["filename"],
+                target=ExportTarget(data["target"]),
+                overwrite_policy=ExportOverwritePolicy(data["overwrite_policy"]),
+                create_target_directory=data["create_target_directory"],
+                request_id=_id(NCExportRequestId, data["request_id"], "Export request ID"),
+                schema_version=data["format_version"],
+            )
+        except ValueError as error:
+            raise CamValidationError("NC assembly export request is invalid") from error
     if format_name == NC_EXPORT_RESULT_FORMAT:
         return result_from_dict(data)
     if format_name == NC_ARTIFACT_ENTRY_FORMAT:

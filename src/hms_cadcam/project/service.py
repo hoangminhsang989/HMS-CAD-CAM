@@ -61,8 +61,9 @@ from hms_cadcam.cam.simulation import (
     SimulationSamplingPolicy,
     build_simulation_request,
 )
-from hms_cadcam.cam.post.export_model import NCExportRequest
+from hms_cadcam.cam.post.export_model import NCAssemblyExportRequest, NCExportRequest
 from hms_cadcam.cam.post.export_service import (
+    NCAssemblyExportSourceSnapshot,
     NCExportExecution,
     NCExportService,
     NCExportSourceSnapshot,
@@ -429,6 +430,27 @@ class ProjectService:
             current_post_result=lambda: self._cam_application.post_runtime.current(
                 source.post_request
             ),
+        )
+
+    def export_assembly_nc(
+        self,
+        request: NCAssemblyExportRequest,
+        source: NCAssemblyExportSourceSnapshot,
+        *,
+        current_source: Callable[[], NCAssemblyExportSourceSnapshot] | None = None,
+    ) -> NCExportExecution:
+        """Export one published multi-operation assembly via 7D.2.2 storage."""
+        session = self._require_current()
+        if request.project_id != session.manifest.project_id:
+            raise ProjectError("NC assembly export request belongs to another project")
+        if source.project_generation != self._cam_application.generation:
+            raise ProjectError("NC assembly export source belongs to an inactive project generation")
+        return self._nc_export_service.export_assembly(
+            session.root_path,
+            request,
+            source,
+            current_source=current_source,
+            current_project_generation=lambda: self._cam_application.generation,
         )
 
     def register_toolpath_artifact(
