@@ -9,7 +9,7 @@ from threading import RLock
 from typing import Callable
 from uuid import UUID, uuid4, uuid5
 
-from hms_cadcam.cam.domain.ids import NCArtifactId, NCExportResultId
+from hms_cadcam.cam.domain.ids import NCArtifactId, NCExportResultId, OperationId
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.domain.revision import DependencyFingerprint
 from hms_cadcam.cam.post.export_model import (
@@ -189,6 +189,29 @@ class NCExportService:
                 return
             with self._lock:
                 self._manifest = manifest
+
+    def clear_managed_artifact(self, project_root: Path, project_id: UUID, operation_id: object) -> NCArtifactManifest:
+        """Explicitly remove one project-managed artifact and its sidecar.
+
+        The operation is intentionally separate from ``mark_operation_stale``;
+        callers must invoke it as an explicit destructive UI action.  Runtime
+        PostResult and external files are unaffected.
+        """
+        if not isinstance(operation_id, OperationId):
+            raise ValueError("Operation identity is invalid")
+        with self._lock:
+            project_bound = self._bound_project_id
+            root_bound = self._bound_root
+        if project_bound is not None and project_bound != project_id:
+            raise ValueError("Managed artifact belongs to another project")
+        if root_bound is not None and root_bound.resolve() != project_root.resolve():
+            raise ValueError("Managed artifact root belongs to another project")
+        manifest = self._store.remove_operation_artifact(project_root, project_id, operation_id)
+        with self._lock:
+            self._results.pop((project_id, operation_id), None)
+            self._latest.pop((project_id, operation_id), None)
+            self._manifest = manifest
+        return manifest
 
     def export(
         self,

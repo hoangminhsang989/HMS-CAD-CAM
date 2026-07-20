@@ -77,6 +77,7 @@ from hms_cadcam.viewer.simulation import (
 from hms_cadcam.ui.simulation_ui import (
     SimulationIssueSelection, SimulationPanel,
 )
+from hms_cadcam.ui.post_ui import PostProcessorPanel
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
@@ -170,11 +171,13 @@ class CamWorkspace(QWidget):
         self.tree.itemChanged.connect(self._item_changed)
         self.editor = _CamPropertiesEditor(self._apply_properties)
         self.simulation_panel = SimulationPanel()
+        self.post_panel = PostProcessorPanel(service)
         splitter = QSplitter()
         splitter.addWidget(self.tree)
         splitter.addWidget(self.editor)
         splitter.addWidget(self.simulation_panel)
-        splitter.setSizes([320, 340, 390])
+        splitter.addWidget(self.post_panel)
+        splitter.setSizes([280, 320, 360, 460])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.toolbar = QToolBar("Lệnh CAM")
@@ -197,6 +200,7 @@ class CamWorkspace(QWidget):
         self.simulation_panel.issue_selection_cleared.connect(
             self._clear_simulation_issue_focus
         )
+        self.post_panel.message.connect(self.message.emit)
         for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
@@ -249,6 +253,7 @@ class CamWorkspace(QWidget):
         self._simulation_policies.clear()
         self._simulation_cache_attempts.clear()
         self.simulation_panel.clear_source()
+        self.post_panel.bind_project(session)
         self.simulation_panel.set_policy(
             SimulationSamplingPolicy(),
             SimulationDisplayPolicy(),
@@ -334,6 +339,7 @@ class CamWorkspace(QWidget):
             self._active_editor_operation_id = None
             self.editor.clear()
             self._remove_displayed_toolpath()
+            self.post_panel.clear_operation()
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -408,6 +414,7 @@ class CamWorkspace(QWidget):
             self._selected_key = None
             self.editor.clear()
             self._remove_displayed_toolpath()
+            self.post_panel.clear_operation()
             return
         self._selected_key = (item.data(0, _KIND_ROLE), item.data(0, _ID_ROLE))
         self._show_properties(item)
@@ -424,9 +431,11 @@ class CamWorkspace(QWidget):
         if kind == "job" and job:
             self.editor.show_job(job.name)
             self._remove_displayed_toolpath()
+            self.post_panel.clear_operation()
         elif kind in {"setup", "stock"} and setup:
             self.editor.show_setup(setup)
             self._remove_displayed_toolpath()
+            self.post_panel.clear_operation()
         elif kind in {"group", "operation"} and setup:
             node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE)))
             operation = (
@@ -439,7 +448,13 @@ class CamWorkspace(QWidget):
                 self._picked_hole_source = None
                 self.editor.show_node(node.name, None)
                 self._remove_displayed_toolpath()
+                self.post_panel.clear_operation()
             else:
+                self.post_panel.set_operation(
+                    operation.operation_id,
+                    generation=self._generation,
+                    operation_name=node.name,
+                )
                 self._picked_hole_reference = None
                 self._picked_hole_source = None
                 self._picked_reference = (
@@ -543,6 +558,7 @@ class CamWorkspace(QWidget):
             self._picked_reference = None
             self.editor.clear()
             self._remove_displayed_toolpath()
+            self.post_panel.clear_operation()
         self._update_generate_action()
 
     def _remove_toolpath(self, operation_id: OperationId) -> None:

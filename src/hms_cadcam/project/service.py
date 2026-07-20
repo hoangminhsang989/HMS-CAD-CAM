@@ -69,6 +69,7 @@ from hms_cadcam.cam.post.export_service import (
 )
 from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreError
 from hms_cadcam.cam.post.service import PostRuntimeService
+from hms_cadcam.cam.post.lowering import PostSourceSnapshot
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
@@ -627,6 +628,71 @@ class ProjectService:
         """Load one verified derived artifact for presentation; never expose its path."""
         session = self._require_current()
         return self._cam_application.load_artifact(session.root_path, operation_id)
+
+    def capture_post_source(self, operation_id: OperationId) -> PostSourceSnapshot:
+        """Capture one immutable, native-free Post source from the active project.
+
+        The UI uses this boundary for validation, generation and export.  No
+        QWidget or mutable project object crosses the worker boundary.
+        """
+        session = self._require_current()
+        snapshot = self._cam_application.snapshot
+        operation = None
+        setup = None
+        for job in snapshot.jobs:
+            for candidate_setup in job.setups:
+                candidate = next(
+                    (value for value in candidate_setup.operation_tree.operations
+                     if value.operation_id == operation_id),
+                    None,
+                )
+                if candidate is not None:
+                    operation = candidate
+                    setup = candidate_setup
+                    break
+            if operation is not None:
+                break
+        if operation is None or setup is None:
+            raise ProjectError("Post source operation is missing")
+        artifact = self.load_toolpath_artifact(operation_id)
+        if artifact is None:
+            raise ProjectError("Post source ToolpathArtifact is missing")
+        assembly = next(
+            (value for value in snapshot.tool_assemblies
+             if value.assembly_id == operation.tool_assembly.assembly_id),
+            None,
+        )
+        if assembly is None:
+            raise ProjectError("Post source tool assembly is missing")
+        tool = next(
+            (value for value in snapshot.tool_definitions
+             if value.tool_id == assembly.tool_id),
+            None,
+        )
+        holder = next(
+            (value for value in snapshot.holder_definitions
+             if value.holder_id == assembly.holder_id),
+            None,
+        )
+        machine = next(
+            (value for value in snapshot.machine_definitions
+             if value.machine_id == artifact.machine_id),
+            None,
+        )
+        simulation = self._simulation_runs.result(operation_id)
+        expected_simulation = simulation.input_fingerprint if simulation else None
+        return PostSourceSnapshot(
+            project_id=session.manifest.project_id,
+            operation=operation,
+            artifact=artifact,
+            setup=setup,
+            assembly=assembly,
+            tool=tool,
+            holder=holder,
+            machine=machine,
+            simulation_result=simulation,
+            expected_simulation_input_fingerprint=expected_simulation,
+        )
 
     @property
     def simulation_runs(self) -> SimulationRunController:

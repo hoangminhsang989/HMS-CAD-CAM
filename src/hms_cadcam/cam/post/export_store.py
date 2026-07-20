@@ -358,6 +358,55 @@ class NCArtifactStore:
             return manifest
         return self._write_manifest_and_sidecars(project_root, candidate)
 
+    def remove_operation_artifact(
+        self, project_root: Path, project_id: UUID, operation_id: OperationId
+    ) -> NCArtifactManifest:
+        """Explicitly remove managed files for one operation.
+
+        Only files inside the HMS ``nc/`` and ``post/metadata/`` roots are
+        touched.  External export targets are deliberately never inspected or
+        deleted by this lifecycle operation.
+        """
+        root = self._project_root(project_root)
+        manifest_path = self.manifest_path(root)
+        if not manifest_path.exists():
+            return NCArtifactManifest(project_id)
+        try:
+            manifest = self.load(root, project_id)
+            removed = tuple(item for item in manifest.entries if item.operation_id == operation_id)
+            if not removed:
+                return manifest
+            remaining = NCArtifactManifest(
+                project_id,
+                tuple(item for item in manifest.entries if item.operation_id != operation_id),
+            )
+            # Publish the new manifest/sidecars before deleting payloads so a
+            # failed delete leaves a recoverable, manifest-consistent state.
+            published = self._write_manifest_and_sidecars(root, remaining)
+            for entry in removed:
+                for relative in (entry.output_relative_path, entry.metadata_relative_path):
+                    path = self._relative_file(root, relative)
+                    if is_link_or_junction(path):
+                        raise NCArtifactStoreError(
+                            NCExportDiagnosticCode.PATH_ESCAPE,
+                            "Managed NC artifact path is a link or junction",
+                        )
+                    if path.is_file():
+                        path.unlink()
+            return published
+        except NCArtifactStoreError:
+            raise
+        except PermissionError as error:
+            raise NCArtifactStoreError(
+                NCExportDiagnosticCode.PERMISSION_DENIED,
+                "Managed NC artifact could not be cleared",
+            ) from error
+        except OSError as error:
+            raise NCArtifactStoreError(
+                NCExportDiagnosticCode.WRITE_FAILED,
+                "Managed NC artifact could not be cleared",
+            ) from error
+
     def reconcile_sources(
         self,
         project_root: Path,
