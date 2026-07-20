@@ -28,6 +28,9 @@ temp/
 cache/
 autosave/
 
+# Tài liệu tham khảo riêng và file dung lượng lớn: chỉ lưu cục bộ.
+reference_private/
+
 # Tài liệu tham khảo bên ngoài: chỉ giữ README, ghi chú và metadata trong Git.
 # File tải về/nhị phân được đặt trong external/ hoặc assets/ và giữ cục bộ.
 docs/references/**/external/*
