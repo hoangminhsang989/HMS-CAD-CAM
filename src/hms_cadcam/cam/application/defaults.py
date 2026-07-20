@@ -6,9 +6,11 @@ from hms_cadcam.cam.domain import (
     HolderDefinitionId, HolderSection, KinematicChain, KinematicMount,
     KinematicNode, KinematicSide, Length, LengthUnit, MachineAxis,
     MachineAxisType, MachineCapabilities, MachineDefinition, MachineDefinitionId,
-    MachineKind, OperationCapability, ShankGeometry, SpindleCapability,
+    MachineCoolantCapability, MachineKind, OperationCapability, ShankGeometry,
+    SpindleCapability,
     SpindleDirection, SpindleSpeed, TapGeometry, TappingMode, ToolAssembly,
-    ToolAssemblyId, ToolDefinition, ToolDefinitionId, ToolFamily, ToolHand,
+    ToolAssemblyId, ToolCoolantCapability, ToolDefinition, ToolDefinitionId,
+    ToolFamily, ToolHand,
     Vector3, WorkEnvelope,
 )
 
@@ -231,3 +233,113 @@ def basic_tapping_resources(unit: LengthUnit) -> tuple[
         left_assembly,
         machine,
     )
+
+
+def basic_reaming_resources(unit: LengthUnit) -> tuple[
+    ToolDefinition,
+    HolderDefinition,
+    ToolAssembly,
+    MachineDefinition,
+]:
+    """Create one D8-style reamer and a compatible milling machine bundle."""
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    diameter = Length(8.0 * scale, unit)
+    reamer = ToolDefinition(
+        ToolDefinitionId.new(),
+        "Dao doa D8",
+        ToolFamily.REAMER,
+        unit,
+        CylindricalGeometry(diameter, Length(25.0 * scale, unit)),
+        Length(90.0 * scale, unit),
+        Length(45.0 * scale, unit),
+        ShankGeometry(diameter, Length(55.0 * scale, unit)),
+        coolant_capabilities=(
+            ToolCoolantCapability.FLOOD,
+            ToolCoolantCapability.MIST,
+            ToolCoolantCapability.THROUGH_TOOL,
+        ),
+    )
+    holder = HolderDefinition(
+        HolderDefinitionId.new(),
+        "Holder doa cơ bản",
+        unit,
+        (HolderSection(
+            Length(0, unit),
+            Length(35.0 * scale, unit),
+            Length(30.0 * scale, unit),
+            Length(40.0 * scale, unit),
+        ),),
+        Length(0, unit),
+        interface="generic_taper",
+    )
+    assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "Cụm dao doa D8",
+        reamer,
+        Length(35.0 * scale, unit),
+        Length(75.0 * scale, unit),
+        holder,
+    )
+    axis = MachineAxis(
+        "axis_x",
+        "longitudinal_motion",
+        MachineAxisType.LINEAR,
+        Vector3(1, 0, 0),
+        Length(-500, unit),
+        Length(500, unit),
+        Length(0, unit),
+    )
+    chain = KinematicChain((
+        KinematicNode(
+            "base", None, None, KinematicSide.FIXED, KinematicMount.NONE,
+            AffineTransform.identity(unit),
+        ),
+        KinematicNode(
+            "slide", "base", "axis_x", KinematicSide.TOOL,
+            KinematicMount.TOOL, AffineTransform.identity(unit),
+        ),
+    ))
+    feed_unit = (
+        FeedUnit.INCH_PER_MINUTE
+        if unit is LengthUnit.INCH else FeedUnit.MM_PER_MINUTE
+    )
+    capabilities = MachineCapabilities(
+        milling=True,
+        turning=False,
+        live_tooling=False,
+        probing=False,
+        tapping=False,
+        threading=False,
+        spindle_count=1,
+        maximum_feed=FeedRate(5000.0 * scale, feed_unit),
+        maximum_rapid=FeedRate(10000.0 * scale, feed_unit),
+        tool_capacity=12,
+        coolant=(
+            MachineCoolantCapability.FLOOD,
+            MachineCoolantCapability.MIST,
+            MachineCoolantCapability.THROUGH_SPINDLE,
+        ),
+        operations=(OperationCapability.MILLING, OperationCapability.DRILLING),
+    )
+    machine = MachineDefinition(
+        MachineDefinitionId.new(),
+        "Máy phay doa cơ bản",
+        MachineKind.MILL,
+        unit,
+        (axis,),
+        (SpindleCapability(
+            "main",
+            SpindleSpeed(100),
+            SpindleSpeed(10000),
+            directions=(
+                SpindleDirection.CLOCKWISE,
+                SpindleDirection.COUNTERCLOCKWISE,
+            ),
+        ),),
+        capabilities,
+        chain,
+        WorkEnvelope(
+            Length(1000, unit), Length(500, unit), Length(500, unit),
+        ),
+    )
+    return reamer, holder, assembly, machine

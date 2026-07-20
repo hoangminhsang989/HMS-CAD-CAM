@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Callable
 from uuid import UUID
@@ -32,9 +33,11 @@ from hms_cadcam.cam.domain import (
     OperationId, OperationParameterSet, Point3,
     PocketCuttingDirection, PocketDepthDefinition, PocketEntryPolicy,
     PocketGeometryInput, PocketStrategy,
+    ReamingCoolantMode, ReamingRetractPolicy, ReamingStrategy,
+    ReamingValidationError,
     ResolvedContourProfile, ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
     ResolvedDrillingGeometry, ResolvedPocketGeometry,
-    SpindleSpeed, TappingHand, TappingStrategy,
+    SpindleDirection, SpindleSpeed, TappingHand, TappingStrategy,
     TappingSynchronizationPolicy, TappingValidationError, ToolAssemblyId,
     ToolAssemblyReference,
     ToolFamily,
@@ -45,10 +48,13 @@ from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
+    ReamingGenerationError,
+    ReamingGenerator,
     TappingGenerationError,
     TappingGenerator,
     basic_drilling_resources,
     basic_mill_resources,
+    basic_reaming_resources,
     basic_tapping_resources,
 )
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
@@ -112,6 +118,10 @@ class CamWorkspace(QWidget):
             OperationId,
             tuple[dict[str, object], HoleReference | HolePattern | None],
         ] = {}
+        self._reaming_drafts: dict[
+            OperationId,
+            tuple[dict[str, object], HoleReference | HolePattern | None],
+        ] = {}
         self._active_editor_operation_id: OperationId | None = None
         self._active_editor_strategy_key: str | None = None
         self._generation: int | None = None
@@ -134,7 +144,7 @@ class CamWorkspace(QWidget):
         layout.addWidget(splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
-        for key in ("job", "setup", "resources", "tapping_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -147,12 +157,17 @@ class CamWorkspace(QWidget):
                 "Tạo TAP Tool/Machine cơ bản",
                 self.create_basic_tapping_resources,
             ),
+            "reaming_resources": (
+                "Tạo REAMER Tool/Machine cơ bản",
+                self.create_basic_reaming_resources,
+            ),
             "group": ("Thêm Group", self.add_group),
             "operation": ("Thêm Facing 2.5D", self.add_operation),
             "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
             "pocket_operation": ("Thêm Pocket 2.5D", self.add_pocket_operation),
             "drilling_operation": ("Thêm Drilling", self.add_drilling_operation),
             "tapping_operation": ("Thêm Tapping", self.add_tapping_operation),
+            "reaming_operation": ("Thêm Reaming", self.add_reaming_operation),
             "generate": ("Generate/Recompute", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
             "pick": ("Bind/Rebind geometry", self.pick_geometry),
@@ -179,6 +194,7 @@ class CamWorkspace(QWidget):
         self._pocket_drafts.clear()
         self._drilling_drafts.clear()
         self._tapping_drafts.clear()
+        self._reaming_drafts.clear()
         self._toolpath_visibility.clear()
         self._active_editor_operation_id = None
         self._active_editor_strategy_key = None
@@ -273,7 +289,7 @@ class CamWorkspace(QWidget):
                     if machine is None:
                         status += " · MACHINE MISSING"
                 is_hole_operation = operation.strategy_key in {
-                    "drilling_v1", "tapping_v1",
+                    "drilling_v1", "tapping_v1", "reaming_v1",
                 }
                 if operation.geometry_inputs:
                     status += (
@@ -282,15 +298,7 @@ class CamWorkspace(QWidget):
                     )
                 elif is_hole_operation:
                     try:
-                        strategy = (
-                            TappingStrategy.from_operation_parameters(
-                                operation.parameters
-                            )
-                            if operation.strategy_key == "tapping_v1"
-                            else DrillingStrategy.from_operation_parameters(
-                                operation.parameters
-                            )
-                        )
+                        strategy = _hole_strategy(operation)
                         has_explicit_pattern = (
                             isinstance(strategy.geometry.source, HolePattern)
                             and not _hole_references(strategy.geometry.source)
@@ -365,17 +373,11 @@ class CamWorkspace(QWidget):
                     operation.geometry_inputs[0].reference
                     if len(operation.geometry_inputs) == 1 else None
                 )
-                if operation.strategy_key in {"drilling_v1", "tapping_v1"}:
+                if operation.strategy_key in {
+                    "drilling_v1", "tapping_v1", "reaming_v1",
+                }:
                     try:
-                        hole_strategy = (
-                            TappingStrategy.from_operation_parameters(
-                                operation.parameters
-                            )
-                            if operation.strategy_key == "tapping_v1"
-                            else DrillingStrategy.from_operation_parameters(
-                                operation.parameters
-                            )
-                        )
+                        hole_strategy = _hole_strategy(operation)
                     except (TypeError, ValueError):
                         hole_strategy = None
                     source = (
@@ -413,7 +415,17 @@ class CamWorkspace(QWidget):
                         self._picked_reference_resolved = self._resolve_picked_reference()
                     self._active_editor_operation_id = operation.operation_id
                     self._active_editor_strategy_key = operation.strategy_key
-                if operation.strategy_key in {"drilling_v1", "tapping_v1"}:
+                elif operation.strategy_key == "reaming_v1":
+                    saved = self._reaming_drafts.get(operation.operation_id)
+                    if saved is not None:
+                        self.editor.restore_reaming_state(saved[0])
+                        self._set_picked_hole_source(saved[1])
+                        self._picked_reference_resolved = self._resolve_picked_reference()
+                    self._active_editor_operation_id = operation.operation_id
+                    self._active_editor_strategy_key = operation.strategy_key
+                if operation.strategy_key in {
+                    "drilling_v1", "tapping_v1", "reaming_v1",
+                }:
                     self.editor.show_hole_source(
                         self._picked_hole_source,
                         self._picked_reference_resolved,
@@ -533,12 +545,31 @@ class CamWorkspace(QWidget):
         if changed is not None:
             self.refresh(self._selected_key)
 
+    def create_basic_reaming_resources(self) -> None:
+        """Create one project-owned REAMER and compatible milling machine."""
+        if not self._service.has_project:
+            return
+        unit = _length_unit(self._service.current_project)
+        reamer, holder, assembly, machine = basic_reaming_resources(unit)
+
+        def add_resources(app):
+            app.add_tool_definition(reamer)
+            app.add_holder_definition(holder)
+            app.add_tool_assembly(assembly)
+            return app.add_machine_definition(machine)
+
+        changed = self._execute(add_resources)
+        if changed is not None:
+            self.refresh(self._selected_key)
+
     def pick_geometry(self) -> None:
         """Explicitly bind the current unambiguous CAD selection."""
         operation = self._selected_operation()
         is_hole_operation = (
             operation is not None
-            and operation.strategy_key in {"drilling_v1", "tapping_v1"}
+            and operation.strategy_key in {
+                "drilling_v1", "tapping_v1", "reaming_v1",
+            }
         )
         provider = (
             self._drilling_pick_provider if is_hole_operation
@@ -602,6 +633,7 @@ class CamWorkspace(QWidget):
         if (operation is not None
                 and operation.strategy_key in {
                     "contour_2d", "drilling_v1", "pocket_2_5d", "tapping_v1",
+                    "reaming_v1",
                 }
                 and operation.geometry_inputs):
             item = self.tree.currentItem()
@@ -621,7 +653,7 @@ class CamWorkspace(QWidget):
         self._picked_hole_source = None
         self._picked_reference_resolved = False
         if operation is not None and operation.strategy_key in {
-            "drilling_v1", "tapping_v1",
+            "drilling_v1", "tapping_v1", "reaming_v1",
         }:
             self.editor.show_hole_source(None)
         else:
@@ -648,7 +680,7 @@ class CamWorkspace(QWidget):
                             continue
                         if (
                             operation.strategy_key not in {
-                                "drilling_v1", "tapping_v1",
+                                "drilling_v1", "tapping_v1", "reaming_v1",
                             }
                             and len(operation.geometry_inputs) != 1
                         ):
@@ -663,17 +695,11 @@ class CamWorkspace(QWidget):
                                 resolver = self._face_resolver
                         elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
                             resolver = self._profile_resolver
-                        elif operation.strategy_key in {"drilling_v1", "tapping_v1"}:
+                        elif operation.strategy_key in {
+                            "drilling_v1", "tapping_v1", "reaming_v1",
+                        }:
                             try:
-                                hole_strategy = (
-                                    TappingStrategy.from_operation_parameters(
-                                        operation.parameters
-                                    )
-                                    if operation.strategy_key == "tapping_v1"
-                                    else DrillingStrategy.from_operation_parameters(
-                                        operation.parameters
-                                    )
-                                )
+                                hole_strategy = _hole_strategy(operation)
                             except (RuntimeError, TypeError, ValueError):
                                 continue
                             resolver = self._drilling_resolver
@@ -691,7 +717,7 @@ class CamWorkspace(QWidget):
                             result = (
                                 resolver(hole_strategy.geometry, hole_strategy.depth)
                                 if operation.strategy_key in {
-                                    "drilling_v1", "tapping_v1",
+                                    "drilling_v1", "tapping_v1", "reaming_v1",
                                 }
                                 else resolver(operation.geometry_inputs[0].reference)
                             )
@@ -720,17 +746,11 @@ class CamWorkspace(QWidget):
                 return True
             operation = self._selected_operation()
             if operation is None or operation.strategy_key not in {
-                "drilling_v1", "tapping_v1",
+                "drilling_v1", "tapping_v1", "reaming_v1",
             }:
                 return False
             try:
-                current = (
-                    TappingStrategy.from_operation_parameters(operation.parameters)
-                    if operation.strategy_key == "tapping_v1"
-                    else DrillingStrategy.from_operation_parameters(
-                        operation.parameters
-                    )
-                )
+                current = _hole_strategy(operation)
                 geometry = DrillGeometryInput(
                     self._picked_hole_source,
                     self._picked_hole_source.unit,
@@ -793,6 +813,11 @@ class CamWorkspace(QWidget):
         elif self._active_editor_strategy_key == "tapping_v1":
             self._tapping_drafts[operation_id] = (
                 self.editor.tapping_state(),
+                self._picked_hole_source,
+            )
+        elif self._active_editor_strategy_key == "reaming_v1":
+            self._reaming_drafts[operation_id] = (
+                self.editor.reaming_state(),
                 self._picked_hole_source,
             )
 
@@ -1012,6 +1037,92 @@ class CamWorkspace(QWidget):
         if changed:
             self.refresh(("operation", str(node_id)))
 
+    def add_reaming_operation(self) -> None:
+        """Add one validated Reaming operation with an explicit pre-hole value."""
+        context = self._tree_context()
+        if context is None:
+            return
+        if self._drilling_pick_provider is None or self._drilling_resolver is None:
+            self._error("ream.geometry_missing: Reaming geometry adapter chưa sẵn sàng.")
+            return
+        job_id, setup_id, _tree, parent_id = context
+        snapshot = self._service.cam_snapshot
+        setup = next(
+            value for job in snapshot.jobs for value in job.setups
+            if value.setup_id == setup_id
+        )
+        generation = self._generation
+        try:
+            hole_source = self._drilling_pick_provider(setup.wcs.z_axis)
+            if not isinstance(hole_source, (HoleReference, HolePattern)):
+                raise ValueError("ream.geometry_missing: Hole source không hợp lệ.")
+            strategy = _default_reaming_strategy(setup, hole_source)
+            resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
+            assembly = _find_drilling_assembly(snapshot, ToolFamily.REAMER)
+            if assembly is None:
+                raise ValueError("ream.tool_missing: Chưa có Tool Assembly REAMER.")
+            tool = next((
+                value for value in snapshot.tool_definitions
+                if value.tool_id == assembly.tool_id
+            ), None)
+            machine = next((
+                value for value in snapshot.machine_definitions
+                if OperationCapability.DRILLING in value.capabilities.operations
+                and any(
+                    spindle.minimum_speed.value
+                    <= strategy.spindle_speed.value
+                    <= spindle.maximum_speed.value
+                    and strategy.spindle_direction in spindle.directions
+                    for spindle in value.spindles
+                )
+            ), None)
+            if machine is None:
+                raise ValueError(
+                    "ream.machine_incompatible: Chưa có máy phay hỗ trợ drilling."
+                )
+            node_id, operation_id = CamNodeId.new(), OperationId.new()
+            requirement = MachineRequirement(
+                machine.machine_id,
+                machine.revision,
+                machine.content_fingerprint,
+                machine.unit,
+                (OperationCapability.DRILLING,),
+            )
+            operation = Operation(
+                operation_id,
+                node_id,
+                OperationFamily.DRILLING,
+                setup_id,
+                ToolAssemblyReference.from_assembly(assembly),
+                _hole_geometry_inputs((), hole_source),
+                strategy.to_operation_parameters(),
+                requirement,
+            )
+            ReamingGenerator().resolve_inputs(
+                operation,
+                setup,
+                assembly=assembly,
+                tool=tool,
+                machine=machine,
+                resolved_geometry=resolved,
+            )
+        except ReamingGenerationError as error:
+            self._error(f"{error.code.value}: {error}")
+            return
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._error(str(error))
+            return
+        if generation is None or generation != self._service.cam_generation:
+            self._error("ream.stale_result: Phiên tạo Reaming đã stale.")
+            return
+        changed = self._execute(lambda app: app.update_tree(
+            job_id,
+            setup_id,
+            lambda value: value.add_operation(parent_id, "Reaming", operation),
+        ))
+        if changed:
+            self.refresh(("operation", str(node_id)))
+
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation" or self._generation is None:
@@ -1022,9 +1133,76 @@ class CamWorkspace(QWidget):
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is None or operation.strategy_key not in {
             "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
-            "tapping_v1",
+            "tapping_v1", "reaming_v1",
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "reaming_v1":
+            generation = self._generation
+            draft = self.editor.reaming_draft(
+                setup.wcs.origin.unit,
+                self._picked_hole_source,
+            )
+            machine_id = (
+                operation.machine_requirement.machine_id
+                if operation.machine_requirement else None
+            )
+            if (
+                draft is None
+                or draft.to_operation_parameters() != operation.parameters
+                or self.editor.tool.currentData()
+                != str(operation.tool_assembly.assembly_id)
+                or self.editor.machine.currentData()
+                != (str(machine_id) if machine_id else None)
+                or self._picked_hole_source is None
+                or not _operation_matches_hole_source(
+                    operation, self._picked_hole_source,
+                )
+                or not self._picked_reference_resolved
+                or not operation.enabled
+            ):
+                self._error(
+                    "ream.invalid_parameters: Draft Reaming chưa hợp lệ "
+                    "hoặc chưa được Áp dụng."
+                )
+                return
+            result = self._service.compute_reaming(
+                operation.operation_id,
+                expected_generation=generation,
+                geometry_resolver=self._drilling_resolver,
+            )
+            current = self._selected_operation()
+            try:
+                service_generation = self._service.cam_generation
+            except (ProjectError, RuntimeError):
+                service_generation = None
+            if (
+                generation != self._generation
+                or generation != service_generation
+                or current is None
+                or current.operation_id != operation.operation_id
+            ):
+                self._error(
+                    "ream.stale_result: Kết quả Reaming đã stale và không "
+                    "được hiển thị."
+                )
+                return
+            if result.accepted and result.artifact is not None:
+                self.message.emit(
+                    "Reaming đã Generate và publish artifact hợp lệ."
+                )
+                self.editor.set_error("")
+                failure_message = None
+            else:
+                failure_message = (
+                    f"{result.diagnostics[0].code.value}: "
+                    f"{result.diagnostics[0].message}"
+                    if result.diagnostics
+                    else "ream.generation_failed: Reaming generation thất bại."
+                )
+            self.refresh(self._selected_key)
+            if failure_message is not None:
+                self._error(failure_message)
             return
         if operation.strategy_key == "tapping_v1":
             generation = self._generation
@@ -1493,6 +1671,121 @@ class CamWorkspace(QWidget):
                     tree_mutation = lambda tree: tree.rename_node(
                         node_id, str(values["name"])
                     ).replace_operation(changed_operation)
+                elif current is not None and current.strategy_key == "reaming_v1":
+                    unit = setup.wcs.origin.unit
+                    if self._picked_hole_source is None:
+                        raise ValueError(
+                            "ream.geometry_missing: Reaming thiếu hole geometry."
+                        )
+                    parameters = self.editor.reaming_draft(
+                        unit,
+                        self._picked_hole_source,
+                    )
+                    if parameters is None:
+                        raise ValueError(
+                            self.editor.reaming_draft_error
+                            or "ream.invalid_parameters: Thông số Reaming chưa hợp lệ."
+                        )
+                    if self._drilling_resolver is None:
+                        raise ValueError(
+                            "ream.geometry_missing: Reaming resolver chưa sẵn sàng."
+                        )
+                    resolved = self._drilling_resolver(
+                        parameters.geometry,
+                        parameters.depth,
+                    )
+                    snapshot = self._service.cam_snapshot
+                    assembly = next((
+                        value for value in snapshot.tool_assemblies
+                        if str(value.assembly_id) == values["tool_id"]
+                    ), None)
+                    if assembly is None:
+                        raise ValueError(
+                            "ream.tool_missing: Reaming thiếu Tool Assembly."
+                        )
+                    tool = next((
+                        value for value in snapshot.tool_definitions
+                        if value.tool_id == assembly.tool_id
+                    ), None)
+                    machine = next((
+                        value for value in snapshot.machine_definitions
+                        if str(value.machine_id) == values["machine_id"]
+                    ), None)
+                    if machine is None:
+                        raise ValueError(
+                            "ream.machine_incompatible: Reaming thiếu Machine."
+                        )
+                    requirement = MachineRequirement(
+                        machine.machine_id,
+                        machine.revision,
+                        machine.content_fingerprint,
+                        machine.unit,
+                        (OperationCapability.DRILLING,),
+                    )
+                    geometry_inputs = _hole_geometry_inputs(
+                        current.geometry_inputs,
+                        self._picked_hole_source,
+                    )
+                    parameter_set = parameters.to_operation_parameters()
+                    tool_reference = ToolAssemblyReference.from_assembly(assembly)
+                    enabled = bool(values["enabled"])
+                    validation_operation = replace(
+                        current,
+                        parameters=parameter_set,
+                        tool_assembly=tool_reference,
+                        machine_requirement=requirement,
+                        geometry_inputs=geometry_inputs,
+                        enabled=True,
+                    )
+                    try:
+                        ReamingGenerator().resolve_inputs(
+                            validation_operation,
+                            setup,
+                            assembly=assembly,
+                            tool=tool,
+                            machine=machine,
+                            resolved_geometry=resolved,
+                        )
+                    except ReamingGenerationError as error:
+                        raise ValueError(
+                            f"{error.code.value}: {error}"
+                        ) from error
+                    parameter_changed = parameter_set != current.parameters
+                    geometry_changed = geometry_inputs != current.geometry_inputs
+                    tool_changed = tool_reference != current.tool_assembly
+                    machine_changed = requirement != current.machine_requirement
+                    enabled_changed = enabled != current.enabled
+                    changed_operation = current
+                    if any((
+                        parameter_changed,
+                        geometry_changed,
+                        tool_changed,
+                        machine_changed,
+                        enabled_changed,
+                    )):
+                        if geometry_changed:
+                            reason = DirtyReason.GEOMETRY_CHANGED
+                        elif tool_changed:
+                            reason = DirtyReason.TOOL_CHANGED
+                        elif machine_changed:
+                            reason = DirtyReason.MACHINE_CHANGED
+                        elif parameter_changed:
+                            reason = DirtyReason.PARAMETERS_CHANGED
+                        else:
+                            reason = DirtyReason.UPSTREAM_CHANGED
+                        changed_operation = replace(
+                            current,
+                            parameters=parameter_set,
+                            tool_assembly=tool_reference,
+                            machine_requirement=requirement,
+                            geometry_inputs=geometry_inputs,
+                            enabled=enabled,
+                            revision=current.revision.next(),
+                            artifact_state=current.artifact_state.mark_dirty(reason),
+                        )
+                    tree_mutation = lambda tree: tree.rename_node(
+                        node_id, str(values["name"])
+                    ).replace_operation(changed_operation)
                 elif current is not None and current.strategy_key == "tapping_v1":
                     unit = setup.wcs.origin.unit
                     if self._picked_hole_source is None:
@@ -1712,7 +2005,14 @@ class CamWorkspace(QWidget):
                 self.editor.set_error("")
                 self.refresh(self._selected_key)
         except (RuntimeError, TypeError, ValueError) as error:
-            self.editor.set_error(str(error))
+            message = str(error)
+            if self._active_editor_strategy_key == "reaming_v1":
+                operation_id = self._active_editor_operation_id
+                self._active_editor_operation_id = None
+                if operation_id is not None:
+                    self._reaming_drafts.pop(operation_id, None)
+                self.refresh(self._selected_key)
+            self.editor.set_error(message)
 
     def _tree_context(self):
         item = self.tree.currentItem()
@@ -1754,11 +2054,17 @@ class CamWorkspace(QWidget):
             self.message.emit("Đã cập nhật CAM; dự án có thay đổi chưa lưu.")
             return result
         except Exception as error:
-            if self._active_editor_strategy_key == "tapping_v1":
+            if self._active_editor_strategy_key in {"tapping_v1", "reaming_v1"}:
+                strategy_key = self._active_editor_strategy_key
                 operation_id = self._active_editor_operation_id
                 self._active_editor_operation_id = None
                 if operation_id is not None:
-                    self._tapping_drafts.pop(operation_id, None)
+                    drafts = (
+                        self._tapping_drafts
+                        if strategy_key == "tapping_v1"
+                        else self._reaming_drafts
+                    )
+                    drafts.pop(operation_id, None)
                 self.refresh(self._selected_key)
             self._error(str(error))
             return None
@@ -1839,6 +2145,25 @@ class CamWorkspace(QWidget):
                     and self.editor.machine.currentData()
                     == (str(machine_id) if machine_id else None)
                 )
+            if operation.strategy_key == "reaming_v1":
+                draft = self.editor.reaming_draft(
+                    setup.wcs.origin.unit,
+                    self._picked_hole_source,
+                )
+                return bool(
+                    operation.enabled
+                    and draft is not None
+                    and draft.to_operation_parameters() == operation.parameters
+                    and self._picked_hole_source is not None
+                    and _operation_matches_hole_source(
+                        operation, self._picked_hole_source,
+                    )
+                    and self._picked_reference_resolved
+                    and self.editor.tool.currentData()
+                    == str(operation.tool_assembly.assembly_id)
+                    and self.editor.machine.currentData()
+                    == (str(machine_id) if machine_id else None)
+                )
             draft = self.editor.facing_draft(setup.wcs.origin.unit)
             return bool(operation.enabled and draft is not None and
                 draft.to_operation_parameters() == operation.parameters and
@@ -1859,6 +2184,7 @@ class _CamPropertiesEditor(QWidget):
         super().__init__()
         self._commit = commit
         self._tapping_draft_error = ""
+        self._reaming_draft_error = ""
         self._fields = {key: QLineEdit() for key in ("name", "offset", "x", "y", "z", "a", "b", "c")}
         self._facing_fields = {key: QLineEdit() for key in (
             "top", "target", "stepdown", "stepover", "allowance", "clearance", "retract",
@@ -1877,6 +2203,10 @@ class _CamPropertiesEditor(QWidget):
             "top", "final", "clearance", "retract", "diameter", "pitch",
             "spindle", "dwell", "tolerance",
         )}
+        self._reaming_fields = {key: QLineEdit() for key in (
+            "top", "final", "clearance", "retract", "diameter", "pre_hole",
+            "spindle", "feed_per_revolution", "dwell", "tolerance",
+        )}
         self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
         self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
         self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
@@ -1888,6 +2218,11 @@ class _CamPropertiesEditor(QWidget):
         self.drilling_retract = QComboBox(); self.drilling_retract.addItems([item.value for item in DrillRetractPolicy])
         self.tapping_hand = QComboBox(); self.tapping_hand.addItems([item.value for item in TappingHand])
         self.tapping_mode = QComboBox(); self.tapping_mode.addItems([item.value for item in TappingSynchronizationPolicy])
+        self.reaming_spindle_direction = QComboBox(); self.reaming_spindle_direction.addItems([item.value for item in SpindleDirection])
+        self.reaming_retract_policy = QComboBox(); self.reaming_retract_policy.addItems([item.value for item in ReamingRetractPolicy])
+        self.reaming_coolant = QComboBox(); self.reaming_coolant.addItems([item.value for item in ReamingCoolantMode])
+        self.reaming_derived = QLabel("—")
+        self.reaming_derived.setWordWrap(True)
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
@@ -1955,6 +2290,23 @@ class _CamPropertiesEditor(QWidget):
             ("Tapping tolerance", "tolerance"),
         ):
             form.addRow(label, self._tapping_fields[key])
+        form.addRow("Reaming spindle direction", self.reaming_spindle_direction)
+        form.addRow("Reaming retract policy", self.reaming_retract_policy)
+        form.addRow("Reaming coolant", self.reaming_coolant)
+        for label, key in (
+            ("Reaming Top Z", "top"),
+            ("Reaming final depth Z", "final"),
+            ("Reaming clearance Z", "clearance"),
+            ("Reaming retract Z", "retract"),
+            ("Finished nominal diameter", "diameter"),
+            ("Pre-hole diameter (required)", "pre_hole"),
+            ("Reaming spindle RPM", "spindle"),
+            ("Feed per revolution", "feed_per_revolution"),
+            ("Reaming dwell (s, optional)", "dwell"),
+            ("Reaming tolerance", "tolerance"),
+        ):
+            form.addRow(label, self._reaming_fields[key])
+        form.addRow("Derived (read-only)", self.reaming_derived)
         form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
         form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
         button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
@@ -1968,10 +2320,15 @@ class _CamPropertiesEditor(QWidget):
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for field in self._tapping_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
+        for field in self._reaming_fields.values():
+            field.textChanged.connect(lambda _text: self.draft_changed.emit())
+            field.textChanged.connect(self._update_reaming_preview)
         for combo in (self.boundary_source, self.direction, self.profile_source, self.contour_side,
                       self.contour_direction, self.pocket_entry, self.pocket_direction,
                       self.drilling_cycle, self.drilling_retract,
-                      self.tapping_hand, self.tapping_mode, self.tool, self.machine):
+                      self.tapping_hand, self.tapping_mode,
+                      self.reaming_spindle_direction, self.reaming_retract_policy,
+                      self.reaming_coolant, self.tool, self.machine):
             combo.currentIndexChanged.connect(lambda _index: self.draft_changed.emit())
         self.finishing_pass.toggled.connect(lambda _checked: self.draft_changed.emit())
         self.multiple_depth_passes.toggled.connect(lambda _checked: self.draft_changed.emit())
@@ -1983,6 +2340,8 @@ class _CamPropertiesEditor(QWidget):
         for field in self._pocket_fields.values(): field.clear()
         for field in self._drilling_fields.values(): field.clear()
         for field in self._tapping_fields.values(): field.clear()
+        for field in self._reaming_fields.values(): field.clear()
+        self.reaming_derived.setText("—")
         self.status.setText("—"); self.toolpath_metadata.setText("—"); self.error.clear()
 
     def show_job(self, name: str) -> None:
@@ -2112,6 +2471,39 @@ class _CamPropertiesEditor(QWidget):
                 self.machine.setCurrentIndex(self.machine.findData(
                     str(operation.machine_requirement.machine_id)
                 ))
+        elif operation is not None and operation.strategy_key == "reaming_v1":
+            parameters = ReamingStrategy.from_operation_parameters(
+                operation.parameters
+            )
+            values = {
+                "top": parameters.top_z.value,
+                "final": parameters.final_depth.value,
+                "clearance": parameters.clearance_height.value,
+                "retract": parameters.retract_height.value,
+                "diameter": parameters.nominal_diameter.value,
+                "pre_hole": parameters.pre_hole_diameter.value,
+                "spindle": parameters.spindle_speed.value,
+                "feed_per_revolution": parameters.feed_per_revolution.value,
+                "dwell": parameters.dwell_seconds,
+                "tolerance": parameters.tolerance.value,
+            }
+            for key, value in values.items():
+                self._reaming_fields[key].setText(str(value))
+            self.reaming_spindle_direction.setCurrentText(
+                parameters.spindle_direction.value
+            )
+            self.reaming_retract_policy.setCurrentText(
+                parameters.retract_policy.value
+            )
+            self.reaming_coolant.setCurrentText(parameters.coolant.value)
+            self.tool.setCurrentIndex(self.tool.findData(
+                str(operation.tool_assembly.assembly_id)
+            ))
+            if operation.machine_requirement:
+                self.machine.setCurrentIndex(self.machine.findData(
+                    str(operation.machine_requirement.machine_id)
+                ))
+            self._update_reaming_preview()
 
     def set_error(self, text: str) -> None: self.error.setText(text)
 
@@ -2136,6 +2528,22 @@ class _CamPropertiesEditor(QWidget):
                 f" · {value.tapping_mode.value if value.tapping_mode else '?'}"
                 f" · {value.hole_count} hole"
                 f" · D{diameter} · P{pitch} · {rpm} RPM · depth {depth}"
+            )
+        if value.strategy_key == "reaming_v1":
+            def number(item) -> str:
+                return "?" if item is None else f"{item.value:g}"
+
+            tapping = (
+                f" · {value.hole_count} hole"
+                f" · D{number(value.nominal_diameter)}"
+                f" · pre-hole {number(value.pre_hole_diameter)}"
+                f" · stock/side {number(value.stock_per_side)}"
+                f" · feed/rev {number(value.feed_per_revolution)}"
+                f" · feed/min {number(value.feed_per_minute)}"
+                f" · {number(value.spindle_speed)} RPM"
+                f" · {value.spindle_direction.value if value.spindle_direction else '?'}"
+                f" · {value.retract_policy.value if value.retract_policy else '?'}"
+                f" · {value.coolant_mode.value if value.coolant_mode else '?'}"
             )
         self.toolpath_metadata.setText(
             f"{value.operation_id} · {value.strategy_key} · {value.pass_count} pass · "
@@ -2269,6 +2677,41 @@ class _CamPropertiesEditor(QWidget):
         self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
         self.enabled.setChecked(bool(state.get("enabled", False)))
 
+    def reaming_state(self) -> dict[str, object]:
+        """Capture one transient Reaming draft without derived or runtime state."""
+        return {
+            "name": self._fields["name"].text(),
+            "fields": {
+                key: field.text() for key, field in self._reaming_fields.items()
+            },
+            "spindle_direction": self.reaming_spindle_direction.currentText(),
+            "retract_policy": self.reaming_retract_policy.currentText(),
+            "coolant": self.reaming_coolant.currentText(),
+            "tool_id": self.tool.currentData(),
+            "machine_id": self.machine.currentData(),
+            "enabled": self.enabled.isChecked(),
+        }
+
+    def restore_reaming_state(self, state: dict[str, object]) -> None:
+        """Restore one unapplied Reaming draft by stable operation ID."""
+        fields = state.get("fields")
+        if not isinstance(fields, dict):
+            return
+        self._fields["name"].setText(str(state.get("name", "")))
+        for key, field in self._reaming_fields.items():
+            field.setText(str(fields.get(key, "")))
+        self.reaming_spindle_direction.setCurrentText(
+            str(state.get("spindle_direction", ""))
+        )
+        self.reaming_retract_policy.setCurrentText(
+            str(state.get("retract_policy", ""))
+        )
+        self.reaming_coolant.setCurrentText(str(state.get("coolant", "")))
+        self.tool.setCurrentIndex(self.tool.findData(state.get("tool_id")))
+        self.machine.setCurrentIndex(self.machine.findData(state.get("machine_id")))
+        self.enabled.setChecked(bool(state.get("enabled", False)))
+        self._update_reaming_preview()
+
     def _submit(self) -> None:
         self._commit({**{key: field.text() for key, field in self._fields.items()},
                       **{key: field.text() for key, field in self._facing_fields.items()},
@@ -2276,6 +2719,7 @@ class _CamPropertiesEditor(QWidget):
                       **{f"pocket_{key}": field.text() for key, field in self._pocket_fields.items()},
                       **{f"drilling_{key}": field.text() for key, field in self._drilling_fields.items()},
                       **{f"tapping_{key}": field.text() for key, field in self._tapping_fields.items()},
+                      **{f"reaming_{key}": field.text() for key, field in self._reaming_fields.items()},
                       "setup_kind": self.setup_kind.currentText(), "stock_kind": self.stock_kind.currentText(),
                       "enabled": self.enabled.isChecked(), "boundary_source": self.boundary_source.currentText(),
                       "direction": self.direction.currentText(), "tool_id": self.tool.currentData(),
@@ -2288,6 +2732,9 @@ class _CamPropertiesEditor(QWidget):
                       "drilling_retract": self.drilling_retract.currentText(),
                       "tapping_hand": self.tapping_hand.currentText(),
                       "tapping_mode": self.tapping_mode.currentText(),
+                      "reaming_spindle_direction": self.reaming_spindle_direction.currentText(),
+                      "reaming_retract_policy": self.reaming_retract_policy.currentText(),
+                      "reaming_coolant": self.reaming_coolant.currentText(),
                       "finishing_pass": self.finishing_pass.isChecked(),
                       "multiple_depth_passes": self.multiple_depth_passes.isChecked()})
 
@@ -2495,6 +2942,145 @@ class _CamPropertiesEditor(QWidget):
         """Return the last stable diagnostic produced while parsing a Tapping draft."""
         return self._tapping_draft_error
 
+    def reaming_draft(
+        self,
+        unit: LengthUnit,
+        hole_source: HoleReference | HolePattern | None,
+    ) -> ReamingStrategy | None:
+        """Build an immutable Reaming draft without mutating project state."""
+        self._reaming_draft_error = ""
+        try:
+            if hole_source is None or hole_source.unit is not unit:
+                self._reaming_draft_error = (
+                    "ream.geometry_missing: Reaming thiếu hole geometry hợp lệ."
+                )
+                return None
+            pre_hole_text = self._reaming_fields["pre_hole"].text().strip()
+            if not pre_hole_text:
+                self._reaming_draft_error = (
+                    "ream.prehole_missing: Pre-hole diameter là bắt buộc."
+                )
+                return None
+            dwell_text = self._reaming_fields["dwell"].text().strip()
+            feed_unit = (
+                FeedUnit.MM_PER_REVOLUTION
+                if unit is LengthUnit.MM
+                else FeedUnit.INCH_PER_REVOLUTION
+            )
+            return ReamingStrategy(
+                unit=unit,
+                geometry=DrillGeometryInput(hole_source, unit),
+                depth=DrillDepthDefinition(
+                    unit,
+                    Length(float(self._reaming_fields["top"].text()), unit),
+                    Length(float(self._reaming_fields["final"].text()), unit),
+                ),
+                nominal_diameter=Length(
+                    float(self._reaming_fields["diameter"].text()), unit,
+                ),
+                pre_hole_diameter=Length(float(pre_hole_text), unit),
+                spindle_speed=SpindleSpeed(
+                    float(self._reaming_fields["spindle"].text())
+                ),
+                feed_per_revolution=FeedRate(
+                    float(self._reaming_fields["feed_per_revolution"].text()),
+                    feed_unit,
+                ),
+                clearance_height=Length(
+                    float(self._reaming_fields["clearance"].text()), unit,
+                ),
+                retract_height=Length(
+                    float(self._reaming_fields["retract"].text()), unit,
+                ),
+                spindle_direction=SpindleDirection(
+                    self.reaming_spindle_direction.currentText()
+                ),
+                retract_policy=ReamingRetractPolicy(
+                    self.reaming_retract_policy.currentText()
+                ),
+                coolant=ReamingCoolantMode(self.reaming_coolant.currentText()),
+                dwell_seconds=0.0 if not dwell_text else float(dwell_text),
+                tolerance=Length(
+                    float(self._reaming_fields["tolerance"].text()), unit,
+                ),
+            )
+        except ReamingValidationError as error:
+            self._reaming_draft_error = f"{error.code.value}: {error}"
+            return None
+        except DrillValidationError as error:
+            code = (
+                "ream.depth_invalid"
+                if error.code in {
+                    DiagnosticCode.DRILL_INVALID_DEPTH,
+                    DiagnosticCode.DRILL_DEPTH_INVALID,
+                }
+                else "ream.invalid_parameters"
+            )
+            self._reaming_draft_error = f"{code}: {error}"
+            return None
+        except (TypeError, ValueError) as error:
+            self._reaming_draft_error = (
+                f"ream.invalid_parameters: "
+                f"{error or 'Thông số Reaming không hợp lệ.'}"
+            )
+            return None
+
+    @property
+    def reaming_draft_error(self) -> str:
+        """Return the last stable diagnostic produced while parsing Reaming."""
+        return self._reaming_draft_error
+
+    def _update_reaming_preview(self, *_args: object) -> None:
+        """Update derived-only values without constructing or mutating an operation."""
+        try:
+            nominal_text = self._reaming_fields["diameter"].text().strip()
+            pre_hole_text = self._reaming_fields["pre_hole"].text().strip()
+            if not pre_hole_text:
+                self.reaming_derived.setText(
+                    "ream.prehole_missing · pre-hole diameter là bắt buộc"
+                )
+                return
+            nominal = float(nominal_text)
+            pre_hole = float(pre_hole_text)
+            tolerance = float(self._reaming_fields["tolerance"].text())
+            if not math.isfinite(nominal) or nominal <= 0.0:
+                raise ValueError("ream.invalid_parameters · nominal diameter phải > 0")
+            if (
+                not math.isfinite(pre_hole)
+                or pre_hole <= 0.0
+                or pre_hole >= nominal
+            ):
+                raise ValueError(
+                    "ream.prehole_invalid · pre-hole phải > 0 và nhỏ hơn nominal"
+                )
+            stock = (nominal - pre_hole) / 2.0
+            if (
+                not math.isfinite(tolerance)
+                or tolerance <= 0.0
+                or stock <= tolerance
+                or stock >= nominal / 2.0 - tolerance
+            ):
+                raise ValueError(
+                    "ream.stock_invalid · stock mỗi phía ngoài giới hạn tolerance"
+                )
+            rpm = float(self._reaming_fields["spindle"].text())
+            feed_per_revolution = float(
+                self._reaming_fields["feed_per_revolution"].text()
+            )
+            top = float(self._reaming_fields["top"].text())
+            final = float(self._reaming_fields["final"].text())
+            derived = (rpm, feed_per_revolution, top, final)
+            if any(not math.isfinite(value) for value in derived):
+                raise ValueError("ream.invalid_parameters · derived input không hữu hạn")
+            if rpm <= 0.0 or feed_per_revolution <= 0.0:
+                raise ValueError("ream.invalid_parameters · RPM/feed mỗi vòng phải > 0")
+            self.reaming_derived.setText(
+                f"Stock/side: {stock:g} · Feed/min: "
+                f"{rpm * feed_per_revolution:g} · Cutting depth: {top - final:g}"
+            )
+        except ValueError as error:
+            self.reaming_derived.setText(str(error) or "ream.invalid_parameters")
+
 
 def _length_unit(session: ProjectSession | None) -> LengthUnit:
     return LengthUnit.INCH if session and session.manifest.units is UnitSystem.INCH else LengthUnit.MM
@@ -2650,6 +3236,65 @@ def _default_tapping_strategy(
         dwell_seconds=0.0,
         tolerance=Length(1.0e-7 * scale, unit),
     )
+
+
+def _default_reaming_strategy(
+    setup: Setup,
+    hole_source: HoleReference | HolePattern,
+) -> ReamingStrategy:
+    """Create a conservative D8 Reaming draft with explicit D7.8 pre-hole."""
+    unit = setup.wcs.origin.unit
+    if hole_source.unit is not unit:
+        raise ValueError("ream.invalid_parameters: Hole source unit không khớp WCS.")
+    plane_origin = (
+        hole_source.plane_origin
+        if isinstance(hole_source, HoleReference)
+        else hole_source.locations[0].plane_origin
+    )
+    delta = Vector3(
+        plane_origin.x - setup.wcs.origin.x,
+        plane_origin.y - setup.wcs.origin.y,
+        plane_origin.z - setup.wcs.origin.z,
+    )
+    top_z = delta.dot(setup.wcs.z_axis)
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    feed_unit = (
+        FeedUnit.MM_PER_REVOLUTION
+        if unit is LengthUnit.MM else FeedUnit.INCH_PER_REVOLUTION
+    )
+    return ReamingStrategy(
+        unit=unit,
+        geometry=DrillGeometryInput(hole_source, unit),
+        depth=DrillDepthDefinition(
+            unit,
+            Length(top_z, unit),
+            Length(top_z - 10.0 * scale, unit),
+        ),
+        nominal_diameter=Length(8.0 * scale, unit),
+        pre_hole_diameter=Length(7.8 * scale, unit),
+        spindle_speed=SpindleSpeed(500.0),
+        feed_per_revolution=FeedRate(0.1 * scale, feed_unit),
+        clearance_height=Length(top_z + 8.0 * scale, unit),
+        retract_height=Length(top_z + 3.0 * scale, unit),
+        spindle_direction=SpindleDirection.CLOCKWISE,
+        retract_policy=ReamingRetractPolicy.CONTROLLED_FEED,
+        coolant=ReamingCoolantMode.OFF,
+        dwell_seconds=0.0,
+        tolerance=Length(1.0e-7 * scale, unit),
+    )
+
+
+def _hole_strategy(
+    operation: Operation,
+) -> DrillingStrategy | TappingStrategy | ReamingStrategy:
+    """Decode one supported hole strategy without changing its binding."""
+    if operation.strategy_key == "tapping_v1":
+        return TappingStrategy.from_operation_parameters(operation.parameters)
+    if operation.strategy_key == "reaming_v1":
+        return ReamingStrategy.from_operation_parameters(operation.parameters)
+    if operation.strategy_key == "drilling_v1":
+        return DrillingStrategy.from_operation_parameters(operation.parameters)
+    raise ValueError("Operation is not a supported hole strategy")
 
 
 def _hole_references(

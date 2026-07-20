@@ -4,6 +4,7 @@ from hms_cadcam.cam.application.service import CamApplicationService, CamSelecti
 from hms_cadcam.cam.application.defaults import (
     basic_drilling_resources,
     basic_mill_resources,
+    basic_reaming_resources,
     basic_tapping_resources,
 )
 from hms_cadcam.cam.application.facing import (
@@ -54,6 +55,7 @@ from hms_cadcam.cam.application.pocket import (
 __all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
            "FacingGenerator", "FacingInputs", "basic_drilling_resources", "basic_mill_resources",
+           "basic_reaming_resources",
            "basic_tapping_resources",
            "offset_contour", "reconcile_artifacts",
            "DrillingComputeResult", "DrillingGenerationError", "DrillingGenerator",
