@@ -1,48 +1,91 @@
 # Trạng thái dự án HMS CAD/CAM
 
-## Baseline checkpoint Post Processor
+## Checkpoint Multi-operation Program Assembly
 
-- `HEAD` đầu vào đã audit: `dbc7dd7` (`tao he thong thu muc tai lieu tham khao`); không có thay đổi source code sau baseline này trong checkpoint.
-- Worktree sạch trước audit; sau commit checkpoint phải tiếp tục sạch.
-- Python dự án: 3.14.6 trong `.venv`; package imports đạt.
+- Baseline source 7D.3.2: `4d8deab` (`hoan thanh Multi operation assembly UI
+  giai doan 7D3.2`), kế thừa đầy đủ 7D.3.1 tại `8555747`.
+- Worktree sạch trước audit ngày 21-07-2026; `git diff --check` đạt.
+- Python dự án: 3.14.6 trong `.venv`; package compile/import đạt.
 - SQLite giữ nguyên schema **v4** (`DATABASE_SCHEMA_VERSION = 4`).
-- Toàn bộ pytest ngày 20-07-2026: **980 passed**; `pip check`, `compileall src tests` và `git diff --check` đều đạt.
+- Toàn bộ pytest: **999 passed**; `pip check` và `compileall src tests` đều đạt.
+- GUI smoke 7D.3.2 chạy thành công ở chế độ offscreen, tự đóng và không
+  Generate/Export NC.
 
-## Nền tảng ứng dụng, CAD và XCAF
+## Nền tảng ứng dụng, dự án, CAD và XCAF
 
-- Giai đoạn 1–4: khung PySide6, dự án thư mục `.HMS`, Session Lock, Autosave, Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
-- Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state đã hoàn thành.
-- Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và persistence đã hoàn thành.
-- `ProjectService` là API dự án được UI sử dụng; manifest dùng JSON UTF-8, dữ liệu chính dùng SQLite v4, CAD gốc được giữ nguyên trong `source/`, cache có thể xóa và tái tạo.
-- OCP/Open CASCADE được cô lập sau adapter; các tác vụ import/I/O nặng không chạy trực tiếp trong UI thread.
+- Giai đoạn 1–4: khung PySide6, dự án thư mục `.HMS`, Session Lock, Autosave,
+  Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
+- Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state
+  đã hoàn thành.
+- Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và
+  persistence đã hoàn thành.
+- `ProjectService` là API dự án được UI sử dụng; manifest dùng JSON UTF-8, dữ
+  liệu chính dùng SQLite v4, CAD gốc được giữ nguyên trong `source/`, cache có
+  thể xóa và tái tạo.
+- OCP/Open CASCADE được cô lập sau adapter; các tác vụ import/I/O nặng không
+  chạy trực tiếp trong UI thread.
 
-## CAM và Simulation/Collision hiện có
+## CAM và Simulation/Collision
 
-- Các operation hiện có: Facing, Planar Face Facing, Contour, Pocket, Drilling, Tapping domain/toolpath, Reaming và Boring.
-- Tapping đã có domain/toolpath/UI/viewer nhưng production Post hiện vẫn fail-closed.
-- Simulation/Collision v1 gồm foundation 7C.1, Viewer 7C.2, UI + external cache 7C.3; kết quả có PASS/WARN/FAIL, provenance/fingerprint, stale/cancel guard và project lifecycle.
-- Review ổn định Simulation/Collision v1 tại `6fdbd45`; PASS chỉ có nghĩa không phát hiện vấn đề trong phạm vi và resolution v1.
+- Các operation hiện có: Facing, Planar Face Facing, Contour, Pocket, Drilling,
+  Tapping, Reaming và Boring.
+- Tapping đã có domain/toolpath/UI/viewer nhưng production Post vẫn fail-closed.
+- Simulation/Collision v1 gồm foundation 7C.1, Viewer 7C.2 và UI/cache 7C.3;
+  kết quả có PASS/WARN/FAIL, provenance/fingerprint, stale/cancel guard và
+  project lifecycle.
+- PASS chỉ có nghĩa không phát hiện vấn đề trong phạm vi và resolution v1;
+  không phải chứng nhận an toàn máy.
 
 ## Chuỗi Post Processor đã tích hợp
 
-- `0b2038e` — Post Foundation 7D.1: `ToolpathArtifact` single-operation được preflight qua Simulation gate, lower thành `NCProgramIR`, rồi adapter tạo `PostResult` deterministic trong bộ nhớ.
-- `1b3d1ff` — FANUC ROBODRILL 21i 7D.2.1: production profile/adapter `.fn`, MM, G54, XYZ/XY plane, CRLF/UTF-8 và validation fail-closed.
-- `bfac949` — Export/data-server lifecycle 7D.2.2: lưu `.fn` do project quản lý cùng manifest, sidecar và SHA-256; export nguyên byte đến thư mục local, ổ mạng đã map hoặc UNC.
-- `bd90166` — Post UI 7D.2.3: Apply/Validate/Generate, preview chính xác ở chế độ read-only, Save Managed Artifact và explicit filesystem export.
-- GUI smoke sau 7D.2.3 phát hiện metadata output chưa refresh sau generate đồng bộ và trạng thái Post chưa hiện stale khi Toolpath artifact đổi. Hai lỗi đã được sửa, có regression tests, tại `7b06c25`.
-- Luồng hiện tại: `ToolpathArtifact → Simulation gate → NCProgramIR → FANUC ROBODRILL 21i PostResult → read-only NC preview → project-managed .fn + manifest/sidecar/checksum → local/mapped/UNC filesystem export`.
+- 7D.1: `ToolpathArtifact` single-operation được preflight qua Simulation gate,
+  lower thành `NCProgramIR`, rồi adapter tạo `PostResult` deterministic trong
+  bộ nhớ.
+- 7D.2.1: production profile FANUC ROBODRILL 21i `.fn`, MM, G54, XYZ/XY,
+  CRLF/UTF-8 và validation fail-closed.
+- 7D.2.2: managed artifact, manifest/sidecar/SHA-256 và external export đến thư
+  mục local, ổ mạng đã map hoặc UNC.
+- 7D.2.3: Apply/Validate/Generate, exact read-only preview, Save Managed Artifact
+  và explicit filesystem export cho single operation.
+- 7D.3.1: `ProgramAssemblyService` ghép nhiều immutable operation snapshot theo
+  explicit order, tạo nhiều independent tool section với một global
+  header/footer và deterministic checksum/provenance.
+- 7D.3.2: tab `Program Assembly` trong CAM workspace cung cấp danh sách operation,
+  context/binding editor, compatibility/Simulation diagnostics, background
+  Generate, preview/navigation, managed save và explicit external export.
 
-## Giới hạn hiện tại
+Luồng multi-operation hiện tại:
 
-- Chỉ một operation và một tool section; chưa có multi-operation assembly.
-- Chỉ MM, G54, ba trục XYZ và mặt phẳng XY.
-- Tapping production fail-closed.
-- Không direct CNC transfer; không FTP/SFTP/HTTP/DNC.
-- Không stock removal, machine kinematics, 4/5-axis hoặc machine certification.
-- Output ROBODRILL 21i **chưa được machine-certified**; luôn cần manual review và dry-run/single-block trước sản xuất.
+```text
+Ordered ToolpathArtifact snapshots
+  → per-operation Simulation gate + production context
+  → NCProgramIR sections
+  → ProgramAssemblyResult / canonical .fn / SHA-256
+  → read-only preview
+  → project-managed artifact + manifest/sidecar
+  → explicit local/mapped/UNC filesystem export
+```
 
-## Tài liệu tham khảo
+Workflow single-operation 7D.2.3, golden output và export contract cũ vẫn được
+giữ tương thích.
 
-- `docs/references/` là cấu trúc ghi chú/chỉ mục công khai theo WorkNC, Mastercam và NX; file nhị phân bên ngoài được giữ cục bộ.
-- `docs/reference/` chứa quy tắc sử dụng và chỉ mục cho `reference_private/`.
-- `reference_private/` bị Git ignore, không phải source of truth và chỉ được đọc chọn lọc theo task; checkpoint này chỉ xác nhận bốn file đã được người dùng copy, không quét hoặc đọc toàn bộ.
+## Lifecycle và giới hạn
+
+- Đổi order, T/H/D, safe Z, cutter policy, shared context, Simulation result,
+  source Toolpath hoặc project generation làm result cũ stale; UI không tự
+  regenerate hoặc export.
+- V1 chỉ hỗ trợ một Job/Setup/Machine/profile, MM, G54, ba trục XYZ và mặt
+  phẳng XY trong một assembly.
+- Mỗi operation luôn là một section độc lập; chưa tự group cùng dao hoặc tối ưu
+  tool change.
+- Chưa có production Tapping, stock removal, machine kinematics, 4/5-axis,
+  direct CNC transfer, FTP/SFTP/HTTP/DNC hoặc machine certification.
+- Output ROBODRILL 21i phải được manual review và dry-run/single-block trước khi
+  sử dụng sản xuất.
+
+## Tài liệu liên quan
+
+- `docs/CAM_MULTI_OPERATION_ASSEMBLY_7D3_1.md`: contract/service 7D.3.1.
+- `docs/CAM_MULTI_OPERATION_UI_7D3_2.md`: workflow UI/lifecycle 7D.3.2.
+- `docs/references/` và `docs/reference/`: chỉ mục/quy tắc tài liệu tham khảo;
+  file riêng trong `reference_private/` không phải source of truth.

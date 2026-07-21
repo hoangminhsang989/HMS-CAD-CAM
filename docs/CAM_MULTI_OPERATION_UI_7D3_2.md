@@ -85,3 +85,14 @@ Phạm vi này chưa triển khai production Tapping, automatic tool ordering/gr
 nhiều Setup/WCS, nhiều machine/profile, stock removal, kinematics, 4/5-axis,
 direct CNC communication hoặc machine certification. Output phải được review,
 dry-run/single-block thủ công trước khi dùng trên máy.
+
+## Kiểm tra checkpoint
+
+Audit ngày 21-07-2026 chạy bằng Python 3.14.6 trong `.venv`:
+
+- 16 test trực tiếp của 7D.3.1/7D.3.2 đạt.
+- Toàn bộ suite đạt **999 passed**.
+- `python -m compileall -q src tests` và `python -m pip check` đạt.
+- GUI smoke `tests/manual_stage7d32_program_assembly_gui.py` chạy thành công ở
+  chế độ offscreen và tự đóng; harness cố ý giữ FAIL/missing Simulation để xác
+  nhận Generate bị chặn và không tự ghi/xuất `.fn`.
