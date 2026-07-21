@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="900" viewBox="0 0 760 900" role="img" aria-labelledby="title desc">
+  <title id="title">Wireframe Basic cho Pocket HMS</title>
+  <desc id="desc">Editor Pocket có boundary, tool, bottom, step, entry, feed và spindle; Advanced collapsed.</desc>
+  <defs><style>
+    .bg{fill:#f3f5f7}.surface{fill:#fff;stroke:#c6cdd5}.bar{fill:#e9edf2;stroke:#c6cdd5}.soft{fill:#e8f1fb;stroke:#8db4db}.warn{fill:#fff4dc;stroke:#c88a24}.text{font:14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.small{font:12px 'Segoe UI',Arial,sans-serif;fill:#5c6874}.label{font:600 16px 'Segoe UI',Arial,sans-serif;fill:#202a33}.button{fill:#fff;stroke:#9ca8b4}.primary{fill:#2463a5}.white{font:600 12px 'Segoe UI',Arial,sans-serif;fill:#fff}
+  </style></defs>
+  <rect class="bg" width="760" height="900"/><rect class="surface" x="18" y="16" width="724" height="868" rx="6"/>
+  <rect class="warn" x="34" y="34" width="692" height="76" rx="5"/><text class="label" x="52" y="64">Pocket lòng khuôn</text><text class="small" x="52" y="90">NEEDS_INPUT · Boundary đã chọn · thiếu Entry phù hợp</text>
+  <rect class="surface" x="34" y="124" width="692" height="476" rx="5"/><text class="label" x="52" y="154">Basic · 8 input</text>
+  <text class="small" x="52" y="194">1. Boundary</text><rect class="soft" x="240" y="174" width="454" height="34" rx="4"/><text class="text" x="254" y="197">Pocket #1 · 1 đảo · đã resolve</text>
+  <text class="small" x="52" y="240">2. Tool Assembly</text><rect class="button" x="240" y="220" width="454" height="34" rx="4"/><text class="text" x="254" y="243">Dao phay ngón D8 · Holder H02</text>
+  <text class="small" x="52" y="286">3. Đáy Pocket</text><rect class="button" x="240" y="266" width="356" height="34" rx="4"/><text class="text" x="254" y="289">-18.000</text><text class="small" x="610" y="289">mm</text>
+  <text class="small" x="52" y="332">4. Bước xuống</text><rect class="button" x="240" y="312" width="356" height="34" rx="4"/><text class="text" x="254" y="335">2.000</text><text class="small" x="610" y="335">mm</text>
+  <text class="small" x="52" y="378">5. Stepover</text><rect class="button" x="240" y="358" width="356" height="34" rx="4"/><text class="text" x="254" y="381">4.000</text><text class="small" x="610" y="381">mm</text>
+  <text class="small" x="52" y="424">6. Entry</text><rect x="240" y="404" width="454" height="34" rx="4" fill="#fff8f0" stroke="#c88a24"/><text class="text" x="254" y="427">Vertical plunge · cần kiểm tra khoảng trống</text>
+  <text class="small" x="52" y="470">7. Lượng chạy dao</text><rect class="button" x="240" y="450" width="356" height="34" rx="4"/><text class="text" x="254" y="473">520</text><text class="small" x="610" y="473">mm/min</text>
+  <text class="small" x="52" y="516">8. Tốc độ trục chính</text><rect class="button" x="240" y="496" width="356" height="34" rx="4"/><text class="text" x="254" y="519">5200</text><text class="small" x="610" y="519">rpm</text>
+  <text class="small" x="52" y="568">Top Z từ Geometry · Direction: climb từ HMS default v1</text>
+  <rect class="bar" x="34" y="614" width="692" height="48" rx="4"/><text class="text" x="52" y="644">Geometry · Boundary + islands</text><text class="text" x="696" y="644">›</text>
+  <rect class="bar" x="34" y="672" width="692" height="48" rx="4"/><text class="text" x="52" y="702">Cutting / Levels / Linking</text><text class="text" x="696" y="702">›</text>
+  <rect class="bar" x="34" y="730" width="692" height="48" rx="4"/><text class="text" x="52" y="760">Advanced · Allowance, Tolerance, Direction · collapsed</text><text class="text" x="696" y="760">›</text>
+  <rect class="button" x="34" y="818" width="100" height="38" rx="4"/><text class="small" x="50" y="842">Reset Draft</text><rect class="button" x="144" y="818" width="84" height="38" rx="4"/><text class="small" x="163" y="842">Preview</text><rect class="button" x="238" y="818" width="84" height="38" rx="4"/><text class="small" x="256" y="842">Validate</text><rect class="primary" x="332" y="818" width="96" height="38" rx="4"/><text class="white" x="351" y="842">Calculate</text><rect class="button" x="438" y="818" width="74" height="38" rx="4"/><text class="small" x="459" y="842">Apply</text><rect class="button" x="522" y="818" width="74" height="38" rx="4"/><text class="small" x="542" y="842">Close</text>
+</svg>

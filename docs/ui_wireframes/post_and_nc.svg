@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="860" viewBox="0 0 1240 860" role="img" aria-labelledby="title desc">
+  <title id="title">Wireframe Post và NC workflow HMS</title>
+  <desc id="desc">Operation selection, validation gates, generate in memory, preview, managed artifact và explicit export trong một workflow.</desc>
+  <defs><style>
+    .bg{fill:#f3f5f7}.surface{fill:#fff;stroke:#c6cdd5}.bar{fill:#e9edf2;stroke:#c6cdd5}.soft{fill:#e8f1fb;stroke:#8db4db}.okbox{fill:#e7f5ed;stroke:#4b9a6c}.warnbox{fill:#fff4dc;stroke:#c88a24}.text{font:14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.small{font:12px 'Segoe UI',Arial,sans-serif;fill:#5c6874}.label{font:600 15px 'Segoe UI',Arial,sans-serif;fill:#202a33}.mono{font:12px Consolas,monospace;fill:#26333d}.button{fill:#fff;stroke:#9ca8b4}.primary{fill:#2463a5}.white{font:600 12px 'Segoe UI',Arial,sans-serif;fill:#fff}.line{stroke:#aab4bf;stroke-width:2}.ok{fill:#2f855a}.warn{fill:#b7791f}.muted{fill:#8a96a2}
+  </style></defs>
+  <rect class="bg" width="1240" height="860"/>
+  <rect class="surface" x="14" y="14" width="1212" height="832" rx="6"/>
+  <text class="label" x="34" y="46">Post / Program Assembly / NC</text>
+  <text class="small" x="964" y="46">Không tự Generate hoặc Export</text>
+
+  <rect class="surface" x="30" y="66" width="350" height="700" rx="5"/>
+  <text class="label" x="48" y="96">1. Phạm vi chương trình</text>
+  <rect class="soft" x="46" y="112" width="318" height="42" rx="4"/><text class="text" x="60" y="138">Program Assembly · 3 operation</text>
+  <text class="small" x="54" y="184">THỨ TỰ EXPLICIT</text>
+  <rect class="bar" x="46" y="196" width="318" height="34"/><text class="small" x="58" y="218">#</text><text class="small" x="94" y="218">Operation</text><text class="small" x="286" y="218">Gate</text>
+  <rect class="surface" x="46" y="230" width="318" height="48"/><text class="text" x="58" y="259">1</text><text class="text" x="94" y="259">Facing mặt chuẩn</text><circle class="ok" cx="330" cy="253" r="7"/>
+  <rect class="surface" x="46" y="278" width="318" height="48"/><text class="text" x="58" y="307">2</text><text class="text" x="94" y="307">Pocket lòng khuôn</text><circle class="ok" cx="330" cy="301" r="7"/>
+  <rect class="surface" x="46" y="326" width="318" height="48"/><text class="text" x="58" y="355">3</text><text class="text" x="94" y="355">Contour ngoài</text><circle class="warn" cx="330" cy="349" r="7"/>
+  <rect class="button" x="46" y="388" width="88" height="32" rx="4"/><text class="small" x="60" y="409">Thêm chọn</text>
+  <rect class="button" x="144" y="388" width="70" height="32" rx="4"/><text class="small" x="160" y="409">Bỏ khỏi</text>
+  <rect class="button" x="224" y="388" width="62" height="32" rx="4"/><text class="small" x="239" y="409">Lên</text>
+  <rect class="button" x="296" y="388" width="62" height="32" rx="4"/><text class="small" x="307" y="409">Xuống</text>
+
+  <text class="label" x="48" y="462">Basic</text>
+  <text class="small" x="48" y="494">Tên file</text><rect class="button" x="138" y="474" width="218" height="32" rx="3"/><text class="text" x="150" y="496">TRUC_MAY.fn</text>
+  <text class="small" x="48" y="536">Profile</text><rect class="button" x="138" y="516" width="218" height="32" rx="3"/><text class="text" x="150" y="538">ROBODRILL 21i · v1</text>
+  <text class="small" x="48" y="578">Work Offset</text><rect class="button" x="138" y="558" width="218" height="32" rx="3"/><text class="text" x="150" y="580">G54</text>
+  <text class="small" x="48" y="620">Simulation gate</text><rect class="button" x="138" y="600" width="218" height="32" rx="3"/><text class="text" x="150" y="622">REQUIRE PASS</text>
+  <rect class="bar" x="46" y="650" width="318" height="44" rx="4"/><text class="text" x="60" y="677">Advanced · binding/target</text><text class="text" x="336" y="677">›</text>
+  <text class="small" x="48" y="724">Identity theo OperationId · không theo row</text>
+
+  <rect class="surface" x="396" y="66" width="310" height="700" rx="5"/>
+  <text class="label" x="414" y="96">2. Gate và trạng thái</text>
+  <line class="line" x1="442" y1="138" x2="442" y2="486"/>
+  <circle class="ok" cx="442" cy="144" r="10"/><text class="text" x="468" y="149">Source snapshot</text><text class="small" x="468" y="169">3 operation · CURRENT</text>
+  <circle class="ok" cx="442" cy="218" r="10"/><text class="text" x="468" y="223">Compatibility</text><text class="small" x="468" y="243">Cùng Job/Setup/Machine</text>
+  <circle class="warn" cx="442" cy="292" r="10"/><text class="text" x="468" y="297">Simulation</text><text class="small" x="468" y="317">Contour: WARN cần review</text>
+  <circle class="muted" cx="442" cy="366" r="10"/><text class="text" x="468" y="371">Generate in memory</text><text class="small" x="468" y="391">Chưa chạy</text>
+  <circle class="muted" cx="442" cy="440" r="10"/><text class="text" x="468" y="445">Managed artifact</text><text class="small" x="468" y="465">Chưa lưu</text>
+  <rect class="warnbox" x="414" y="510" width="274" height="82" rx="4"/>
+  <text class="text" x="430" y="538">1 cảnh báo cần xác nhận</text>
+  <text class="small" x="430" y="562">Simulation WARN ở Contour ngoài</text>
+  <rect class="button" x="430" y="604" width="104" height="34" rx="4"/><text class="small" x="446" y="626">Xem chi tiết</text>
+  <rect class="primary" x="544" y="604" width="126" height="34" rx="4"/><text class="white" x="564" y="626">Validate lại</text>
+  <rect class="bar" x="414" y="658" width="274" height="44" rx="4"/><text class="text" x="430" y="685">Expert · controller-specific</text><text class="text" x="660" y="685">›</text>
+  <text class="small" x="414" y="730">NOT MACHINE CERTIFIED · REVIEW REQUIRED</text>
+
+  <rect class="surface" x="722" y="66" width="486" height="700" rx="5"/>
+  <text class="label" x="740" y="96">3. Preview và NC artifact</text>
+  <rect class="bar" x="740" y="112" width="450" height="38"/><text class="small" x="754" y="136">PREVIEW · canonical text · read-only</text>
+  <rect x="740" y="150" width="450" height="330" fill="#f8fafb" stroke="#c6cdd5"/>
+  <text class="mono" x="756" y="178">%</text><text class="mono" x="756" y="200">O1001 (TRUC MAY)</text><text class="mono" x="756" y="222">(REVIEW REQUIRED - NOT MACHINE CERTIFIED)</text>
+  <text class="mono" x="756" y="254">G90 G17 G21 G40 G49 G80</text><text class="mono" x="756" y="276">G54</text><text class="mono" x="756" y="308">(SECTION 1 - FACING)</text><text class="mono" x="756" y="330">T1 M06</text><text class="mono" x="756" y="352">...</text><text class="mono" x="756" y="384">(SECTION 2 - POCKET)</text><text class="mono" x="756" y="406">...</text>
+  <text class="small" x="756" y="454">SHA-256: — · CRLF · UTF-8 · .fn</text>
+  <rect class="button" x="740" y="496" width="104" height="36" rx="4"/><text class="small" x="760" y="519">Generate</text>
+  <rect class="button" x="854" y="496" width="84" height="36" rx="4"/><text class="small" x="874" y="519">Preview</text>
+  <rect class="button" x="948" y="496" width="112" height="36" rx="4"/><text class="small" x="965" y="519">Save Managed</text>
+  <rect class="button" x="1070" y="496" width="120" height="36" rx="4"/><text class="small" x="1090" y="519">Export explicit</text>
+  <rect class="okbox" x="740" y="552" width="450" height="68" rx="4"/><text class="text" x="756" y="580">Managed artifact</text><text class="small" x="756" y="604">Chưa có · Save chỉ bật khi result CURRENT</text>
+  <rect class="surface" x="740" y="634" width="450" height="100" rx="4"/><text class="text" x="756" y="660">External export</text><text class="small" x="756" y="684">Đích: chưa chọn · không tạo file tự động</text><text class="small" x="756" y="708">Overwrite: FAIL_IF_EXISTS</text>
+
+  <rect class="bar" x="30" y="784" width="1178" height="46" rx="4"/>
+  <text class="small" x="48" y="812">Reset Draft</text><text class="small" x="158" y="812">Validate</text><text class="small" x="250" y="812">Generate</text><text class="small" x="350" y="812">Preview</text><text class="small" x="448" y="812">Save Managed</text><text class="small" x="578" y="812">Export</text>
+  <text class="small" x="854" y="812">Action chỉ hiện/bật theo lifecycle hiện tại</text>
+</svg>

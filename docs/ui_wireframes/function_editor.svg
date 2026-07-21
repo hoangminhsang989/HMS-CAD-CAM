@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="1040" viewBox="0 0 620 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Wireframe Unified Function Editor HMS</title>
+  <desc id="desc">Header summary, Basic mở, các section chuẩn, Advanced collapsed, diagnostics và footer action.</desc>
+  <defs><style>
+    .bg{fill:#f3f5f7}.surface{fill:#fff;stroke:#c6cdd5}.bar{fill:#e9edf2;stroke:#c6cdd5}.soft{fill:#e8f1fb;stroke:#8db4db}.warn{fill:#fff4dc;stroke:#c88a24}.text{font:14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.small{font:12px 'Segoe UI',Arial,sans-serif;fill:#5c6874}.label{font:600 15px 'Segoe UI',Arial,sans-serif;fill:#202a33}.button{fill:#fff;stroke:#9ca8b4}.primary{fill:#2463a5}.white{font:600 12px 'Segoe UI',Arial,sans-serif;fill:#fff}.error{font:12px 'Segoe UI',Arial,sans-serif;fill:#a11b12}
+  </style></defs>
+  <rect class="bg" width="620" height="1040"/>
+  <rect class="surface" x="12" y="12" width="596" height="1016" rx="6"/>
+  <text class="small" x="30" y="42">FUNCTION EDITOR · CONTOUR 2D</text>
+  <rect class="warn" x="28" y="56" width="564" height="88" rx="5"/>
+  <text class="label" x="44" y="84">Contour ngoài</text>
+  <text class="small" x="44" y="108">Strategy: Contour 2D · Tool: Dao D10 · Geometry: Profile kín</text>
+  <text class="small" x="44" y="130">● STALE · 0 lỗi · 1 cảnh báo · Draft chưa thay đổi</text>
+
+  <rect class="surface" x="28" y="158" width="564" height="338" rx="5"/>
+  <text class="label" x="44" y="186">B. Basic</text>
+  <text class="small" x="44" y="220">Profile</text><rect class="button" x="206" y="200" width="350" height="32" rx="3"/><text class="text" x="218" y="222">Biên dạng ngoài · đã resolve</text>
+  <text class="small" x="44" y="264">Tool Assembly</text><rect class="button" x="206" y="244" width="350" height="32" rx="3"/><text class="text" x="218" y="266">Dao phay ngón D10 · Holder H01</text>
+  <text class="small" x="44" y="308">Side</text><rect class="button" x="206" y="288" width="350" height="32" rx="3"/><text class="text" x="218" y="310">Bên ngoài</text>
+  <text class="small" x="44" y="352">Chiều sâu cuối</text><rect class="button" x="206" y="332" width="270" height="32" rx="3"/><text class="text" x="218" y="354">-12.000</text><text class="small" x="490" y="354">mm</text>
+  <text class="small" x="44" y="396">Bước xuống</text><rect class="button" x="206" y="376" width="270" height="32" rx="3"/><text class="text" x="218" y="398">2.000</text><text class="small" x="490" y="398">mm</text>
+  <text class="small" x="44" y="440">Lượng chạy dao</text><rect x="206" y="420" width="270" height="32" rx="3" fill="#fff8f7" stroke="#b42318"/><text class="text" x="218" y="442">0</text><text class="small" x="490" y="442">mm/min</text>
+  <text class="error" x="206" y="470">Phải lớn hơn 0 · giá trị đề xuất từ Tool: 650 mm/min</text>
+
+  <rect class="bar" x="28" y="510" width="564" height="46" rx="4"/><text class="text" x="44" y="539">C. Geometry</text><text class="small" x="470" y="539">Profile kín · 4 cạnh</text><text class="text" x="568" y="539">›</text>
+  <rect class="bar" x="28" y="566" width="564" height="46" rx="4"/><text class="text" x="44" y="595">D. Tool</text><text class="small" x="440" y="595">D10 · 32 mm stick-out</text><text class="text" x="568" y="595">›</text>
+  <rect class="bar" x="28" y="622" width="564" height="46" rx="4"/><text class="text" x="44" y="651">E. Cutting</text><text class="small" x="444" y="651">Direction · Allowance</text><text class="text" x="568" y="651">›</text>
+  <rect class="bar" x="28" y="678" width="564" height="46" rx="4"/><text class="text" x="44" y="707">F. Levels / Depths</text><text class="small" x="440" y="707">Top từ Geometry</text><text class="text" x="568" y="707">›</text>
+  <rect class="bar" x="28" y="734" width="564" height="46" rx="4"/><text class="text" x="44" y="763">G. Linking / Safe Motion</text><text class="small" x="450" y="763">Từ Setup 1</text><text class="text" x="568" y="763">›</text>
+  <rect class="bar" x="28" y="790" width="564" height="46" rx="4"/><text class="text" x="44" y="819">H. Advanced</text><text class="small" x="452" y="819">8 tham số · collapsed</text><text class="text" x="568" y="819">›</text>
+  <rect class="soft" x="28" y="846" width="564" height="70" rx="4"/>
+  <text class="text" x="44" y="874">I. Diagnostics / Preview</text>
+  <text class="small" x="44" y="898">1 lỗi input · Calculate và Apply đang bị khóa</text>
+
+  <rect class="surface" x="28" y="930" width="564" height="78" rx="4"/>
+  <rect class="button" x="40" y="950" width="84" height="36" rx="4"/><text class="small" x="52" y="973">Reset Draft</text>
+  <rect class="button" x="132" y="950" width="70" height="36" rx="4"/><text class="small" x="146" y="973">Preview</text>
+  <rect class="button" x="210" y="950" width="72" height="36" rx="4"/><text class="small" x="224" y="973">Validate</text>
+  <rect x="290" y="950" width="82" height="36" rx="4" fill="#d9dde2"/><text class="small" x="304" y="973">Calculate</text>
+  <rect x="380" y="950" width="62" height="36" rx="4" fill="#d9dde2"/><text class="small" x="396" y="973">Apply</text>
+  <rect class="button" x="450" y="950" width="62" height="36" rx="4"/><text class="small" x="467" y="973">Close</text>
+  <text class="small" x="520" y="973">?</text>
+</svg>

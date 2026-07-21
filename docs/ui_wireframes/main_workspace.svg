@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Wireframe workspace chính HMS CAD/CAM</title>
+  <desc id="desc">Bố cục ribbon theo ngữ cảnh, Operation Manager trái, viewport trung tâm, Function Editor phải và diagnostics dưới.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f3f5f7}.surface{fill:#fff;stroke:#c6cdd5;stroke-width:1}.bar{fill:#e9edf2;stroke:#c6cdd5}.primary{fill:#2463a5}.soft{fill:#e8f1fb;stroke:#8db4db}.ok{fill:#e7f5ed;stroke:#4b9a6c}.warn{fill:#fff4dc;stroke:#c88a24}.text{font:14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.small{font:12px 'Segoe UI',Arial,sans-serif;fill:#5c6874}.label{font:600 14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.white{font:600 13px 'Segoe UI',Arial,sans-serif;fill:#fff}.line{stroke:#aab4bf;stroke-width:1;fill:none}.dash{stroke:#9aa7b4;stroke-dasharray:6 5;fill:none}.button{fill:#fff;stroke:#9ca8b4}.viewport{fill:#dfe6ec;stroke:#aab4bf}.grid{stroke:#c8d1d9;stroke-width:1}.part{fill:#9fb5c7;stroke:#536b7c;stroke-width:2}.toolpath{fill:none;stroke:#2463a5;stroke-width:3}
+    </style>
+  </defs>
+  <rect class="bg" width="1440" height="900"/>
+  <rect class="surface" x="0" y="0" width="1440" height="42"/>
+  <text class="label" x="18" y="27">HMS CAD/CAM</text>
+  <text class="text" x="170" y="27">Dự án: TRUC_MAY.HMS</text>
+  <rect class="primary" x="1130" y="8" width="92" height="27" rx="4"/><text class="white" x="1151" y="27">CAM</text>
+  <rect class="button" x="1230" y="8" width="92" height="27" rx="4"/><text class="text" x="1247" y="27">Simulation</text>
+  <rect class="button" x="1330" y="8" width="92" height="27" rx="4"/><text class="text" x="1358" y="27">NC</text>
+
+  <rect class="bar" x="0" y="42" width="1440" height="82"/>
+  <text class="small" x="18" y="62">RIBBON THEO NGỮ CẢNH · OPERATION ĐANG CHỌN</text>
+  <rect class="button" x="18" y="70" width="108" height="38" rx="4"/><text class="text" x="34" y="94">Chọn hình học</text>
+  <rect class="button" x="136" y="70" width="92" height="38" rx="4"/><text class="text" x="157" y="94">Chọn dao</text>
+  <rect class="button" x="238" y="70" width="94" height="38" rx="4"/><text class="text" x="260" y="94">Preview</text>
+  <rect class="primary" x="342" y="70" width="104" height="38" rx="4"/><text class="white" x="364" y="94">Tính đường dao</text>
+  <line class="line" x1="470" y1="58" x2="470" y2="112"/>
+  <rect class="button" x="490" y="70" width="96" height="38" rx="4"/><text class="text" x="511" y="94">Mô phỏng</text>
+  <rect class="button" x="596" y="70" width="84" height="38" rx="4"/><text class="text" x="622" y="94">Post</text>
+
+  <rect class="surface" x="0" y="124" width="282" height="604"/>
+  <text class="label" x="16" y="151">Operation Manager</text>
+  <rect class="soft" x="10" y="164" width="262" height="34" rx="4"/><text class="text" x="22" y="186">▾ Project · TRUC_MAY</text>
+  <text class="text" x="30" y="222">▾ Job · Khuôn trên</text>
+  <text class="text" x="48" y="254">▾ Setup 1 · Máy phay 3 trục</text>
+  <text class="small" x="68" y="284">Stock</text><circle cx="252" cy="280" r="6" fill="#2f855a"/>
+  <text class="small" x="68" y="312">Tool Library · 5 dao</text>
+  <text class="text" x="68" y="344">▾ Operations</text>
+  <rect class="soft" x="58" y="354" width="204" height="38" rx="4"/>
+  <circle cx="74" cy="373" r="6" fill="#b7791f"/><text class="text" x="88" y="378">Contour ngoài</text>
+  <text class="small" x="84" y="414">Geometry</text><circle cx="250" cy="410" r="5" fill="#2f855a"/>
+  <text class="small" x="84" y="440">Tool · Dao D10</text><circle cx="250" cy="436" r="5" fill="#2f855a"/>
+  <text class="small" x="84" y="466">Toolpath · STALE</text><circle cx="250" cy="462" r="5" fill="#b7791f"/>
+  <text class="small" x="84" y="492">Simulation · Chưa chạy</text>
+  <text class="small" x="84" y="518">Post</text>
+  <text class="text" x="68" y="554">Pocket lòng khuôn</text><circle cx="250" cy="550" r="6" fill="#2f855a"/>
+  <text class="text" x="68" y="586">Drilling lỗ gá</text><circle cx="250" cy="582" r="6" fill="#b42318"/>
+  <text class="text" x="50" y="626">Program Assembly</text>
+  <rect class="button" x="14" y="680" width="252" height="32" rx="4"/><text class="small" x="26" y="701">+ Thêm operation theo selection</text>
+
+  <rect class="viewport" x="282" y="124" width="720" height="604"/>
+  <text class="label" x="304" y="151">Graphics Viewport</text>
+  <text class="small" x="882" y="151">TOP · MM · WCS G54</text>
+  <line class="grid" x1="282" y1="620" x2="1002" y2="620"/><line class="grid" x1="380" y1="124" x2="380" y2="728"/>
+  <path class="part" d="M430 310 L780 240 L895 375 L565 470 Z"/>
+  <path class="toolpath" d="M450 330 C520 270 620 430 700 300 S830 280 870 375"/>
+  <path class="toolpath" d="M470 355 C550 300 620 445 720 325 S820 315 850 390"/>
+  <line x1="348" y1="660" x2="408" y2="660" stroke="#b42318" stroke-width="3"/><text class="small" x="412" y="665">X</text>
+  <line x1="348" y1="660" x2="348" y2="600" stroke="#2f855a" stroke-width="3"/><text class="small" x="342" y="592">Y</text>
+  <rect class="soft" x="304" y="172" width="205" height="32" rx="4"/><text class="small" x="316" y="193">Đang chọn: Contour ngoài</text>
+  <text class="small" x="304" y="706">Overlay: geometry + draft preview · không sửa CAD nguồn</text>
+
+  <rect class="surface" x="1002" y="124" width="438" height="604"/>
+  <text class="label" x="1022" y="151">Function Editor</text>
+  <rect class="warn" x="1020" y="164" width="400" height="62" rx="5"/>
+  <text class="label" x="1034" y="188">Contour ngoài · STALE</text>
+  <text class="small" x="1034" y="210">Dao D10 · Profile kín · 1 cảnh báo</text>
+  <rect class="surface" x="1020" y="238" width="400" height="246" rx="5"/>
+  <text class="label" x="1034" y="264">Basic</text>
+  <text class="small" x="1034" y="295">Profile</text><rect class="button" x="1168" y="276" width="232" height="30" rx="3"/><text class="text" x="1180" y="297">Biên dạng ngoài · đã chọn</text>
+  <text class="small" x="1034" y="335">Dao</text><rect class="button" x="1168" y="316" width="232" height="30" rx="3"/><text class="text" x="1180" y="337">Dao phay ngón D10</text>
+  <text class="small" x="1034" y="375">Chiều sâu cuối</text><rect class="button" x="1168" y="356" width="182" height="30" rx="3"/><text class="text" x="1180" y="377">-12.000</text><text class="small" x="1360" y="377">mm</text>
+  <text class="small" x="1034" y="415">Bước xuống</text><rect class="button" x="1168" y="396" width="182" height="30" rx="3"/><text class="text" x="1180" y="417">2.000</text><text class="small" x="1360" y="417">mm</text>
+  <text class="small" x="1034" y="455">Lượng chạy dao</text><rect class="button" x="1168" y="436" width="182" height="30" rx="3"/><text class="text" x="1180" y="457">650</text><text class="small" x="1360" y="457">mm/min</text>
+  <rect class="bar" x="1020" y="494" width="400" height="42" rx="4"/><text class="text" x="1034" y="520">Geometry</text><text class="small" x="1380" y="520">›</text>
+  <rect class="bar" x="1020" y="544" width="400" height="42" rx="4"/><text class="text" x="1034" y="570">Tool · từ Tool Library</text><text class="small" x="1380" y="570">›</text>
+  <rect class="bar" x="1020" y="594" width="400" height="42" rx="4"/><text class="text" x="1034" y="620">Advanced · 8 tham số</text><text class="small" x="1380" y="620">›</text>
+  <text class="small" x="1022" y="661">Diagnostics · Clearance phải lớn hơn Retract</text>
+  <rect class="button" x="1020" y="678" width="88" height="34" rx="4"/><text class="small" x="1033" y="700">Reset Draft</text>
+  <rect class="button" x="1116" y="678" width="72" height="34" rx="4"/><text class="small" x="1131" y="700">Preview</text>
+  <rect class="button" x="1196" y="678" width="72" height="34" rx="4"/><text class="small" x="1210" y="700">Validate</text>
+  <rect class="primary" x="1276" y="678" width="72" height="34" rx="4"/><text class="white" x="1288" y="700">Calculate</text>
+  <rect class="button" x="1356" y="678" width="64" height="34" rx="4"/><text class="small" x="1374" y="700">Apply</text>
+
+  <rect class="surface" x="0" y="728" width="1440" height="142"/>
+  <text class="label" x="18" y="756">Diagnostics &amp; background tasks</text>
+  <rect class="warn" x="18" y="772" width="610" height="38" rx="4"/><text class="text" x="32" y="796">⚠ Contour ngoài · Clearance 50 mm phải lớn hơn Retract 52 mm</text>
+  <rect class="ok" x="642" y="772" width="360" height="38" rx="4"/><text class="text" x="656" y="796">✓ Pocket lòng khuôn · Toolpath CURRENT</text>
+  <text class="small" x="18" y="840">1 cảnh báo · 0 lỗi · Không có tác vụ nền đang chạy</text>
+  <text class="small" x="1280" y="840">Thu gọn panel ⌄</text>
+  <rect class="primary" x="0" y="870" width="1440" height="30"/>
+  <text class="white" x="16" y="891">Sẵn sàng · ĐỐI TƯỢNG: 1 · X 0.000 · Y 0.000 · Z 0.000 · MM · WCS G54</text>
+</svg>

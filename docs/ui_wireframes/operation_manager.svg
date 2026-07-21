@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="920" viewBox="0 0 620 920" role="img" aria-labelledby="title desc">
+  <title id="title">Wireframe Operation Manager HMS</title>
+  <desc id="desc">Cây Project Job Setup theo domain ID, operation status và action theo ngữ cảnh.</desc>
+  <defs><style>
+    .bg{fill:#f3f5f7}.surface{fill:#fff;stroke:#c6cdd5}.bar{fill:#e9edf2;stroke:#c6cdd5}.select{fill:#e7f1fb;stroke:#7ba9d4}.text{font:14px 'Segoe UI',Arial,sans-serif;fill:#202a33}.small{font:12px 'Segoe UI',Arial,sans-serif;fill:#5c6874}.label{font:600 15px 'Segoe UI',Arial,sans-serif;fill:#202a33}.button{fill:#fff;stroke:#9ca8b4}.ok{fill:#2f855a}.warn{fill:#b7791f}.bad{fill:#b42318}.muted{fill:#8a96a2}.line{stroke:#c3cbd3}
+  </style></defs>
+  <rect class="bg" width="620" height="920"/>
+  <rect class="surface" x="12" y="12" width="596" height="896" rx="6"/>
+  <text class="label" x="30" y="44">Operation Manager</text>
+  <rect class="button" x="408" y="24" width="82" height="30" rx="4"/><text class="small" x="425" y="44">Thu gọn</text>
+  <rect class="button" x="500" y="24" width="90" height="30" rx="4"/><text class="small" x="516" y="44">Tùy chọn</text>
+  <rect class="button" x="28" y="68" width="562" height="34" rx="4"/><text class="small" x="42" y="90">Tìm operation, dao hoặc artifact…</text>
+  <rect class="bar" x="28" y="114" width="562" height="34"/><text class="small" x="40" y="136">TÊN</text><text class="small" x="500" y="136">TRẠNG THÁI</text>
+
+  <text class="text" x="38" y="174">▾ Project · TRUC_MAY.HMS</text><circle class="ok" cx="560" cy="169" r="7"/><text class="small" x="474" y="174">Đã lưu</text>
+  <line class="line" x1="48" y1="184" x2="48" y2="802"/>
+  <text class="text" x="62" y="210">▾ Job · Khuôn trên</text><circle class="ok" cx="560" cy="205" r="7"/>
+  <line class="line" x1="72" y1="220" x2="72" y2="772"/>
+  <text class="text" x="86" y="246">▾ Setup 1 · Máy phay 3 trục · G54</text><circle class="ok" cx="560" cy="241" r="7"/>
+
+  <text class="text" x="112" y="282">Stock · Hộp 120 × 80 × 35 mm</text><circle class="ok" cx="560" cy="277" r="7"/>
+  <text class="text" x="112" y="318">Tool Library · 5 assembly</text><circle class="ok" cx="560" cy="313" r="7"/>
+  <text class="text" x="112" y="354">▾ Operations · 4</text>
+
+  <rect class="select" x="98" y="368" width="482" height="44" rx="4"/>
+  <circle class="warn" cx="120" cy="390" r="7"/><text class="text" x="138" y="395">Contour ngoài</text><text class="small" x="486" y="395">STALE</text>
+  <line class="line" x1="120" y1="412" x2="120" y2="598"/>
+  <text class="small" x="144" y="438">Geometry · Profile kín</text><circle class="ok" cx="560" cy="433" r="6"/>
+  <text class="small" x="144" y="468">Tool · Dao phay ngón D10</text><circle class="ok" cx="560" cy="463" r="6"/>
+  <text class="small" x="144" y="498">Toolpath · cần tính lại</text><circle class="warn" cx="560" cy="493" r="6"/>
+  <text class="small" x="144" y="528">Simulation · kết quả cũ</text><circle class="warn" cx="560" cy="523" r="6"/>
+  <text class="small" x="144" y="558">Post · bị khóa bởi Simulation</text><circle class="muted" cx="560" cy="553" r="6"/>
+  <text class="small" x="144" y="588">NC Artifact · chưa có</text><circle class="muted" cx="560" cy="583" r="6"/>
+
+  <text class="text" x="112" y="630">Pocket lòng khuôn</text><circle class="ok" cx="560" cy="625" r="7"/><text class="small" x="476" y="630">CURRENT</text>
+  <text class="text" x="112" y="666">Drilling lỗ gá</text><circle class="bad" cx="560" cy="661" r="7"/><text class="small" x="486" y="666">BLOCKED</text>
+  <text class="text" x="112" y="702">Facing mặt chuẩn</text><circle class="muted" cx="560" cy="697" r="7"/><text class="small" x="498" y="702">DRAFT</text>
+  <text class="text" x="98" y="744">Program Assembly</text><circle class="warn" cx="560" cy="739" r="7"/><text class="small" x="500" y="744">STALE</text>
+
+  <rect class="bar" x="28" y="810" width="562" height="80" rx="4"/>
+  <text class="small" x="42" y="834">ACTION THEO SELECTION · CONTOUR NGOÀI</text>
+  <rect class="button" x="42" y="848" width="84" height="30" rx="4"/><text class="small" x="61" y="868">Mở editor</text>
+  <rect class="button" x="136" y="848" width="78" height="30" rx="4"/><text class="small" x="154" y="868">Preview</text>
+  <rect x="224" y="848" width="96" height="30" rx="4" fill="#2463a5"/><text x="243" y="868" font-family="Segoe UI,Arial" font-size="12" font-weight="600" fill="#fff">Tính lại</text>
+  <rect class="button" x="330" y="848" width="86" height="30" rx="4"/><text class="small" x="348" y="868">Mô phỏng</text>
+  <rect class="button" x="426" y="848" width="72" height="30" rx="4"/><text class="small" x="450" y="868">Post</text>
+  <rect class="button" x="508" y="848" width="68" height="30" rx="4"/><text class="small" x="530" y="868">•••</text>
+</svg>

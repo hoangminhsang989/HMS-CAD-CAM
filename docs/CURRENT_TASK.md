@@ -1,36 +1,36 @@
-# Nhiệm vụ hiện tại — Checkpoint 7D.3.2
+# Nhiệm vụ hiện tại - Stage 9A.1
 
-## Trạng thái
+## Trạng thái ưu tiên
 
-- `8555747` hoàn thành nền tảng Multi-operation Program Assembly 7D.3.1.
-- `4d8deab` hoàn thành Program Assembly UI 7D.3.2 và tích hợp vào CAM
-  workspace.
-- Audit ngày 21-07-2026 xác nhận 7D.3.1/7D.3.2 chạy trên Python 3.14.6,
-  worktree đầu vào sạch và toàn bộ 999 test đạt.
+- Baseline: `495d080` - hoàn thành CAM 3D Foundation 8A.1.
+- **Stage 8A.2.1 - Parallel Finishing Algorithm Foundation: DEFERRED.**
+- **Current priority: Stage 9A.1 - UI Reference Extraction and UX Architecture.**
 
-## Phạm vi đã hoàn thành trong 7D.3.2
+## Phạm vi 9A.1
 
-- Danh sách operation theo `OperationId` và explicit order; Add/Remove/Move/Clear
-  không tự tối ưu hoặc tự gom dao.
-- Shared program context và per-operation T/H/D, safe Z, cutter compensation,
-  tool comment có Apply atomic.
-- Validation theo Job/Setup/Machine/profile, Toolpath provenance, Simulation
-  gate, binding conflict và production Tapping fail-closed.
-- Generate ngoài UI thread từ immutable request, stale/project-generation/
-  fingerprint guard và không tự ghi file.
-- Read-only preview dùng canonical production text, checksum, metadata,
-  diagnostic và section navigation.
-- Save Managed Artifact, explicit external export và Clear Managed Artifact dùng
-  lại `NCExportService`/`NCArtifactStore`.
-- Project switch/Open chỉ inspect state; không tự Generate hoặc external export.
+- Bóc tách có chọn lọc trang giao diện từ tài liệu Mastercam/WorkNC riêng.
+- Audit production UI HMS hiện tại bằng PySide6/OCP thật.
+- Chốt kiến trúc main workspace, Operation Manager và Unified Function Editor.
+- Định nghĩa progressive disclosure BASIC/ADVANCED/EXPERT.
+- Tạo wireframe HMS riêng và roadmap migration 9A.2-9A.9.
 
-## Chưa thuộc phạm vi đã hoàn thành
+## Artifact được quản lý trong Git
 
-- Production Tapping.
-- Automatic tool ordering/grouping hoặc tool-change optimization.
-- Nhiều Setup/WCS, machine hoặc production profile trong một assembly.
-- Stock removal, machine kinematics, 4/5-axis.
-- Direct CNC communication, FTP/SFTP/HTTP/DNC hoặc machine certification.
+- `tools/build_ui_reference_catalog.py`
+- `docs/UI_REFERENCE_CATALOG.md`
+- `docs/UI_UX_ARCHITECTURE_9A1.md`
+- `docs/UI_FUNCTION_EDITOR_SPEC_9A1.md`
+- `docs/UI_PARAMETER_DISCLOSURE_RULES.md`
+- `docs/UI_REDESIGN_ROADMAP.md`
+- `docs/ui_wireframes/*.svg`
 
-Không có giai đoạn tiếp theo được tự động bắt đầu tại checkpoint này. Mọi `.fn`
-vẫn phải được review và kiểm tra dry-run/single-block thủ công trước sản xuất.
+Ảnh/PDF/ZIP và metadata render nằm trong
+`reference_private/DERIVED/UI_REFERENCE/`, bị Git ignore và không phải source
+of truth.
+
+## Không thuộc phạm vi
+
+- Không sửa production UI trong 9A.1.
+- Không đổi CAD/CAM domain, Toolpath IR hoặc SQLite schema.
+- Không triển khai Parallel Finishing hoặc algorithm CAM mới.
+- Không bắt đầu 9A.2 khi chưa có chỉ thị riêng.
