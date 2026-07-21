@@ -1,36 +1,33 @@
-# Nhiệm vụ hiện tại - Stage 9A.1
+# Nhiệm vụ hiện tại — Stage 9A.6
 
 ## Trạng thái ưu tiên
 
-- Baseline: `495d080` - hoàn thành CAM 3D Foundation 8A.1.
-- **Stage 8A.2.1 - Parallel Finishing Algorithm Foundation: DEFERRED.**
-- **Current priority: Stage 9A.1 - UI Reference Extraction and UX Architecture.**
+- Functional UI baseline: `24d2a42` — hoàn thành đánh giá đồng bộ giao diện
+  phay 2D Stage 9A.5.4.
+- **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
+- **Current priority: Stage 9A.6 — Drilling Family Production Function Editors.**
 
-## Phạm vi 9A.1
+## Lý do tạm gác Stage 9A.I1
 
-- Bóc tách có chọn lọc trang giao diện từ tài liệu Mastercam/WorkNC riêng.
-- Audit production UI HMS hiện tại bằng PySide6/OCP thật.
-- Chốt kiến trúc main workspace, Operation Manager và Unified Function Editor.
-- Định nghĩa progressive disclosure BASIC/ADVANCED/EXPERT.
-- Tạo wireframe HMS riêng và roadmap migration 9A.2-9A.9.
+- Bộ icon chưa đạt chuẩn hình học và độ nét cần thiết.
+- Icon chưa phải ưu tiên trong giai đoạn hoàn thiện giao diện chức năng chính.
+- Production UI tiếp tục dùng icon hoặc placeholder hiện có.
+- Stage 9A.I1 sẽ được đánh giá lại sau khi giao diện chức năng chính hoàn thiện.
 
-## Artifact được quản lý trong Git
+## Phạm vi dự kiến Stage 9A.6
 
-- `tools/build_ui_reference_catalog.py`
-- `docs/UI_REFERENCE_CATALOG.md`
-- `docs/UI_UX_ARCHITECTURE_9A1.md`
-- `docs/UI_FUNCTION_EDITOR_SPEC_9A1.md`
-- `docs/UI_PARAMETER_DISCLOSURE_RULES.md`
-- `docs/UI_REDESIGN_ROADMAP.md`
-- `docs/ui_wireframes/*.svg`
+- Drilling.
+- Tapping.
+- Reaming.
+- Boring.
+- Tích hợp trong Unified Function Editor.
+- Tối giản chế độ Basic.
+- Thu gọn Advanced/Expert theo progressive disclosure.
+- Giữ tương đương domain, toolpath và post hiện có.
 
-Ảnh/PDF/ZIP và metadata render nằm trong
-`reference_private/DERIVED/UI_REFERENCE/`, bị Git ignore và không phải source
-of truth.
+## Ràng buộc chuyển giai đoạn
 
-## Không thuộc phạm vi
-
-- Không sửa production UI trong 9A.1.
-- Không đổi CAD/CAM domain, Toolpath IR hoặc SQLite schema.
-- Không triển khai Parallel Finishing hoặc algorithm CAM mới.
-- Không bắt đầu 9A.2 khi chưa có chỉ thị riêng.
+- Task dọn dẹp này không bắt đầu triển khai Stage 9A.6.
+- Không thay đổi domain, codec, Toolpath IR, Simulation, Post hoặc SQLite schema.
+- Stage 9A.5.4 và các production editor Facing, Planar Facing, Contour, Pocket
+  tiếp tục là baseline giao diện cần bảo toàn.
