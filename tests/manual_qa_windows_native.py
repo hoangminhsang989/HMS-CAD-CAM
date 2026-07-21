@@ -129,10 +129,13 @@ def _terminate_process_tree(pid: int, *extra_pids: int) -> None:
         process.kill()
 
 
-def run_windows_native_smoke() -> None:
-    """Launch and automate only the dedicated HMS QA child window."""
+def run_windows_native_smoke() -> bool:
+    """Launch the dedicated HMS QA child window, or skip without failure."""
     if not _interactive_desktop_available():
-        raise RuntimeError("Không tìm thấy Windows interactive desktop session")
+        logger.warning(
+            "SKIP Windows-native smoke: không có interactive desktop session"
+        )
+        return False
 
     from pywinauto import Desktop, timings
 
@@ -200,6 +203,7 @@ def run_windows_native_smoke() -> None:
         raise RuntimeError("Windows-native UIA smoke hết thời gian chờ") from error
     finally:
         _terminate_process_tree(process.pid, host_pid)
+    return True
 
 
 def main() -> int:

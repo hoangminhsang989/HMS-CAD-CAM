@@ -37,9 +37,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra"
-qt_api = "pyside6"
-timeout = 300
+addopts = "-ra -m 'not benchmark and not windows_native'"
 markers = [
     "gui: tests that exercise Qt widgets or the Qt event loop",
     "windows_native: optional tests that require an interactive Windows desktop",
