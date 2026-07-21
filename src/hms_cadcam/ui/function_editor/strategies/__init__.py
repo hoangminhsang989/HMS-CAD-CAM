@@ -22,6 +22,15 @@ from hms_cadcam.ui.function_editor.strategies.facing import build_facing_schema
 from hms_cadcam.ui.function_editor.strategies.planar_face_facing import (
     build_planar_face_facing_schema,
 )
+from hms_cadcam.ui.function_editor.strategies.pocket import (
+    PocketEditorContext,
+    PocketEditorDraftContext,
+    PocketOperationUpdate,
+    build_pocket_schema,
+    pocket_applied_values,
+    prepare_pocket_update,
+    validate_pocket_schema_contract,
+)
 
 __all__ = [
     "ContourEditorContext",
@@ -31,13 +40,20 @@ __all__ = [
     "FacingEditorDraftContext",
     "FacingEditorVariant",
     "FacingOperationUpdate",
+    "PocketEditorContext",
+    "PocketEditorDraftContext",
+    "PocketOperationUpdate",
     "build_contour_schema",
     "build_facing_schema",
     "build_planar_face_facing_schema",
+    "build_pocket_schema",
     "contour_applied_values",
     "facing_applied_values",
+    "pocket_applied_values",
     "prepare_contour_update",
     "prepare_facing_update",
+    "prepare_pocket_update",
     "validate_contour_schema_contract",
     "validate_facing_schema_contract",
+    "validate_pocket_schema_contract",
 ]

@@ -59,6 +59,8 @@ from hms_cadcam.cam.application import (
     ContourGenerator,
     FacingGenerationError,
     FacingGenerator,
+    PocketGenerationError,
+    PocketGenerator,
     ReamingGenerationError,
     ReamingGenerator,
     TappingGenerationError,
@@ -98,13 +100,18 @@ from hms_cadcam.ui.function_editor.strategies import (
     FacingEditorContext,
     FacingEditorDraftContext,
     FacingEditorVariant,
+    PocketEditorContext,
+    PocketEditorDraftContext,
     build_contour_schema,
     build_facing_schema,
     build_planar_face_facing_schema,
+    build_pocket_schema,
     contour_applied_values,
     facing_applied_values,
+    pocket_applied_values,
     prepare_contour_update,
     prepare_facing_update,
+    prepare_pocket_update,
 )
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
@@ -193,8 +200,10 @@ class CamWorkspace(QWidget):
         self._active_editor_strategy_key: str | None = None
         self._production_facing_editors_enabled = True
         self._production_contour_editor_enabled = True
+        self._production_pocket_editor_enabled = True
         self._facing_preview: tuple[str, ...] = ()
         self._contour_preview: tuple[str, ...] = ()
+        self._pocket_preview: tuple[str, ...] = ()
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -395,6 +404,12 @@ class CamWorkspace(QWidget):
             return self._contour_production_session(
                 job.job_id, setup, node_id, node.name, operation
             )
+        if operation.strategy_key == "pocket_2_5d":
+            if not self._production_pocket_editor_enabled:
+                return None
+            return self._pocket_production_session(
+                job.job_id, setup, node_id, node.name, operation
+            )
         if not self._production_facing_editors_enabled:
             return None
         if operation.strategy_key != "facing_2_5d":
@@ -538,6 +553,115 @@ class CamWorkspace(QWidget):
             ),
         )
 
+    def _pocket_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one typed Pocket session without touching project state."""
+        if self._generation is None:
+            return None
+        reference = (
+            operation.geometry_inputs[0].reference
+            if len(operation.geometry_inputs) == 1
+            else None
+        )
+        resolved_pocket = None
+        if reference is not None and self._pocket_resolver is not None:
+            resolved_pocket = self._pocket_resolver(reference)
+        geometry_resolved = (
+            resolved_pocket is not None
+            and resolved_pocket.status is GeometryResolutionStatus.RESOLVED
+            and resolved_pocket.region is not None
+        )
+        segment_count = (
+            len(resolved_pocket.region.boundary.outer_loop.segments)
+            if geometry_resolved
+            and resolved_pocket is not None
+            and resolved_pocket.region is not None
+            else None
+        )
+        orientation = (
+            resolved_pocket.region.boundary.outer_loop.orientation.value
+            if geometry_resolved
+            and resolved_pocket is not None
+            and resolved_pocket.region is not None
+            else ""
+        )
+        island_count: int | None = 0 if geometry_resolved else None
+        diagnostic = ""
+        if reference is not None and self._profile_resolver is not None:
+            profile_result = self._profile_resolver(reference)
+            profile = getattr(profile_result, "profile", None)
+            if (
+                profile_result.status is GeometryResolutionStatus.RESOLVED
+                and profile is not None
+            ):
+                island_count = len(profile.inner_loops)
+                if segment_count is None:
+                    segment_count = len(profile.outer_loop.segments)
+                    orientation = profile.outer_loop.orientation.value
+                if island_count:
+                    diagnostic = "island unsupported v1"
+        if (
+            not geometry_resolved
+            and resolved_pocket is not None
+            and resolved_pocket.diagnostics
+        ):
+            diagnostic = resolved_pocket.diagnostics[0].message
+        if len(operation.geometry_inputs) > 1:
+            diagnostic = "duplicate/additional geometry input"
+        snapshot = self._service.cam_snapshot
+        context = PocketEditorContext(
+            operation_name,
+            operation,
+            setup,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            reference,
+            geometry_resolved,
+            segment_count,
+            orientation,
+            island_count,
+            diagnostic,
+        )
+        draft = PocketEditorDraftContext(reference)
+        schema = build_pocket_schema(context)
+        applied = pocket_applied_values(context)
+        project = self._service.current_project
+        if project is None:
+            return None
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_pocket_production(
+                job_id, setup.setup_id, node_id, context, draft, values
+            ),
+            validation_callback=lambda values: self._validate_pocket_production(
+                schema, context, draft, values
+            ),
+            preview_callback=lambda request: self._preview_pocket_production(
+                schema, context, draft, request
+            ),
+            calculate_callback=lambda values: self._calculate_pocket_production(
+                context, values
+            ),
+            field_action_callback=lambda action_id, values: self._pocket_field_action(
+                context, draft, action_id, values
+            ),
+        )
+
     def _current_facing_operation(self, operation_id: OperationId) -> Operation | None:
         if not self._service.has_project:
             return None
@@ -574,6 +698,24 @@ class CamWorkspace(QWidget):
         )
 
     def _contour_context_is_current(self, context: ContourEditorContext) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None:
+            return False
+        snapshot = self._service.cam_snapshot
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.enabled == context.operation.enabled
+            and snapshot.tool_assemblies == context.tool_assemblies
+            and snapshot.tool_definitions == context.tool_definitions
+            and snapshot.holder_definitions == context.holder_definitions
+            and snapshot.machine_definitions == context.machine_definitions
+        )
+
+    def _pocket_context_is_current(self, context: PocketEditorContext) -> bool:
         current = self._current_facing_operation(context.operation.operation_id)
         if current is None:
             return False
@@ -1208,6 +1350,313 @@ class CamWorkspace(QWidget):
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
         self.message.emit("2D Contour đã Calculate và publish artifact hợp lệ.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    @staticmethod
+    def _pocket_error_target(message: str, code: str) -> str | None:
+        folded = f"{code} {message}".casefold()
+        for token, field_id in (
+            ("stepover", "stepover"),
+            ("stepdown", "stepdown"),
+            ("radial", "radial_stock_allowance"),
+            ("floor", "axial_allowance"),
+            ("allowance", "axial_allowance"),
+            ("clearance", "clearance_height"),
+            ("retract", "retract_height"),
+            ("bottom", "bottom_z"),
+            ("depth", "bottom_z"),
+            ("top z", "top_z"),
+            ("spindle", "spindle_speed"),
+            ("plunge", "plunge_feed_rate"),
+            ("entry", "entry_policy"),
+            ("feed", "cutting_feed_rate"),
+            ("tolerance", "tolerance"),
+            ("tool", "tool_assembly_id"),
+            ("dao", "tool_assembly_id"),
+            ("machine", "machine_id"),
+            ("máy", "machine_id"),
+            ("island", "island_summary"),
+            ("inner loop", "island_summary"),
+            ("profile", "geometry_summary"),
+            ("boundary", "geometry_summary"),
+            ("geometry", "geometry_summary"),
+        ):
+            if token in folded:
+                return field_id
+        return None
+
+    def _pocket_diagnostic(
+        self,
+        schema,
+        code: str,
+        message: str,
+    ) -> FunctionEditorDiagnostic:
+        field_id = self._pocket_error_target(message, code)
+        if field_id is not None and field_id not in {
+            field.field_id for field in schema.fields
+        }:
+            field_id = None
+        return FunctionEditorDiagnostic(
+            code=code,
+            message=message,
+            severity=FunctionEditorDiagnosticSeverity.ERROR,
+            field_id=field_id,
+            section_id=(
+                schema.section_for_field(field_id).section_id
+                if field_id is not None
+                else None
+            ),
+        )
+
+    def _validate_pocket_production(
+        self,
+        schema,
+        context: PocketEditorContext,
+        draft: PocketEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        """Run the unchanged Pocket generator validation without mutation."""
+        if self._generation is None or self._generation != self._service.cam_generation:
+            return (
+                self._pocket_diagnostic(
+                    schema,
+                    "pocket.ui.stale_editor",
+                    "Function Editor thuộc project generation cũ.",
+                ),
+            )
+        if not self._pocket_context_is_current(context):
+            return (
+                self._pocket_diagnostic(
+                    schema,
+                    "pocket.ui.stale_editor",
+                    "Operation hoặc resource đã thay đổi; hãy mở lại editor.",
+                ),
+            )
+        try:
+            update = prepare_pocket_update(context, draft, values)
+            if self._pocket_resolver is None:
+                raise PocketGenerationError(
+                    DiagnosticCode.POCKET_PROFILE_MISSING,
+                    "Pocket geometry resolver chưa sẵn sàng.",
+                )
+            resolved = self._pocket_resolver(update.geometry_reference)
+            PocketGenerator().resolve_inputs(
+                replace(update.operation, enabled=True),
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_geometry=resolved,
+            )
+            return ()
+        except PocketGenerationError as error:
+            return (
+                self._pocket_diagnostic(schema, error.code.value, str(error)),
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            return (
+                self._pocket_diagnostic(
+                    schema, "pocket.invalid_parameters", str(error)
+                ),
+            )
+
+    def _apply_pocket_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: PocketEditorContext,
+        draft: PocketEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Commit one validated Pocket draft through the existing service."""
+        schema = build_pocket_schema(context)
+        diagnostics = self._validate_pocket_production(
+            schema, context, draft, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_pocket_update(context, draft, values)
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn active.")
+        self._service.execute_cam_command(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.rename_node(
+                    node_id, update.operation_name
+                ).replace_operation(update.operation),
+            ),
+            expected_generation=self._generation,
+        )
+        if self._selected_key == ("operation", str(node_id)):
+            item = self.tree.currentItem()
+            self._guard = True
+            try:
+                if item is not None:
+                    item.setText(0, update.operation_name)
+                    item.setText(1, update.operation.artifact_state.status.value.upper())
+            finally:
+                self._guard = False
+            snapshot = self._service.cam_snapshot
+            self.editor.show_node(
+                update.operation_name,
+                update.operation,
+                snapshot.tool_assemblies,
+                snapshot.machine_definitions,
+                snapshot.tool_definitions,
+                snapshot.holder_definitions,
+            )
+            self._picked_reference = update.geometry_reference
+            self._picked_reference_resolved = True
+            self.editor.show_reference(update.geometry_reference, True)
+        self.message.emit("Đã Apply Pocket 2.5D; chưa tự Calculate toolpath.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    def _pocket_field_action(
+        self,
+        context: PocketEditorContext,
+        draft: PocketEditorDraftContext,
+        action_id: str,
+        _values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        """Select one persistent FACE/WIRE Pocket region without mutation."""
+        if action_id != "select_geometry":
+            raise ValueError(f"Field action không hỗ trợ: {action_id}")
+        if self._contour_pick_provider is None or self._pocket_resolver is None:
+            raise RuntimeError("Pocket geometry selection workflow chưa sẵn sàng.")
+        generation = self._generation
+        reference = self._contour_pick_provider()
+        if not isinstance(reference, GeometryReference) or reference.kind not in {
+            GeometryReferenceKind.FACE,
+            GeometryReferenceKind.SKETCH_OR_PROFILE,
+        }:
+            raise ValueError("Pocket yêu cầu planar FACE hoặc closed WIRE.")
+        if generation is None or generation != self._service.cam_generation:
+            raise RuntimeError("Geometry selection callback đã stale sau project switch.")
+        resolved = self._pocket_resolver(reference)
+        if (
+            resolved.status is not GeometryResolutionStatus.RESOLVED
+            or resolved.region is None
+        ):
+            message = (
+                resolved.diagnostics[0].message
+                if resolved.diagnostics
+                else "Pocket region đã chọn không resolve được an toàn."
+            )
+            raise ValueError(message)
+        draft.geometry_reference = reference
+        current_id = (
+            context.geometry_reference.reference_id
+            if context.geometry_reference is not None
+            else None
+        )
+        if reference.reference_id != current_id:
+            draft.pending_input_id = GeometryInputId.new()
+        self._picked_reference = reference
+        self._picked_reference_resolved = True
+        self.editor.show_reference(reference, True)
+        loop = resolved.region.boundary.outer_loop
+        return {
+            "geometry_summary": (
+                f"1 Closed Region · {len(loop.segments)} segments · 0 Islands · "
+                f"RESOLVED · {loop.orientation.value}"
+            ),
+            "geometry_reference_id": str(reference.reference_id),
+            "island_summary": "0 island · Pocket v1 chỉ gia công một outer region",
+        }
+
+    def _preview_pocket_production(
+        self,
+        schema,
+        context: PocketEditorContext,
+        draft: PocketEditorDraftContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        """Create a validated, artifact-free summary of draft Pocket inputs."""
+        if (
+            request.operation_key != str(context.operation.operation_id)
+            or request.generation != self._generation
+        ):
+            raise RuntimeError("Preview request đã stale.")
+        values = dict(request.values)
+        diagnostics = self._validate_pocket_production(
+            schema, context, draft, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_pocket_update(context, draft, values)
+        if self._pocket_resolver is None:
+            raise RuntimeError("Pocket geometry resolver chưa sẵn sàng.")
+        resolved = self._pocket_resolver(update.geometry_reference)
+        inputs = PocketGenerator().resolve_inputs(
+            replace(update.operation, enabled=True),
+            context.setup,
+            assembly=update.assembly,
+            tool=update.tool,
+            machine=update.machine,
+            resolved_geometry=resolved,
+        )
+        strategy = update.strategy
+        self._pocket_preview = (
+            str(len(inputs.offset_loops)),
+            str(len(inputs.depth_levels)),
+            strategy.cutting_direction.value,
+            str(strategy.stepover.value),
+            str(strategy.top_z.value),
+            str(strategy.final_depth.value),
+            strategy.entry_policy.value,
+            str(strategy.clearance_height.value),
+            str(strategy.retract_height.value),
+        )
+        return (
+            f"Preview approximate · 1 closed region · 0 islands · Offset · "
+            f"{len(inputs.offset_loops)} loops · {len(inputs.depth_levels)} levels · "
+            f"{strategy.cutting_direction.value} · Stepover {strategy.stepover.value:g} · "
+            f"Top/Depth {strategy.top_z.value:g}/{strategy.final_depth.value:g} "
+            f"{strategy.unit.value} · Entry vertical plunge · Safe "
+            f"{strategy.clearance_height.value:g}/{strategy.retract_height.value:g} · "
+            "không phải bằng chứng collision-safe"
+        )
+
+    def _calculate_pocket_production(
+        self,
+        context: PocketEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Calculate only the current applied Pocket operation."""
+        if self._generation is None or not self._pocket_context_is_current(context):
+            raise RuntimeError("Applied Pocket state đã stale; hãy mở lại editor.")
+        if self._pocket_resolver is None:
+            raise RuntimeError("Pocket geometry resolver chưa sẵn sàng.")
+        result = self._service.compute_pocket(
+            context.operation.operation_id,
+            expected_generation=self._generation,
+            geometry_resolver=self._pocket_resolver,
+        )
+        if not result.accepted or result.artifact is None:
+            message = (
+                result.diagnostics[0].message
+                if result.diagnostics
+                else "Pocket 2.5D Calculate thất bại."
+            )
+            raise RuntimeError(message)
+        selected = self._selected_operation()
+        if (
+            selected is not None
+            and selected.operation_id == context.operation.operation_id
+            and self._toolpath_display is not None
+        ):
+            displayed = self._toolpath_display(result.artifact)
+            if displayed is not False:
+                self.editor.show_toolpath_metadata(
+                    ToolpathPresentation.from_artifact(result.artifact)
+                )
+                self._displayed_operation_id = context.operation.operation_id
+                self._toolpath_visibility[context.operation.operation_id] = True
+        self.message.emit("Pocket 2.5D đã Calculate và publish artifact hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 

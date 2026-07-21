@@ -56,6 +56,7 @@ class FunctionEditorValueSource(StrEnum):
     GEOMETRY = "geometry"
     PROJECT = "project"
     DEFAULT = "default"
+    DERIVED = "derived"
 
 
 class FunctionEditorValueConversion(StrEnum):
