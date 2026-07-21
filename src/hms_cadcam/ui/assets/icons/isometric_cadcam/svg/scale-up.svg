@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="scale-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#82C0D0"/>
+      <stop offset="1" stop-color="#6FB2C4"/>
+    </linearGradient>
+  </defs>
+  <g id="main-solid" stroke="#1E4A5D" stroke-width="1.7" stroke-linejoin="round">
+    <polygon points="8,38 19,32 31,38 20,44" fill="url(#scale-top)"/>
+    <polygon points="8,38 20,44 20,52 8,46" fill="#5199B0"/>
+    <polygon points="20,44 31,38 31,46 20,52" fill="#356F85"/>
+    <polygon points="22,25 39,15 57,24 40,34" fill="#B8DCE5" fill-opacity="0.66" stroke-dasharray="3 2"/>
+    <polygon points="22,25 40,34 40,48 22,39" fill="#6FB2C4" fill-opacity="0.45" stroke-dasharray="3 2"/>
+    <polygon points="40,34 57,24 57,38 40,48" fill="#438CA4" fill-opacity="0.45" stroke-dasharray="3 2"/>
+    <polyline fill="none" stroke="#D9F1F5" stroke-width="1.2" points="9.5,37.7 19,33 28.5,37.8"/>
+  </g>
+  <g id="construction-detail" fill="none" stroke="#4F7588" stroke-width="1.2" stroke-dasharray="3 2">
+    <line x1="20" y1="44" x2="40" y2="34"/>
+  </g>
+  <g id="action-arrow" fill="#E89924" stroke="#9B5B16" stroke-width="1.1" stroke-linejoin="round">
+    <path d="M25 33 L40 24 L37.5 21 L47 18 L44.5 27.5 L42 24.8 L27 34 Z"/>
+  </g>
+</svg>
