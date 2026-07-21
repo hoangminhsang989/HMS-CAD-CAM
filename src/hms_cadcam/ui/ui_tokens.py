@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 
-OPERATION_MANAGER_MIN_WIDTH = 240
-OPERATION_MANAGER_DEFAULT_WIDTH = 290
-OPERATION_MANAGER_MAX_WIDTH = 360
+OPERATION_MANAGER_MIN_WIDTH = 260
+OPERATION_MANAGER_DEFAULT_WIDTH = 300
+OPERATION_MANAGER_MAX_WIDTH = 340
 
 FUNCTION_EDITOR_MIN_WIDTH = 360
 FUNCTION_EDITOR_DEFAULT_WIDTH = 410
@@ -63,6 +63,42 @@ QLabel#PanelTitle {
     font-weight: 600;
 }
 QLabel#PanelSummary { color: #516273; }
+QFrame#OperationManagerSummary {
+    background: #f7f9fb;
+    border-bottom: 1px solid #d5dde4;
+}
+QLabel#OperationManagerProject { color: #203243; font-weight: 600; }
+QLabel#OperationManagerCounts { color: #315f7d; font-size: 8.5pt; }
+QComboBox#OperationStatusFilter {
+    background: #ffffff;
+    border: 1px solid #aebbc7;
+    border-radius: 3px;
+    min-height: 26px;
+    padding: 1px 4px;
+}
+QTreeView#OperationManagerTree {
+    background: #ffffff;
+    border: 0;
+    border-top: 1px solid #c7d1da;
+    selection-background-color: #176aa6;
+    selection-color: #ffffff;
+}
+QTreeView#OperationManagerTree::item { border-bottom: 1px solid #edf1f4; }
+QTreeView#OperationManagerTree::item:hover { background: #eef5fa; }
+QHeaderView::section {
+    background: #edf2f6;
+    color: #516273;
+    border: 0;
+    border-bottom: 1px solid #c4ced8;
+    padding: 3px 5px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+QFrame#OperationManagerEmptyState {
+    background: #f4f7f9;
+    border-top: 1px solid #c7d1da;
+}
+QLabel#OperationManagerStateTitle { color: #203243; font-weight: 600; }
 QLabel#SemanticInfo { color: #245b87; font-weight: 600; }
 QLineEdit#OperationSearch {
     background: #ffffff;
@@ -97,7 +133,7 @@ QFrame#FunctionEditorFooter {
 QLabel#DiagnosticSeverityInfo { color: #245b87; font-weight: 600; }
 QLabel#DiagnosticSeverityWarning { color: #875d12; font-weight: 600; }
 QLabel#DiagnosticSeverityError { color: #9b241b; font-weight: 600; }
-QAbstractButton:focus, QComboBox:focus, QTreeWidget:focus,
+QAbstractButton:focus, QComboBox:focus, QTreeWidget:focus, QTreeView:focus,
 QTableWidget:focus, QPlainTextEdit:focus {
     border: 2px solid #2472ad;
 }

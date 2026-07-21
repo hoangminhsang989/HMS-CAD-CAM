@@ -200,8 +200,11 @@ class MainWindow(QMainWindow):
         self.cam_workspace.toolbar.hide()
 
         self.operation_manager_host = OperationManagerHost(
-            self.cam_workspace.tree,
+            self.cam_workspace,
+            project_service,
+            self._layout_store.settings,
             self.cam_workspace.actions,
+            self.project_controller.actions,
         )
         self.operation_manager_dock = QDockWidget("Operation Manager", self)
         self.operation_manager_dock.setObjectName("OperationManagerDock")
@@ -283,6 +286,15 @@ class MainWindow(QMainWindow):
         )
         self.operation_manager_host.collapse_requested.connect(
             self.operation_manager_dock.hide
+        )
+        self.operation_manager_host.simulation_requested.connect(
+            lambda: self._workspace_changed(WorkspaceId.SIMULATION.value)
+        )
+        self.operation_manager_host.post_requested.connect(
+            lambda: self._workspace_changed(WorkspaceId.POST.value)
+        )
+        self.operation_manager_host.editor_requested.connect(
+            self._show_function_editor
         )
         self.function_editor_host.collapse_requested.connect(
             self.function_editor_dock.hide
@@ -465,6 +477,11 @@ class MainWindow(QMainWindow):
         self.workspace_bar.set_active_workspace(WorkspaceId.MILL_2D)
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
+        self.function_editor_dock.show()
+        self.function_editor_dock.raise_()
+
+    def _show_function_editor(self) -> None:
+        """Reveal the existing editor without changing or applying its draft."""
         self.function_editor_dock.show()
         self.function_editor_dock.raise_()
 

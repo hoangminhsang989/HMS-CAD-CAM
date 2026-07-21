@@ -2,129 +2,30 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QTabWidget,
-    QToolBar,
     QToolButton,
     QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from hms_cadcam.ui.operation_manager import OperationManagerPanel
 
-class OperationManagerHost(QWidget):
-    """Header, compact actions and filter wrapped around the existing CAM tree."""
 
-    collapse_requested = Signal()
-
-    def __init__(
-        self,
-        tree: QTreeWidget,
-        actions: Mapping[str, QAction],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("OperationManagerHost")
-        self.setAccessibleName("Operation Manager")
-        self.tree = tree
-        self.tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        header, self.collapse_button = _panel_header(
-            "Operation Manager", "Thu gọn Operation Manager"
-        )
-        self.collapse_button.clicked.connect(self.collapse_requested)
-        root.addWidget(header)
-
-        self.search = QLineEdit()
-        self.search.setObjectName("OperationSearch")
-        self.search.setAccessibleName("Tìm trong Operation Manager")
-        self.search.setClearButtonEnabled(True)
-        self.search.setPlaceholderText("Tìm operation hoặc trạng thái…")
-        self.search.textChanged.connect(self._apply_filter)
-        root.addWidget(self.search)
-
-        self.toolbar = QToolBar("Lệnh Operation Manager")
-        self.toolbar.setObjectName("OperationManagerTools")
-        self.toolbar.setAccessibleName("Lệnh theo Operation Manager")
-        self.toolbar.setMovable(False)
-        self.toolbar.setFloatable(False)
-        self._add_create_menu(actions)
-        self._add_context_menu(actions)
-        for key in ("generate", "visibility", "delete"):
-            action = actions.get(key)
-            if action is not None:
-                self.toolbar.addAction(action)
-        root.addWidget(self.toolbar)
-        root.addWidget(self.tree, 1)
-
-    def _add_create_menu(self, actions: Mapping[str, QAction]) -> None:
-        menu = QMenu("Tạo và thêm", self)
-        for key in (
-            "job",
-            "setup",
-            "resources",
-            "tapping_resources",
-            "reaming_resources",
-            "boring_resources",
-            "group",
-            "operation",
-            "contour_operation",
-            "pocket_operation",
-            "drilling_operation",
-            "tapping_operation",
-            "reaming_operation",
-            "boring_operation",
-        ):
-            action = actions.get(key)
-            if action is not None:
-                menu.addAction(action)
-        button = QToolButton(self.toolbar)
-        button.setObjectName("OperationCreateMenuButton")
-        button.setAccessibleName("Tạo tài nguyên hoặc operation CAM")
-        button.setText("+ Tạo")
-        button.setToolTip("Tạo Job, Setup, tài nguyên hoặc operation")
-        button.setMenu(menu)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.toolbar.addWidget(button)
-
-    def _add_context_menu(self, actions: Mapping[str, QAction]) -> None:
-        menu = QMenu("Thao tác theo selection", self)
-        for key in ("pick", "clear_pick", "up", "down"):
-            action = actions.get(key)
-            if action is not None:
-                menu.addAction(action)
-        button = QToolButton(self.toolbar)
-        button.setObjectName("OperationContextMenuButton")
-        button.setAccessibleName("Thao tác theo selection CAM")
-        button.setText("Thao tác")
-        button.setToolTip("Bind geometry hoặc đổi thứ tự operation")
-        button.setMenu(menu)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.toolbar.addWidget(button)
-
-    def _apply_filter(self, text: str) -> None:
-        needle = text.strip().casefold()
-        for index in range(self.tree.topLevelItemCount()):
-            _filter_tree_item(self.tree.topLevelItem(index), needle)
+class OperationManagerHost(OperationManagerPanel):
+    """Compatibility name for the production Stage 9A.3 panel."""
 
 
 class FunctionEditorHost(QWidget):
@@ -322,20 +223,6 @@ def _panel_header(title: str, collapse_accessible_name: str) -> tuple[QFrame, QT
     button.setAutoRaise(True)
     layout.addWidget(button)
     return frame, button
-
-
-def _filter_tree_item(item: QTreeWidgetItem, needle: str) -> bool:
-    child_match = False
-    for index in range(item.childCount()):
-        child_match = _filter_tree_item(item.child(index), needle) or child_match
-    own_match = not needle or needle in " ".join(
-        item.text(column).casefold() for column in range(item.columnCount())
-    )
-    visible = own_match or child_match
-    item.setHidden(not visible)
-    if needle and child_match:
-        item.setExpanded(True)
-    return visible
 
 
 def _scroll_host(widget: QWidget, object_name: str) -> QScrollArea:

@@ -92,6 +92,8 @@ class CamWorkspace(QWidget):
     """One self-contained CAM management surface; CAD viewport remains central."""
 
     message = Signal(str)
+    projection_changed = Signal()
+    selection_identity_changed = Signal(object)
 
     def __init__(self, service: ProjectService,
                  source_provider: Callable[[], UUID | None],
@@ -299,6 +301,54 @@ class CamWorkspace(QWidget):
             return
         self._render(preserve or self._selected_key)
 
+    @property
+    def selected_identity(self) -> tuple[str, str] | None:
+        """Return the transient CAM selection as its stable presentation key."""
+        return self._selected_key
+
+    def select_identity(self, kind: str, identity: str) -> bool:
+        """Select one classic coordinator item by stable typed presentation ID."""
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value()
+            if (
+                item.data(0, _KIND_ROLE) == kind
+                and item.data(0, _ID_ROLE) == identity
+            ):
+                self.tree.setCurrentItem(item)
+                return True
+            iterator += 1
+        return False
+
+    def clear_selection(self) -> None:
+        """Clear transient CAM selection without mutating project or CAD data."""
+        self.tree.clearSelection()
+        self.tree.setCurrentItem(None)
+
+    def set_selected_enabled(self, enabled: bool) -> None:
+        """Route enabled state through the existing OperationTree command."""
+        if type(enabled) is not bool:
+            raise TypeError("Operation enabled state must be boolean")
+        item = self.tree.currentItem()
+        context = self._tree_context()
+        if (
+            item is None
+            or context is None
+            or item.data(0, _KIND_ROLE) not in {"group", "operation"}
+        ):
+            return
+        job_id, setup_id, _tree, _parent_id = context
+        node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
+        changed = self._execute(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.set_enabled(node_id, enabled),
+            )
+        )
+        if changed is not None:
+            self.refresh((item.data(0, _KIND_ROLE), str(node_id)))
+
     def _render(self, preserve: tuple[str, str] | None) -> None:
         self._stash_active_operation_draft()
         self._guard = True
@@ -351,6 +401,8 @@ class CamWorkspace(QWidget):
             self.post_panel.clear_operation()
             self.program_assembly_panel.clear_selected_operation()
         self.program_assembly_panel.refresh_sources()
+        self.selection_identity_changed.emit(self._selected_key)
+        self.projection_changed.emit()
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -427,9 +479,11 @@ class CamWorkspace(QWidget):
             self._remove_displayed_toolpath()
             self.post_panel.clear_operation()
             self.program_assembly_panel.clear_selected_operation()
+            self.selection_identity_changed.emit(None)
             return
         self._selected_key = (item.data(0, _KIND_ROLE), item.data(0, _ID_ROLE))
         self._show_properties(item)
+        self.selection_identity_changed.emit(self._selected_key)
 
     def _show_properties(self, item: QTreeWidgetItem) -> None:
         self._stash_active_operation_draft()
@@ -863,6 +917,7 @@ class CamWorkspace(QWidget):
         if inputs is None or inputs.operation.operation_id != record.operation_id:
             return
         self.simulation_panel.set_run_record(record)
+        self.projection_changed.emit()
 
     def _cancel_simulation(self) -> None:
         handle = self._simulation_handle
@@ -908,6 +963,7 @@ class CamWorkspace(QWidget):
         if viewport is not None and callable(getattr(viewport, "remove_simulation", None)):
             viewport.remove_simulation(operation.operation_id)
         self.simulation_panel.clear_result_display()
+        self.projection_changed.emit()
 
     def _set_simulation_visibility(self, visible: bool) -> None:
         operation = self._selected_operation()
