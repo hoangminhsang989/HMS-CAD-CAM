@@ -15,7 +15,10 @@ env/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+coverage.xml
+.benchmarks/
 
 .vscode/settings.json
 

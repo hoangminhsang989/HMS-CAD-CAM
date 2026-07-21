@@ -17,6 +17,16 @@ dependencies = [
 dev = [
     "pytest>=8.4,<10",
 ]
+qa = [
+    "pytest==9.1.1",
+    "pytest-qt==4.5.0",
+    "pytest-cov==7.1.0",
+    "pytest-timeout==2.4.0",
+    "psutil==7.2.2",
+    "pytest-xdist==3.8.0",
+    "pytest-benchmark==5.2.3",
+    "pywinauto==0.6.9; sys_platform == 'win32'",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -28,3 +38,15 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra"
+qt_api = "pyside6"
+timeout = 300
+markers = [
+    "gui: tests that exercise Qt widgets or the Qt event loop",
+    "windows_native: optional tests that require an interactive Windows desktop",
+    "serial: tests that must not share resources with concurrent pytest workers",
+    "ocp: tests that load or exercise the Open CASCADE kernel",
+    "benchmark: measurements reported for observation, never a hard pass/fail gate",
+    "slow: tests that are intentionally slower than the quick QA selection",
+    "filesystem: tests that create, export, recover, or inspect filesystem artifacts",
+    "sqlite: tests that own a SQLite database lifecycle",
+]
