@@ -221,6 +221,7 @@ class MainWindow(QMainWindow):
             self.cam_workspace.editor,
             self.cam_workspace.tree,
             self.cam_workspace.editor.apply_draft,
+            settings=self._layout_store.settings,
         )
         self.function_editor_dock = QDockWidget("Function Editor", self)
         self.function_editor_dock.setObjectName("FunctionEditorDock")

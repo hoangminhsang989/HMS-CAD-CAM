@@ -1,124 +1,27 @@
-"""Panel hosts that recompose existing Stage 9A.2 workflow widgets."""
+"""Panel hosts that recompose existing Stage 9A workflow widgets."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QTabWidget,
     QToolButton,
-    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from hms_cadcam.ui.function_editor.host import FunctionEditorHost
 from hms_cadcam.ui.operation_manager import OperationManagerPanel
 
 
 class OperationManagerHost(OperationManagerPanel):
     """Compatibility name for the production Stage 9A.3 panel."""
-
-
-class FunctionEditorHost(QWidget):
-    """Sticky summary/footer and internal scroll for the existing editor."""
-
-    collapse_requested = Signal()
-
-    def __init__(
-        self,
-        editor: QWidget,
-        tree: QTreeWidget,
-        apply_callback: Callable[[], None],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setObjectName("FunctionEditorHost")
-        self.setAccessibleName("Function Editor")
-        self.editor = editor
-        self._tree = tree
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-        header, self.collapse_button = _panel_header(
-            "Function Editor", "Thu gọn Function Editor"
-        )
-        self.collapse_button.clicked.connect(self.collapse_requested)
-        root.addWidget(header)
-
-        summary_frame = QFrame()
-        summary_layout = QVBoxLayout(summary_frame)
-        summary_layout.setContentsMargins(8, 6, 8, 6)
-        summary_layout.setSpacing(2)
-        self.selection_summary = QLabel("Chưa chọn operation")
-        self.selection_summary.setObjectName("PanelTitle")
-        self.selection_summary.setWordWrap(True)
-        self.state_summary = QLabel("Chọn một node trong Operation Manager để chỉnh sửa.")
-        self.state_summary.setObjectName("PanelSummary")
-        self.state_summary.setWordWrap(True)
-        summary_layout.addWidget(self.selection_summary)
-        summary_layout.addWidget(self.state_summary)
-        root.addWidget(summary_frame)
-
-        form = editor.layout()
-        if isinstance(form, QFormLayout):
-            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-            classic_apply = getattr(editor, "apply_button", None)
-            if isinstance(classic_apply, QWidget):
-                form.setRowVisible(classic_apply, False)
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setObjectName("FunctionEditorScrollArea")
-        self.scroll_area.setAccessibleName("Nội dung Function Editor")
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.scroll_area.setWidget(editor)
-        root.addWidget(self.scroll_area, 1)
-
-        footer = QFrame()
-        footer.setObjectName("FunctionEditorFooter")
-        footer_layout = QHBoxLayout(footer)
-        footer_layout.setContentsMargins(8, 6, 8, 6)
-        footer_layout.addStretch(1)
-        self.apply_button = QPushButton("Áp dụng")
-        self.apply_button.setObjectName("PrimaryPanelAction")
-        self.apply_button.setAccessibleName("Áp dụng bản nháp operation")
-        self.apply_button.setToolTip("Kiểm tra và áp dụng bản nháp hiện tại")
-        self.apply_button.clicked.connect(apply_callback)
-        footer_layout.addWidget(self.apply_button)
-        self.close_button = QPushButton("Đóng")
-        self.close_button.setAccessibleName("Đóng Function Editor")
-        self.close_button.setToolTip("Ẩn Function Editor; có thể mở lại từ menu Hiển thị")
-        self.close_button.clicked.connect(self.collapse_requested)
-        footer_layout.addWidget(self.close_button)
-        root.addWidget(footer)
-
-        self._tree.itemSelectionChanged.connect(self.refresh_summary)
-        self.refresh_summary()
-
-    def refresh_summary(self) -> None:
-        """Reflect the current typed tree selection without caching identity."""
-        item = self._tree.currentItem()
-        if item is None:
-            self.selection_summary.setText("Chưa chọn operation")
-            self.state_summary.setText(
-                "Chọn một node trong Operation Manager để chỉnh sửa."
-            )
-            return
-        self.selection_summary.setText(item.text(0) or "Selection")
-        status = item.text(1).strip() or "Không có trạng thái"
-        self.state_summary.setText(f"Trạng thái: {status}")
 
 
 class DiagnosticsHost(QWidget):
