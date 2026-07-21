@@ -55,6 +55,8 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
     BoringGenerationError,
     BoringGenerator,
+    ContourGenerationError,
+    ContourGenerator,
     FacingGenerationError,
     FacingGenerator,
     ReamingGenerationError,
@@ -91,12 +93,17 @@ from hms_cadcam.ui.function_editor.model import (
 )
 from hms_cadcam.ui.function_editor.production import FunctionEditorProductionSession
 from hms_cadcam.ui.function_editor.strategies import (
+    ContourEditorContext,
+    ContourEditorDraftContext,
     FacingEditorContext,
     FacingEditorDraftContext,
     FacingEditorVariant,
+    build_contour_schema,
     build_facing_schema,
     build_planar_face_facing_schema,
+    contour_applied_values,
     facing_applied_values,
+    prepare_contour_update,
     prepare_facing_update,
 )
 
@@ -185,7 +192,9 @@ class CamWorkspace(QWidget):
         self._active_editor_operation_id: OperationId | None = None
         self._active_editor_strategy_key: str | None = None
         self._production_facing_editors_enabled = True
+        self._production_contour_editor_enabled = True
         self._facing_preview: tuple[str, ...] = ()
+        self._contour_preview: tuple[str, ...] = ()
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -307,6 +316,7 @@ class CamWorkspace(QWidget):
         self._active_editor_operation_id = None
         self._active_editor_strategy_key = None
         self._facing_preview = ()
+        self._contour_preview = ()
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
@@ -358,14 +368,14 @@ class CamWorkspace(QWidget):
 
     def report_function_editor_fallback(self, message: str) -> None:
         """Expose a safe production-schema fallback without mutating CAM state."""
-        logger.error("Facing Function Editor fallback: %s", message)
+        logger.error("Production Function Editor fallback: %s", message)
         self._error(f"Function Editor fallback: {message}")
 
     def production_function_editor_session(
         self,
     ) -> FunctionEditorProductionSession | None:
-        """Resolve the selected migrated Facing variant or request legacy fallback."""
-        if not self._production_facing_editors_enabled or not self._service.has_project:
+        """Resolve a migrated milling editor or request one safe legacy fallback."""
+        if not self._service.has_project:
             return None
         item = self.tree.currentItem()
         if item is None or item.data(0, _KIND_ROLE) != "operation":
@@ -379,6 +389,14 @@ class CamWorkspace(QWidget):
         if node.operation_id is None:
             return None
         operation = setup.operation_tree.get_operation(node.operation_id)
+        if operation.strategy_key == "contour_2d":
+            if not self._production_contour_editor_enabled:
+                return None
+            return self._contour_production_session(
+                job.job_id, setup, node_id, node.name, operation
+            )
+        if not self._production_facing_editors_enabled:
+            return None
         if operation.strategy_key != "facing_2_5d":
             return None
         parameters = FacingParameters.from_operation_parameters(operation.parameters)
@@ -440,6 +458,86 @@ class CamWorkspace(QWidget):
             ),
         )
 
+    def _contour_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one typed Contour session without touching project state."""
+        if self._generation is None:
+            return None
+        reference = (
+            operation.geometry_inputs[0].reference
+            if len(operation.geometry_inputs) == 1
+            else None
+        )
+        resolved = None
+        if reference is not None and self._profile_resolver is not None:
+            resolved = self._profile_resolver(reference)
+        geometry_resolved = (
+            resolved is not None
+            and resolved.status is GeometryResolutionStatus.RESOLVED
+            and resolved.profile is not None
+        )
+        segment_count = (
+            len(resolved.profile.outer_loop.segments)
+            if geometry_resolved and resolved is not None and resolved.profile is not None
+            else None
+        )
+        orientation = (
+            resolved.profile.outer_loop.orientation.value
+            if geometry_resolved and resolved is not None and resolved.profile is not None
+            else ""
+        )
+        snapshot = self._service.cam_snapshot
+        context = ContourEditorContext(
+            operation_name,
+            operation,
+            setup,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            reference,
+            geometry_resolved,
+            segment_count,
+            orientation,
+        )
+        draft = ContourEditorDraftContext(reference)
+        schema = build_contour_schema(context)
+        applied = contour_applied_values(context)
+        project = self._service.current_project
+        if project is None:
+            return None
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_contour_production(
+                job_id, setup.setup_id, node_id, context, draft, values
+            ),
+            validation_callback=lambda values: self._validate_contour_production(
+                schema, context, draft, values
+            ),
+            preview_callback=lambda request: self._preview_contour_production(
+                schema, context, draft, request
+            ),
+            calculate_callback=lambda values: self._calculate_contour_production(
+                context, values
+            ),
+            field_action_callback=lambda action_id, values: self._contour_field_action(
+                context, draft, action_id, values
+            ),
+        )
+
     def _current_facing_operation(self, operation_id: OperationId) -> Operation | None:
         if not self._service.has_project:
             return None
@@ -458,6 +556,24 @@ class CamWorkspace(QWidget):
         return None
 
     def _facing_context_is_current(self, context: FacingEditorContext) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None:
+            return False
+        snapshot = self._service.cam_snapshot
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.enabled == context.operation.enabled
+            and snapshot.tool_assemblies == context.tool_assemblies
+            and snapshot.tool_definitions == context.tool_definitions
+            and snapshot.holder_definitions == context.holder_definitions
+            and snapshot.machine_definitions == context.machine_definitions
+        )
+
+    def _contour_context_is_current(self, context: ContourEditorContext) -> bool:
         current = self._current_facing_operation(context.operation.operation_id)
         if current is None:
             return False
@@ -773,6 +889,325 @@ class CamWorkspace(QWidget):
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
         self.message.emit("Facing đã Calculate và publish artifact hợp lệ.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    @staticmethod
+    def _contour_error_target(message: str, code: str) -> str | None:
+        folded = f"{code} {message}".casefold()
+        for token, field_id in (
+            ("stepdown", "stepdown"),
+            ("allowance", "radial_stock_allowance"),
+            ("offset", "side"),
+            ("side", "side"),
+            ("clearance", "clearance_height"),
+            ("retract", "retract_height"),
+            ("final depth", "final_depth"),
+            ("chiều sâu", "final_depth"),
+            ("top height", "top_height"),
+            ("top z", "top_height"),
+            ("spindle", "spindle_speed"),
+            ("plunge", "plunge_feed_rate"),
+            ("feed", "cutting_feed_rate"),
+            ("lead", "lead_length"),
+            ("tool", "tool_assembly_id"),
+            ("dao", "tool_assembly_id"),
+            ("machine", "machine_id"),
+            ("máy", "machine_id"),
+            ("profile source", "profile_source"),
+            ("profile", "geometry_summary"),
+            ("geometry", "geometry_summary"),
+            ("wire", "geometry_summary"),
+            ("face", "geometry_summary"),
+        ):
+            if token in folded:
+                return field_id
+        return None
+
+    def _contour_diagnostic(
+        self,
+        schema,
+        code: str,
+        message: str,
+    ) -> FunctionEditorDiagnostic:
+        field_id = self._contour_error_target(message, code)
+        if field_id is not None and field_id not in {
+            field.field_id for field in schema.fields
+        }:
+            field_id = None
+        return FunctionEditorDiagnostic(
+            code=code,
+            message=message,
+            severity=FunctionEditorDiagnosticSeverity.ERROR,
+            field_id=field_id,
+            section_id=(
+                schema.section_for_field(field_id).section_id
+                if field_id is not None
+                else None
+            ),
+        )
+
+    def _validate_contour_production(
+        self,
+        schema,
+        context: ContourEditorContext,
+        draft: ContourEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        """Run the unchanged Contour generator validation without mutation."""
+        if self._generation is None or self._generation != self._service.cam_generation:
+            return (
+                self._contour_diagnostic(
+                    schema,
+                    "contour.ui.stale_editor",
+                    "Function Editor thuộc project generation cũ.",
+                ),
+            )
+        if not self._contour_context_is_current(context):
+            return (
+                self._contour_diagnostic(
+                    schema,
+                    "contour.ui.stale_editor",
+                    "Operation hoặc resource đã thay đổi; hãy mở lại editor.",
+                ),
+            )
+        try:
+            update = prepare_contour_update(context, draft, values)
+            if self._profile_resolver is None:
+                raise ContourGenerationError(
+                    DiagnosticCode.CONTOUR_PROFILE_MISSING,
+                    "Contour geometry resolver chưa sẵn sàng.",
+                )
+            resolved = self._profile_resolver(update.geometry_reference)
+            ContourGenerator().resolve_inputs(
+                replace(update.operation, enabled=True),
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_profile=resolved,
+            )
+            return ()
+        except ContourGenerationError as error:
+            return (
+                self._contour_diagnostic(schema, error.code.value, str(error)),
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            return (
+                self._contour_diagnostic(
+                    schema, "contour.invalid_parameters", str(error)
+                ),
+            )
+
+    def _apply_contour_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: ContourEditorContext,
+        draft: ContourEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Commit one validated Contour draft through the existing service."""
+        schema = build_contour_schema(context)
+        diagnostics = self._validate_contour_production(
+            schema, context, draft, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_contour_update(context, draft, values)
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn active.")
+        self._service.execute_cam_command(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.rename_node(
+                    node_id, update.operation_name
+                ).replace_operation(update.operation),
+            ),
+            expected_generation=self._generation,
+        )
+        if self._selected_key == ("operation", str(node_id)):
+            item = self.tree.currentItem()
+            self._guard = True
+            try:
+                if item is not None:
+                    item.setText(0, update.operation_name)
+                    item.setText(1, update.operation.artifact_state.status.value.upper())
+            finally:
+                self._guard = False
+            snapshot = self._service.cam_snapshot
+            self.editor.show_node(
+                update.operation_name,
+                update.operation,
+                snapshot.tool_assemblies,
+                snapshot.machine_definitions,
+                snapshot.tool_definitions,
+                snapshot.holder_definitions,
+            )
+            self._picked_reference = update.geometry_reference
+            self._picked_reference_resolved = True
+            self.editor.show_reference(update.geometry_reference, True)
+        self.message.emit("Đã Apply 2D Contour; chưa tự Calculate toolpath.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    def _contour_field_action(
+        self,
+        context: ContourEditorContext,
+        draft: ContourEditorDraftContext,
+        action_id: str,
+        _values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        """Select one persistent FACE/WIRE into the draft without mutation."""
+        if action_id != "select_geometry":
+            raise ValueError(f"Field action không hỗ trợ: {action_id}")
+        if self._contour_pick_provider is None or self._profile_resolver is None:
+            raise RuntimeError("Contour geometry selection workflow chưa sẵn sàng.")
+        generation = self._generation
+        reference = self._contour_pick_provider()
+        if not isinstance(reference, GeometryReference) or reference.kind not in {
+            GeometryReferenceKind.FACE,
+            GeometryReferenceKind.SKETCH_OR_PROFILE,
+        }:
+            raise ValueError("2D Contour yêu cầu planar FACE hoặc closed WIRE.")
+        if generation is None or generation != self._service.cam_generation:
+            raise RuntimeError("Geometry selection callback đã stale sau project switch.")
+        resolved = self._profile_resolver(reference)
+        if (
+            resolved.status is not GeometryResolutionStatus.RESOLVED
+            or resolved.profile is None
+        ):
+            raise ValueError(
+                resolved.message or "Contour profile đã chọn không resolve được an toàn."
+            )
+        draft.geometry_reference = reference
+        current_id = (
+            context.geometry_reference.reference_id
+            if context.geometry_reference is not None
+            else None
+        )
+        if reference.reference_id != current_id:
+            draft.pending_input_id = GeometryInputId.new()
+        self._picked_reference = reference
+        self._picked_reference_resolved = True
+        self.editor.show_reference(reference, True)
+        profile = resolved.profile
+        profile_source = (
+            ContourProfileSource.PLANAR_FACE_OUTER
+            if reference.kind is GeometryReferenceKind.FACE
+            else ContourProfileSource.CLOSED_WIRE
+        )
+        kind = "Planar FACE" if reference.kind is GeometryReferenceKind.FACE else "Closed WIRE"
+        return {
+            "geometry_summary": (
+                f"1 chain · {len(profile.outer_loop.segments)} segments · closed · "
+                f"{kind} · RESOLVED · {profile.outer_loop.orientation.value}"
+            ),
+            "geometry_reference_id": str(reference.reference_id),
+            "profile_source": profile_source.value,
+        }
+
+    def _preview_contour_production(
+        self,
+        schema,
+        context: ContourEditorContext,
+        draft: ContourEditorDraftContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        """Create a validated, artifact-free summary of the draft path inputs."""
+        if (
+            request.operation_key != str(context.operation.operation_id)
+            or request.generation != self._generation
+        ):
+            raise RuntimeError("Preview request đã stale.")
+        values = dict(request.values)
+        diagnostics = self._validate_contour_production(
+            schema, context, draft, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_contour_update(context, draft, values)
+        if self._profile_resolver is None:
+            raise RuntimeError("Contour geometry resolver chưa sẵn sàng.")
+        resolved = self._profile_resolver(update.geometry_reference)
+        inputs = ContourGenerator().resolve_inputs(
+            replace(update.operation, enabled=True),
+            context.setup,
+            assembly=update.assembly,
+            tool=update.tool,
+            machine=update.machine,
+            resolved_profile=resolved,
+        )
+        parameters = update.parameters
+        pass_count = 1
+        if parameters.multiple_depth_passes:
+            pass_count = max(
+                1,
+                math.ceil(
+                    (parameters.top_height.value - parameters.final_cut_depth)
+                    / parameters.stepdown.value
+                ),
+            )
+        if parameters.finishing_pass:
+            pass_count += 1
+        self._contour_preview = (
+            str(len(inputs.path.loop.segments)),
+            inputs.path.loop.orientation.value,
+            parameters.side.value,
+            parameters.direction.value,
+            str(parameters.top_height.value),
+            str(parameters.final_cut_depth),
+            str(parameters.clearance_height.value),
+            str(parameters.retract_height.value),
+            str(parameters.lead_length.value),
+        )
+        return (
+            f"Preview CURRENT · 1 closed chain · {len(inputs.path.loop.segments)} segments · "
+            f"{inputs.path.loop.orientation.value} · {parameters.side.value}/"
+            f"{parameters.direction.value} · {pass_count} pass · "
+            f"Top/Depth {parameters.top_height.value:g}/{parameters.final_cut_depth:g} "
+            f"{parameters.unit.value} · Lead linear {parameters.lead_length.value:g} · "
+            f"Safe {parameters.clearance_height.value:g}/{parameters.retract_height.value:g}"
+        )
+
+    def _calculate_contour_production(
+        self,
+        context: ContourEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Calculate only the current applied Contour operation."""
+        if self._generation is None or not self._contour_context_is_current(context):
+            raise RuntimeError("Applied Contour state đã stale; hãy mở lại editor.")
+        if self._profile_resolver is None:
+            raise RuntimeError("Contour geometry resolver chưa sẵn sàng.")
+        result = self._service.compute_contour(
+            context.operation.operation_id,
+            expected_generation=self._generation,
+            profile_resolver=self._profile_resolver,
+        )
+        if not result.accepted or result.artifact is None:
+            message = (
+                result.diagnostics[0].message
+                if result.diagnostics
+                else "2D Contour Calculate thất bại."
+            )
+            raise RuntimeError(message)
+        selected = self._selected_operation()
+        if (
+            selected is not None
+            and selected.operation_id == context.operation.operation_id
+            and self._toolpath_display is not None
+        ):
+            displayed = self._toolpath_display(result.artifact)
+            if displayed is not False:
+                self.editor.show_toolpath_metadata(
+                    ToolpathPresentation.from_artifact(result.artifact)
+                )
+                self._displayed_operation_id = context.operation.operation_id
+                self._toolpath_visibility[context.operation.operation_id] = True
+        self.message.emit("2D Contour đã Calculate và publish artifact hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 

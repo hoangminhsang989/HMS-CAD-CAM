@@ -1,5 +1,14 @@
 """Production Function Editor strategies migrated after Stage 9A.4."""
 
+from hms_cadcam.ui.function_editor.strategies.contour import (
+    ContourEditorContext,
+    ContourEditorDraftContext,
+    ContourOperationUpdate,
+    build_contour_schema,
+    contour_applied_values,
+    prepare_contour_update,
+    validate_contour_schema_contract,
+)
 from hms_cadcam.ui.function_editor.strategies.common_milling import (
     FacingEditorContext,
     FacingEditorDraftContext,
@@ -15,13 +24,20 @@ from hms_cadcam.ui.function_editor.strategies.planar_face_facing import (
 )
 
 __all__ = [
+    "ContourEditorContext",
+    "ContourEditorDraftContext",
+    "ContourOperationUpdate",
     "FacingEditorContext",
     "FacingEditorDraftContext",
     "FacingEditorVariant",
     "FacingOperationUpdate",
+    "build_contour_schema",
     "build_facing_schema",
     "build_planar_face_facing_schema",
+    "contour_applied_values",
     "facing_applied_values",
+    "prepare_contour_update",
     "prepare_facing_update",
+    "validate_contour_schema_contract",
     "validate_facing_schema_contract",
 ]
