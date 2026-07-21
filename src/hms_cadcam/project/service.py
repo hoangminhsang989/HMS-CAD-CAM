@@ -40,6 +40,7 @@ from hms_cadcam.cam.application import (
     BoringComputeResult, ReamingComputeResult, TappingComputeResult,
 )
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
+from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
 from hms_cadcam.cam.domain import (
     DrillDepthDefinition, DrillGeometryInput, GeometryReference, OperationId,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
@@ -345,6 +346,27 @@ class ProjectService:
             self._simulation_runs.cancel_all(stale=True)
             self._remove_deleted_operation_simulations(session, before, changed)
             self._reconcile_nc_artifacts(session, changed)
+        return session
+
+    @property
+    def cam3d_config(self) -> Cam3DProjectConfig:
+        """Return the current immutable CAM 3D editable configuration."""
+        session = self._require_current()
+        if session.cam3d_config is None:
+            session.cam3d_config = Cam3DProjectConfig(session.manifest.project_id)
+        return session.cam3d_config
+
+    def stage_cam3d_config(self, config: Cam3DProjectConfig) -> ProjectSession:
+        """Stage CAM 3D zones without creating a mesh or dirtying CAD state."""
+        if not isinstance(config, Cam3DProjectConfig):
+            raise TypeError("CAM 3D project config is invalid")
+        session = self._require_current()
+        if config.project_id != session.manifest.project_id:
+            raise ValueError("CAM 3D config belongs to another project")
+        before = session.cam3d_config or Cam3DProjectConfig(config.project_id)
+        session.cam3d_config = config
+        if config != before:
+            session.is_dirty = True
         return session
 
     def apply_cam_mutation(
@@ -1001,6 +1023,8 @@ class ProjectService:
             persisted_cad_view_states=dict(session.persisted_cad_view_states),
             cam_snapshot=self._cam_application.snapshot,
             persisted_cam_snapshot=session.persisted_cam_snapshot,
+            cam3d_config=session.cam3d_config,
+            persisted_cam3d_config=session.persisted_cam3d_config,
         )
         self.flush_simulation_cache()
         autosave_snapshot = self._autosave.create_snapshot(
@@ -1099,6 +1123,10 @@ class ProjectService:
                 self._session_locks.release(session.root_path)
                 raise
         self._current_project = session
+        if session.cam3d_config is None:
+            session.cam3d_config = Cam3DProjectConfig(session.manifest.project_id)
+        if session.persisted_cam3d_config is None:
+            session.persisted_cam3d_config = session.cam3d_config
         self._cam_application.load(session.cam_snapshot)
         self._simulation_runs.bind_project(
             session.manifest.project_id,

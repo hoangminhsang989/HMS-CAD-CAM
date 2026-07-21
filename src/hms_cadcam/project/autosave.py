@@ -49,6 +49,13 @@ from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.persistence import CamSqliteRepository
 from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreError
+from hms_cadcam.cam.cam3d.persistence import (
+    CAM3D_CONFIG_DIRECTORY,
+    CAM3D_CONFIG_FILENAME,
+    Cam3DProjectConfig,
+    Cam3DProjectStore,
+    Cam3DPersistenceError,
+)
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SNAPSHOT_PREFIX = "snapshot-"
@@ -104,6 +111,7 @@ class AutosaveMetadata:
     application_version: str
     manifest: AutosaveFileMetadata
     database: AutosaveFileMetadata
+    cam3d: AutosaveFileMetadata | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert snapshot metadata to JSON-compatible values."""
@@ -117,6 +125,7 @@ class AutosaveMetadata:
             "application_version": self.application_version,
             "manifest": self.manifest.to_dict(),
             "database": self.database.to_dict(),
+            "cam3d": self.cam3d.to_dict() if self.cam3d is not None else None,
         }
 
     @classmethod
@@ -149,6 +158,11 @@ class AutosaveMetadata:
             application_version=data["application_version"],
             manifest=AutosaveFileMetadata.from_dict(data["manifest"]),
             database=AutosaveFileMetadata.from_dict(data["database"]),
+            cam3d=(
+                AutosaveFileMetadata.from_dict(data["cam3d"])
+                if data.get("cam3d") is not None
+                else None
+            ),
         )
 
 
@@ -207,6 +221,7 @@ class AutosaveManager:
         cad_state_store: CadViewStateStore | None = None,
         cam_repository: CamSqliteRepository | None = None,
         nc_artifact_store: NCArtifactStore | None = None,
+        cam3d_store: Cam3DProjectStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -214,6 +229,7 @@ class AutosaveManager:
         self._cad_state_store = cad_state_store or CadViewStateStore()
         self._cam_repository = cam_repository or CamSqliteRepository()
         self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
+        self._cam3d_store = cam3d_store or Cam3DProjectStore()
         self._operation_lock = threading.Lock()
 
     def create_snapshot(
@@ -287,6 +303,16 @@ class AutosaveManager:
                     session.manifest.project_id,
                     session.manifest.project_id,
                 )
+                cam3d_config = session.cam3d_config or Cam3DProjectConfig(
+                    session.manifest.project_id
+                )
+                cam3d_metadata = None
+                if not cam3d_config.is_empty:
+                    cam3d_path = self._cam3d_store.save(staging, cam3d_config)
+                    cam3d_metadata = self._file_metadata(
+                        cam3d_path,
+                        f"{CAM3D_CONFIG_DIRECTORY}/{CAM3D_CONFIG_FILENAME}",
+                    )
                 metadata = AutosaveMetadata(
                     format=AUTOSAVE_FORMAT,
                     format_version=AUTOSAVE_FORMAT_VERSION,
@@ -297,6 +323,7 @@ class AutosaveManager:
                     application_version=APPLICATION_VERSION,
                     manifest=self._file_metadata(staging / MANIFEST_FILENAME),
                     database=self._file_metadata(staging / DATABASE_FILENAME),
+                    cam3d=cam3d_metadata,
                 )
                 self._write_json_exclusive(
                     staging / AUTOSAVE_METADATA_FILENAME,
@@ -313,6 +340,8 @@ class AutosaveManager:
             return snapshot
         except ProjectError:
             raise
+        except Cam3DPersistenceError as error:
+            raise AutosaveSnapshotError(str(error)) from error
         except OSError as error:
             raise AutosaveSnapshotError(str(error)) from error
 
@@ -323,6 +352,7 @@ class AutosaveManager:
             raise
         except (
             ProjectError,
+            Cam3DPersistenceError,
             OSError,
             UnicodeDecodeError,
             json.JSONDecodeError,
@@ -346,7 +376,12 @@ class AutosaveManager:
             raise AutosaveSnapshotError("Autosave snapshot must be a real directory")
         entries = tuple(snapshot_path.iterdir())
         names = {path.name for path in entries}
-        optional_names = {CACHE_DIRECTORY, POST_DIRECTORY, NC_DIRECTORY}
+        optional_names = {
+            CACHE_DIRECTORY,
+            POST_DIRECTORY,
+            NC_DIRECTORY,
+            CAM3D_CONFIG_DIRECTORY,
+        }
         if not expected_names.issubset(names) or names - expected_names - optional_names:
             raise AutosaveSnapshotError("Autosave snapshot file set is incomplete")
         if (POST_DIRECTORY in names) != (NC_DIRECTORY in names):
@@ -377,12 +412,31 @@ class AutosaveManager:
             raise AutosaveSnapshotError("Autosave manifest filename is invalid")
         if metadata.database.filename != DATABASE_FILENAME:
             raise AutosaveSnapshotError("Autosave database filename is invalid")
+        has_cam3d = CAM3D_CONFIG_DIRECTORY in names
+        if has_cam3d != (metadata.cam3d is not None):
+            raise AutosaveSnapshotError("Autosave CAM 3D config layout is incomplete")
+        if metadata.cam3d is not None:
+            expected_cam3d = f"{CAM3D_CONFIG_DIRECTORY}/{CAM3D_CONFIG_FILENAME}"
+            if metadata.cam3d.filename != expected_cam3d:
+                raise AutosaveSnapshotError("Autosave CAM 3D config filename is invalid")
+            cam3d_root = snapshot_path / CAM3D_CONFIG_DIRECTORY
+            if (
+                not cam3d_root.is_dir()
+                or self._is_link_or_junction(cam3d_root)
+                or {item.name for item in cam3d_root.iterdir()}
+                != {CAM3D_CONFIG_FILENAME}
+            ):
+                raise AutosaveSnapshotError("Autosave CAM 3D config directory is invalid")
         self._verify_file(snapshot_path, metadata.manifest)
         self._verify_file(snapshot_path, metadata.database)
+        if metadata.cam3d is not None:
+            self._verify_file(snapshot_path, metadata.cam3d)
         manifest = self._manifest_store.load(snapshot_path)
         self._validator.validate_manifest(manifest)
         if manifest.project_id != metadata.project_id:
             raise AutosaveSnapshotError("Autosave project identity differs from manifest")
+        if metadata.cam3d is not None:
+            self._cam3d_store.load(snapshot_path, metadata.project_id)
         self._database.validate(snapshot_path / DATABASE_FILENAME)
         if POST_DIRECTORY in names:
             try:
@@ -392,9 +446,11 @@ class AutosaveManager:
         return metadata
 
     @staticmethod
-    def _file_metadata(path: Path) -> AutosaveFileMetadata:
+    def _file_metadata(
+        path: Path, filename: str | None = None
+    ) -> AutosaveFileMetadata:
         return AutosaveFileMetadata(
-            filename=path.name,
+            filename=filename or path.name,
             size_bytes=path.stat().st_size,
             sha256=sha256_file(path),
         )

@@ -25,6 +25,7 @@ from hms_cadcam.cam.persistence import (
     CamSqliteRepository, ToolpathArtifactStore, ToolpathArtifactStoreError,
 )
 from hms_cadcam.cam.post.export_store import NCArtifactStore
+from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig, Cam3DProjectStore
 import logging
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class ProjectSaver:
         cam_repository: CamSqliteRepository | None = None,
         artifact_store: ToolpathArtifactStore | None = None,
         nc_artifact_store: NCArtifactStore | None = None,
+        cam3d_store: Cam3DProjectStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -50,6 +52,7 @@ class ProjectSaver:
         self._cam_repository = cam_repository or CamSqliteRepository()
         self._artifact_store = artifact_store or ToolpathArtifactStore()
         self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
+        self._cam3d_store = cam3d_store or Cam3DProjectStore()
 
     def save(self, session: ProjectSession) -> ProjectSession:
         """Validate and atomically save the current manifest."""
@@ -67,11 +70,20 @@ class ProjectSaver:
                 (record.source_id for record in manifest.source_files),
             )
             persisted_cam = self._cam_repository.replace_all(connection, session.cam_snapshot)
+            cam3d_config = session.cam3d_config or Cam3DProjectConfig(
+                session.manifest.project_id
+            )
+            if not cam3d_config.is_empty or self._cam3d_store.path_for(
+                session.root_path
+            ).exists():
+                self._cam3d_store.save(session.root_path, cam3d_config)
             self._manifest_store.save(session.root_path, manifest)
         session.manifest = manifest
         session.persisted_cad_view_states = dict(session.cad_view_states)
         session.cam_snapshot = persisted_cam
         session.persisted_cam_snapshot = persisted_cam
+        session.cam3d_config = cam3d_config
+        session.persisted_cam3d_config = cam3d_config
         session.is_dirty = False
         try:
             self._artifact_store.cleanup_orphans(session.root_path, persisted_cam.artifacts)
@@ -107,6 +119,7 @@ class ProjectSaver:
         session.is_dirty = (
             session.cad_view_states != session.persisted_cad_view_states
             or session.cam_snapshot != session.persisted_cam_snapshot
+            or session.cam3d_config != session.persisted_cam3d_config
         )
         return session
 
@@ -162,6 +175,12 @@ class ProjectSaver:
                 session.cam_snapshot.artifacts,
             )
             staged_cam = replace(session.cam_snapshot, artifacts=copied_artifacts)
+            source_cam3d = session.cam3d_config or Cam3DProjectConfig(
+                session.manifest.project_id
+            )
+            staged_cam3d = source_cam3d.rebind_project(manifest.project_id)
+            if not staged_cam3d.is_empty:
+                self._cam3d_store.save(staging, staged_cam3d)
             self._nc_artifact_store.copy_workspace(
                 session.root_path,
                 staging,
@@ -189,4 +208,6 @@ class ProjectSaver:
             persisted_cad_view_states=dict(session.cad_view_states),
             cam_snapshot=persisted_cam,
             persisted_cam_snapshot=persisted_cam,
+            cam3d_config=staged_cam3d,
+            persisted_cam3d_config=staged_cam3d,
         )

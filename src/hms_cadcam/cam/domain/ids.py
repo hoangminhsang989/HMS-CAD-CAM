@@ -130,6 +130,34 @@ class FixtureInstanceId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class CamSurfaceSelectionId(_CamUuidId):
+    """Identity of one persistent CAM 3D surface selection."""
+
+    PREFIX: ClassVar[str] = "cam_surface_selection"
+
+
+@dataclass(frozen=True, slots=True)
+class MachiningZone3DId(_CamUuidId):
+    """Identity of one CAM 3D machining zone."""
+
+    PREFIX: ClassVar[str] = "machining_zone_3d"
+
+
+@dataclass(frozen=True, slots=True)
+class Cam3DGeometrySnapshotId(_CamUuidId):
+    """Identity of one immutable CAM 3D geometry snapshot."""
+
+    PREFIX: ClassVar[str] = "cam3d_geometry_snapshot"
+
+
+@dataclass(frozen=True, slots=True)
+class Cam3DCalculationContextId(_CamUuidId):
+    """Identity of one CAM 3D calculation context."""
+
+    PREFIX: ClassVar[str] = "cam3d_calculation_context"
+
+
+@dataclass(frozen=True, slots=True)
 class ToolpathArtifactId(_CamUuidId):
     """Identity of one future toolpath artifact."""
 
@@ -246,6 +274,10 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     MachineDefinitionId,
     GeometryReferenceId,
     FixtureInstanceId,
+    CamSurfaceSelectionId,
+    MachiningZone3DId,
+    Cam3DGeometrySnapshotId,
+    Cam3DCalculationContextId,
     ToolpathArtifactId,
     ToolpathEventId,
     SimulationRequestId,

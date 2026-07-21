@@ -12,6 +12,7 @@ from hms_cadcam.project.models import ProjectManifest, ProjectSession
 from hms_cadcam.project.validator import ProjectValidator
 from hms_cadcam.cam.application import reconcile_artifacts
 from hms_cadcam.cam.persistence import CamSqliteRepository, ToolpathArtifactStore
+from hms_cadcam.cam.cam3d.persistence import Cam3DProjectStore
 
 
 class ProjectLoader:
@@ -25,6 +26,7 @@ class ProjectLoader:
         cad_state_store: CadViewStateStore,
         cam_repository: CamSqliteRepository | None = None,
         artifact_store: ToolpathArtifactStore | None = None,
+        cam3d_store: Cam3DProjectStore | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -32,6 +34,7 @@ class ProjectLoader:
         self._cad_state_store = cad_state_store
         self._cam_repository = cam_repository or CamSqliteRepository()
         self._artifact_store = artifact_store or ToolpathArtifactStore()
+        self._cam3d_store = cam3d_store or Cam3DProjectStore()
 
     def read_manifest(self, project_root: Path) -> ProjectManifest:
         """Validate project identity without opening or migrating SQLite."""
@@ -55,6 +58,7 @@ class ProjectLoader:
             self._cam_repository.load(database_path),
             self._artifact_store,
         )
+        cam3d_config = self._cam3d_store.load(project_root, manifest.project_id)
         return ProjectSession(
             root_path=project_root,
             manifest=manifest,
@@ -63,4 +67,6 @@ class ProjectLoader:
             persisted_cad_view_states=dict(states),
             cam_snapshot=cam_snapshot,
             persisted_cam_snapshot=cam_snapshot,
+            cam3d_config=cam3d_config,
+            persisted_cam3d_config=cam3d_config,
         )

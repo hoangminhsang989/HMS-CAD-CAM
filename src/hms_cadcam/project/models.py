@@ -11,6 +11,7 @@ from uuid import UUID
 
 from hms_cadcam.project.cad_state import CadViewState
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot
+from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
 
 
 class UnitSystem(StrEnum):
@@ -175,3 +176,5 @@ class ProjectSession:
     persisted_cad_view_states: dict[UUID, CadViewState] = field(default_factory=dict)
     cam_snapshot: CamProjectSnapshot = field(default_factory=CamProjectSnapshot)
     persisted_cam_snapshot: CamProjectSnapshot = field(default_factory=CamProjectSnapshot)
+    cam3d_config: Cam3DProjectConfig | None = None
+    persisted_cam3d_config: Cam3DProjectConfig | None = None

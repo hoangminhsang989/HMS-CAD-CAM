@@ -30,6 +30,7 @@ from hms_cadcam.project.models import (
     utc_now,
 )
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
 
 
 class ProjectCreator:
@@ -95,4 +96,11 @@ class ProjectCreator:
             self._validator.validate_references(staging, manifest)
             self._database.validate(staging / DATABASE_FILENAME)
             publish_directory(staging, target, overwrite=overwrite)
-        return ProjectSession(root_path=target, manifest=manifest, is_dirty=False)
+        cam3d_config = Cam3DProjectConfig(manifest.project_id)
+        return ProjectSession(
+            root_path=target,
+            manifest=manifest,
+            is_dirty=False,
+            cam3d_config=cam3d_config,
+            persisted_cam3d_config=cam3d_config,
+        )
