@@ -32,7 +32,7 @@ class RibbonWidget(QTabWidget):
         self.setObjectName("RibbonTabs")
         self.setDocumentMode(True)
         self.setIconSize(QSize(24, 24))
-        self.setFixedHeight(132)
+        self.setFixedHeight(112)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._build_tabs()
 

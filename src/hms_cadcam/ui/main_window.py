@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent, QColor
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QResizeEvent
 from PySide6.QtWidgets import (
     QDockWidget,
     QColorDialog,
@@ -69,6 +69,33 @@ from hms_cadcam.ui.cam_geometry_adapter import (
 from hms_cadcam.ui.project_controller import ProjectUiController
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
+from hms_cadcam.ui.ui_tokens import (
+    DIAGNOSTICS_DEFAULT_HEIGHT,
+    DIAGNOSTICS_MAX_HEIGHT,
+    FUNCTION_EDITOR_DEFAULT_WIDTH,
+    FUNCTION_EDITOR_MAX_WIDTH,
+    FUNCTION_EDITOR_MIN_WIDTH,
+    OPERATION_MANAGER_DEFAULT_WIDTH,
+    OPERATION_MANAGER_MAX_WIDTH,
+    OPERATION_MANAGER_MIN_WIDTH,
+    SECONDARY_PANEL_MAX_WIDTH,
+    SECONDARY_PANEL_MIN_WIDTH,
+    WORKSPACE_STYLE,
+)
+from hms_cadcam.ui.workspace_layout import (
+    WorkspaceLayoutStore,
+    clamp_window_to_available_screens,
+)
+from hms_cadcam.ui.workspace_panels import (
+    DiagnosticsHost,
+    FunctionEditorHost,
+    OperationManagerHost,
+    SecondaryPanelHost,
+)
+from hms_cadcam.ui.workspace_shell import (
+    WorkspaceBar,
+    WorkspaceId,
+)
 from hms_cadcam.ui.simulation_geometry_adapter import ActiveOcpFixtureResolver
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
@@ -96,6 +123,8 @@ class MainWindow(QMainWindow):
         project_service: ProjectService,
         cad_kernel: CadKernel,
         viewport_backend: CadViewportBackend,
+        *,
+        layout_store: WorkspaceLayoutStore | None = None,
     ) -> None:
         super().__init__()
         self.setObjectName("HmsMainWindow")
@@ -103,9 +132,13 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         self.setMinimumSize(1024, 680)
         self.setDockNestingEnabled(True)
-        self.setStyleSheet(APP_STYLE)
+        self.setStyleSheet(APP_STYLE + WORKSPACE_STYLE)
         self._cad_kernel = cad_kernel
         self._project_service = project_service
+        self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
+            project_service.config_dir
+        )
+        self._responsive_collapsed_operation_manager = False
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self.project_controller = ProjectUiController(self, project_service)
@@ -126,6 +159,10 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_quick_access_toolbar()
         self._build_cad_toolbar()
+        self.workspace_bar = WorkspaceBar(self)
+        self.workspace_bar.workspace_changed.connect(self._workspace_changed)
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.workspace_bar)
         self._ribbon = RibbonWidget(
             self.project_controller.actions,
             self.cad_controller.actions,
@@ -160,21 +197,99 @@ class MainWindow(QMainWindow):
             simulation_scene_builder=self._build_simulation_scene,
         )
         self.cam_workspace.message.connect(self._append_output)
-        self.cam_dock = QDockWidget("CAM Workspace", self)
-        self.cam_dock.setObjectName("CamWorkspaceDock")
-        self.cam_dock.setWidget(self.cam_workspace)
+        self.cam_workspace.toolbar.hide()
+
+        self.operation_manager_host = OperationManagerHost(
+            self.cam_workspace.tree,
+            self.cam_workspace.actions,
+        )
+        self.operation_manager_dock = QDockWidget("Operation Manager", self)
+        self.operation_manager_dock.setObjectName("OperationManagerDock")
+        self.operation_manager_dock.setAccessibleName("Operation Manager")
+        self.operation_manager_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.operation_manager_dock.setMinimumWidth(OPERATION_MANAGER_MIN_WIDTH)
+        self.operation_manager_dock.setMaximumWidth(OPERATION_MANAGER_MAX_WIDTH)
+        self.operation_manager_dock.setWidget(self.operation_manager_host)
+
+        self.function_editor_host = FunctionEditorHost(
+            self.cam_workspace.editor,
+            self.cam_workspace.tree,
+            self.cam_workspace.editor.apply_draft,
+        )
+        self.function_editor_dock = QDockWidget("Function Editor", self)
+        self.function_editor_dock.setObjectName("FunctionEditorDock")
+        self.function_editor_dock.setAccessibleName("Function Editor")
+        self.function_editor_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.function_editor_dock.setMinimumWidth(FUNCTION_EDITOR_MIN_WIDTH)
+        self.function_editor_dock.setMaximumWidth(FUNCTION_EDITOR_MAX_WIDTH)
+        self.function_editor_dock.setWidget(self.function_editor_host)
+
+        self.diagnostics_host = DiagnosticsHost(self._output)
+        self.output_dock.setWindowTitle("Diagnostics & Activity")
+        self.output_dock.setAccessibleName("Diagnostics và tác vụ nền")
+        self.output_dock.setMaximumHeight(DIAGNOSTICS_MAX_HEIGHT)
+        self.output_dock.setWidget(self.diagnostics_host)
+        self.diagnostics_dock = self.output_dock
+
+        self.secondary_panel_host = SecondaryPanelHost(
+            self.cam_workspace.simulation_panel,
+            self.cam_workspace.post_tabs,
+        )
+        self.secondary_dock = QDockWidget("Simulation / Post", self)
+        self.secondary_dock.setObjectName("SecondaryWorkflowDock")
+        self.secondary_dock.setAccessibleName("Panel Simulation và Post")
+        self.secondary_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.secondary_dock.setMinimumWidth(SECONDARY_PANEL_MIN_WIDTH)
+        self.secondary_dock.setMaximumWidth(SECONDARY_PANEL_MAX_WIDTH)
+        self.secondary_dock.setWidget(self.secondary_panel_host)
+
+        # Compatibility alias for existing callers; the CAM coordinator remains
+        # available as ``cam_workspace`` while its tree is hosted in this dock.
+        self.cam_dock = self.operation_manager_dock
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.project_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.operation_manager_dock
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.function_editor_dock
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.cam_dock)
-        self.tabifyDockWidget(self.project_dock, self.cam_dock)
-        self.project_dock.raise_()
+        self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
+        self.tabifyDockWidget(self.properties_dock, self.function_editor_dock)
+        self.tabifyDockWidget(self.function_editor_dock, self.secondary_dock)
+        self.operation_manager_dock.raise_()
+        self.function_editor_dock.raise_()
+        self.project_dock.hide()
+        self.properties_dock.hide()
+        self.secondary_dock.hide()
         self.resizeDocks(
-            [self.project_dock, self.properties_dock],
-            [310, 280],
+            [self.operation_manager_dock, self.function_editor_dock],
+            [OPERATION_MANAGER_DEFAULT_WIDTH, FUNCTION_EDITOR_DEFAULT_WIDTH],
             Qt.Orientation.Horizontal,
         )
-        self.resizeDocks([self.output_dock], [145], Qt.Orientation.Vertical)
+        self.resizeDocks(
+            [self.output_dock], [DIAGNOSTICS_DEFAULT_HEIGHT], Qt.Orientation.Vertical
+        )
+        self.operation_manager_host.collapse_requested.connect(
+            self.operation_manager_dock.hide
+        )
+        self.function_editor_host.collapse_requested.connect(
+            self.function_editor_dock.hide
+        )
+        self.diagnostics_host.collapse_requested.connect(self.output_dock.hide)
+        self.secondary_panel_host.collapse_requested.connect(self.secondary_dock.hide)
+        self._build_panel_visibility_actions()
         self._build_status_bar()
         self.project_controller.project_changed.connect(self._handle_project_change)
         self.project_controller.message.connect(self._append_output)
@@ -201,6 +316,7 @@ class MainWindow(QMainWindow):
             self._update_measurements
         )
         self._handle_project_change(self.project_controller.service.current_project)
+        self._restore_workspace_layout()
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
             reason = viewport_status.error or "Không xác định"
@@ -225,8 +341,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.project_controller.actions["save_as"])
         file_menu.addAction(self.project_controller.actions["close"])
         file_menu.addSeparator()
-        for title in ("Chỉnh sửa", "Hiển thị"):
-            menu_bar.addMenu(title)
+        menu_bar.addMenu("Chỉnh sửa")
+        self._view_menu = menu_bar.addMenu("Hiển thị")
         cad_viewer_menu = menu_bar.addMenu("CAD")
         cam_menu = menu_bar.addMenu("CAM")
         cam_workspace_action = QAction("Mở CAM Workspace", self)
@@ -283,11 +399,173 @@ class MainWindow(QMainWindow):
             action.setEnabled(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
+    def _build_panel_visibility_actions(self) -> None:
+        """Expose every closable panel through one recoverable View menu."""
+        self.panel_actions: dict[str, QAction] = {}
+        definitions = (
+            (
+                "operation_manager",
+                "Operation Manager",
+                self.operation_manager_dock,
+                "Bật hoặc tắt Operation Manager",
+            ),
+            (
+                "function_editor",
+                "Function Editor",
+                self.function_editor_dock,
+                "Bật hoặc tắt Function Editor",
+            ),
+            (
+                "diagnostics",
+                "Diagnostics & Activity",
+                self.output_dock,
+                "Bật hoặc tắt Diagnostics và nhật ký tác vụ",
+            ),
+            (
+                "secondary",
+                "Simulation / Post",
+                self.secondary_dock,
+                "Bật hoặc tắt panel quy trình phụ",
+            ),
+            (
+                "project_topology",
+                "Project / Topology",
+                self.project_dock,
+                "Bật hoặc tắt cây Project và Topology CAD",
+            ),
+            (
+                "cad_properties",
+                "Thuộc tính CAD",
+                self.properties_dock,
+                "Bật hoặc tắt bảng thuộc tính CAD",
+            ),
+        )
+        for key, text, dock, tooltip in definitions:
+            action = dock.toggleViewAction()
+            action.setText(text)
+            action.setObjectName(f"View{key.title().replace('_', '')}Action")
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            self._view_menu.addAction(action)
+            self.panel_actions[key] = action
+        self._view_menu.addSeparator()
+        self.reset_workspace_action = QAction("Reset Workspace Layout", self)
+        self.reset_workspace_action.setObjectName("ResetWorkspaceLayoutAction")
+        self.reset_workspace_action.setToolTip(
+            "Khôi phục bố cục UI mặc định; không thay đổi dữ liệu dự án"
+        )
+        self.reset_workspace_action.setStatusTip(
+            "Chỉ reset vị trí và trạng thái panel của giao diện"
+        )
+        self.reset_workspace_action.triggered.connect(self.reset_workspace_layout)
+        self._view_menu.addAction(self.reset_workspace_action)
+
     def _show_cam_workspace(self) -> None:
-        """Switch the left manager to CAM without replacing the CAD viewport."""
-        if hasattr(self, "cam_dock"):
-            self.cam_dock.show()
-            self.cam_dock.raise_()
+        """Switch to MILL 2D without replacing the CAD/OCP viewport."""
+        self.workspace_bar.set_active_workspace(WorkspaceId.MILL_2D)
+        self.operation_manager_dock.show()
+        self.operation_manager_dock.raise_()
+        self.function_editor_dock.show()
+        self.function_editor_dock.raise_()
+
+    def _workspace_changed(self, workspace_value: str) -> None:
+        """Update shell presentation only; never calculate, post or export."""
+        workspace = self.workspace_bar.set_active_workspace(workspace_value)
+        if workspace is WorkspaceId.MILL_2D:
+            self.operation_manager_dock.show()
+            self.operation_manager_dock.raise_()
+            self.function_editor_dock.show()
+            self.function_editor_dock.raise_()
+        elif workspace is WorkspaceId.CAD:
+            self.project_dock.show()
+            self.project_dock.raise_()
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+        elif workspace is WorkspaceId.SIMULATION:
+            self.secondary_panel_host.select_simulation()
+            self.secondary_dock.show()
+            self.secondary_dock.raise_()
+        elif workspace is WorkspaceId.POST:
+            self.secondary_panel_host.select_post()
+            self.secondary_dock.show()
+            self.secondary_dock.raise_()
+
+    def reset_workspace_layout(self) -> None:
+        """Reset only window/dock presentation and leave project state untouched."""
+        self._layout_store.reset()
+        self._apply_default_workspace_layout()
+        self.resize(1500, 900)
+        clamp_window_to_available_screens(self)
+
+    def _apply_default_workspace_layout(self) -> None:
+        docks = (
+            self.project_dock,
+            self.operation_manager_dock,
+            self.properties_dock,
+            self.function_editor_dock,
+            self.secondary_dock,
+            self.output_dock,
+        )
+        for dock in docks:
+            if dock.isFloating():
+                dock.setFloating(False)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.project_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.operation_manager_dock
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.function_editor_dock
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
+        self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
+        self.tabifyDockWidget(self.properties_dock, self.function_editor_dock)
+        self.tabifyDockWidget(self.function_editor_dock, self.secondary_dock)
+        self.project_dock.hide()
+        self.properties_dock.hide()
+        self.secondary_dock.hide()
+        self.operation_manager_dock.show()
+        self.operation_manager_dock.raise_()
+        self.function_editor_dock.show()
+        self.function_editor_dock.raise_()
+        self.output_dock.show()
+        self.resizeDocks(
+            [self.operation_manager_dock, self.function_editor_dock],
+            [OPERATION_MANAGER_DEFAULT_WIDTH, FUNCTION_EDITOR_DEFAULT_WIDTH],
+            Qt.Orientation.Horizontal,
+        )
+        self.resizeDocks(
+            [self.output_dock],
+            [DIAGNOSTICS_DEFAULT_HEIGHT],
+            Qt.Orientation.Vertical,
+        )
+        self.workspace_bar.set_active_workspace(WorkspaceId.HOME)
+        self._responsive_collapsed_operation_manager = False
+
+    def _restore_workspace_layout(self) -> None:
+        snapshot = self._layout_store.restore(self)
+        if snapshot is None:
+            self._apply_default_workspace_layout()
+        else:
+            self.resizeDocks(
+                [self.operation_manager_dock, self.function_editor_dock],
+                [snapshot.operation_manager_width, snapshot.function_editor_width],
+                Qt.Orientation.Horizontal,
+            )
+            self.resizeDocks(
+                [self.output_dock],
+                [snapshot.diagnostics_height],
+                Qt.Orientation.Vertical,
+            )
+            workspace = self.workspace_bar.set_active_workspace(
+                snapshot.active_workspace
+            )
+            if workspace is WorkspaceId.SIMULATION:
+                self.secondary_panel_host.select_simulation()
+            elif workspace is WorkspaceId.POST:
+                self.secondary_panel_host.select_post()
+        clamp_window_to_available_screens(self)
 
     def _current_geometry_reference(self):
         """Convert exactly one current viewer selection through the safe adapter."""
@@ -1128,13 +1406,47 @@ class MainWindow(QMainWindow):
 
     def _update_import_status(self, status: str) -> None:
         self._import_status.setText(f"CAD: {status}")
+        severity = "error" if "lỗi" in status.casefold() else "info"
+        if hasattr(self, "diagnostics_host"):
+            self.diagnostics_host.set_activity(f"CAD: {status}", severity=severity)
 
     def _append_output(self, text: str) -> None:
         self._output.appendPlainText(text)
+        if hasattr(self, "diagnostics_host"):
+            folded = text.casefold()
+            if "lỗi" in folded or "failed" in folded:
+                self.diagnostics_host.set_activity(text, severity="error")
+            elif "cảnh báo" in folded or "warning" in folded:
+                self.diagnostics_host.set_activity(text, severity="warning")
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API name
+        """Keep the viewport usable at the compact 1024-1279 px breakpoint."""
+        super().resizeEvent(event)
+        if not hasattr(self, "operation_manager_dock"):
+            return
+        width = event.size().width()
+        if (
+            width < 1200
+            and self.operation_manager_dock.isVisible()
+            and self.function_editor_dock.isVisible()
+        ):
+            self.operation_manager_dock.hide()
+            self._responsive_collapsed_operation_manager = True
+        elif width >= 1280 and self._responsive_collapsed_operation_manager:
+            self.operation_manager_dock.show()
+            self.operation_manager_dock.raise_()
+            self._responsive_collapsed_operation_manager = False
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Prevent closing during I/O and protect unsaved project state."""
         if self.project_controller.request_application_close():
+            self._layout_store.save(
+                self,
+                active_workspace=self.workspace_bar.active_workspace.value,
+                operation_manager=self.operation_manager_dock,
+                function_editor=self.function_editor_dock,
+                diagnostics=self.output_dock,
+            )
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()

@@ -50,7 +50,7 @@ QToolButton#RibbonButton {
     min-width: 46px;
 }
 QToolButton#RibbonButton:hover { background: #e7f0fa; border-color: #b7d0e8; }
-QToolButton#RibbonButton:disabled { color: #9ca6b1; }
+QToolButton#RibbonButton:disabled { color: #647280; }
 QDockWidget { font-weight: 600; color: #27313c; }
 QDockWidget::title {
     background: #eef1f4;

@@ -36,6 +36,11 @@ class RecentProjectsService:
         self._path = config_dir / "recent_projects.json"
         self._limit = limit
 
+    @property
+    def config_dir(self) -> Path:
+        """Return the user-runtime configuration directory."""
+        return self._config_dir
+
     def list(self) -> tuple[RecentProjectEntry, ...]:
         """Return valid recent entries; malformed config is treated as empty."""
         if not self._path.exists():

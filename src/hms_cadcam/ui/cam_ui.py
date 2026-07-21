@@ -178,17 +178,18 @@ class CamWorkspace(QWidget):
         self.post_tabs.setObjectName("CamPostTabs")
         self.post_tabs.addTab(self.post_panel, "Post Processor")
         self.post_tabs.addTab(self.program_assembly_panel, "Program Assembly")
-        splitter = QSplitter()
-        splitter.addWidget(self.tree)
-        splitter.addWidget(self.editor)
-        splitter.addWidget(self.simulation_panel)
-        splitter.addWidget(self.post_tabs)
-        splitter.setSizes([280, 320, 360, 460])
+        self.splitter = QSplitter()
+        self.splitter.setObjectName("ClassicCamWorkspaceSplitter")
+        self.splitter.addWidget(self.tree)
+        self.splitter.addWidget(self.editor)
+        self.splitter.addWidget(self.simulation_panel)
+        self.splitter.addWidget(self.post_tabs)
+        self.splitter.setSizes([280, 320, 360, 460])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.toolbar = QToolBar("Lệnh CAM")
         layout.addWidget(self.toolbar)
-        layout.addWidget(splitter)
+        layout.addWidget(self.splitter)
         self.actions = self._actions()
         self.editor.draft_changed.connect(self._update_generate_action)
         self.simulation_panel.run_requested.connect(self._run_simulation)
@@ -3205,7 +3206,7 @@ class _CamPropertiesEditor(QWidget):
         self.status = QLabel("—")
         self.toolpath_metadata = QLabel("—")
         self.toolpath_metadata.setWordWrap(True)
-        self.error = QLabel(); self.error.setStyleSheet("color: #d9534f")
+        self.error = QLabel(); self.error.setStyleSheet("color: #9b241b")
         form = QFormLayout(self)
         for label, key in (("Tên", "name"), ("Work offset", "offset"), ("WCS X", "x"), ("WCS Y", "y"), ("WCS Z", "z")):
             form.addRow(label, self._fields[key])
@@ -3300,7 +3301,11 @@ class _CamPropertiesEditor(QWidget):
         form.addRow("BORING_BAR current", self.boring_tool_details)
         form.addRow("Trạng thái", self.status); form.addRow("Toolpath", self.toolpath_metadata)
         form.addRow("", self.enabled); form.addRow("Lỗi", self.error)
-        button = QPushButton("Áp dụng"); button.clicked.connect(self._submit); form.addRow(button)
+        self.apply_button = QPushButton("Áp dụng")
+        self.apply_button.setObjectName("ClassicCamApplyButton")
+        self.apply_button.setAccessibleName("Áp dụng bản nháp CAM")
+        self.apply_button.clicked.connect(self._submit)
+        form.addRow(self.apply_button)
         for field in self._facing_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for field in self._contour_fields.values():
@@ -3567,6 +3572,10 @@ class _CamPropertiesEditor(QWidget):
             self._update_boring_tool_details()
 
     def set_error(self, text: str) -> None: self.error.setText(text)
+
+    def apply_draft(self) -> None:
+        """Apply the current draft through the existing validated commit path."""
+        self._submit()
 
     def show_toolpath_metadata(self, value: ToolpathPresentation) -> None:
         """Show native-free artifact metadata; never expose runtime or NC data."""

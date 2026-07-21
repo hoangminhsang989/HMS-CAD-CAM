@@ -167,6 +167,11 @@ class ProjectService:
         )
 
     @property
+    def config_dir(self) -> Path:
+        """Return the user-only runtime configuration directory."""
+        return self._recent_projects.config_dir
+
+    @property
     def current_project(self) -> ProjectSession | None:
         """Return the current session without exposing persistence adapters."""
         return self._current_project
