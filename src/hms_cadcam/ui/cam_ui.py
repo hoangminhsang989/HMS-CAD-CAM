@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import logging
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Callable
 from uuid import UUID
@@ -54,6 +55,8 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
     BoringGenerationError,
     BoringGenerator,
+    FacingGenerationError,
+    FacingGenerator,
     ReamingGenerationError,
     ReamingGenerator,
     TappingGenerationError,
@@ -64,6 +67,7 @@ from hms_cadcam.cam.application import (
     basic_reaming_resources,
     basic_tapping_resources,
 )
+from hms_cadcam.cam.application.facing import resolve_planar_face_region
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.cam.simulation import (
     CollisionBackend, CollisionScene, SimulationCacheStatus,
@@ -79,6 +83,22 @@ from hms_cadcam.ui.simulation_ui import (
 )
 from hms_cadcam.ui.post_ui import PostProcessorPanel
 from hms_cadcam.ui.program_assembly_ui import ProgramAssemblyPanel
+from hms_cadcam.ui.function_editor.model import (
+    FunctionEditorDiagnostic,
+    FunctionEditorDiagnosticSeverity,
+    FunctionEditorPreviewRequest,
+    PresentationValue,
+)
+from hms_cadcam.ui.function_editor.production import FunctionEditorProductionSession
+from hms_cadcam.ui.function_editor.strategies import (
+    FacingEditorContext,
+    FacingEditorDraftContext,
+    FacingEditorVariant,
+    build_facing_schema,
+    build_planar_face_facing_schema,
+    facing_applied_values,
+    prepare_facing_update,
+)
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
@@ -164,6 +184,8 @@ class CamWorkspace(QWidget):
         ] = {}
         self._active_editor_operation_id: OperationId | None = None
         self._active_editor_strategy_key: str | None = None
+        self._production_facing_editors_enabled = True
+        self._facing_preview: tuple[str, ...] = ()
         self._generation: int | None = None
         self._guard = False
         self._selected_key: tuple[str, str] | None = None
@@ -284,6 +306,7 @@ class CamWorkspace(QWidget):
         self._toolpath_visibility.clear()
         self._active_editor_operation_id = None
         self._active_editor_strategy_key = None
+        self._facing_preview = ()
         self.editor.clear()
         if self._toolpath_clear is not None:
             self._toolpath_clear()
@@ -319,6 +342,439 @@ class CamWorkspace(QWidget):
                 return True
             iterator += 1
         return False
+
+    def selection_exists(self, selection_key: tuple[str, str]) -> bool:
+        """Return whether one stable classic-tree selection still exists."""
+        iterator = QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value()
+            if (
+                item.data(0, _KIND_ROLE) == selection_key[0]
+                and item.data(0, _ID_ROLE) == selection_key[1]
+            ):
+                return True
+            iterator += 1
+        return False
+
+    def report_function_editor_fallback(self, message: str) -> None:
+        """Expose a safe production-schema fallback without mutating CAM state."""
+        logger.error("Facing Function Editor fallback: %s", message)
+        self._error(f"Function Editor fallback: {message}")
+
+    def production_function_editor_session(
+        self,
+    ) -> FunctionEditorProductionSession | None:
+        """Resolve the selected migrated Facing variant or request legacy fallback."""
+        if not self._production_facing_editors_enabled or not self._service.has_project:
+            return None
+        item = self.tree.currentItem()
+        if item is None or item.data(0, _KIND_ROLE) != "operation":
+            return None
+        job = self._find_job(item)
+        setup = self._find_setup(item, job)
+        if job is None or setup is None or self._generation is None:
+            return None
+        node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
+        node = setup.operation_tree.get_node(node_id)
+        if node.operation_id is None:
+            return None
+        operation = setup.operation_tree.get_operation(node.operation_id)
+        if operation.strategy_key != "facing_2_5d":
+            return None
+        parameters = FacingParameters.from_operation_parameters(operation.parameters)
+        variant = (
+            FacingEditorVariant.STOCK
+            if parameters.boundary_source is FacingBoundarySource.STOCK_BOX
+            else FacingEditorVariant.PLANAR_FACE
+        )
+        geometry_reference = (
+            operation.geometry_inputs[0].reference
+            if len(operation.geometry_inputs) == 1
+            else None
+        )
+        snapshot = self._service.cam_snapshot
+        context = FacingEditorContext(
+            node.name,
+            operation,
+            setup,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            geometry_reference,
+            self._picked_reference_resolved,
+        )
+        draft = FacingEditorDraftContext(geometry_reference)
+        schema = (
+            build_facing_schema(context)
+            if variant is FacingEditorVariant.STOCK
+            else build_planar_face_facing_schema(context)
+        )
+        applied = facing_applied_values(context, variant)
+        project = self._service.current_project
+        if project is None:
+            return None
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_facing_production(
+                job.job_id, setup.setup_id, node_id, context, draft, variant, values
+            ),
+            validation_callback=lambda values: self._validate_facing_production(
+                schema, context, draft, variant, values
+            ),
+            preview_callback=lambda request: self._preview_facing_production(
+                schema, context, draft, variant, request
+            ),
+            calculate_callback=lambda values: self._calculate_facing_production(
+                context, variant, values
+            ),
+            field_action_callback=lambda action_id, values: self._facing_field_action(
+                context, draft, variant, action_id, values
+            ),
+        )
+
+    def _current_facing_operation(self, operation_id: OperationId) -> Operation | None:
+        if not self._service.has_project:
+            return None
+        for job in self._service.cam_snapshot.jobs:
+            for setup in job.setups:
+                operation = next(
+                    (
+                        item
+                        for item in setup.operation_tree.operations
+                        if item.operation_id == operation_id
+                    ),
+                    None,
+                )
+                if operation is not None:
+                    return operation
+        return None
+
+    def _facing_context_is_current(self, context: FacingEditorContext) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None:
+            return False
+        snapshot = self._service.cam_snapshot
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.enabled == context.operation.enabled
+            and snapshot.tool_assemblies == context.tool_assemblies
+            and snapshot.tool_definitions == context.tool_definitions
+            and snapshot.holder_definitions == context.holder_definitions
+            and snapshot.machine_definitions == context.machine_definitions
+        )
+
+    @staticmethod
+    def _facing_error_target(message: str, code: str) -> str | None:
+        folded = f"{code} {message}".casefold()
+        for token, field_id in (
+            ("stepover", "stepover"),
+            ("stepdown", "stepdown"),
+            ("allowance", "stock_allowance"),
+            ("overtravel", "overtravel"),
+            ("clearance", "clearance_height"),
+            ("retract", "retract_height"),
+            ("target", "target_height"),
+            ("top height", "top_height"),
+            ("top z", "top_height"),
+            ("spindle", "spindle_speed"),
+            ("plunge", "plunge_feed_rate"),
+            ("feed", "feed_rate"),
+            ("tool", "tool_assembly_id"),
+            ("dao", "tool_assembly_id"),
+            ("machine", "machine_id"),
+            ("máy", "machine_id"),
+            ("geometry", "geometry_summary"),
+            ("face", "geometry_summary"),
+            ("mặt phẳng", "geometry_summary"),
+        ):
+            if token in folded:
+                return field_id
+        return None
+
+    def _facing_diagnostic(
+        self,
+        schema,
+        code: str,
+        message: str,
+    ) -> FunctionEditorDiagnostic:
+        field_id = self._facing_error_target(message, code)
+        if field_id is not None and field_id not in {
+            field.field_id for field in schema.fields
+        }:
+            field_id = None
+        return FunctionEditorDiagnostic(
+            code=code,
+            message=message,
+            severity=FunctionEditorDiagnosticSeverity.ERROR,
+            field_id=field_id,
+            section_id=(
+                schema.section_for_field(field_id).section_id
+                if field_id is not None
+                else None
+            ),
+        )
+
+    def _validate_facing_production(
+        self,
+        schema,
+        context: FacingEditorContext,
+        draft: FacingEditorDraftContext,
+        variant: FacingEditorVariant,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        """Map unchanged domain/generator validation to production UI targets."""
+        if self._generation is None or self._generation != self._service.cam_generation:
+            return (
+                self._facing_diagnostic(
+                    schema,
+                    "facing.stale_editor",
+                    "Function Editor thuộc project generation cũ.",
+                ),
+            )
+        if not self._facing_context_is_current(context):
+            return (
+                self._facing_diagnostic(
+                    schema,
+                    "facing.stale_editor",
+                    "Operation hoặc resource đã thay đổi; hãy mở lại editor.",
+                ),
+            )
+        try:
+            update = prepare_facing_update(context, draft, variant, values)
+            resolved = None
+            if variant is FacingEditorVariant.PLANAR_FACE:
+                if update.geometry_reference is None or self._face_resolver is None:
+                    raise FacingGenerationError(
+                        DiagnosticCode.FACING_FACE_REFERENCE_MISSING,
+                        "Planar Face Facing thiếu geometry resolver hoặc FACE reference.",
+                    )
+                resolved = self._face_resolver(update.geometry_reference)
+            FacingGenerator().resolve_inputs(
+                replace(update.operation, enabled=True),
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_face=resolved,
+            )
+            return ()
+        except FacingGenerationError as error:
+            return (
+                self._facing_diagnostic(
+                    schema, error.code.value, str(error)
+                ),
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            return (
+                self._facing_diagnostic(
+                    schema, "facing.invalid_parameters", str(error)
+                ),
+            )
+
+    def _apply_facing_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: FacingEditorContext,
+        draft: FacingEditorDraftContext,
+        variant: FacingEditorVariant,
+        values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Commit one validated Facing draft through the existing atomic service."""
+        schema = (
+            build_facing_schema(context)
+            if variant is FacingEditorVariant.STOCK
+            else build_planar_face_facing_schema(context)
+        )
+        diagnostics = self._validate_facing_production(
+            schema, context, draft, variant, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_facing_update(context, draft, variant, values)
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn active.")
+        self._service.execute_cam_command(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.rename_node(
+                    node_id, update.operation_name
+                ).replace_operation(update.operation),
+            ),
+            expected_generation=self._generation,
+        )
+        if self._selected_key == ("operation", str(node_id)):
+            item = self.tree.currentItem()
+            self._guard = True
+            try:
+                if item is not None:
+                    item.setText(0, update.operation_name)
+                    item.setText(1, update.operation.artifact_state.status.value.upper())
+            finally:
+                self._guard = False
+            snapshot = self._service.cam_snapshot
+            self.editor.show_node(
+                update.operation_name,
+                update.operation,
+                snapshot.tool_assemblies,
+                snapshot.machine_definitions,
+                snapshot.tool_definitions,
+                snapshot.holder_definitions,
+            )
+            self._picked_reference = update.geometry_reference
+            self._picked_reference_resolved = (
+                variant is FacingEditorVariant.STOCK
+                or update.geometry_reference is not None
+            )
+            if variant is FacingEditorVariant.PLANAR_FACE:
+                self.editor.show_reference(
+                    update.geometry_reference,
+                    self._picked_reference_resolved,
+                    subject="face",
+                )
+        self.message.emit("Đã Apply Facing; chưa tự Calculate toolpath.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    def _facing_field_action(
+        self,
+        context: FacingEditorContext,
+        draft: FacingEditorDraftContext,
+        variant: FacingEditorVariant,
+        action_id: str,
+        _values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        """Bind one persistent FACE to the draft without mutating the operation."""
+        if action_id != "select_geometry" or variant is not FacingEditorVariant.PLANAR_FACE:
+            raise ValueError(f"Field action không hỗ trợ: {action_id}")
+        if self._pick_provider is None or self._face_resolver is None:
+            raise RuntimeError("Geometry selection workflow chưa sẵn sàng.")
+        generation = self._generation
+        reference = self._pick_provider()
+        if not isinstance(reference, GeometryReference) or reference.kind is not GeometryReferenceKind.FACE:
+            raise ValueError("Planar Face Facing yêu cầu đúng một persistent FACE.")
+        if generation is None or generation != self._service.cam_generation:
+            raise RuntimeError("Geometry selection callback đã stale sau project switch.")
+        resolved = self._face_resolver(reference)
+        if (
+            resolved.status is not GeometryResolutionStatus.RESOLVED
+            or resolved.planar_face is None
+        ):
+            raise ValueError(
+                resolved.message or "Planar FACE đã chọn không resolve được an toàn."
+            )
+        region = resolve_planar_face_region(resolved.planar_face, context.setup)
+        draft.geometry_reference = reference
+        current_id = (
+            context.geometry_reference.reference_id
+            if context.geometry_reference is not None
+            else None
+        )
+        if reference.reference_id != current_id:
+            draft.pending_input_id = GeometryInputId.new()
+        self._picked_reference = reference
+        self._picked_reference_resolved = True
+        self.editor.show_reference(reference, True, subject="face")
+        return {
+            "geometry_summary": f"{reference.hint or 'Planar FACE'} · RESOLVED",
+            "geometry_reference_id": str(reference.reference_id),
+            "target_height": str(region.boundary[0].z),
+        }
+
+    def _preview_facing_production(
+        self,
+        schema,
+        context: FacingEditorContext,
+        draft: FacingEditorDraftContext,
+        variant: FacingEditorVariant,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        """Validate and expose a stale-safe draft overlay summary only."""
+        if (
+            request.operation_key != str(context.operation.operation_id)
+            or request.generation != self._generation
+        ):
+            raise RuntimeError("Preview request đã stale.")
+        values = dict(request.values)
+        diagnostics = self._validate_facing_production(
+            schema, context, draft, variant, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        parameters = prepare_facing_update(
+            context, draft, variant, values
+        ).parameters
+        boundary = "Stock BOX" if variant is FacingEditorVariant.STOCK else "Planar FACE"
+        self._facing_preview = (
+            boundary,
+            parameters.direction.value,
+            str(parameters.top_height.value),
+            str(parameters.target_height.value),
+            str(parameters.clearance_height.value),
+            str(parameters.retract_height.value),
+        )
+        return (
+            f"Preview CURRENT · {boundary} · {parameters.direction.value} · "
+            f"Top/Target {parameters.top_height.value:g}/{parameters.target_height.value:g} "
+            f"{parameters.unit.value} · Safe {parameters.clearance_height.value:g}/"
+            f"{parameters.retract_height.value:g}"
+        )
+
+    def _calculate_facing_production(
+        self,
+        context: FacingEditorContext,
+        variant: FacingEditorVariant,
+        _values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Calculate only the current applied operation; never consume draft values."""
+        if self._generation is None or not self._facing_context_is_current(context):
+            raise RuntimeError("Applied Facing state đã stale; hãy mở lại editor.")
+        result = self._service.compute_facing(
+            context.operation.operation_id,
+            expected_generation=self._generation,
+            face_resolver=(
+                self._face_resolver
+                if variant is FacingEditorVariant.PLANAR_FACE
+                else None
+            ),
+        )
+        if not result.accepted or result.artifact is None:
+            message = (
+                result.diagnostics[0].message
+                if result.diagnostics
+                else "Facing Calculate thất bại."
+            )
+            raise RuntimeError(message)
+        selected = self._selected_operation()
+        if (
+            selected is not None
+            and selected.operation_id == context.operation.operation_id
+            and self._toolpath_display is not None
+        ):
+            displayed = self._toolpath_display(result.artifact)
+            if displayed is not False:
+                self.editor.show_toolpath_metadata(
+                    ToolpathPresentation.from_artifact(result.artifact)
+                )
+                self._displayed_operation_id = context.operation.operation_id
+                self._toolpath_visibility[context.operation.operation_id] = True
+        self.message.emit("Facing đã Calculate và publish artifact hợp lệ.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
 
     def clear_selection(self) -> None:
         """Clear transient CAM selection without mutating project or CAD data."""

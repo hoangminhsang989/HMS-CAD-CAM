@@ -13,11 +13,13 @@ from hms_cadcam.ui.function_editor.model import (
     FunctionEditorFieldKind,
     FunctionEditorFooter,
     FunctionEditorPreviewRequest,
+    FunctionEditorResetBehavior,
     FunctionEditorSection,
     FunctionEditorStrategyKey,
     FunctionEditorSummary,
     FunctionEditorValidationKind,
     FunctionEditorValidationRule,
+    FunctionEditorValueConversion,
     FunctionEditorValueSource,
     ParameterDisclosureLevel,
 )
@@ -26,6 +28,7 @@ from hms_cadcam.ui.function_editor.schema import (
     FunctionEditorRegistry,
     FunctionEditorSchema,
 )
+from hms_cadcam.ui.function_editor.production import FunctionEditorProductionSession
 from hms_cadcam.ui.function_editor.sections import FunctionEditorSectionWidget
 from hms_cadcam.ui.function_editor.fields import FunctionEditorFieldWidget
 from hms_cadcam.ui.function_editor.state import (
@@ -59,6 +62,8 @@ __all__ = [
     "FunctionEditorHost",
     "FunctionEditorPage",
     "FunctionEditorPreviewRequest",
+    "FunctionEditorProductionSession",
+    "FunctionEditorResetBehavior",
     "FunctionEditorRegistry",
     "FunctionEditorSchema",
     "FunctionEditorSection",
@@ -70,6 +75,7 @@ __all__ = [
     "FunctionEditorUserState",
     "FunctionEditorValidationKind",
     "FunctionEditorValidationRule",
+    "FunctionEditorValueConversion",
     "FunctionEditorValueSource",
     "LegacyFunctionEditorAdapter",
     "ParameterDisclosureLevel",

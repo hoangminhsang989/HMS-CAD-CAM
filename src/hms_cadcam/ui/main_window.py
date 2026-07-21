@@ -222,6 +222,13 @@ class MainWindow(QMainWindow):
             self.cam_workspace.tree,
             self.cam_workspace.editor.apply_draft,
             settings=self._layout_store.settings,
+            production_provider=self.cam_workspace.production_function_editor_session,
+            selection_restore=self.cam_workspace.select_identity,
+            selection_exists=self.cam_workspace.selection_exists,
+            fallback_callback=self.cam_workspace.report_function_editor_fallback,
+        )
+        self.cam_workspace.projection_changed.connect(
+            self.function_editor_host.refresh_current
         )
         self.function_editor_dock = QDockWidget("Function Editor", self)
         self.function_editor_dock.setObjectName("FunctionEditorDock")

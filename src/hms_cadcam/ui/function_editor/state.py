@@ -112,6 +112,9 @@ class FunctionEditorStateStore:
 
 
 ApplyCallback = Callable[[Mapping[str, PresentationValue]], object]
+ValidationCallback = Callable[
+    [Mapping[str, PresentationValue]], tuple[FunctionEditorDiagnostic, ...]
+]
 
 
 class FunctionEditorDraftState:
@@ -125,6 +128,7 @@ class FunctionEditorDraftState:
         project_key: str = "reference-project",
         operation_key: str = "reference-operation",
         generation: int = 0,
+        validation_callback: ValidationCallback | None = None,
     ) -> None:
         self.schema = schema
         defaults = {field.field_id: deepcopy(field.value) for field in schema.fields}
@@ -141,6 +145,8 @@ class FunctionEditorDraftState:
         self.project_key = str(project_key)
         self.operation_key = str(operation_key)
         self.generation = int(generation)
+        self._validation_callback = validation_callback
+        self._last_apply_result: object = None
 
     @staticmethod
     def _ensure_values_safe(values: Mapping[str, PresentationValue]) -> None:
@@ -179,13 +185,31 @@ class FunctionEditorDraftState:
     def is_dirty(self) -> bool:
         return self._draft != self._applied
 
+    @property
+    def last_apply_result(self) -> object:
+        """Return the last successful application callback result."""
+        return self._last_apply_result
+
     def edit(self, field_id: str, value: PresentationValue) -> None:
         """Update one draft primitive without mutating domain or applied state."""
-        self.schema.field(field_id)
-        self._ensure_values_safe({field_id: value})
-        self._draft[field_id] = deepcopy(value)
+        self.edit_many({field_id: value})
+
+    def edit_many(self, changes: Mapping[str, PresentationValue]) -> None:
+        """Atomically merge validated presentation primitives into the draft."""
+        detached = dict(changes)
+        known = {field.field_id for field in self.schema.fields}
+        unknown = set(detached).difference(known)
+        if unknown:
+            raise KeyError(f"Unknown draft fields: {sorted(unknown)}")
+        self._ensure_values_safe(detached)
+        changed_ids = set(detached)
+        candidate = deepcopy(self._draft)
+        candidate.update(
+            {field_id: deepcopy(value) for field_id, value in detached.items()}
+        )
+        self._draft = candidate
         self._diagnostics = tuple(
-            item for item in self._diagnostics if item.field_id != field_id
+            item for item in self._diagnostics if item.field_id not in changed_ids
         )
         self._status = (
             FunctionEditorDraftStatus.MODIFIED
@@ -216,6 +240,26 @@ class FunctionEditorDraftState:
         self._draft = deepcopy(self._applied)
         self._diagnostics = ()
         self._status = FunctionEditorDraftStatus.NO_CHANGES
+
+    def set_diagnostics(
+        self, diagnostics: tuple[FunctionEditorDiagnostic, ...]
+    ) -> None:
+        """Replace presentation diagnostics from a typed UI action boundary."""
+        if not isinstance(diagnostics, tuple) or any(
+            not isinstance(item, FunctionEditorDiagnostic) for item in diagnostics
+        ):
+            raise TypeError("Function Editor diagnostics are invalid")
+        self._diagnostics = diagnostics
+        self._status = (
+            FunctionEditorDraftStatus.INVALID
+            if any(
+                item.severity is FunctionEditorDiagnosticSeverity.ERROR
+                for item in diagnostics
+            )
+            else FunctionEditorDraftStatus.MODIFIED
+            if self.is_dirty
+            else FunctionEditorDraftStatus.NO_CHANGES
+        )
 
     def restore_recommended_defaults(self, section_id: str | None = None) -> None:
         """Load declared recommendations into the draft without applying them."""
@@ -307,6 +351,25 @@ class FunctionEditorDraftState:
                             section_id=section_id,
                         )
                     )
+        if not any(
+            item.severity is FunctionEditorDiagnosticSeverity.ERROR
+            for item in diagnostics
+        ) and self._validation_callback is not None:
+            try:
+                external = self._validation_callback(self.applicable_snapshot())
+                if not isinstance(external, tuple) or any(
+                    not isinstance(item, FunctionEditorDiagnostic) for item in external
+                ):
+                    raise TypeError("Production validator returned invalid diagnostics")
+                diagnostics.extend(external)
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                diagnostics.append(
+                    FunctionEditorDiagnostic(
+                        code="validation.failed",
+                        message=str(error) or "Không thể kiểm tra bản nháp.",
+                        severity=FunctionEditorDiagnosticSeverity.ERROR,
+                    )
+                )
         self._diagnostics = tuple(
             sorted(
                 diagnostics,
@@ -364,7 +427,7 @@ class FunctionEditorDraftState:
             result = callback(snapshot) if callback is not None else True
             if result is False:
                 raise RuntimeError("Application service rejected the draft")
-        except (RuntimeError, TypeError, ValueError) as error:
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._diagnostics = self._diagnostics + (
                 FunctionEditorDiagnostic(
                     code="apply.failed",
@@ -378,6 +441,7 @@ class FunctionEditorDraftState:
                 else previous_status
             )
             return False
+        self._last_apply_result = result
         for key, value in snapshot.items():
             self._applied[key] = deepcopy(value)
         self._draft = deepcopy(self._applied)
@@ -388,6 +452,8 @@ class FunctionEditorDraftState:
     @property
     def can_calculate(self) -> bool:
         """Calculate is allowed only from current, valid, applied state."""
+        if self._draft.get("enabled") is False:
+            return False
         if self.is_dirty or self._status in {
             FunctionEditorDraftStatus.INVALID,
             FunctionEditorDraftStatus.APPLYING,

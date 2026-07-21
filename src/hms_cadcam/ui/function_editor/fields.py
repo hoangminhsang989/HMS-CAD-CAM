@@ -32,6 +32,7 @@ _SOURCE_LABELS = {
     FunctionEditorValueSource.MACHINE: "Machine",
     FunctionEditorValueSource.PROFILE: "Profile",
     FunctionEditorValueSource.GEOMETRY: "Geometry",
+    FunctionEditorValueSource.PROJECT: "Project",
     FunctionEditorValueSource.DEFAULT: "HMS Default",
 }
 
@@ -42,6 +43,7 @@ class FunctionEditorFieldWidget(QWidget):
     value_changed = Signal(str, object)
     reset_requested = Signal(str)
     help_requested = Signal(str)
+    action_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -59,7 +61,7 @@ class FunctionEditorFieldWidget(QWidget):
         self.layout_grid = QGridLayout(self)
         self.layout_grid.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.layout_grid.setContentsMargins(8, 5, 8, 5)
-        self.layout_grid.setHorizontalSpacing(7)
+        self.layout_grid.setHorizontalSpacing(4)
         self.layout_grid.setVerticalSpacing(2)
 
         label_text = definition.label + (" *" if definition.required else "")
@@ -87,6 +89,19 @@ class FunctionEditorFieldWidget(QWidget):
         self.reset_button.clicked.connect(
             lambda: self.reset_requested.emit(definition.field_id)
         )
+        self.action_button = QToolButton()
+        self.action_button.setText(definition.action_label)
+        self.action_button.setObjectName("FunctionEditorFieldAction")
+        self.action_button.setAccessibleName(
+            f"{definition.action_label} {definition.label}".strip()
+        )
+        self.action_button.setToolTip(definition.tooltip or definition.action_label)
+        self.action_button.setVisible(bool(definition.action_id))
+        self.action_button.clicked.connect(
+            lambda: self.action_requested.emit(
+                definition.field_id, definition.action_id
+            )
+        )
         self.help_button = QToolButton()
         self.help_button.setText("?")
         self.help_button.setObjectName("FunctionEditorFieldHelp")
@@ -112,11 +127,12 @@ class FunctionEditorFieldWidget(QWidget):
         self.layout_grid.addWidget(self.label, 0, 0)
         self.layout_grid.addWidget(self.editor, 0, 1)
         self.layout_grid.addWidget(self.unit_label, 0, 2)
-        self.layout_grid.addWidget(self.reset_button, 0, 3)
-        self.layout_grid.addWidget(self.help_button, 0, 4)
-        self.layout_grid.addWidget(self.source_label, 1, 1, 1, 4)
-        self.layout_grid.addWidget(self.default_label, 2, 1, 1, 4)
-        self.layout_grid.addWidget(self.diagnostic_label, 3, 1, 1, 4)
+        self.layout_grid.addWidget(self.action_button, 0, 3)
+        self.layout_grid.addWidget(self.reset_button, 0, 4)
+        self.layout_grid.addWidget(self.help_button, 0, 5)
+        self.layout_grid.addWidget(self.source_label, 1, 1, 1, 5)
+        self.layout_grid.addWidget(self.default_label, 2, 1, 1, 5)
+        self.layout_grid.addWidget(self.diagnostic_label, 3, 1, 1, 5)
         self.layout_grid.setColumnStretch(1, 1)
         self.set_value(value)
 
@@ -140,8 +156,13 @@ class FunctionEditorFieldWidget(QWidget):
         elif definition.kind is FunctionEditorFieldKind.CHOICE:
             editor = QComboBox()
             editor.setObjectName(f"FunctionEditorInput_{definition.field_id}")
+            editor.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            editor.setMinimumContentsLength(8)
+            labels = dict(definition.choice_labels)
             for choice in definition.choices:
-                editor.addItem(str(choice), choice)
+                editor.addItem(labels.get(choice, str(choice)), choice)
             editor.currentIndexChanged.connect(self._emit_choice)
         elif definition.kind is FunctionEditorFieldKind.READ_ONLY:
             editor = QLabel()
@@ -245,6 +266,7 @@ class FunctionEditorFieldWidget(QWidget):
             self.editor,
             self.unit_label,
             self.reset_button,
+            self.action_button,
             self.help_button,
             self.source_label,
             self.default_label,
@@ -253,23 +275,25 @@ class FunctionEditorFieldWidget(QWidget):
         for widget in widgets:
             self.layout_grid.removeWidget(widget)
         if compact:
-            self.layout_grid.addWidget(self.label, 0, 0, 1, 5)
+            self.layout_grid.addWidget(self.label, 0, 0, 1, 6)
             self.layout_grid.addWidget(self.editor, 1, 0, 1, 2)
             self.layout_grid.addWidget(self.unit_label, 1, 2)
-            self.layout_grid.addWidget(self.reset_button, 1, 3)
-            self.layout_grid.addWidget(self.help_button, 1, 4)
-            self.layout_grid.addWidget(self.source_label, 2, 0, 1, 5)
-            self.layout_grid.addWidget(self.default_label, 3, 0, 1, 5)
-            self.layout_grid.addWidget(self.diagnostic_label, 4, 0, 1, 5)
+            self.layout_grid.addWidget(self.action_button, 1, 3)
+            self.layout_grid.addWidget(self.reset_button, 1, 4)
+            self.layout_grid.addWidget(self.help_button, 1, 5)
+            self.layout_grid.addWidget(self.source_label, 2, 0, 1, 6)
+            self.layout_grid.addWidget(self.default_label, 3, 0, 1, 6)
+            self.layout_grid.addWidget(self.diagnostic_label, 4, 0, 1, 6)
         else:
             self.layout_grid.addWidget(self.label, 0, 0)
             self.layout_grid.addWidget(self.editor, 0, 1)
             self.layout_grid.addWidget(self.unit_label, 0, 2)
-            self.layout_grid.addWidget(self.reset_button, 0, 3)
-            self.layout_grid.addWidget(self.help_button, 0, 4)
-            self.layout_grid.addWidget(self.source_label, 1, 1, 1, 4)
-            self.layout_grid.addWidget(self.default_label, 2, 1, 1, 4)
-            self.layout_grid.addWidget(self.diagnostic_label, 3, 1, 1, 4)
+            self.layout_grid.addWidget(self.action_button, 0, 3)
+            self.layout_grid.addWidget(self.reset_button, 0, 4)
+            self.layout_grid.addWidget(self.help_button, 0, 5)
+            self.layout_grid.addWidget(self.source_label, 1, 1, 1, 5)
+            self.layout_grid.addWidget(self.default_label, 2, 1, 1, 5)
+            self.layout_grid.addWidget(self.diagnostic_label, 3, 1, 1, 5)
 
     def focus_editor(self) -> None:
         """Move keyboard focus to the concrete editor control."""

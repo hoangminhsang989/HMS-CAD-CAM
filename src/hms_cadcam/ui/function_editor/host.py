@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import logging
 
 from PySide6.QtCore import QSettings, QSize, Signal
 from PySide6.QtWidgets import (
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMessageBox,
     QStackedWidget,
     QToolButton,
     QTreeWidget,
@@ -21,6 +23,7 @@ from hms_cadcam.ui.function_editor.legacy_adapter import (
     LegacyFunctionEditorAdapter,
 )
 from hms_cadcam.ui.function_editor.model import PresentationValue
+from hms_cadcam.ui.function_editor.production import FunctionEditorProductionSession
 from hms_cadcam.ui.function_editor.reference import build_contour_reference_schema
 from hms_cadcam.ui.function_editor.schema import (
     FunctionEditorRegistry,
@@ -31,6 +34,9 @@ from hms_cadcam.ui.function_editor.state import (
     FunctionEditorStateStore,
 )
 from hms_cadcam.ui.function_editor.widgets import FunctionEditorPage
+
+
+logger = logging.getLogger(__name__)
 
 
 class FunctionEditorHost(QWidget):
@@ -47,6 +53,12 @@ class FunctionEditorHost(QWidget):
         parent: QWidget | None = None,
         *,
         settings: QSettings | None = None,
+        production_provider: Callable[[], FunctionEditorProductionSession | None]
+        | None = None,
+        selection_restore: Callable[[str, str], bool] | None = None,
+        selection_exists: Callable[[tuple[str, str]], bool] | None = None,
+        switch_confirmation: Callable[[FunctionEditorDraftState], str] | None = None,
+        fallback_callback: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("FunctionEditorHost")
@@ -59,6 +71,12 @@ class FunctionEditorHost(QWidget):
         )
         self._active_page: FunctionEditorPage | None = None
         self._selection_guard = False
+        self._production_provider = production_provider
+        self._selection_restore = selection_restore
+        self._selection_exists = selection_exists
+        self._switch_confirmation = switch_confirmation
+        self._fallback_callback = fallback_callback
+        self._active_session: FunctionEditorProductionSession | None = None
 
         root = QVBoxLayout(self)
         root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
@@ -85,6 +103,8 @@ class FunctionEditorHost(QWidget):
         tree.itemSelectionChanged.connect(self._selection_changed)
         tree.model().modelReset.connect(self._selection_changed)
         self.show_legacy_editor()
+        if self._production_provider is not None:
+            self._selection_changed()
 
     def _header(self) -> QFrame:
         frame = QFrame()
@@ -118,6 +138,7 @@ class FunctionEditorHost(QWidget):
     def show_legacy_editor(self) -> None:
         """Return to the unchanged production editor and clean old callbacks."""
         self._dispose_active_page()
+        self._active_session = None
         self.legacy_adapter.selection_changed()
         self.stack.setCurrentWidget(self.legacy_adapter)
         self.mode_label.setText("LEGACY")
@@ -136,6 +157,11 @@ class FunctionEditorHost(QWidget):
         preview_callback: Callable[[object], object] | None = None,
         calculate_callback: Callable[[Mapping[str, PresentationValue]], object]
         | None = None,
+        validation_callback: Callable[[Mapping[str, PresentationValue]], tuple]
+        | None = None,
+        field_action_callback: Callable[
+            [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
+        ] | None = None,
         close_confirmation: Callable[[FunctionEditorDraftState], bool]
         | None = None,
     ) -> FunctionEditorPage:
@@ -147,6 +173,7 @@ class FunctionEditorHost(QWidget):
             project_key=project_key,
             operation_key=operation_key,
             generation=generation,
+            validation_callback=validation_callback,  # type: ignore[arg-type]
         )
         page = FunctionEditorPage(
             state,
@@ -154,6 +181,7 @@ class FunctionEditorHost(QWidget):
             apply_callback=apply_callback,
             preview_callback=preview_callback,  # type: ignore[arg-type]
             calculate_callback=calculate_callback,
+            field_action_callback=field_action_callback,
             close_confirmation=close_confirmation,
         )
         page.close_requested.connect(self._framework_close_requested)
@@ -162,6 +190,25 @@ class FunctionEditorHost(QWidget):
         self._active_page = page
         self.mode_label.setText("REFERENCE" if schema.summary.reference_only else "FRAMEWORK")
         self.editor_replaced.emit(schema.editor_id)
+        return page
+
+    def show_production_session(
+        self, session: FunctionEditorProductionSession
+    ) -> FunctionEditorPage:
+        """Open one migrated operation session over its immutable snapshot."""
+        page = self.show_schema(
+            session.schema,
+            session.applied_mapping(),
+            project_key=session.project_key,
+            operation_key=session.operation_key,
+            generation=session.generation,
+            apply_callback=session.apply_callback,
+            preview_callback=session.preview_callback,
+            calculate_callback=session.calculate_callback,
+            validation_callback=session.validation_callback,
+            field_action_callback=session.field_action_callback,
+        )
+        self._active_session = session
         return page
 
     def show_reference_editor(
@@ -183,13 +230,116 @@ class FunctionEditorHost(QWidget):
     def _selection_changed(self) -> None:
         if self._selection_guard:
             return
-        # Stage 9A.4 deliberately leaves every production strategy on legacy.
-        # A later migration can resolve a registered typed strategy here.
+        if self._production_provider is None:
+            try:
+                self.show_legacy_editor()
+            except RuntimeError:
+                return
+            return
+        try:
+            session = self._production_provider()
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_fallback(str(error) or "Không thể tải production schema.")
+            return
+        active = self._active_session
+        page = self._active_page
+        if (
+            active is not None
+            and page is not None
+            and session is not None
+            and active.selection_key == session.selection_key
+            and active.project_key == session.project_key
+        ):
+            return
+        if active is not None and page is not None and page.state.is_dirty:
+            still_exists = (
+                self._selection_exists(active.selection_key)
+                if self._selection_exists is not None
+                else True
+            )
+            if still_exists:
+                decision = self._confirm_switch(page.state)
+                if decision == "apply":
+                    if not page.apply_draft():
+                        self._restore_selection(active.selection_key)
+                        return
+                elif decision == "cancel":
+                    self._restore_selection(active.selection_key)
+                    return
+                elif decision != "discard":
+                    self._restore_selection(active.selection_key)
+                    return
+        try:
+            if session is None:
+                self.show_legacy_editor()
+            else:
+                self.show_production_session(session)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_fallback(str(error) or "Production schema không hợp lệ.")
+
+    def _confirm_switch(self, state: FunctionEditorDraftState) -> str:
+        if self._switch_confirmation is not None:
+            return self._switch_confirmation(state)
+        box = QMessageBox(self)
+        box.setWindowTitle("Bản nháp chưa Apply")
+        box.setText("Operation hiện tại có thay đổi chưa Apply.")
+        box.setInformativeText("Apply, Discard hoặc Cancel trước khi đổi operation.")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Apply
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        selected = box.exec()
+        if selected == QMessageBox.StandardButton.Apply:
+            return "apply"
+        if selected == QMessageBox.StandardButton.Discard:
+            return "discard"
+        return "cancel"
+
+    def _restore_selection(self, selection_key: tuple[str, str]) -> None:
+        if self._selection_restore is None:
+            return
+        self._selection_guard = True
+        try:
+            self._selection_restore(*selection_key)
+        finally:
+            self._selection_guard = False
+
+    def _show_fallback(self, message: str) -> None:
+        logger.error("Function Editor production fallback: %s", message)
         try:
             self.show_legacy_editor()
+            self.mode_label.setText("FALLBACK")
+            self.legacy_adapter.state_summary.setText(
+                f"Production schema lỗi · Legacy fallback · {message}"
+            )
         except RuntimeError:
-            # A model reset can arrive during QObject teardown; no UI survives it.
             return
+        if self._fallback_callback is not None:
+            self._fallback_callback(message)
+
+    def refresh_current(self) -> None:
+        """Refresh a clean migrated page after one domain status change."""
+        if self._production_provider is None:
+            return
+        if self._active_page is not None and self._active_page.state.is_dirty:
+            return
+        try:
+            session = self._production_provider()
+            active = self._active_session
+            if (
+                session is not None
+                and active is not None
+                and session.selection_key == active.selection_key
+                and session.project_key == active.project_key
+            ):
+                self.show_production_session(session)
+            else:
+                self._selection_changed()
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_fallback(str(error) or "Không thể refresh production schema.")
 
     def _dispose_active_page(self) -> None:
         page = self._active_page

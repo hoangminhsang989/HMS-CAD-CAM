@@ -54,7 +54,25 @@ class FunctionEditorValueSource(StrEnum):
     MACHINE = "machine"
     PROFILE = "profile"
     GEOMETRY = "geometry"
+    PROJECT = "project"
     DEFAULT = "default"
+
+
+class FunctionEditorValueConversion(StrEnum):
+    """Declared UI-to-binding conversion; execution stays in the presenter."""
+
+    IDENTITY = "identity"
+    TEXT = "text"
+    FLOAT = "float"
+    BOOLEAN = "boolean"
+
+
+class FunctionEditorResetBehavior(StrEnum):
+    """Stable reset policy declared by a production field schema."""
+
+    APPLIED = "applied"
+    RECOMMENDED = "recommended"
+    INHERITED = "inherited"
 
 
 class FunctionEditorDiagnosticSeverity(IntEnum):
@@ -225,6 +243,12 @@ class FunctionEditorField:
     help_text: str = ""
     help_key: str = ""
     order: int = 0
+    binding_key: str = ""
+    conversion: FunctionEditorValueConversion = FunctionEditorValueConversion.IDENTITY
+    reset_behavior: FunctionEditorResetBehavior = FunctionEditorResetBehavior.APPLIED
+    choice_labels: tuple[tuple[PresentationScalar, str], ...] = ()
+    action_id: str = ""
+    action_label: str = ""
 
     def __post_init__(self) -> None:
         require_stable_id(self.field_id, label="field ID")
@@ -234,6 +258,20 @@ class FunctionEditorField:
             raise ValueError(f"Choice field {self.field_id!r} requires choices")
         if self.help_key:
             require_stable_id(self.help_key, label="help key")
+        if self.binding_key:
+            require_stable_id(self.binding_key, label="binding key")
+        if self.action_id:
+            require_stable_id(self.action_id, label="field action ID")
+            if not self.action_label.strip():
+                raise ValueError("Field action label must not be empty")
+        elif self.action_label:
+            raise ValueError("Field action label requires an action ID")
+        if self.choice_labels:
+            if self.kind is not FunctionEditorFieldKind.CHOICE:
+                raise ValueError("Choice labels require a choice field")
+            labels = dict(self.choice_labels)
+            if len(labels) != len(self.choice_labels) or set(labels) != set(self.choices):
+                raise ValueError("Choice labels must map every choice exactly once")
 
     def is_applicable(self, values: dict[str, PresentationValue]) -> bool:
         """Return whether the field should exist in the current presentation."""

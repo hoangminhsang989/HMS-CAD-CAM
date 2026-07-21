@@ -48,6 +48,9 @@ from hms_cadcam.ui.function_editor.state import (
 PreviewCallback = Callable[[FunctionEditorPreviewRequest], object]
 CalculateCallback = Callable[[Mapping[str, PresentationValue]], object]
 CloseConfirmation = Callable[[FunctionEditorDraftState], bool]
+FieldActionCallback = Callable[
+    [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
+]
 
 _STATUS_LABELS = {
     FunctionEditorDraftStatus.NO_CHANGES: "No changes",
@@ -244,7 +247,10 @@ class FunctionEditorFooterWidget(QFrame):
         if not schema.footer.apply_supported:
             supported.discard(FunctionEditorAction.APPLY)
         self.buttons: dict[FunctionEditorAction, QPushButton] = {}
-        for action in FunctionEditorAction:
+        self._action_order = tuple(
+            action for action in schema.footer.actions if action in supported
+        )
+        for action in self._action_order:
             if action not in supported:
                 continue
             button = QPushButton(self._LABELS[action])
@@ -285,11 +291,7 @@ class FunctionEditorFooterWidget(QFrame):
     def _place_buttons(self) -> None:
         for button in self.buttons.values():
             self.layout_grid.removeWidget(button)
-        ordered = [
-            self.buttons[action]
-            for action in FunctionEditorAction
-            if action in self.buttons
-        ]
+        ordered = [self.buttons[action] for action in self._action_order]
         columns = 3 if self._compact else max(1, len(ordered))
         for index, button in enumerate(ordered):
             self.layout_grid.addWidget(button, index // columns, index % columns)
@@ -357,6 +359,7 @@ class FunctionEditorPage(QWidget):
         apply_callback: ApplyCallback | None = None,
         preview_callback: PreviewCallback | None = None,
         calculate_callback: CalculateCallback | None = None,
+        field_action_callback: FieldActionCallback | None = None,
         close_confirmation: CloseConfirmation | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -369,6 +372,7 @@ class FunctionEditorPage(QWidget):
         self._apply_callback = apply_callback
         self._preview_callback = preview_callback
         self._calculate_callback = calculate_callback
+        self._field_action_callback = field_action_callback
         self._close_confirmation = close_confirmation
         self._section_widgets: dict[str, FunctionEditorSectionWidget] = {}
         self._field_widgets: dict[str, FunctionEditorFieldWidget] = {}
@@ -387,6 +391,12 @@ class FunctionEditorPage(QWidget):
         self.summary = FunctionEditorSummaryWidget(self.schema.summary)
         self.summary.help_requested.connect(self._show_editor_help)
         root.addWidget(self.summary)
+        self.preview_status = QLabel()
+        self.preview_status.setObjectName("FunctionEditorPreviewStatus")
+        self.preview_status.setAccessibleName("Trạng thái Preview Function Editor")
+        self.preview_status.setWordWrap(True)
+        self.preview_status.setVisible(False)
+        root.addWidget(self.preview_status)
         root.addWidget(self._disclosure_bar())
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("FunctionEditorContentScroll")
@@ -520,6 +530,7 @@ class FunctionEditorPage(QWidget):
         widget.value_changed.connect(self._field_changed)
         widget.reset_requested.connect(self.reset_field)
         widget.help_requested.connect(self._show_field_help)
+        widget.action_requested.connect(self._field_action_requested)
         widget.set_compact(self._compact)
         self._field_widgets[field_id] = widget
         owner = self.schema.section_for_field(field_id)
@@ -573,6 +584,28 @@ class FunctionEditorPage(QWidget):
         self.state.edit(field_id, value)  # type: ignore[arg-type]
         self._sync_visibility()
         self._render_state()
+        self.state_changed.emit(self.state)
+
+    def _field_action_requested(self, field_id: str, action_id: str) -> None:
+        """Run a typed selection action and merge only returned primitives."""
+        if self._field_action_callback is None:
+            return
+        try:
+            changed = self._field_action_callback(action_id, self.state.values)
+            if changed is None:
+                return
+            self.state.edit_many(changed)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            definition = self.schema.field(field_id)
+            diagnostic = FunctionEditorDiagnostic(
+                code="field.action_failed",
+                message=str(error) or f"Không thể thực hiện {definition.action_label}.",
+                severity=FunctionEditorDiagnosticSeverity.ERROR,
+                field_id=field_id,
+                section_id=self.schema.section_for_field(field_id).section_id,
+            )
+            self.state.set_diagnostics((diagnostic,))
+        self._refresh_values()
         self.state_changed.emit(self.state)
 
     def _render_state(self) -> None:
@@ -656,6 +689,21 @@ class FunctionEditorPage(QWidget):
         self._refresh_values()
         self.state_changed.emit(self.state)
 
+    def apply_draft(self) -> bool:
+        """Apply through the configured callback and refresh all presentation state."""
+        accepted = self.state.apply(self._apply_callback)
+        if accepted:
+            self._refresh_values()
+        else:
+            self._render_state()
+            first = next(
+                (item for item in self.state.diagnostics if item.field_id), None
+            )
+            if first is not None and first.field_id is not None:
+                self.focus_field(first.field_id)
+        self.state_changed.emit(self.state)
+        return accepted
+
     def collapse_all(self) -> None:
         for widget in self._section_widgets.values():
             if widget.isVisible():
@@ -706,18 +754,15 @@ class FunctionEditorPage(QWidget):
                 field_widget = self._field_widgets.get(field.field_id)
                 if field_widget is None or field_widget.isHidden():
                     continue
-                controls.extend(
-                    (
-                        field_widget.editor,
-                        field_widget.reset_button,
-                        field_widget.help_button,
-                    )
-                )
+                controls.append(field_widget.editor)
+                if field_widget.action_button.isVisible():
+                    controls.append(field_widget.action_button)
+                controls.extend((field_widget.reset_button, field_widget.help_button))
         if not self.diagnostic_view.list.isHidden():
             controls.append(self.diagnostic_view.list)
         controls.extend(
             self.footer.buttons[action]
-            for action in FunctionEditorAction
+            for action in self.footer._action_order
             if action in self.footer.buttons
         )
         for previous, following in zip(controls, controls[1:], strict=False):
@@ -779,26 +824,33 @@ class FunctionEditorPage(QWidget):
         elif action is FunctionEditorAction.VALIDATE:
             self.validate_draft()
         elif action is FunctionEditorAction.APPLY:
-            if self.state.apply(self._apply_callback):
-                self._refresh_values()
-            else:
-                self._render_state()
-                first = next(
-                    (item for item in self.state.diagnostics if item.field_id), None
-                )
-                if first is not None and first.field_id is not None:
-                    self.focus_field(first.field_id)
-            self.state_changed.emit(self.state)
+            self.apply_draft()
         elif action is FunctionEditorAction.PREVIEW:
             request = self.state.preview_request()
             if self._preview_callback is not None:
-                self._preview_callback(request)
+                try:
+                    result = self._preview_callback(request)
+                    if self.state.accepts_preview(request):
+                        self.preview_status.setText(
+                            str(result) if result is not None else "Preview CURRENT"
+                        )
+                        self.preview_status.setVisible(True)
+                    else:
+                        self.preview_status.setText("Preview STALE — đã bỏ kết quả cũ")
+                        self.preview_status.setVisible(True)
+                except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                    self.preview_status.setText(f"Preview lỗi: {error}")
+                    self.preview_status.setVisible(True)
             self.preview_requested.emit(request)
         elif action is FunctionEditorAction.CALCULATE:
-            snapshot = self.state.calculation_snapshot()
-            if self._calculate_callback is not None:
-                self._calculate_callback(snapshot)
-            self.calculate_requested.emit(snapshot)
+            try:
+                snapshot = self.state.calculation_snapshot()
+                if self._calculate_callback is not None:
+                    self._calculate_callback(snapshot)
+                self.calculate_requested.emit(snapshot)
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self.preview_status.setText(f"Calculate lỗi: {error}")
+                self.preview_status.setVisible(True)
         elif action is FunctionEditorAction.CLOSE:
             self.request_close()
 
