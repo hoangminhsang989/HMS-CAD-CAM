@@ -80,7 +80,7 @@ class FunctionEditorSummaryWidget(QFrame):
         top = QHBoxLayout()
         self.title = QLabel(summary.title)
         self.title.setObjectName("FunctionEditorSummaryTitle")
-        self.title.setWordWrap(True)
+        self.title.setWordWrap(False)
         top.addWidget(self.title, 1)
         self.reference_badge = QLabel("REFERENCE DEMO")
         self.reference_badge.setObjectName("FunctionEditorReferenceBadge")
@@ -95,7 +95,7 @@ class FunctionEditorSummaryWidget(QFrame):
         root.addLayout(top)
         self.context = QLabel()
         self.context.setObjectName("FunctionEditorSummaryContext")
-        self.context.setWordWrap(True)
+        self.context.setWordWrap(False)
         root.addWidget(self.context)
         status_line = QHBoxLayout()
         self.draft_status = QLabel()
@@ -106,6 +106,8 @@ class FunctionEditorSummaryWidget(QFrame):
         self.validation.setObjectName("FunctionEditorValidationSummary")
         status_line.addWidget(self.validation)
         root.addLayout(status_line)
+        self._full_title = ""
+        self._full_context = ""
         self.update_summary(summary, FunctionEditorDraftStatus.NO_CHANGES, ())
 
     def update_summary(
@@ -115,14 +117,16 @@ class FunctionEditorSummaryWidget(QFrame):
         diagnostics: tuple[FunctionEditorDiagnostic, ...],
     ) -> None:
         """Render summary and validation through text as well as color."""
-        self.title.setText(summary.title)
+        self._full_title = summary.title
         strategy = summary.strategy or "Không có strategy"
-        self.context.setText(
-            f"{strategy} · {summary.tool} · {summary.geometry} · "
-            f"{summary.operation_status}"
+        self._full_context = (
+            f"Tool: {summary.tool} · Geometry: {summary.geometry} · {strategy}"
         )
+        self._refresh_elided_text()
         self.reference_badge.setVisible(summary.reference_only)
-        self.draft_status.setText(f"Draft: {_STATUS_LABELS[status]}")
+        self.draft_status.setText(
+            f"Toolpath: {summary.operation_status} · Draft: {_STATUS_LABELS[status]}"
+        )
         errors = sum(
             item.severity is FunctionEditorDiagnosticSeverity.ERROR
             for item in diagnostics
@@ -137,6 +141,26 @@ class FunctionEditorSummaryWidget(QFrame):
             f"{errors} lỗi, {warnings} cảnh báo"
         )
         self.setAccessibleDescription(accessible)
+
+    def _refresh_elided_text(self) -> None:
+        title_width = max(40, self.title.width())
+        context_width = max(40, self.context.width())
+        self.title.setText(
+            self.title.fontMetrics().elidedText(
+                self._full_title, Qt.TextElideMode.ElideRight, title_width
+            )
+        )
+        self.context.setText(
+            self.context.fontMetrics().elidedText(
+                self._full_context, Qt.TextElideMode.ElideRight, context_width
+            )
+        )
+        self.title.setToolTip(self._full_title)
+        self.context.setToolTip(self._full_context)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_elided_text()
 
 
 class FunctionEditorDiagnosticView(QFrame):
@@ -309,11 +333,13 @@ class FunctionEditorFooterWidget(QFrame):
         reset = self.buttons.get(FunctionEditorAction.RESET_DRAFT)
         if reset is not None:
             reset.setEnabled(state.is_dirty)
-            reset.setToolTip(
+            reason = (
                 self._tooltip(FunctionEditorAction.RESET_DRAFT)
                 if state.is_dirty
                 else "Draft đang trùng snapshot đã Apply"
             )
+            reset.setToolTip(reason)
+            reset.setAccessibleDescription(reason)
         apply = self.buttons.get(FunctionEditorAction.APPLY)
         if apply is not None:
             enabled = state.is_dirty and state.status not in {
@@ -321,26 +347,37 @@ class FunctionEditorFooterWidget(QFrame):
                 FunctionEditorDraftStatus.APPLYING,
             }
             apply.setEnabled(enabled)
-            apply.setToolTip(
+            reason = (
                 self._tooltip(FunctionEditorAction.APPLY)
                 if enabled
                 else (
                     "Không có thay đổi" if not state.is_dirty else "Sửa lỗi draft trước khi Apply"
                 )
             )
+            apply.setToolTip(reason)
+            apply.setAccessibleDescription(reason)
         calculate = self.buttons.get(FunctionEditorAction.CALCULATE)
         if calculate is not None:
             calculate.setEnabled(state.can_calculate)
-            calculate.setToolTip(
+            reason = (
                 self._tooltip(FunctionEditorAction.CALCULATE)
                 if calculate.isEnabled()
                 else (
                     "Calculate chỉ dùng applied state current và hợp lệ"
                 )
             )
+            calculate.setToolTip(reason)
+            calculate.setAccessibleDescription(reason)
         preview = self.buttons.get(FunctionEditorAction.PREVIEW)
         if preview is not None:
             preview.setEnabled(state.status is not FunctionEditorDraftStatus.INVALID)
+            reason = (
+                self._tooltip(FunctionEditorAction.PREVIEW)
+                if preview.isEnabled()
+                else "Sửa lỗi draft trước khi Preview"
+            )
+            preview.setToolTip(reason)
+            preview.setAccessibleDescription(reason)
 
 
 class FunctionEditorPage(QWidget):
@@ -377,12 +414,26 @@ class FunctionEditorPage(QWidget):
         self._section_widgets: dict[str, FunctionEditorSectionWidget] = {}
         self._field_widgets: dict[str, FunctionEditorFieldWidget] = {}
         self._compact = False
+        self._content_section_order: tuple[str, ...] | None = None
         self._user_state = (
             state_store.load(self.schema)
             if state_store is not None
             else FunctionEditorUserState()
         )
-        self.maximum_disclosure = self._user_state.disclosure_level
+        self._highest_disclosure = max(
+            (
+                level
+                for section in self.schema.sections
+                for level in (
+                    section.disclosure_level,
+                    *(field.disclosure_level for field in section.fields),
+                )
+            ),
+            default=ParameterDisclosureLevel.BASIC,
+        )
+        self.maximum_disclosure = min(
+            self._user_state.disclosure_level, self._highest_disclosure
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -464,7 +515,8 @@ class FunctionEditorPage(QWidget):
             (ParameterDisclosureLevel.ADVANCED, "Advanced"),
             (ParameterDisclosureLevel.EXPERT, "Expert"),
         ):
-            self.disclosure_selector.addItem(text, level)
+            if level <= self._highest_disclosure:
+                self.disclosure_selector.addItem(text, level)
         self.disclosure_selector.setCurrentIndex(
             self.disclosure_selector.findData(self.maximum_disclosure)
         )
@@ -534,7 +586,17 @@ class FunctionEditorPage(QWidget):
         widget.set_compact(self._compact)
         self._field_widgets[field_id] = widget
         owner = self.schema.section_for_field(field_id)
-        self._ensure_section(owner.section_id).add_field(widget)
+        section_widget = self._ensure_section(owner.section_id)
+        ordered_ids = [
+            item.field_id
+            for item in sorted(owner.fields, key=lambda item: (item.order, item.field_id))
+        ]
+        insert_at = sum(
+            1
+            for other_id in ordered_ids[: ordered_ids.index(field_id)]
+            if other_id in self._field_widgets
+        )
+        section_widget.insert_field(insert_at, widget)
         return widget
 
     def _sync_visibility(self) -> None:
@@ -567,11 +629,16 @@ class FunctionEditorPage(QWidget):
         self._update_tab_order()
 
     def _rebuild_content_order(self) -> None:
+        section_order = tuple(
+            section.section_id
+            for section in self.schema.ordered_sections
+            if section.section_id in self._section_widgets
+        )
+        if section_order == self._content_section_order:
+            return
+        self._content_section_order = section_order
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(self.content)
         for section in self.schema.ordered_sections:
             widget = self._section_widgets.get(section.section_id)
             if widget is not None:
@@ -879,7 +946,7 @@ class FunctionEditorPage(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.footer.set_compact(event.size().width() < 360)
+        self.footer.set_compact(event.size().width() < 400)
         compact = event.size().width() < 400
         if compact == self._compact:
             return

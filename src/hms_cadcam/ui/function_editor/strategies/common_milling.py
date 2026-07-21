@@ -471,6 +471,7 @@ def _number_field(
     validators: tuple[FunctionEditorValidationRule, ...] = (),
     source: FunctionEditorValueSource = FunctionEditorValueSource.USER,
     read_only: bool = False,
+    disclosure_level: ParameterDisclosureLevel = ParameterDisclosureLevel.BASIC,
     help_text: str = "",
 ) -> FunctionEditorField:
     return FunctionEditorField(
@@ -483,6 +484,7 @@ def _number_field(
         default=default,
         default_label="HMS Facing v1" if default is not None else "",
         required=True,
+        disclosure_level=disclosure_level,
         validators=validators,
         tooltip=help_text,
         help_text=help_text,
@@ -577,7 +579,7 @@ def build_facing_sections(
                 binding_key="operation.tool_assembly",
             ),
             FunctionEditorField(
-                "tool_details", "Dao và shank", FunctionEditorFieldKind.READ_ONLY,
+                "tool_details", "Tool / Shank", FunctionEditorFieldKind.READ_ONLY,
                 values["tool_details"], source=FunctionEditorValueSource.TOOL,
                 help_key="facing.tool_details", order=20,
                 binding_key="derived.tool_details",
@@ -595,7 +597,7 @@ def build_facing_sections(
         "cutting", "CUTTING",
         (
             _number_field(
-                "stepover", "Khoảng cách đường cắt", values["stepover"], unit=unit,
+                "stepover", "Stepover", values["stepover"], unit=unit,
                 binding_key="parameters.stepover", order=10,
                 default=defaults.get("stepover"),
                 validators=(_positive("facing.stepover_positive", "Stepover phải lớn hơn 0."),),
@@ -628,13 +630,13 @@ def build_facing_sections(
         "levels", "LEVELS",
         (
             _number_field(
-                "top_height", "Top Z", values["top_height"], unit=unit,
+                "top_height", "Top", values["top_height"], unit=unit,
                 binding_key="parameters.top_height", order=10,
                 default=defaults.get("top_height"),
                 help_text="Facing v1 yêu cầu Top Z bằng mặt trên Stock BOX.",
             ),
             _number_field(
-                "target_height", "Target Z", values["target_height"], unit=unit,
+                "target_height", "Depth", values["target_height"], unit=unit,
                 binding_key="parameters.target_height", order=20,
                 default=(None if variant is FacingEditorVariant.PLANAR_FACE else defaults.get("target_height")),
                 source=(FunctionEditorValueSource.GEOMETRY if variant is FacingEditorVariant.PLANAR_FACE
@@ -645,16 +647,17 @@ def build_facing_sections(
                            else "Mức Z mục tiêu trước stock allowance."),
             ),
             _number_field(
-                "stock_allowance", "Lượng dư", values["stock_allowance"], unit=unit,
+                "stock_allowance", "Stock Allowance", values["stock_allowance"], unit=unit,
                 binding_key="parameters.stock_allowance", order=30,
                 default=defaults.get("stock_allowance"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(FunctionEditorValidationRule(
                     FunctionEditorValidationKind.MINIMUM, 0.0,
                     "Stock allowance không được âm.", "facing.allowance_nonnegative",
                 ),),
             ),
             _number_field(
-                "stepdown", "Chiều sâu mỗi lớp", values["stepdown"], unit=unit,
+                "stepdown", "Stepdown", values["stepdown"], unit=unit,
                 binding_key="parameters.stepdown", order=40,
                 default=defaults.get("stepdown"),
                 validators=(_positive("facing.stepdown_positive", "Stepdown phải lớn hơn 0."),),
@@ -666,14 +669,16 @@ def build_facing_sections(
         "linking", "LINKING",
         (
             _number_field(
-                "clearance_height", "Clearance Z", values["clearance_height"], unit=unit,
+                "clearance_height", "Clearance", values["clearance_height"], unit=unit,
                 binding_key="parameters.clearance_height", order=10,
                 default=defaults.get("clearance_height"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
-                "retract_height", "Retract Z", values["retract_height"], unit=unit,
+                "retract_height", "Retract", values["retract_height"], unit=unit,
                 binding_key="parameters.retract_height", order=20,
                 default=defaults.get("retract_height"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(FunctionEditorValidationRule(
                     FunctionEditorValidationKind.GREATER_THAN_FIELD, "top_height",
                     "Retract Z phải cao hơn Top Z.", "facing.retract_above_top",
@@ -690,12 +695,14 @@ def build_facing_sections(
             "plunge_feed_rate", "Feed tiếp cận/rút", values["plunge_feed_rate"], unit=feed_unit,
             binding_key="parameters.plunge_feed_rate", order=10,
             default=defaults.get("plunge_feed_rate"),
+            disclosure_level=ParameterDisclosureLevel.ADVANCED,
             validators=(_positive("facing.plunge_positive", "Plunge feed phải lớn hơn 0."),),
         ),
         _number_field(
             "raster_angle_degrees", "Góc raster", values["raster_angle_degrees"], unit="°",
             binding_key="parameters.raster_angle_degrees", order=20,
             default=defaults.get("raster_angle_degrees"),
+            disclosure_level=ParameterDisclosureLevel.ADVANCED,
             help_text="Giá trị hữu hạn được domain chuẩn hóa modulo 180°.",
         ),
     ]
@@ -705,6 +712,7 @@ def build_facing_sections(
                 "overtravel", "Overtravel", values["overtravel"], unit=unit,
                 binding_key="parameters.overtravel", order=30,
                 default=defaults.get("overtravel"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(FunctionEditorValidationRule(
                     FunctionEditorValidationKind.MINIMUM, 0.0,
                     "Overtravel không được âm.", "facing.overtravel_nonnegative",
@@ -716,6 +724,7 @@ def build_facing_sections(
             FunctionEditorField(
                 "machine_id", "Máy", FunctionEditorFieldKind.CHOICE,
                 values["machine_id"], required=True,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 choices=machine_choices, choice_labels=machine_labels,
                 tooltip="Machine requirement hiện có của operation; compatibility được domain kiểm tra.",
                 help_key="facing.machine", order=40,
@@ -723,7 +732,8 @@ def build_facing_sections(
             ),
             FunctionEditorField(
                 "enabled", "Operation được bật", FunctionEditorFieldKind.CHECKBOX,
-                values["enabled"], help_key="facing.enabled", order=50,
+                values["enabled"], disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                help_key="facing.enabled", order=50,
                 binding_key="operation.enabled",
                 conversion=FunctionEditorValueConversion.BOOLEAN,
             ),

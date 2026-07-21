@@ -198,12 +198,13 @@ def test_basic_is_minimal_and_advanced_expert_are_progressive() -> None:
     assert basic_editable == {
         "operation_name",
         "tool_assembly_id",
+        "cutting_direction",
         "stepover",
-        "radial_stock_allowance",
+        "cutting_feed_rate",
+        "spindle_speed",
         "top_z",
         "bottom_z",
         "stepdown",
-        "axial_allowance",
         "entry_policy",
     }
     advanced = schema.visible_sections(values, ParameterDisclosureLevel.ADVANCED)

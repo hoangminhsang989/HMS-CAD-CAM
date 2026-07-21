@@ -297,6 +297,10 @@ def run(output_dir: Path, workspace_root: Path) -> tuple[Path, ...]:
         _show_section(page, "levels")
         captures.append(_capture(application, window, output_dir, "contour_levels"))
 
+        page.disclosure_selector.setCurrentIndex(
+            page.disclosure_selector.findData(ParameterDisclosureLevel.ADVANCED)
+        )
+        application.processEvents()
         page._field_changed("lead_length", "2.0")
         _show_section(page, "linking")
         captures.append(_capture(application, window, output_dir, "contour_linking"))

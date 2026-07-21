@@ -196,7 +196,7 @@ def test_disclosure_and_stepdown_applicability_are_domain_driven() -> None:
     _context_value, schema, values = _schema_values()
     basic_sections = schema.visible_sections(values, ParameterDisclosureLevel.BASIC)
     assert {section.section_id for section in basic_sections} == {
-        "basic", "geometry", "tool", "cutting", "levels", "linking"
+        "basic", "geometry", "tool", "cutting", "levels"
     }
     assert schema.field("stepdown").is_applicable(values)
     values["multiple_depth_passes"] = False

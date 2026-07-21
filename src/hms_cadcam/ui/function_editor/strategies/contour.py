@@ -597,6 +597,7 @@ def build_contour_sections(
                 FunctionEditorFieldKind.CHOICE,
                 values["profile_source"],
                 required=True,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 choices=tuple(item.value for item in ContourProfileSource),
                 choice_labels=_choice_labels(
                     ContourProfileSource,
@@ -646,7 +647,7 @@ def build_contour_sections(
             ),
             FunctionEditorField(
                 "tool_details",
-                "Dao / shank",
+                "Tool / Shank",
                 FunctionEditorFieldKind.READ_ONLY,
                 values["tool_details"],
                 source=FunctionEditorValueSource.TOOL,
@@ -724,7 +725,7 @@ def build_contour_sections(
             ),
             _number_field(
                 "radial_stock_allowance",
-                "Lượng dư thành",
+                "Wall Stock Allowance",
                 values["radial_stock_allowance"],
                 unit=unit,
                 binding_key="parameters.radial_stock_allowance",
@@ -737,6 +738,7 @@ def build_contour_sections(
                         0.0,
                     ),
                 ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
                 "cutting_feed_rate",
@@ -770,7 +772,7 @@ def build_contour_sections(
         (
             _number_field(
                 "top_height",
-                "Top Z",
+                "Top",
                 values["top_height"],
                 unit=unit,
                 binding_key="parameters.top_height",
@@ -780,7 +782,7 @@ def build_contour_sections(
             ),
             _number_field(
                 "final_depth",
-                "Final depth Z",
+                "Depth",
                 values["final_depth"],
                 unit=unit,
                 binding_key="parameters.final_depth",
@@ -800,7 +802,7 @@ def build_contour_sections(
             ),
             _number_field(
                 "stepdown",
-                "Chiều sâu tối đa mỗi lớp",
+                "Stepdown",
                 values["stepdown"],
                 unit=unit,
                 binding_key="parameters.stepdown",
@@ -815,7 +817,7 @@ def build_contour_sections(
             ),
             _number_field(
                 "axial_stock_allowance",
-                "Lượng dư đáy",
+                "Floor Stock Allowance",
                 values["axial_stock_allowance"],
                 unit=unit,
                 binding_key="parameters.axial_stock_allowance",
@@ -840,16 +842,17 @@ def build_contour_sections(
         (
             _number_field(
                 "clearance_height",
-                "Clearance Z",
+                "Clearance",
                 values["clearance_height"],
                 unit=unit,
                 binding_key="parameters.clearance_height",
                 order=10,
                 default=defaults.get("clearance_height"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
                 "retract_height",
-                "Retract Z",
+                "Retract",
                 values["retract_height"],
                 unit=unit,
                 binding_key="parameters.retract_height",
@@ -863,6 +866,7 @@ def build_contour_sections(
                         "contour.retract_above_top",
                     ),
                 ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             FunctionEditorField(
                 "lead_policy",
@@ -870,6 +874,7 @@ def build_contour_sections(
                 FunctionEditorFieldKind.READ_ONLY,
                 values["lead_policy"],
                 source=FunctionEditorValueSource.DEFAULT,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 tooltip="Contour v1 luôn dùng linear lead-in và linear lead-out cùng chiều dài.",
                 help_key="contour.lead_policy",
                 order=30,
@@ -877,7 +882,7 @@ def build_contour_sections(
             ),
             _number_field(
                 "lead_length",
-                "Chiều dài lead-in/out",
+                "Lead Length",
                 values["lead_length"],
                 unit=unit,
                 binding_key="parameters.lead_length",
@@ -886,6 +891,7 @@ def build_contour_sections(
                 validators=(
                     _minimum("contour.lead_positive", "Chiều dài lead phải lớn hơn 0."),
                 ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
                 "plunge_feed_rate",
@@ -902,6 +908,8 @@ def build_contour_sections(
             ),
         ),
         "Clearance, retract và linear lead v1; mọi Z đều thuộc Setup WCS.",
+        disclosure_level=ParameterDisclosureLevel.ADVANCED,
+        default_expanded=False,
         order=60,
     )
     advanced = FunctionEditorSection(

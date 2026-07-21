@@ -34,6 +34,7 @@ _SOURCE_LABELS = {
     FunctionEditorValueSource.GEOMETRY: "Geometry",
     FunctionEditorValueSource.PROJECT: "Project",
     FunctionEditorValueSource.DEFAULT: "HMS Default",
+    FunctionEditorValueSource.DERIVED: "Derived",
 }
 
 

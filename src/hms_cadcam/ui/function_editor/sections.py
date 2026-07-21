@@ -131,6 +131,10 @@ class FunctionEditorSectionWidget(QFrame):
         """Append one applicable field widget."""
         self.body_layout.addWidget(field)
 
+    def insert_field(self, index: int, field: FunctionEditorFieldWidget) -> None:
+        """Insert a lazily-created field at its deterministic schema position."""
+        self.body_layout.insertWidget(index, field)
+
     def set_diagnostics(
         self, diagnostics: tuple[FunctionEditorDiagnostic, ...]
     ) -> None:

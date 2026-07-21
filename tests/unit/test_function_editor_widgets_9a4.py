@@ -283,7 +283,7 @@ def test_responsive_widths_have_internal_scroll_and_compact_footer() -> None:
         assert page._field_widgets["stepdown"].label.text()
         assert page._field_widgets["stepdown"].unit_label.text() == "mm"
         assert page._compact is (width < 400)
-        assert page.footer._compact is (width < 360)
+        assert page.footer._compact is (width < 400)
     _dispose(page, application)
 
 

@@ -694,7 +694,7 @@ def build_pocket_sections(
             ),
             FunctionEditorField(
                 "tool_details",
-                "Dao / shank",
+                "Tool / Shank",
                 FunctionEditorFieldKind.READ_ONLY,
                 values["tool_details"],
                 source=FunctionEditorValueSource.TOOL,
@@ -744,7 +744,6 @@ def build_pocket_sections(
                 ),
                 tooltip="Đổi traversal của offset loops; không tự đảo geometry nguồn.",
                 help_key="pocket.cutting_direction",
-                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 order=20,
                 binding_key="parameters.cutting_direction",
             ),
@@ -761,7 +760,7 @@ def build_pocket_sections(
             ),
             _number_field(
                 "radial_stock_allowance",
-                "Lượng dư thành",
+                "Wall Stock Allowance",
                 values["radial_stock_allowance"],
                 unit=unit,
                 binding_key="parameters.radial_stock_allowance",
@@ -774,6 +773,7 @@ def build_pocket_sections(
                         0.0,
                     ),
                 ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
                 "cutting_feed_rate",
@@ -784,7 +784,6 @@ def build_pocket_sections(
                 order=50,
                 default=defaults.get("cutting_feed_rate"),
                 validators=(_minimum("pocket.feed_positive", "Feed cắt phải lớn hơn 0."),),
-                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             _number_field(
                 "spindle_speed",
@@ -795,7 +794,6 @@ def build_pocket_sections(
                 order=60,
                 default=defaults.get("spindle_speed"),
                 validators=(_minimum("pocket.spindle_positive", "Spindle RPM phải lớn hơn 0."),),
-                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
         ),
         "Offset pattern, direction, stepover, wall allowance và tốc độ cắt.",
@@ -807,7 +805,7 @@ def build_pocket_sections(
         (
             _number_field(
                 "top_z",
-                "Top Z",
+                "Top",
                 values["top_z"],
                 unit=unit,
                 binding_key="parameters.top_z",
@@ -817,7 +815,7 @@ def build_pocket_sections(
             ),
             _number_field(
                 "bottom_z",
-                "Bottom Z",
+                "Depth",
                 values["bottom_z"],
                 unit=unit,
                 binding_key="parameters.bottom_z",
@@ -845,7 +843,7 @@ def build_pocket_sections(
             ),
             _number_field(
                 "axial_allowance",
-                "Lượng dư đáy",
+                "Floor Stock Allowance",
                 values["axial_allowance"],
                 unit=unit,
                 binding_key="parameters.axial_allowance",
@@ -858,6 +856,7 @@ def build_pocket_sections(
                         0.0,
                     ),
                 ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
             FunctionEditorField(
                 "final_depth_summary",
@@ -925,7 +924,7 @@ def build_pocket_sections(
         (
             _number_field(
                 "clearance_height",
-                "Clearance Z",
+                "Clearance",
                 values["clearance_height"],
                 unit=unit,
                 binding_key="parameters.clearance_height",
@@ -936,7 +935,7 @@ def build_pocket_sections(
             ),
             _number_field(
                 "retract_height",
-                "Retract Z",
+                "Retract",
                 values["retract_height"],
                 unit=unit,
                 binding_key="parameters.retract_height",
@@ -989,7 +988,7 @@ def build_pocket_sections(
                 conversion=FunctionEditorValueConversion.BOOLEAN,
             ),
         ),
-        "2 optional settings",
+        "Machine binding và trạng thái operation.",
         disclosure_level=ParameterDisclosureLevel.ADVANCED,
         default_expanded=False,
         order=80,
