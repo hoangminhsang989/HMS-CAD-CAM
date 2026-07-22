@@ -1,4 +1,4 @@
-# Nhiệm vụ hiện tại — Stage 8A.2.1
+# Nhiệm vụ hiện tại — Stage 8A.2.2
 
 ## Trạng thái ưu tiên
 
@@ -7,6 +7,40 @@
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
 - **Stage 9A.6 — Drilling Family Production Function Editors — COMPLETED.**
 - **Stage 8A.2.1 — Parallel Finishing Foundation — COMPLETED.**
+- **Stage 8A.2.2 — Parallel Finishing Hardening and Collision Safety — COMPLETED.**
+
+## Phạm vi Stage 8A.2.2 đã hoàn thành
+
+- Giữ nguyên foundation 8A.2.1 và thêm validation stage riêng trước khi publish.
+- Kiểm tra gouge cutter, shank, holder và toàn bộ swept motion với protected
+  geometry đã khai báo.
+- Dùng contract `SAFE/UNSAFE/UNKNOWN/CANCELLED/FAILED`; chỉ `SAFE` được publish
+  artifact READY/VALID.
+- Làm cứng boundary, sharp edge, curvature, retract/link/rapid, cancellation,
+  latest-wins, Simulation và Post fail-closed.
+- Algorithm version đã chuyển `2 -> 3`; strategy payload vẫn version 1 và
+  SQLite vẫn schema v4.
+- Chưa xây Production Function Editor, chưa sửa icon và chưa tuyên bố
+  production-safe.
+
+## Kết quả hoàn thành Stage 8A.2.2
+
+- Candidate Parallel phải qua tool-assembly collision scene, broad/narrow phase,
+  expected-contact classification và swept-motion validation trước publish.
+- Chỉ report `SAFE` với algorithm version 3, safety hash và checked/unverified
+  scope hợp lệ mới tạo artifact READY; v2, stale, unsafe và unknown bị từ chối.
+- Cutter gouge, shank/holder collision, rapid/approach/retract/link, boundary,
+  sharp edge, concave access và linking vùng rời đều có test fail-closed.
+- Diagnostic collision được aggregate deterministic theo calculation/motion/
+  component/geometry/code, giữ deepest penetration, minimum clearance và
+  `occurrence_count`.
+- Holder `declared_absent` chỉ SAFE trong declared assembly scope và vẫn nằm
+  trong unverified components; Post yêu cầu holder verification phải từ chối.
+- Clearance 0,001 mm là internal detection minimum;
+  `machine_ready_clearance_verified = false` và stage không tuyên bố universal
+  collision-free, gouge-free hoặc production-safe.
+- Review package 30 file đã được người dùng duyệt. QA cuối trước commit đạt
+  98 focused, 302 regression chọn lọc và 1382 passed, 2 deselected toàn dự án.
 
 ## Phạm vi Stage 8A.2.1 đã hoàn thành
 

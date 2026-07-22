@@ -25,7 +25,7 @@ from hms_cadcam.cam.domain.units import LengthUnit
 
 PARALLEL_FINISHING_STRATEGY_KEY = "parallel_finishing_3d"
 PARALLEL_FINISHING_STRATEGY_VERSION = 1
-PARALLEL_FINISHING_ALGORITHM_VERSION = 2
+PARALLEL_FINISHING_ALGORITHM_VERSION = 3
 _ORTHOGONAL_TOLERANCE = 1.0e-9
 
 
@@ -59,6 +59,7 @@ class ParallelProgressPhase(StrEnum):
     DISCRETIZATION = "discretization"
     ORDERING_LINKING = "ordering_linking"
     IR_BUILD = "ir_build"
+    SAFETY_VALIDATION = "safety_validation"
     FINALIZATION = "finalization"
 
 

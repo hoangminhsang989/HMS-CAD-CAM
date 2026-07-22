@@ -289,16 +289,19 @@ def test_clearance_below_ball_center_is_rejected_fail_closed() -> None:
     assert captured.value.code.value == "parallel.invalid_clearance"
 
 
-def test_check_surfaces_are_rejected_until_collision_validation_exists() -> None:
+def test_declared_check_surface_missing_from_safety_mesh_fails_closed(tmp_path) -> None:
     fixture = planar_fixture(with_check=True)
-    with pytest.raises(ParallelFinishingError) as captured:
-        ParallelFinishingGenerator().resolve_inputs(
-            fixture.operation,
-            fixture.context,
-            assembly=fixture.assembly,
-            tool=fixture.tool,
-        )
-    assert captured.value.code.value == "parallel.unsupported_protective_geometry"
+    result = calculate_and_publish_parallel_finishing(
+        tmp_path,
+        fixture.operation,
+        fixture.context,
+        assembly=fixture.assembly,
+        tool=fixture.tool,
+    )
+    assert not result.accepted and result.artifact is None
+    assert result.safety_report is not None
+    assert result.safety_report.status.value == "unknown"
+    assert result.safety_report.diagnostics[0].code.value == "parallel.safety.unknown"
 
 
 def test_unsupported_allowance_components_are_rejected() -> None:

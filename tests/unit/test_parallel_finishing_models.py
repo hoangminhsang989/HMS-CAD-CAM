@@ -29,8 +29,8 @@ from hms_cadcam.cam.domain import (
 from tests.unit._parallel_finishing_fixtures import planar_fixture
 
 
-def test_algorithm_version_records_brep_normal_revision() -> None:
-    assert PARALLEL_FINISHING_ALGORITHM_VERSION == 2
+def test_algorithm_version_records_collision_safety_revision() -> None:
+    assert PARALLEL_FINISHING_ALGORITHM_VERSION == 3
 
 
 def test_parameters_defaults_round_trip_and_fingerprint() -> None:

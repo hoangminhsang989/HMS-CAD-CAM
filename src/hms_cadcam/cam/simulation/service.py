@@ -61,6 +61,14 @@ def build_simulation_request(*, operation: Operation, artifact: ToolpathArtifact
         _source_error(SimulationIssueCode.SOURCE_STALE, "Operation toolpath lifecycle is not VALID")
     if artifact.completion_status is not ToolpathCompletionStatus.COMPLETE or artifact.artifact_fingerprint is None:
         _source_error(SimulationIssueCode.SOURCE_UNSUPPORTED, "Only COMPLETE fingerprinted toolpaths can be simulated")
+    if operation.strategy_key == "parallel_finishing_3d":
+        from hms_cadcam.cam.cam3d.parallel import parallel_artifact_has_safe_contract
+
+        if not parallel_artifact_has_safe_contract(artifact):
+            _source_error(
+                SimulationIssueCode.SOURCE_UNSUPPORTED,
+                "Parallel artifact has no current SAFE collision-validation contract",
+            )
     if artifact.coordinate_space is not CoordinateSpace.SETUP_WCS:
         _source_error(SimulationIssueCode.SOURCE_UNSUPPORTED, "Simulation v1 requires SETUP_WCS toolpath coordinates")
     if artifact.source_operation_id != operation.operation_id or artifact.operation_revision != operation.revision:

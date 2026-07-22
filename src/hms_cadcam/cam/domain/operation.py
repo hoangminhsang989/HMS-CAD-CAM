@@ -259,6 +259,38 @@ class DiagnosticCode(StrEnum):
         "parallel.contact_normal_discontinuity"
     )
     PARALLEL_SOURCE_NORMAL_UNAVAILABLE = "parallel.source_normal_unavailable"
+    PARALLEL_SAFETY_CUTTER_GOUGE = "parallel.safety.cutter_gouge"
+    PARALLEL_SAFETY_SHANK_COLLISION = "parallel.safety.shank_collision"
+    PARALLEL_SAFETY_HOLDER_COLLISION = "parallel.safety.holder_collision"
+    PARALLEL_SAFETY_RAPID_COLLISION = "parallel.safety.rapid_collision"
+    PARALLEL_SAFETY_LINK_COLLISION = "parallel.safety.link_collision"
+    PARALLEL_SAFETY_APPROACH_COLLISION = "parallel.safety.approach_collision"
+    PARALLEL_SAFETY_RETRACT_COLLISION = "parallel.safety.retract_collision"
+    PARALLEL_SAFETY_PROTECTED_FACE_COLLISION = (
+        "parallel.safety.protected_face_collision"
+    )
+    PARALLEL_SAFETY_BOUNDARY_AMBIGUITY = "parallel.safety.boundary_ambiguity"
+    PARALLEL_SAFETY_SHARP_EDGE_AMBIGUITY = "parallel.safety.sharp_edge_ambiguity"
+    PARALLEL_SAFETY_NORMAL_AMBIGUITY = "parallel.safety.normal_ambiguity"
+    PARALLEL_SAFETY_UNSUPPORTED_CURVATURE = (
+        "parallel.safety.unsupported_curvature"
+    )
+    PARALLEL_SAFETY_IMPOSSIBLE_ACCESS = "parallel.safety.impossible_access"
+    PARALLEL_SAFETY_INSUFFICIENT_CLEARANCE = (
+        "parallel.safety.insufficient_clearance"
+    )
+    PARALLEL_SAFETY_MISSING_HOLDER_GEOMETRY = (
+        "parallel.safety.missing_holder_geometry"
+    )
+    PARALLEL_SAFETY_MISSING_TOOL_GEOMETRY = (
+        "parallel.safety.missing_tool_geometry"
+    )
+    PARALLEL_SAFETY_INVALID_MARGIN = "parallel.safety.invalid_margin"
+    PARALLEL_SAFETY_LIMIT_EXCEEDED = "parallel.safety.limit_exceeded"
+    PARALLEL_SAFETY_UNKNOWN = "parallel.safety.unknown"
+    PARALLEL_SAFETY_STALE_ARTIFACT = "parallel.safety.stale_artifact"
+    PARALLEL_SAFETY_CANCELLED = "parallel.safety.cancelled"
+    PARALLEL_SAFETY_FAILED = "parallel.safety.failed"
 
 
 @dataclass(frozen=True, slots=True)

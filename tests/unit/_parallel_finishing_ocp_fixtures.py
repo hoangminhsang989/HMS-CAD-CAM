@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import (
@@ -19,7 +19,7 @@ from OCP.TopoDS import TopoDS, TopoDS_Face
 from OCP.gp import gp_Ax3, gp_Cylinder, gp_Dir, gp_Pnt
 
 from hms_cadcam.cam.adapters import OcpParallelContactResolver
-from hms_cadcam.cam.cam3d import Cam3DTolerancePolicy
+from hms_cadcam.cam.cam3d import Cam3DTolerancePolicy, CamSurfaceOrientation
 from hms_cadcam.cam.cam3d.parallel import ParallelCutDirection
 from tests.unit._cam3d_fixtures import tolerance
 from tests.unit._parallel_finishing_fixtures import (
@@ -64,6 +64,41 @@ def curved_brep_tolerance_fixture(
         cut_direction=cut_direction,
     )
     surface = fixture.zone.part_surfaces.selection.surfaces[0]
+    resolver = OcpParallelContactResolver(((surface, face),))
+    return ParallelOcpFixture(fixture, face, resolver)
+
+
+def concave_brep_tolerance_fixture(
+    *,
+    stepover: float = 1.0,
+) -> ParallelOcpFixture:
+    """Create a reversed lower cylindrical channel smaller than the 5 mm ball."""
+    policy = tolerance(0.01)
+    axis = gp_Ax3(
+        gp_Pnt(0.0, 0.0, 0.0),
+        gp_Dir(1.0, 0.0, 0.0),
+        gp_Dir(0.0, 1.0, 0.0),
+    )
+    cylinder = gp_Cylinder(axis, 4.0)
+    u_min = math.acos(2.5 / 4.0)
+    outward = BRepBuilderAPI_MakeFace(
+        cylinder,
+        math.pi + u_min,
+        2.0 * math.pi - u_min,
+        0.0,
+        10.0,
+    ).Face()
+    face = TopoDS.Face_s(outward.Reversed())
+    definition = _definition("concave-brep-too-small", face, policy)
+    fixture = parallel_fixture(
+        (definition,),
+        stepover=stepover,
+        maximum_segment_length=0.5,
+    )
+    surface = replace(
+        fixture.zone.part_surfaces.selection.surfaces[0],
+        orientation=CamSurfaceOrientation.REVERSED,
+    )
     resolver = OcpParallelContactResolver(((surface, face),))
     return ParallelOcpFixture(fixture, face, resolver)
 

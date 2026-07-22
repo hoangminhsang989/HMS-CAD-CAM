@@ -226,6 +226,16 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
             raise CamValidationError("Production tool binding is missing or stale")
     if source.operation.strategy_key not in capabilities.supported_operation_strategies:
         raise CamValidationError("Operation strategy is unsupported by post definition")
+    if source.operation.strategy_key == "parallel_finishing_3d":
+        from hms_cadcam.cam.cam3d.parallel import parallel_artifact_has_safe_contract
+
+        if not parallel_artifact_has_safe_contract(
+            source.artifact,
+            require_holder_verified=True,
+        ):
+            raise CamValidationError(
+                "Parallel artifact is not SAFE with verified holder scope for post-processing"
+            )
     if source.artifact.unit not in capabilities.supported_units:
         raise CamValidationError("Artifact unit is unsupported by post definition")
     required_capability = {
@@ -236,6 +246,7 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
         "tapping_v1": OperationCapability.TAPPING,
         "reaming_v1": OperationCapability.DRILLING,
         "boring_v1": OperationCapability.DRILLING,
+        "parallel_finishing_3d": OperationCapability.MILLING,
     }[source.operation.strategy_key]
     if required_capability not in capabilities.supported_operation_capabilities:
         raise CamValidationError("Operation capability is unsupported by post definition")

@@ -29,6 +29,11 @@ from hms_cadcam.cam.cam3d.parallel.models import (
     ParallelNormalSource,
     ProgressCallback,
 )
+from hms_cadcam.cam.cam3d.parallel.safety import validate_parallel_candidate_safety
+from hms_cadcam.cam.cam3d.parallel.safety_models import (
+    ParallelSafetyReport,
+    ParallelSafetyStatus,
+)
 from hms_cadcam.cam.domain.ids import OperationId, ToolpathArtifactId
 from hms_cadcam.cam.domain.operation import (
     ArtifactStatus,
@@ -45,6 +50,7 @@ from hms_cadcam.cam.domain.revision import ContentFingerprint, DependencyFingerp
 from hms_cadcam.cam.domain.spatial import Point3, Vector3, WcsFrame
 from hms_cadcam.cam.domain.tooling import (
     BallEndGeometry,
+    HolderDefinition,
     ToolAssembly,
     ToolDefinition,
     ToolFamily,
@@ -69,6 +75,7 @@ class ParallelFinishingInputs:
     parameters: ParallelFinishingParameters
     assembly: ToolAssembly
     tool: ToolDefinition
+    holder: HolderDefinition | None
     tool_radius: float
     input_fingerprint: DependencyFingerprint
 
@@ -91,6 +98,7 @@ class ParallelFinishingComputeResult:
     accepted: bool
     diagnostics: tuple[ValidationDiagnostic, ...] = ()
     metadata: ToolpathArtifactMetadata | None = None
+    safety_report: ParallelSafetyReport | None = None
 
 
 class ParallelFinishingGenerator:
@@ -103,6 +111,7 @@ class ParallelFinishingGenerator:
         *,
         assembly: ToolAssembly | None,
         tool: ToolDefinition | None,
+        holder: HolderDefinition | None = None,
     ) -> ParallelFinishingInputs:
         """Validate current domain snapshots and calculate a deterministic input hash."""
         try:
@@ -163,17 +172,6 @@ class ParallelFinishingGenerator:
                 DiagnosticCode.PARALLEL_MISSING_FACE,
                 "Persisted Parallel machining faces do not match the current zone.",
             )
-        protected = tuple(
-            item
-            for surface_set in (zone.check_surfaces, zone.fixture_surfaces)
-            if surface_set is not None
-            for item in surface_set.selection.surfaces
-        )
-        if protected:
-            raise ParallelFinishingError(
-                DiagnosticCode.PARALLEL_UNSUPPORTED_PROTECTIVE_GEOMETRY,
-                "Stage 8A.2.1 cannot verify Check/Fixture surface clearance.",
-            )
         if any(
             value != 0.0
             for value in (
@@ -202,6 +200,17 @@ class ParallelFinishingGenerator:
                 DiagnosticCode.PARALLEL_INVALID_TOOL,
                 "Parallel Tool Definition is missing.",
             )
+        if assembly.holder_id is not None and holder is not None:
+            if (
+                holder.holder_id != assembly.holder_id
+                or holder.revision != assembly.expected_holder_revision
+                or holder.content_fingerprint != assembly.expected_holder_fingerprint
+                or holder.unit is not assembly.unit
+            ):
+                raise ParallelFinishingError(
+                    DiagnosticCode.PARALLEL_INVALID_TOOL,
+                    "Parallel Holder Definition is stale or mismatched.",
+                )
         if (
             tool.revision != assembly.expected_tool_revision
             or tool.content_fingerprint != assembly.expected_tool_fingerprint
@@ -272,6 +281,7 @@ class ParallelFinishingGenerator:
                 "context": context.fingerprint.to_dict(),
                 "tool": tool.to_dict(),
                 "assembly": assembly.to_dict(),
+                "holder": holder.to_dict() if holder is not None else None,
             }
         )
         return ParallelFinishingInputs(
@@ -280,6 +290,7 @@ class ParallelFinishingGenerator:
             parameters,
             assembly,
             tool,
+            holder,
             diameter.value / 2.0,
             input_fingerprint,
         )
@@ -423,6 +434,7 @@ def calculate_and_publish_parallel_finishing(
     *,
     assembly: ToolAssembly | None,
     tool: ToolDefinition | None,
+    holder: HolderDefinition | None = None,
     artifact_store: ToolpathArtifactStore | None = None,
     cancellation: Callable[[], bool] | None = None,
     progress: ProgressCallback | None = None,
@@ -435,7 +447,7 @@ def calculate_and_publish_parallel_finishing(
     token: ComputationToken | None = None
     try:
         inputs = generator.resolve_inputs(
-            operation, context, assembly=assembly, tool=tool
+            operation, context, assembly=assembly, tool=tool, holder=holder
         )
         computing, token = generator.begin(inputs)
         candidate = generator.generate(
@@ -444,6 +456,58 @@ def calculate_and_publish_parallel_finishing(
             progress=progress,
             contact_resolver=contact_resolver,
         )
+        _emit(
+            progress,
+            operation.operation_id,
+            ParallelProgressPhase.SAFETY_VALIDATION,
+            0,
+            1,
+        )
+        safety_report = validate_parallel_candidate_safety(
+            operation=computing.operation,
+            context=computing.context,
+            tool=computing.tool,
+            assembly=computing.assembly,
+            holder=computing.holder,
+            artifact=candidate.artifact,
+            preview=candidate.preview,
+            cancellation=cancellation,
+        )
+        _emit(
+            progress,
+            operation.operation_id,
+            ParallelProgressPhase.SAFETY_VALIDATION,
+            1,
+            1,
+        )
+        if safety_report.status is not ParallelSafetyStatus.SAFE:
+            safety_diagnostics = tuple(
+                item.to_validation_diagnostic() for item in safety_report.diagnostics
+            )
+            primary = safety_diagnostics[0]
+            failed = _failed_operation(operation, computing, token, primary)
+            if len(safety_diagnostics) > 1:
+                failed = replace(
+                    failed,
+                    diagnostics=(*failed.diagnostics, *safety_diagnostics[1:]),
+                )
+            return ParallelFinishingComputeResult(
+                failed,
+                None,
+                None,
+                False,
+                safety_diagnostics,
+                safety_report=safety_report,
+            )
+        safe_builder = _builder(computing, token)
+        safe_artifact = _build_toolpath(
+            safe_builder,
+            computing,
+            candidate.preview.passes,
+            cancellation=cancellation,
+            safety_report=safety_report,
+        )
+        candidate = ParallelFinishingCandidate(safe_artifact, candidate.preview)
         _checkpoint(cancellation)
         live = current_operation() if current_operation is not None else computing.operation
         published = publish_toolpath(
@@ -459,7 +523,12 @@ def calculate_and_publish_parallel_finishing(
                 "Parallel result became stale before artifact publish.",
             )
             return ParallelFinishingComputeResult(
-                published.operation, None, None, False, (diagnostic,)
+                published.operation,
+                None,
+                None,
+                False,
+                (diagnostic,),
+                safety_report=safety_report,
             )
         _checkpoint(cancellation)
         store = artifact_store or ToolpathArtifactStore()
@@ -468,7 +537,7 @@ def calculate_and_publish_parallel_finishing(
             ValidationDiagnostic(
                 DiagnosticSeverity.WARNING,
                 DiagnosticCode.PARALLEL_FOUNDATION_LIMITATION,
-                "Foundation result is not universally gouge- or collision-certified.",
+                "Safety applies to the declared fixed-axis geometry scene; this is not a universal production certificate.",
             )
         ]
         if any(
@@ -495,6 +564,7 @@ def calculate_and_publish_parallel_finishing(
             True,
             tuple(limitations),
             metadata=metadata,
+            safety_report=safety_report,
         )
     except ParallelFinishingError as error:
         failed = _failed_operation(operation, computing, token, error.diagnostic)
@@ -542,6 +612,7 @@ def _build_toolpath(
     passes,
     *,
     cancellation: Callable[[], bool] | None,
+    safety_report: ParallelSafetyReport | None = None,
 ) -> ToolpathArtifact:
     safe = inputs.context.safe_motion_policy
     assert safe.clearance_z is not None and safe.retract_z is not None
@@ -560,6 +631,59 @@ def _build_toolpath(
         )
     )
     builder.set_initial_process_state(feed_mode=FeedMode.UNITS_PER_MINUTE)
+    builder.marker(
+        "parallel.safety.contract",
+        (
+            "Validated Parallel safety contract"
+            if safety_report is not None
+            else "Parallel candidate awaiting safety validation"
+        ),
+        metadata=(
+            ("algorithm_version", str(PARALLEL_FINISHING_ALGORITHM_VERSION)),
+            (
+                "safety_report_fingerprint",
+                safety_report.fingerprint.digest if safety_report is not None else "pending",
+            ),
+            (
+                "safety_status",
+                safety_report.status.value if safety_report is not None else "candidate",
+            ),
+            (
+                "checked_components",
+                ",".join(item.value for item in safety_report.checked_components)
+                if safety_report is not None
+                else "none",
+            ),
+            (
+                "unverified_components",
+                (
+                    ",".join(item.value for item in safety_report.unverified_components)
+                    or "none"
+                )
+                if safety_report is not None
+                else "cutter,holder,shank",
+            ),
+            (
+                "holder_state",
+                safety_report.holder_state if safety_report is not None else "pending",
+            ),
+            (
+                "safety_scope",
+                safety_report.safety_scope if safety_report is not None else "pending",
+            ),
+            (
+                "tool_assembly_fingerprint",
+                safety_report.tool_assembly_fingerprint.digest
+                if safety_report is not None
+                else "pending",
+            ),
+            (
+                "artifact_tool_assembly_fingerprint",
+                inputs.context.tool_assembly_fingerprint.digest,
+            ),
+        ),
+        provenance="parallel.safety.contract",
+    )
     feed = FeedRate(inputs.parameters.feed_rate_mm_per_minute, FeedUnit.MM_PER_MINUTE)
     tolerance = inputs.context.tolerance_policy.contact_tolerance
     for pass_value in passes:

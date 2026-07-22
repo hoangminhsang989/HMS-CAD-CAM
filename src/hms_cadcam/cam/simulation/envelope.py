@@ -80,7 +80,13 @@ def _primitive(kind: EnvelopePrimitiveKind, start: float, end: float, radius: fl
     return EnvelopePrimitive(kind, start, end, radius, radius if upper is None else upper, unit, label, support)
 
 
-def build_tool_envelope(*, tool: ToolDefinition, assembly: ToolAssembly, holder: HolderDefinition | None) -> ToolEnvelope:
+def build_tool_envelope(
+    *,
+    tool: ToolDefinition,
+    assembly: ToolAssembly,
+    holder: HolderDefinition | None,
+    require_holder: bool = True,
+) -> ToolEnvelope:
     """Build a fixed-axis rotating envelope; malformed/missing profiles fail closed."""
     if not isinstance(tool, ToolDefinition) or not isinstance(assembly.unit, LengthUnit):
         raise CamValidationError("Tool envelope inputs are invalid")
@@ -126,8 +132,12 @@ def build_tool_envelope(*, tool: ToolDefinition, assembly: ToolAssembly, holder:
         else ()
     )
     holder_profile: tuple[EnvelopePrimitive, ...] = ()
+    if type(require_holder) is not bool:
+        raise CamValidationError("Holder requirement flag is invalid")
     if assembly.holder_id is None:
-        raise CamValidationError("Simulation requires an explicit holder definition")
+        if require_holder:
+            raise CamValidationError("Simulation requires an explicit holder definition")
+        return ToolEnvelope(tuple(cutter), shank_profile, (), unit, support)
     if holder is None or holder.holder_id != assembly.holder_id:
         raise CamValidationError("Holder definition is missing or mismatched")
     if holder.unit is not unit:

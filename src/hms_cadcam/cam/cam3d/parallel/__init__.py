@@ -1,4 +1,4 @@
-"""Public Parallel Finishing Foundation API (Stage 8A.2.1)."""
+"""Public Parallel Finishing and fail-closed safety API."""
 
 from .models import (
     PARALLEL_FINISHING_ALGORITHM_VERSION,
@@ -37,6 +37,37 @@ from .service import (
     ParallelFinishingInputs,
     calculate_and_publish_parallel_finishing,
 )
+from .collision import (
+    ParallelAabb,
+    ParallelCollisionPrimitive,
+    ParallelCollisionTriangle,
+    ParallelPrimitiveKind,
+    closest_point_on_triangle,
+    segment_segment_distance,
+    segment_triangle_distance,
+    swept_axis_triangle_distance,
+    swept_primitive_bounds,
+    triangle_triangle_distance,
+)
+from .safety import (
+    ParallelToolAssemblySafetyModel,
+    build_parallel_safety_policy,
+    build_parallel_tool_assembly_model,
+    parallel_artifact_has_safe_contract,
+    validate_parallel_candidate_safety,
+)
+from .safety_models import (
+    ParallelGeometrySource,
+    ParallelSafetyDiagnostic,
+    ParallelSafetyMotion,
+    ParallelSafetyPolicy,
+    ParallelSafetyReport,
+    ParallelSafetyStatistics,
+    ParallelSafetyStatus,
+    ParallelToolComponent,
+    aggregate_parallel_safety_diagnostics,
+    parallel_clearance_is_satisfied,
+)
 
 __all__ = [
     "PARALLEL_FINISHING_ALGORITHM_VERSION",
@@ -64,10 +95,35 @@ __all__ = [
     "ParallelStatistics",
     "ParallelIntersectionOutput",
     "ProgressCallback",
+    "ParallelAabb",
+    "ParallelCollisionPrimitive",
+    "ParallelCollisionTriangle",
+    "ParallelPrimitiveKind",
+    "ParallelGeometrySource",
+    "ParallelSafetyDiagnostic",
+    "ParallelSafetyMotion",
+    "ParallelSafetyPolicy",
+    "ParallelSafetyReport",
+    "ParallelSafetyStatistics",
+    "ParallelSafetyStatus",
+    "ParallelToolAssemblySafetyModel",
+    "ParallelToolComponent",
+    "aggregate_parallel_safety_diagnostics",
     "build_frame_axes",
     "build_machining_frame",
+    "build_parallel_safety_policy",
+    "build_parallel_tool_assembly_model",
     "calculate_and_publish_parallel_finishing",
     "calculate_region_bounds",
     "intersect_parallel_passes",
     "plan_pass_positions",
+    "parallel_artifact_has_safe_contract",
+    "parallel_clearance_is_satisfied",
+    "closest_point_on_triangle",
+    "segment_segment_distance",
+    "segment_triangle_distance",
+    "swept_axis_triangle_distance",
+    "swept_primitive_bounds",
+    "triangle_triangle_distance",
+    "validate_parallel_candidate_safety",
 ]
