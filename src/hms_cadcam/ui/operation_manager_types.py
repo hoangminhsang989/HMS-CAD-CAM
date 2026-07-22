@@ -87,6 +87,7 @@ class OperationManagerCapability(StrEnum):
     SIMULATE = "simulate"
     POST = "post"
     DELETE = "delete"
+    DUPLICATE = "duplicate"
     RENAME = "rename"
     ENABLE = "enable"
     DISABLE = "disable"

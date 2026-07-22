@@ -61,6 +61,8 @@ _STATUS_LABELS = {
     FunctionEditorDraftStatus.STALE: "Stale",
 }
 
+_COMPACT_WIDTH = 400
+
 
 class FunctionEditorSummaryWidget(QFrame):
     """Sticky operation summary with text validation counts."""
@@ -946,8 +948,8 @@ class FunctionEditorPage(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.footer.set_compact(event.size().width() < 400)
-        compact = event.size().width() < 400
+        self.footer.set_compact(event.size().width() < _COMPACT_WIDTH)
+        compact = event.size().width() < _COMPACT_WIDTH
         if compact == self._compact:
             return
         self._compact = compact

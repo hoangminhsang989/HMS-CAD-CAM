@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cam.domain import (
-    ArtifactStatus, BoringBarGeometry, BoringCoolantMode,
+    ArtifactState, ArtifactStatus, BoringBarGeometry, BoringCoolantMode,
     BoringRetractPolicy, BoringStrategy, BoringValidationError,
     BoxStock, CamJobId, CamNodeId, ContentFingerprint,
     ContourCutDirection, ContourParameters, ContourProfileSource, ContourSide,
@@ -59,6 +59,8 @@ from hms_cadcam.cam.application import (
     ContourGenerator,
     FacingGenerationError,
     FacingGenerator,
+    DrillingGenerationError,
+    DrillingGenerator,
     PocketGenerationError,
     PocketGenerator,
     ReamingGenerationError,
@@ -102,16 +104,26 @@ from hms_cadcam.ui.function_editor.strategies import (
     FacingEditorVariant,
     PocketEditorContext,
     PocketEditorDraftContext,
+    DrillingFamilyEditorContext,
+    DrillingFamilyEditorDraftContext,
+    DrillingFamilyEditorKind,
+    build_boring_schema,
     build_contour_schema,
+    build_drilling_schema,
     build_facing_schema,
     build_planar_face_facing_schema,
     build_pocket_schema,
+    build_reaming_schema,
+    build_tapping_schema,
     contour_applied_values,
     facing_applied_values,
     pocket_applied_values,
+    drilling_family_applied_values,
+    drilling_family_geometry_values,
     prepare_contour_update,
     prepare_facing_update,
     prepare_pocket_update,
+    prepare_drilling_family_update,
 )
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
@@ -201,6 +213,7 @@ class CamWorkspace(QWidget):
         self._production_facing_editors_enabled = True
         self._production_contour_editor_enabled = True
         self._production_pocket_editor_enabled = True
+        self._production_drilling_family_editors_enabled = True
         self._facing_preview: tuple[str, ...] = ()
         self._contour_preview: tuple[str, ...] = ()
         self._pocket_preview: tuple[str, ...] = ()
@@ -409,6 +422,18 @@ class CamWorkspace(QWidget):
                 return None
             return self._pocket_production_session(
                 job.job_id, setup, node_id, node.name, operation
+            )
+        hole_kind = {
+            "drilling_v1": DrillingFamilyEditorKind.DRILLING,
+            "tapping_v1": DrillingFamilyEditorKind.TAPPING,
+            "reaming_v1": DrillingFamilyEditorKind.REAMING,
+            "boring_v1": DrillingFamilyEditorKind.BORING,
+        }.get(operation.strategy_key)
+        if hole_kind is not None:
+            if not self._production_drilling_family_editors_enabled:
+                return None
+            return self._drilling_family_production_session(
+                job.job_id, setup, node_id, node.name, operation, hole_kind
             )
         if not self._production_facing_editors_enabled:
             return None
@@ -661,6 +686,471 @@ class CamWorkspace(QWidget):
                 context, draft, action_id, values
             ),
         )
+
+    def _drilling_family_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+        kind: DrillingFamilyEditorKind,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one shared drilling-family production session without mutation."""
+        if self._generation is None:
+            return None
+        strategy = _hole_strategy(operation)
+        resolved = None
+        diagnostic = ""
+        if self._drilling_resolver is not None:
+            try:
+                resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
+            except (RuntimeError, TypeError, ValueError) as error:
+                diagnostic = str(error)
+        geometry_resolved = (
+            resolved is not None
+            and resolved.status is GeometryResolutionStatus.RESOLVED
+            and resolved.region is not None
+        )
+        if not geometry_resolved and resolved is not None and resolved.diagnostics:
+            diagnostic = resolved.diagnostics[0].message
+        if self._drilling_resolver is None:
+            diagnostic = "Hole geometry resolver chưa sẵn sàng"
+        snapshot = self._service.cam_snapshot
+        context = DrillingFamilyEditorContext(
+            kind,
+            operation_name,
+            operation,
+            setup,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            strategy.geometry.source,
+            geometry_resolved,
+            diagnostic,
+        )
+        draft = DrillingFamilyEditorDraftContext(context.hole_source)
+        builder = {
+            DrillingFamilyEditorKind.DRILLING: build_drilling_schema,
+            DrillingFamilyEditorKind.TAPPING: build_tapping_schema,
+            DrillingFamilyEditorKind.REAMING: build_reaming_schema,
+            DrillingFamilyEditorKind.BORING: build_boring_schema,
+        }[kind]
+        schema = builder(context)
+        applied = drilling_family_applied_values(context)
+        project = self._service.current_project
+        if project is None:
+            return None
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_drilling_family_production(
+                job_id, setup.setup_id, node_id, context, draft, values
+            ),
+            validation_callback=lambda values: self._validate_drilling_family_production(
+                schema, context, draft, values
+            ),
+            preview_callback=lambda request: self._preview_drilling_family_production(
+                schema, context, draft, request
+            ),
+            calculate_callback=lambda values: self._calculate_drilling_family_production(
+                context, values
+            ),
+            field_action_callback=lambda action_id, values: self._drilling_family_field_action(
+                context, draft, action_id, values
+            ),
+        )
+
+    def _drilling_family_context_is_current(
+        self, context: DrillingFamilyEditorContext
+    ) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None:
+            return False
+        snapshot = self._service.cam_snapshot
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.enabled == context.operation.enabled
+            and snapshot.tool_assemblies == context.tool_assemblies
+            and snapshot.tool_definitions == context.tool_definitions
+            and snapshot.holder_definitions == context.holder_definitions
+            and snapshot.machine_definitions == context.machine_definitions
+        )
+
+    @staticmethod
+    def _drilling_family_error_target(
+        schema,
+        message: str,
+        code: str,
+    ) -> str | None:
+        folded = f"{code} {message}".casefold()
+        candidates = (
+            (("geometry", "source", "hole", "lỗ"), "geometry_summary"),
+            (("tool", "dao"), "tool_assembly_id"),
+            (("machine", "sync", "capability", "máy"), "machine_id"),
+            (("peck",), "peck_depth"),
+            (("pitch", "bước ren"), "pitch"),
+            (("hand", "chiều ren"), "hand"),
+            (("prebore", "pre-bore"), "pre_bore_diameter"),
+            (("prehole", "pre-hole"), "pre_hole_diameter"),
+            (("diameter", "đường kính"), "finished_bore_diameter"),
+            (("clearance",), "clearance_height"),
+            (("retract",), "retract_height"),
+            (("depth", "độ sâu"), "final_depth"),
+            (("spindle", "rpm"), "spindle_speed"),
+            (("feed",), "feed_rate"),
+            (("coolant",), "coolant"),
+            (("dwell",), "dwell_seconds"),
+        )
+        available = {field.field_id for field in schema.fields}
+        for tokens, field_id in candidates:
+            if field_id in available and any(token in folded for token in tokens):
+                return field_id
+        if "diameter" in folded or "đường kính" in folded:
+            for field_id in ("nominal_diameter", "finished_bore_diameter"):
+                if field_id in available:
+                    return field_id
+        if "feed" in folded and "feed_per_revolution" in available:
+            return "feed_per_revolution"
+        return None
+
+    def _drilling_family_diagnostic(
+        self,
+        schema,
+        code: str,
+        message: str,
+    ) -> FunctionEditorDiagnostic:
+        field_id = self._drilling_family_error_target(schema, message, code)
+        return FunctionEditorDiagnostic(
+            code=code,
+            message=message,
+            severity=FunctionEditorDiagnosticSeverity.ERROR,
+            field_id=field_id,
+            section_id=(
+                schema.section_for_field(field_id).section_id
+                if field_id is not None
+                else None
+            ),
+        )
+
+    def _resolve_drilling_family_inputs(
+        self,
+        context: DrillingFamilyEditorContext,
+        update,
+    ):
+        if self._drilling_resolver is None:
+            raise RuntimeError("Hole geometry resolver chưa sẵn sàng.")
+        resolved = self._drilling_resolver(
+            update.strategy.geometry, update.strategy.depth
+        )
+        operation = replace(update.operation, enabled=True)
+        if context.kind is DrillingFamilyEditorKind.DRILLING:
+            return DrillingGenerator().resolve_inputs(
+                operation,
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_geometry=resolved,
+            )
+        if context.kind is DrillingFamilyEditorKind.TAPPING:
+            return TappingGenerator().resolve_inputs(
+                operation,
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_geometry=resolved,
+            )
+        if context.kind is DrillingFamilyEditorKind.REAMING:
+            return ReamingGenerator().resolve_inputs(
+                operation,
+                context.setup,
+                assembly=update.assembly,
+                tool=update.tool,
+                machine=update.machine,
+                resolved_geometry=resolved,
+            )
+        return BoringGenerator().resolve_inputs(
+            operation,
+            context.setup,
+            assembly=update.assembly,
+            tool=update.tool,
+            holder=update.holder,
+            machine=update.machine,
+            resolved_geometry=resolved,
+        )
+
+    def _validate_drilling_family_production(
+        self,
+        schema,
+        context: DrillingFamilyEditorContext,
+        draft: DrillingFamilyEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        """Run existing domain/generator validation without mutating project state."""
+        if self._generation is None or self._generation != self._service.cam_generation:
+            return (
+                self._drilling_family_diagnostic(
+                    schema,
+                    f"{context.kind.value}.ui.stale_editor",
+                    "Function Editor thuộc project generation cũ.",
+                ),
+            )
+        if not self._drilling_family_context_is_current(context):
+            return (
+                self._drilling_family_diagnostic(
+                    schema,
+                    f"{context.kind.value}.ui.stale_editor",
+                    "Operation hoặc resource đã thay đổi; hãy mở lại editor.",
+                ),
+            )
+        try:
+            update = prepare_drilling_family_update(context, draft, values)
+            self._resolve_drilling_family_inputs(context, update)
+            if context.kind is DrillingFamilyEditorKind.TAPPING:
+                return (
+                    FunctionEditorDiagnostic(
+                        code="tap.post_capability_unbound",
+                        message=(
+                            "Post chưa được ràng buộc vào operation; tapping cycle "
+                            "sẽ được kiểm tra khi Generate Post."
+                        ),
+                        severity=FunctionEditorDiagnosticSeverity.WARNING,
+                        field_id="capability_summary",
+                        section_id="capability",
+                    ),
+                )
+            return ()
+        except (
+            DrillingGenerationError,
+            TappingGenerationError,
+            ReamingGenerationError,
+            BoringGenerationError,
+        ) as error:
+            return (
+                self._drilling_family_diagnostic(
+                    schema, error.code.value, str(error)
+                ),
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            return (
+                self._drilling_family_diagnostic(
+                    schema,
+                    f"{context.kind.value}.invalid_parameters",
+                    str(error) or "Thông số drilling family không hợp lệ.",
+                ),
+            )
+
+    def _apply_drilling_family_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: DrillingFamilyEditorContext,
+        draft: DrillingFamilyEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Commit one validated drilling-family draft through the existing service."""
+        schema = {
+            DrillingFamilyEditorKind.DRILLING: build_drilling_schema,
+            DrillingFamilyEditorKind.TAPPING: build_tapping_schema,
+            DrillingFamilyEditorKind.REAMING: build_reaming_schema,
+            DrillingFamilyEditorKind.BORING: build_boring_schema,
+        }[context.kind](context)
+        diagnostics = self._validate_drilling_family_production(
+            schema, context, draft, values
+        )
+        if any(
+            item.severity is FunctionEditorDiagnosticSeverity.ERROR
+            for item in diagnostics
+        ):
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_drilling_family_update(context, draft, values)
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn active.")
+        self._service.execute_cam_command(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.rename_node(
+                    node_id, update.operation_name
+                ).replace_operation(update.operation),
+            ),
+            expected_generation=self._generation,
+        )
+        if self._selected_key == ("operation", str(node_id)):
+            item = self.tree.currentItem()
+            self._guard = True
+            try:
+                if item is not None:
+                    item.setText(0, update.operation_name)
+                    item.setText(1, update.operation.artifact_state.status.value.upper())
+            finally:
+                self._guard = False
+            snapshot = self._service.cam_snapshot
+            self.editor.show_node(
+                update.operation_name,
+                update.operation,
+                snapshot.tool_assemblies,
+                snapshot.machine_definitions,
+                snapshot.tool_definitions,
+                snapshot.holder_definitions,
+            )
+            self._set_picked_hole_source(update.hole_source)
+            self._picked_reference_resolved = True
+            self.editor.show_hole_source(update.hole_source, True)
+        self.message.emit(
+            f"Đã Apply {context.kind.title}; chưa tự Calculate toolpath."
+        )
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    def _drilling_family_field_action(
+        self,
+        context: DrillingFamilyEditorContext,
+        draft: DrillingFamilyEditorDraftContext,
+        action_id: str,
+        values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        """Select and resolve one hole source into draft state only."""
+        if action_id != "select_holes":
+            raise ValueError(f"Field action không hỗ trợ: {action_id}")
+        if self._drilling_pick_provider is None or self._drilling_resolver is None:
+            raise RuntimeError("Hole selection workflow chưa sẵn sàng.")
+        generation = self._generation
+        source = self._drilling_pick_provider(context.setup.wcs.z_axis)
+        if not isinstance(source, (HoleReference, HolePattern)):
+            raise ValueError("Hole picker trả về source không hợp lệ.")
+        if generation is None or generation != self._service.cam_generation:
+            raise RuntimeError("Hole selection callback đã stale sau project switch.")
+        try:
+            unit = context.setup.wcs.origin.unit
+            depth = DrillDepthDefinition(
+                unit,
+                Length(float(values["top_z"]), unit),
+                Length(float(values["final_depth"]), unit),
+            )
+            resolved = self._drilling_resolver(DrillGeometryInput(source, unit), depth)
+        except (DrillValidationError, TypeError, ValueError) as error:
+            raise ValueError(str(error)) from error
+        if (
+            resolved.status is not GeometryResolutionStatus.RESOLVED
+            or resolved.region is None
+        ):
+            message = (
+                resolved.diagnostics[0].message
+                if resolved.diagnostics
+                else "Hole source đã chọn không resolve được an toàn."
+            )
+            raise ValueError(message)
+        draft.hole_source = source
+        draft.pending_input_ids = {}
+        self._set_picked_hole_source(source)
+        self._picked_reference_resolved = True
+        self.editor.show_hole_source(source, True)
+        return drilling_family_geometry_values(source, True)
+
+    def _preview_drilling_family_production(
+        self,
+        schema,
+        context: DrillingFamilyEditorContext,
+        draft: DrillingFamilyEditorDraftContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        """Create a validated artifact-free drilling-family summary."""
+        if (
+            request.operation_key != str(context.operation.operation_id)
+            or request.generation != self._generation
+        ):
+            raise RuntimeError("Preview request đã stale.")
+        values = dict(request.values)
+        diagnostics = self._validate_drilling_family_production(
+            schema, context, draft, values
+        )
+        if any(
+            item.severity is FunctionEditorDiagnosticSeverity.ERROR
+            for item in diagnostics
+        ):
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_drilling_family_update(context, draft, values)
+        inputs = self._resolve_drilling_family_inputs(context, update)
+        strategy = update.strategy
+        if isinstance(strategy, DrillingStrategy):
+            cycle = strategy.cycle.value
+        elif isinstance(strategy, TappingStrategy):
+            cycle = f"{strategy.hand.value} · {strategy.synchronization_policy.value}"
+        elif isinstance(strategy, ReamingStrategy):
+            cycle = strategy.retract_policy.value
+        else:
+            assert isinstance(strategy, BoringStrategy)
+            cycle = strategy.retract_policy.value
+        return (
+            f"Preview approximate · {len(inputs.holes)} lỗ · {cycle} · "
+            f"Top/Depth {strategy.top_z.value:g}/{strategy.final_depth.value:g} "
+            f"{strategy.unit.value} · Safe {strategy.clearance_height.value:g}/"
+            f"{strategy.retract_height.value:g} · Tool {update.assembly.name} · "
+            "controller-neutral, chưa tạo artifact"
+        )
+
+    def _calculate_drilling_family_production(
+        self,
+        context: DrillingFamilyEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> bool:
+        """Calculate only the current applied drilling-family operation."""
+        if (
+            self._generation is None
+            or not self._drilling_family_context_is_current(context)
+        ):
+            raise RuntimeError("Applied drilling-family state đã stale; hãy mở lại editor.")
+        compute = {
+            DrillingFamilyEditorKind.DRILLING: self._service.compute_drilling,
+            DrillingFamilyEditorKind.TAPPING: self._service.compute_tapping,
+            DrillingFamilyEditorKind.REAMING: self._service.compute_reaming,
+            DrillingFamilyEditorKind.BORING: self._service.compute_boring,
+        }[context.kind]
+        result = compute(
+            context.operation.operation_id,
+            expected_generation=self._generation,
+            geometry_resolver=self._drilling_resolver,
+        )
+        if not result.accepted or result.artifact is None:
+            message = (
+                result.diagnostics[0].message
+                if result.diagnostics
+                else f"{context.kind.title} Calculate thất bại."
+            )
+            raise RuntimeError(message)
+        selected = self._selected_operation()
+        if (
+            selected is not None
+            and selected.operation_id == context.operation.operation_id
+            and self._toolpath_display is not None
+        ):
+            displayed = self._toolpath_display(result.artifact)
+            if displayed is not False:
+                self.editor.show_toolpath_metadata(
+                    ToolpathPresentation.from_artifact(result.artifact)
+                )
+                self._displayed_operation_id = context.operation.operation_id
+                self._toolpath_visibility[context.operation.operation_id] = True
+        self.message.emit(
+            f"{context.kind.title} đã Calculate và publish artifact hợp lệ."
+        )
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
 
     def _current_facing_operation(self, operation_id: OperationId) -> Operation | None:
         if not self._service.has_project:
@@ -3676,6 +4166,64 @@ class CamWorkspace(QWidget):
                 self._toolpath_clear()
                 self._displayed_operation_id = None
             self.refresh()
+
+    def duplicate_selected_operation(self) -> None:
+        """Duplicate one operation with fresh identities and no derived artifact."""
+        item = self.tree.currentItem()
+        context = self._tree_context()
+        if (
+            item is None
+            or context is None
+            or item.data(0, _KIND_ROLE) != "operation"
+        ):
+            return
+        job_id, setup_id, tree, _parent_id = context
+        node_id = CamNodeId.parse(item.data(0, _ID_ROLE))
+        node = tree.get_node(node_id)
+        if node.operation_id is None or node.parent_id is None:
+            return
+        original = tree.get_operation(node.operation_id)
+        duplicate_node_id = CamNodeId.new()
+        duplicate_operation_id = OperationId.new()
+        duplicate_geometry = tuple(
+            replace(value, input_id=GeometryInputId.new())
+            for value in original.geometry_inputs
+        )
+        duplicate = replace(
+            original,
+            operation_id=duplicate_operation_id,
+            node_id=duplicate_node_id,
+            geometry_inputs=duplicate_geometry,
+            revision=Revision(0),
+            artifact_state=ArtifactState(),
+            diagnostics=(),
+        )
+        sibling_names = {
+            tree.get_node(value).name
+            for value in tree.get_node(node.parent_id).child_ids
+        }
+        base_name = f"{node.name} Copy"
+        name = base_name
+        suffix = 2
+        while name in sibling_names:
+            name = f"{base_name} {suffix}"
+            suffix += 1
+        original_index = tree.get_node(node.parent_id).child_ids.index(node_id)
+        changed = self._execute(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda value: value.add_operation(
+                    node.parent_id, name, duplicate
+                ).reorder_node(duplicate_node_id, original_index + 1),
+            )
+        )
+        if changed is not None:
+            self.refresh(("operation", str(duplicate_node_id)))
+            self.projection_changed.emit()
+            self.message.emit(
+                f"Đã nhân bản '{node.name}' thành '{name}'; Toolpath cần Calculate lại."
+            )
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._guard or column != 0:

@@ -689,10 +689,28 @@ def test_model_has_no_row_widgets_drag_drop_and_actions_explain_disabled_state(
         panel.commands.update_state()
         assert not panel.commands.simulate.isEnabled()
         assert "CURRENT" in panel.commands.simulate.toolTip()
-        assert not panel.commands.duplicate.isEnabled()
-        assert "command" in panel.commands.duplicate.toolTip()
+        assert panel.commands.duplicate.isEnabled()
+        assert panel.commands.duplicate.toolTip() == "Nhân bản"
         assert not panel.commands.clear_toolpath.isEnabled()
         assert "command" in panel.commands.clear_toolpath.toolTip()
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
+def test_duplicate_action_routes_through_operation_manager(tmp_path) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    try:
+        operation = _node(panel, OperationManagerNodeKind.OPERATION)
+        panel.view.setCurrentIndex(panel.model.index_for_node_id(operation.node_id))
+        panel.commands.update_state()
+
+        panel.commands.duplicate.trigger()
+        application.processEvents()
+
+        operations = _operation_nodes(panel)
+        assert len(operations) == 2
+        assert len({item.domain_identity.value for item in operations}) == 2
+        assert any(item.label.endswith("Copy") for item in operations)
     finally:
         _dispose(service, workspace, panel, application)
 

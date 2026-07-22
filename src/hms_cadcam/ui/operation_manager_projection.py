@@ -542,6 +542,7 @@ class OperationManagerProjectionBuilder:
             Capability.OPEN,
             Capability.RENAME,
             Capability.DELETE,
+            Capability.DUPLICATE,
             Capability.MOVE_UP,
             Capability.MOVE_DOWN,
             Capability.BIND_GEOMETRY,

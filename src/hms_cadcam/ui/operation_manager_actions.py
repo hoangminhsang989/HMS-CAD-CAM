@@ -73,11 +73,7 @@ class OperationManagerActions(QObject):
             self.clear_toolpath,
             "Chưa có command xóa Toolpath Artifact an toàn trong application service.",
         )
-        self.duplicate = self._action("Nhân bản", lambda: None)
-        _disable(
-            self.duplicate,
-            "Chưa có command nhân bản operation an toàn trong application service.",
-        )
+        self.duplicate = self._action("Nhân bản", self._duplicate)
         self.all_actions = (
             self.add_operation,
             self.recalculate,
@@ -196,6 +192,12 @@ class OperationManagerActions(QObject):
             OperationManagerCapability.DELETE,
             capabilities,
             "Node này không có command xóa trong domain hiện tại.",
+        )
+        self._set_capability(
+            self.duplicate,
+            OperationManagerCapability.DUPLICATE,
+            capabilities,
+            "Chỉ operation có identity domain mới được nhân bản.",
         )
         self._set_capability(
             self.rename,
@@ -428,6 +430,10 @@ class OperationManagerActions(QObject):
 
     def _delete(self) -> None:
         self._trigger("delete")
+
+    def _duplicate(self) -> None:
+        self._ensure_selection()
+        self._workspace.duplicate_selected_operation()
 
     def _open(self) -> None:
         node = self._ensure_selection()

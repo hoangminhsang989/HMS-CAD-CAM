@@ -37,7 +37,6 @@ _SOURCE_LABELS = {
     FunctionEditorValueSource.DERIVED: "Derived",
 }
 
-
 class FunctionEditorFieldWidget(QWidget):
     """Accessible field renderer with unit, provenance and inline diagnostics."""
 
@@ -134,7 +133,8 @@ class FunctionEditorFieldWidget(QWidget):
         self.layout_grid.addWidget(self.source_label, 1, 1, 1, 5)
         self.layout_grid.addWidget(self.default_label, 2, 1, 1, 5)
         self.layout_grid.addWidget(self.diagnostic_label, 3, 1, 1, 5)
-        self.layout_grid.setColumnStretch(1, 1)
+        self.layout_grid.setColumnStretch(0, 1)
+        self.layout_grid.setColumnStretch(1, 2)
         self.set_value(value)
 
     def _accessible_name(self) -> str:
