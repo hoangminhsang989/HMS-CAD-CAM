@@ -1,4 +1,4 @@
-# Nhiệm vụ hiện tại — Stage 9A.6
+# Nhiệm vụ hiện tại — Stage 8A.2.1
 
 ## Trạng thái ưu tiên
 
@@ -6,6 +6,44 @@
   phay 2D Stage 9A.5.4.
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
 - **Stage 9A.6 — Drilling Family Production Function Editors — COMPLETED.**
+- **Stage 8A.2.1 — Parallel Finishing Foundation — COMPLETED.**
+
+## Phạm vi Stage 8A.2.1 đã hoàn thành
+
+- Xây foundation có kiểm chứng cho pass song song trên các mặt CAM 3D đã chọn.
+- Tái sử dụng CAM 3D Foundation 8A.1, Toolpath IR, lifecycle artifact và
+  persistence hiện có.
+- Phạm vi dao ban đầu là ball-end, fixed three-axis trong Setup WCS.
+- Linking dùng retract/clearance bảo thủ; chưa có collision-aware production
+  linking hoặc bảo đảm gouge-free cho mọi topology.
+- Không xây production Function Editor, không sửa icon và không bắt đầu stage
+  tiếp theo.
+
+## Kết quả hiện tại Stage 8A.2.1
+
+- Algorithm version 2 đã có parameter contract native-free, structured diagnostics và persistence
+  qua `OperationParameterSet` hiện có.
+- Đã có frame U/V/W, selected-region bounds, pass planning, mesh-plane
+  intersection, clipping, discretization và one-way/zigzag ordering deterministic.
+- Ball-end tool-center path dùng part-normal allowance; tool/allowance/boundary
+  và protective geometry chưa hỗ trợ đều fail-closed.
+- Linking dùng retract/clearance bảo thủ và chuyển sang Toolpath IR hiện có.
+- Đã có progress/cancellation worker, latest-wins check, atomic artifact publish,
+  Simulation compatibility và Save/Close/Open trên SQLite schema v4.
+- Review JSON nằm trong `reference_private/DERIVED/CAM_3D_8A2_1/` và được Git
+  ignore.
+- Focused suite đạt 62 passed; full suite tuần tự đạt 1346 passed,
+  2 deselected sau khi khóa algorithm version 2.
+- Review package đã được người dùng duyệt. Coarse mesh chỉ còn là regression cho
+  approximation/fail-closed; bằng chứng tolerance dùng BRep contact projection,
+  differential normal, mesh-quality metrics, zigzag, cancellation, unsupported
+  diagnostics và Toolpath IR.
+- Phạm vi hoàn thành gồm clipping, one-way/zigzag ordering, conservative linking,
+  Toolpath IR/Simulation compatibility, progress/cancellation, persistence,
+  deterministic review, atomic latest-wins publish và fail-closed capability gate.
+- Đây vẫn là foundation: chưa production-safe cho mọi topology, chưa có bảo đảm
+  holder/shank collision hoặc universal gouge-free, production editor/Post/linking,
+  tool ngoài ball-end hay multi-axis orientation.
 
 ## Lý do tạm gác Stage 9A.I1
 

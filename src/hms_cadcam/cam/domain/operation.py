@@ -228,6 +228,37 @@ class DiagnosticCode(StrEnum):
     BORE_UNSAFE_CLEARANCE = "bore.unsafe_clearance"
     BORE_GENERATION_FAILED = "bore.generation_failed"
     BORE_STALE_RESULT = "bore.stale_result"
+    PARALLEL_INVALID_PARAMETERS = "parallel.invalid_parameters"
+    PARALLEL_NO_GEOMETRY = "parallel.no_geometry"
+    PARALLEL_MISSING_FACE = "parallel.missing_face"
+    PARALLEL_NULL_SHAPE = "parallel.null_shape"
+    PARALLEL_INVALID_TOOL = "parallel.invalid_tool"
+    PARALLEL_UNSUPPORTED_TOOL_GEOMETRY = "parallel.unsupported_tool_geometry"
+    PARALLEL_ZERO_DIRECTION = "parallel.zero_direction"
+    PARALLEL_INVALID_WORKPLANE = "parallel.invalid_workplane"
+    PARALLEL_INVALID_STEPOVER = "parallel.invalid_stepover"
+    PARALLEL_INVALID_TOLERANCE = "parallel.invalid_tolerance"
+    PARALLEL_INVALID_CLEARANCE = "parallel.invalid_clearance"
+    PARALLEL_EMPTY_BOUNDS = "parallel.empty_bounds"
+    PARALLEL_NO_INTERSECTION = "parallel.no_intersection"
+    PARALLEL_ALL_PASSES_EMPTY = "parallel.all_passes_empty"
+    PARALLEL_CANCELLED = "parallel.cancelled"
+    PARALLEL_OCP_OPERATION_FAILURE = "parallel.ocp_operation_failure"
+    PARALLEL_ARTIFACT_GENERATION_FAILED = "parallel.artifact_generation_failure"
+    PARALLEL_STALE_RESULT = "parallel.stale_result"
+    PARALLEL_LIMIT_EXCEEDED = "parallel.limit_exceeded"
+    PARALLEL_UNSUPPORTED_BOUNDARY = "parallel.unsupported_boundary"
+    PARALLEL_UNSUPPORTED_PROTECTIVE_GEOMETRY = (
+        "parallel.unsupported_protective_geometry"
+    )
+    PARALLEL_UNSUPPORTED_ALLOWANCE = "parallel.unsupported_allowance"
+    PARALLEL_FOUNDATION_LIMITATION = "parallel.foundation_limitation"
+    PARALLEL_MESH_NORMAL_APPROXIMATION = "parallel.mesh_normal_approximation"
+    PARALLEL_MESH_TOLERANCE_VIOLATION = "parallel.mesh_tolerance_violation"
+    PARALLEL_CONTACT_NORMAL_DISCONTINUITY = (
+        "parallel.contact_normal_discontinuity"
+    )
+    PARALLEL_SOURCE_NORMAL_UNAVAILABLE = "parallel.source_normal_unavailable"
 
 
 @dataclass(frozen=True, slots=True)

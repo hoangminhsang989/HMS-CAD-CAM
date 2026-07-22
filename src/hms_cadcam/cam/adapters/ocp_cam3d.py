@@ -13,6 +13,7 @@ from uuid import UUID
 from OCP.BRep import BRep_Tool
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.IMeshTools import IMeshTools_Parameters
 from OCP.BRepTools import BRepTools
 from OCP.TopAbs import TopAbs_Orientation, TopAbs_ShapeEnum
 from OCP.TopExp import TopExp
@@ -151,10 +152,7 @@ class OcpCam3DSurfaceAdapter:
             copied = TopoDS.Face_s(BRepBuilderAPI_Copy(face).Shape())
             mesher = BRepMesh_IncrementalMesh(
                 copied,
-                tolerance.chordal_tolerance,
-                False,
-                tolerance.angular_tolerance,
-                True,
+                _meshing_parameters(tolerance),
             )
             if not mesher.IsDone():
                 raise _error(Cam3DDiagnosticCode.FAILED, "OCP CAM 3D tessellation did not complete", surface)
@@ -250,6 +248,25 @@ def _faces(shape: TopoDS_Shape) -> tuple[TopoDS_Face, ...]:
     values = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(shape, TopAbs_ShapeEnum.TopAbs_FACE, values)
     return tuple(TopoDS.Face_s(values.FindKey(index)) for index in range(1, values.Extent() + 1))
+
+
+def _meshing_parameters(
+    tolerance: Cam3DTolerancePolicy,
+) -> IMeshTools_Parameters:
+    """Map the complete CAM 3D tolerance policy to deterministic OCP controls."""
+    parameters = IMeshTools_Parameters()
+    parameters.Deflection = tolerance.chordal_tolerance
+    parameters.DeflectionInterior = tolerance.chordal_tolerance
+    parameters.Angle = tolerance.angular_tolerance
+    parameters.AngleInterior = tolerance.angular_tolerance
+    parameters.Relative = False
+    parameters.InParallel = False
+    parameters.ControlSurfaceDeflection = True
+    parameters.ForceFaceDeflection = True
+    if tolerance.minimum_triangle_size is not None:
+        parameters.MinSize = tolerance.minimum_triangle_size
+        parameters.AdjustMinSize = False
+    return parameters
 
 
 def _contains_face(container: TopoDS_Shape, face: TopoDS_Face) -> bool:
