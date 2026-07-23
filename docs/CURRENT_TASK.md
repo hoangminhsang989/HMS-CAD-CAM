@@ -1,15 +1,35 @@
-# Nhiệm vụ hiện tại — Stage 8A.3.1
+# Nhiệm vụ hiện tại — Stage 8A.3.2
 
 ## Trạng thái ưu tiên
 
 - Functional UI baseline: `24d2a42` — hoàn thành đánh giá đồng bộ giao diện
   phay 2D Stage 9A.5.4.
+- **Stage 8A.3.2 — Z-Level Finishing Hardening and Collision Safety — COMPLETED.**
 - **Stage 8A.3.1 — Z-Level Finishing Foundation — COMPLETED.**
 - **Stage 8A.2.3 — Parallel Finishing Production Function Editor — COMPLETED.**
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
 - **Stage 9A.6 — Drilling Family Production Function Editors — COMPLETED.**
 - **Stage 8A.2.1 — Parallel Finishing Foundation — COMPLETED.**
 - **Stage 8A.2.2 — Parallel Finishing Hardening and Collision Safety — COMPLETED.**
+
+## Kết quả hoàn thành Stage 8A.3.2
+
+- Z-Level hardening/collision safety đã hoàn tất với algorithm v2, payload v1 và
+  SQLite schema v4.
+- Dùng shared Stage 8A.2.2 safety contract qua adapter Z-Level; không fork safety
+  solver, không fallback âm thầm sang Parallel.
+- Contact/root 3D validation, pathological topology fail-closed, swept cutter/
+  shank/Holder, scope/hash/invalidation, conservative direct-link fallback,
+  cancellation/latest-wins và SAFE-only READY gate đã có mã chạy được và QA.
+- Persistence, Simulation gate, Production Post fail-closed, diagnostic
+  aggregation và evidence consistency đã được kiểm tra.
+- Review package Git-ignored nằm tại
+  `reference_private/DERIVED/CAM_3D_8A3_2_Z_LEVEL_HARDENING_SAFETY/`.
+- Package hardening hiện có 18 ảnh kỹ thuật, một montage, 17 report JSON chuyên
+  biệt và evidence manifest liên kết PNG/report/calculation/hash; tổng 39 file.
+- Chưa production-safe, chưa machine-ready, chưa Production Function Editor,
+  chưa Production Post cho Z-Level; machine-ready clearance vẫn
+  `false`; Stage 8A.3.3 chưa bắt đầu.
 
 ## Kết quả hoàn thành Stage 8A.2.3
 

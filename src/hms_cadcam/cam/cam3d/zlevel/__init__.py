@@ -1,4 +1,4 @@
-"""Public Stage 8A.3.1 Z-Level Finishing foundation API."""
+"""Public Stage 8A.3.2 Z-Level hardening and safety API."""
 
 from .geometry import (
     build_machining_frame,
@@ -42,13 +42,20 @@ from .service import (
     calculate_and_publish_z_level_finishing,
     z_level_artifact_has_safe_contract,
 )
+from .safety import (
+    ZLevelSafetyDiagnostic,
+    ZLevelSafetyReport,
+    ZLevelSafetyScopeEntry,
+    ZLevelSafetyStatistics,
+    ZLevelScopeStatus,
+    build_z_level_safety_policy,
+    validate_z_level_candidate_safety,
+    z_level_artifact_contract_hash,
+)
 from hms_cadcam.cam.cam3d.parallel.safety_models import (
     ParallelGeometrySource as ZLevelGeometrySource,
-    ParallelSafetyDiagnostic as ZLevelSafetyDiagnostic,
     ParallelSafetyMotion as ZLevelSafetyMotion,
     ParallelSafetyPolicy as ZLevelSafetyPolicy,
-    ParallelSafetyReport as ZLevelSafetyReport,
-    ParallelSafetyStatistics as ZLevelSafetyStatistics,
     ParallelSafetyStatus as ZLevelSafetyStatus,
     ParallelToolComponent as ZLevelToolComponent,
 )
@@ -86,16 +93,21 @@ __all__ = [
     "ZLevelSafetyMotion",
     "ZLevelSafetyPolicy",
     "ZLevelSafetyReport",
+    "ZLevelSafetyScopeEntry",
     "ZLevelSafetyStatistics",
+    "ZLevelScopeStatus",
     "ZLevelSafetyStatus",
     "ZLevelToolComponent",
     "ZLevelSchedule",
     "ZLevelSegment",
     "ZLevelStatistics",
     "build_machining_frame",
+    "build_z_level_safety_policy",
     "calculate_and_publish_z_level_finishing",
     "calculate_region_bounds",
     "plan_level_schedule",
     "trace_z_level",
+    "validate_z_level_candidate_safety",
+    "z_level_artifact_contract_hash",
     "z_level_artifact_has_safe_contract",
 ]

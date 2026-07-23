@@ -60,7 +60,7 @@ from .safety_models import (
 )
 
 _PROVENANCE = re.compile(
-    r"parallel\.pass\.(?P<pass>\d+)\.segment\.(?P<segment>\d+)\.(?P<action>.+)"
+    r"(?:parallel|z_level)\.pass\.(?P<pass>\d+)\.segment\.(?P<segment>\d+)\.(?P<action>.+)"
 )
 
 
@@ -695,6 +695,17 @@ def _motions(
                 expected_start = expected_end = segment.points[0]
             elif action in {"retract", "clearance"}:
                 expected_start = expected_end = segment.points[-1]
+            elif action.startswith("link.direct."):
+                direct_parts = action.split(".")
+                if len(direct_parts) != 4:
+                    raise CamValidationError("Direct-link provenance is malformed")
+                previous_segment = segment_map.get(
+                    (int(direct_parts[2]), int(direct_parts[3]))
+                )
+                if previous_segment is None:
+                    raise CamValidationError("Direct-link predecessor is missing")
+                expected_start = previous_segment.points[-1]
+                expected_end = segment.points[0]
         values.append(
             _Motion(
                 event_index,
@@ -752,6 +763,7 @@ def _collision_finding(
         ParallelSafetyMotion.CUT,
         ParallelSafetyMotion.APPROACH,
         ParallelSafetyMotion.RETRACT,
+        ParallelSafetyMotion.LINK,
     }
     expected_sources = {
         source
@@ -777,6 +789,12 @@ def _collision_finding(
             distance_to_axis <= radius + policy.numeric_epsilon_mm
             and expected_distance > expected_limit
         ):
+            # A cutter flank/sphere that is merely tangent to another point on
+            # the same declared machining face is allowable surface contact,
+            # not a gouge.  Only penetration beyond the conservative gouge
+            # tolerance is unsafe.
+            if distance_to_axis >= radius - policy.gouge_tolerance_mm:
+                return None
             threshold = radius + policy.contact_tolerance_mm
             code = DiagnosticCode.PARALLEL_SAFETY_CUTTER_GOUGE
             message = (

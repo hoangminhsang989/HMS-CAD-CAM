@@ -10,8 +10,12 @@ from typing import Callable
 from uuid import UUID, uuid5
 
 from hms_cadcam.cam.cam3d.context import Cam3DCalculationContext
-from hms_cadcam.cam.cam3d.parallel.safety import validate_parallel_candidate_safety
-from hms_cadcam.cam.cam3d.parallel.safety_models import ParallelSafetyReport, ParallelSafetyStatus
+from hms_cadcam.cam.cam3d.parallel.safety_models import ParallelSafetyStatus
+from hms_cadcam.cam.cam3d.zlevel.safety import (
+    ZLevelSafetyReport,
+    validate_z_level_candidate_safety,
+    z_level_artifact_contract_hash,
+)
 from hms_cadcam.cam.cam3d.zlevel.geometry import (
     build_machining_frame,
     calculate_region_bounds,
@@ -32,6 +36,7 @@ from hms_cadcam.cam.cam3d.zlevel.models import (
     ZLevelStatistics,
     Z_LEVEL_FINISHING_ALGORITHM_VERSION,
     Z_LEVEL_FINISHING_STRATEGY_KEY,
+    Z_LEVEL_FINISHING_STRATEGY_VERSION,
 )
 from hms_cadcam.cam.domain.ids import OperationId, ToolpathArtifactId
 from hms_cadcam.cam.domain.operation import (
@@ -91,7 +96,7 @@ class ZLevelFinishingComputeResult:
     accepted: bool
     diagnostics: tuple[ValidationDiagnostic, ...] = ()
     metadata: ToolpathArtifactMetadata | None = None
-    safety_report: ParallelSafetyReport | None = None
+    safety_report: ZLevelSafetyReport | None = None
     lifecycle: ZLevelArtifactLifecycle | None = None
 
 
@@ -287,7 +292,12 @@ def calculate_and_publish_z_level_finishing(
             contact_resolver=contact_resolver,
         )
         _emit(progress, operation.operation_id, ZLevelProgressPhase.SAFETY, 0, 1)
-        safety = validate_parallel_candidate_safety(
+        linking_decision = (
+            "direct_safe"
+            if computing.parameters.linking_mode.value == "conservative_direct"
+            else "retract_clearance"
+        )
+        safety = validate_z_level_candidate_safety(
             operation=computing.operation,
             context=computing.context,
             tool=computing.tool,
@@ -296,8 +306,47 @@ def calculate_and_publish_z_level_finishing(
             artifact=candidate.artifact,
             preview=candidate.preview,  # shared Stage 8A.2.2 structural contract
             cancellation=cancellation,
+            linking_decision=linking_decision,
         )
         _emit(progress, operation.operation_id, ZLevelProgressPhase.SAFETY, 1, 1)
+        # A direct link is an optimisation candidate only.  If the shared
+        # swept validator or the Z-Level boundary/hole adapter rejects it,
+        # deterministically rebuild the same preview with retract/clearance and
+        # validate that complete assembly before considering READY.
+        if (
+            safety.status is not ParallelSafetyStatus.SAFE
+            and computing.parameters.linking_mode.value == "conservative_direct"
+            and any(
+                item.code
+                in {
+                    DiagnosticCode.Z_LEVEL_SAFETY_LINK_COLLISION,
+                    DiagnosticCode.Z_LEVEL_SAFETY_HOLE_CROSSING,
+                }
+                for item in safety.diagnostics
+            )
+        ):
+            fallback_artifact = _build_candidate_toolpath(
+                computing,
+                token,
+                candidate.preview,
+                safety_report=None,
+                cancellation=cancellation,
+                force_retract=True,
+            )
+            fallback_safety = validate_z_level_candidate_safety(
+                operation=computing.operation,
+                context=computing.context,
+                tool=computing.tool,
+                assembly=computing.assembly,
+                holder=computing.holder,
+                artifact=fallback_artifact,
+                preview=candidate.preview,
+                cancellation=cancellation,
+                linking_decision="direct_rejected_fallback",
+            )
+            if fallback_safety.status is ParallelSafetyStatus.SAFE:
+                candidate = ZLevelFinishingCandidate(fallback_artifact, candidate.preview)
+                safety = fallback_safety
         if safety.status is not ParallelSafetyStatus.SAFE:
             diagnostics = tuple(item.to_validation_diagnostic() for item in safety.diagnostics)
             if not diagnostics:
@@ -312,11 +361,36 @@ def calculate_and_publish_z_level_finishing(
                 safety_report=safety,
                 lifecycle=_lifecycle(
                     computing,
-                    ZLevelArtifactStatus.UNSAFE,
+                    (
+                        ZLevelArtifactStatus.CANCELLED
+                        if safety.status is ParallelSafetyStatus.CANCELLED
+                        else ZLevelArtifactStatus.FAILED
+                        if safety.status is ParallelSafetyStatus.FAILED
+                        else ZLevelArtifactStatus.UNSAFE
+                    ),
                     safety=safety,
                 ),
             )
-        safe_artifact = _build_candidate_toolpath(computing, token, candidate.preview, safety_report=safety, cancellation=cancellation)
+        contract_hash = z_level_artifact_contract_hash(
+            operation=computing.operation,
+            context=computing.context,
+            parameters=computing.parameters,
+            tool=computing.tool,
+            assembly=computing.assembly,
+            holder=computing.holder,
+            candidate_artifact=candidate.artifact,
+            safety_report=safety,
+        )
+        safe_artifact = _build_candidate_toolpath(
+            computing,
+            token,
+            candidate.preview,
+            safety_report=safety,
+            artifact_contract_hash=contract_hash.digest,
+            toolpath_ir_hash=candidate.artifact.artifact_fingerprint.digest,
+            cancellation=cancellation,
+            force_retract=safety.linking_decision == "direct_rejected_fallback",
+        )
         _checkpoint(cancellation)
         live = current_operation() if current_operation is not None else computing.operation
         published = publish_toolpath(live, safe_artifact, token, computing.input_fingerprint)
@@ -401,8 +475,11 @@ def _build_candidate_toolpath(
     token: ComputationToken,
     preview: ZLevelPreview,
     *,
-    safety_report: ParallelSafetyReport | None,
+    safety_report: ZLevelSafetyReport | None,
+    artifact_contract_hash: str | None = None,
+    toolpath_ir_hash: str | None = None,
     cancellation: Callable[[], bool] | None,
+    force_retract: bool = False,
 ) -> ToolpathArtifact:
     artifact_id = ToolpathArtifactId(
         uuid5(_ARTIFACT_NAMESPACE, f"{inputs.operation.operation_id}|{inputs.input_fingerprint.digest}|{token.generation}")
@@ -434,60 +511,176 @@ def _build_candidate_toolpath(
             ("strategy_payload_version", str(inputs.operation.parameters.strategy_version)),
             ("safety_status", safety_report.status.value if safety_report is not None else "candidate"),
             ("safety_report_fingerprint", safety_report.fingerprint.digest if safety_report is not None else "pending"),
+            ("safety_scope_hash", safety_report.scope_fingerprint.digest if safety_report is not None else "pending"),
+            ("operation_revision_hash", ContentFingerprint.from_payload(inputs.operation.revision.to_dict()).digest),
+            ("effective_parameter_hash", inputs.parameters.fingerprint.digest),
+            ("tool_fingerprint", inputs.tool.content_fingerprint.digest),
+            ("shank_fingerprint", ContentFingerprint.from_payload(inputs.tool.shank.to_dict()).digest),
+            ("holder_fingerprint", inputs.holder.content_fingerprint.digest if inputs.holder is not None else "not_present"),
+            ("holder_state", safety_report.holder_state if safety_report is not None else "pending"),
+            ("assembly_fingerprint", ContentFingerprint.from_payload(inputs.assembly.to_dict()).digest),
+            ("toolpath_ir_hash", toolpath_ir_hash or "pending"),
+            ("linking_decision", safety_report.linking_decision if safety_report is not None else "pending"),
+            ("machine_ready_clearance_state", "UNVERIFIED"),
+            ("artifact_contract_hash", artifact_contract_hash or "pending"),
             ("machine_ready_clearance_verified", "false"),
         ),
         provenance="z_level.safety.contract",
     )
     feed = FeedRate(inputs.parameters.feed_rate_mm_per_minute, FeedUnit.MM_PER_MINUTE)
     tolerance = inputs.parameters.tolerance_mm
-    for level_pass in preview.passes:
-        for contour in level_pass.segments:
-            _checkpoint(cancellation)
-            points = tuple(_setup_point(item.tool_center_point, inputs.context.machining_zone.wcs) for item in contour.points)
-            start, end = points[0], points[-1]
-            prefix = f"parallel.pass.{contour.pass_index}.segment.{contour.segment_index}"
-            builder.marker(
-                "z_level.contour",
-                "Z-Level contour theo tool-center implicit field",
-                metadata=(
-                    ("level_index", str(contour.pass_index)),
-                    ("level", f"{contour.level:.12g}"),
-                    ("region_id", contour.region_id),
-                    ("loop_type", contour.loop_type.value),
-                    ("orientation", contour.orientation.value),
-                ),
-                provenance=f"{prefix}.marker",
+    contours = tuple(
+        (level_pass, contour)
+        for level_pass in preview.passes
+        for contour in level_pass.segments
+    )
+    direct_mode = (
+        not force_retract
+        and inputs.parameters.linking_mode.value == "conservative_direct"
+    )
+    for contour_index, (level_pass, contour) in enumerate(contours):
+        _checkpoint(cancellation)
+        points = tuple(
+            _setup_point(item.tool_center_point, inputs.context.machining_zone.wcs)
+            for item in contour.points
+        )
+        start, end = points[0], points[-1]
+        prefix = f"z_level.pass.{contour.pass_index}.segment.{contour.segment_index}"
+        builder.marker(
+            "z_level.contour",
+            "Z-Level contour theo tool-center implicit field",
+            metadata=(
+                ("level_index", str(contour.pass_index)),
+                ("level", f"{contour.level:.12g}"),
+                ("region_id", contour.region_id),
+                ("loop_type", contour.loop_type.value),
+                ("orientation", contour.orientation.value),
+            ),
+            provenance=f"{prefix}.marker",
+        )
+        clearance = Pose(
+            Point3(start.x, start.y, inputs.parameters.clearance_z_mm, LengthUnit.MM),
+            axis,
+        )
+        retract = Pose(
+            Point3(start.x, start.y, inputs.parameters.retract_z_mm, LengthUnit.MM),
+            axis,
+        )
+        contact = Pose(start, axis)
+        previous = contours[contour_index - 1][1] if contour_index else None
+        can_direct = (
+            direct_mode
+            and previous is not None
+            and math.isclose(
+                previous.level,
+                contour.level,
+                rel_tol=0.0,
+                abs_tol=tolerance,
             )
-            clearance = Pose(Point3(start.x, start.y, inputs.parameters.clearance_z_mm, LengthUnit.MM), axis)
-            retract = Pose(Point3(start.x, start.y, inputs.parameters.retract_z_mm, LengthUnit.MM), axis)
-            contact = Pose(start, axis)
-            _rapid_if_needed(builder, clearance, MotionClass.NON_CUTTING, f"{prefix}.position.clearance", tolerance)
-            _rapid_if_needed(builder, retract, MotionClass.RETRACT, f"{prefix}.position.retract", tolerance)
-            _linear_if_needed(builder, contact, feed, MotionClass.LINK, f"{prefix}.approach", tolerance)
-            for point_index, point in enumerate(points[1:], start=1):
-                evidence = contour.points[point_index]
-                builder.linear_to(
-                    Pose(point, axis),
-                    feed,
-                    motion_class=MotionClass.CUTTING,
-                    engagement=(
-                        ("strategy", Z_LEVEL_FINISHING_STRATEGY_KEY),
-                        ("level_index", str(contour.pass_index)),
-                        ("region_id", contour.region_id),
-                        ("source_surface_ids", ",".join(map(str, evidence.source_surface_ids))),
-                        ("contact_level", f"{evidence.requested_level:.12g}"),
+            and builder.current_pose is not None
+        )
+        if can_direct:
+            _linear_if_needed(
+                builder,
+                contact,
+                feed,
+                MotionClass.LINK,
+                f"{prefix}.link.direct.{previous.pass_index}.{previous.segment_index}",
+                tolerance,
+            )
+        else:
+            _rapid_if_needed(
+                builder,
+                clearance,
+                MotionClass.NON_CUTTING,
+                f"{prefix}.position.clearance",
+                tolerance,
+            )
+            _rapid_if_needed(
+                builder,
+                retract,
+                MotionClass.RETRACT,
+                f"{prefix}.position.retract",
+                tolerance,
+            )
+            _linear_if_needed(
+                builder,
+                contact,
+                feed,
+                MotionClass.LINK,
+                f"{prefix}.approach",
+                tolerance,
+            )
+        for point_index, point in enumerate(points[1:], start=1):
+            evidence = contour.points[point_index]
+            builder.linear_to(
+                Pose(point, axis),
+                feed,
+                motion_class=MotionClass.CUTTING,
+                engagement=(
+                    ("strategy", Z_LEVEL_FINISHING_STRATEGY_KEY),
+                    ("level_index", str(contour.pass_index)),
+                    ("region_id", contour.region_id),
+                    (
+                        "source_surface_ids",
+                        ",".join(map(str, evidence.source_surface_ids)),
                     ),
-                    provenance=f"{prefix}.cut.{point_index}",
-                )
-            if contour.closed and not _same_point(points[-1], points[0], tolerance):
-                builder.linear_to(Pose(points[0], axis), feed, motion_class=MotionClass.CUTTING, provenance=f"{prefix}.cut.close")
-            _linear_if_needed(builder, Pose(Point3(end.x, end.y, inputs.parameters.retract_z_mm, LengthUnit.MM), axis), feed, MotionClass.RETRACT, f"{prefix}.retract", tolerance)
-            _rapid_if_needed(builder, Pose(Point3(end.x, end.y, inputs.parameters.clearance_z_mm, LengthUnit.MM), axis), MotionClass.RETRACT, f"{prefix}.clearance", tolerance)
+                    ("contact_level", f"{evidence.requested_level:.12g}"),
+                ),
+                provenance=f"{prefix}.cut.{point_index}",
+            )
+        if contour.closed and not _same_point(points[-1], points[0], tolerance):
+            builder.linear_to(
+                Pose(points[0], axis),
+                feed,
+                motion_class=MotionClass.CUTTING,
+                provenance=f"{prefix}.cut.close",
+            )
+        next_contour = (
+            contours[contour_index + 1][1]
+            if contour_index + 1 < len(contours)
+            else None
+        )
+        keep_direct_level = (
+            direct_mode
+            and next_contour is not None
+            and math.isclose(
+                next_contour.level,
+                contour.level,
+                rel_tol=0.0,
+                abs_tol=tolerance,
+            )
+        )
+        if not keep_direct_level:
+            _linear_if_needed(
+                builder,
+                Pose(
+                    Point3(end.x, end.y, inputs.parameters.retract_z_mm, LengthUnit.MM),
+                    axis,
+                ),
+                feed,
+                MotionClass.RETRACT,
+                f"{prefix}.retract",
+                tolerance,
+            )
+            _rapid_if_needed(
+                builder,
+                Pose(
+                    Point3(end.x, end.y, inputs.parameters.clearance_z_mm, LengthUnit.MM),
+                    axis,
+                ),
+                MotionClass.RETRACT,
+                f"{prefix}.clearance",
+                tolerance,
+            )
     return builder.finalize()
 
 
 def z_level_artifact_has_safe_contract(artifact: ToolpathArtifact) -> bool:
-    """Return true only for a complete artifact with the current SAFE marker."""
+    """Return true only for a complete, current Z-Level v2 SAFE marker.
+
+    A v1 artifact deliberately returns ``False`` and must be recalculated.
+    """
     if artifact.completion_status.value != "complete":
         return False
     for event in artifact.events:
@@ -497,9 +690,34 @@ def z_level_artifact_has_safe_contract(artifact: ToolpathArtifact) -> bool:
         return (
             metadata.get("strategy_key") == Z_LEVEL_FINISHING_STRATEGY_KEY
             and metadata.get("algorithm_version") == str(Z_LEVEL_FINISHING_ALGORITHM_VERSION)
+            and metadata.get("strategy_payload_version")
+            == str(Z_LEVEL_FINISHING_STRATEGY_VERSION)
             and metadata.get("safety_status") == ParallelSafetyStatus.SAFE.value
             and metadata.get("machine_ready_clearance_verified") == "false"
-            and metadata.get("safety_report_fingerprint", "pending") != "pending"
+            and metadata.get("machine_ready_clearance_state") == "UNVERIFIED"
+            and _is_sha256(metadata.get("safety_report_fingerprint", ""))
+            and _is_sha256(metadata.get("safety_scope_hash", ""))
+            and _is_sha256(metadata.get("artifact_contract_hash", ""))
+            and _is_sha256(metadata.get("toolpath_ir_hash", ""))
+            and _is_sha256(metadata.get("operation_revision_hash", ""))
+            and _is_sha256(metadata.get("effective_parameter_hash", ""))
+            and _is_sha256(metadata.get("tool_fingerprint", ""))
+            and _is_sha256(metadata.get("shank_fingerprint", ""))
+            and _is_sha256(metadata.get("assembly_fingerprint", ""))
+            and metadata.get("assembly_fingerprint")
+            == artifact.tool_assembly_fingerprint.digest
+            and (
+                (
+                    metadata.get("holder_state") == "declared_absent"
+                    and metadata.get("holder_fingerprint") == "not_present"
+                )
+                or (
+                    metadata.get("holder_state") == "geometry_faithful"
+                    and _is_sha256(metadata.get("holder_fingerprint", ""))
+                )
+            )
+            and metadata.get("linking_decision")
+            in {"retract_clearance", "direct_safe", "direct_rejected_fallback"}
         )
     return False
 
@@ -509,7 +727,7 @@ def _lifecycle(
     status: ZLevelArtifactStatus,
     *,
     artifact: ToolpathArtifact | None = None,
-    safety: ParallelSafetyReport | None = None,
+    safety: ZLevelSafetyReport | None = None,
     superseded: bool = False,
 ) -> ZLevelArtifactLifecycle:
     return ZLevelArtifactLifecycle(
@@ -530,6 +748,12 @@ def _setup_point(point: Point3, wcs: WcsFrame) -> Point3:
 
 def _same_point(first: Point3, second: Point3, tolerance: float) -> bool:
     return math.dist((first.x, first.y, first.z), (second.x, second.y, second.z)) <= tolerance
+
+
+def _is_sha256(value: str) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _rapid_if_needed(builder: ToolpathBuilder, target: Pose, motion_class: MotionClass, provenance: str, tolerance: float) -> None:

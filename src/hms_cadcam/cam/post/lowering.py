@@ -238,7 +238,7 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
             )
     if source.operation.strategy_key == "z_level_finishing_3d":
         raise CamValidationError(
-            "Production Post cho Z-Level chưa được chứng nhận trong Stage 8A.3.1"
+            "Production Post cho Z-Level tiếp tục fail-closed; Stage 8A.3.2 chưa chứng nhận machine-ready"
         )
     if source.artifact.unit not in capabilities.supported_units:
         raise CamValidationError("Artifact unit is unsupported by post definition")

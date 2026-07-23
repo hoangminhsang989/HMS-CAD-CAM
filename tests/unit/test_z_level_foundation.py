@@ -45,7 +45,7 @@ def _preview(fixture, parameters: ZLevelFinishingParameters):
 
 
 def test_strategy_versions_are_strategy_specific_and_parallel_is_unchanged() -> None:
-    assert Z_LEVEL_FINISHING_ALGORITHM_VERSION == 1
+    assert Z_LEVEL_FINISHING_ALGORITHM_VERSION == 2
     assert planar_fixture().operation.parameters.strategy_version == 1
 
 

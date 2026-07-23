@@ -26,7 +26,9 @@ from hms_cadcam.cam.domain.units import LengthUnit
 
 Z_LEVEL_FINISHING_STRATEGY_KEY = "z_level_finishing_3d"
 Z_LEVEL_FINISHING_STRATEGY_VERSION = 1
-Z_LEVEL_FINISHING_ALGORITHM_VERSION = 1
+# Version 2 is an algorithm-only hardening revision.  The persisted strategy
+# payload remains v1 so existing operations can be recalculated explicitly.
+Z_LEVEL_FINISHING_ALGORITHM_VERSION = 2
 _EPSILON = 1.0e-9
 
 
@@ -52,6 +54,7 @@ class ZLevelBoundaryPolicy(StrEnum):
 
 class ZLevelLinkingMode(StrEnum):
     RETRACT_CLEARANCE = "retract_clearance"
+    CONSERVATIVE_DIRECT = "conservative_direct"
 
 
 class ZLevelBoundaryClassification(StrEnum):

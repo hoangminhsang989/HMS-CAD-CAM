@@ -193,7 +193,10 @@ def trace_z_level(
             if mesh.triangle_sources[triangle_index] not in selected:
                 continue
             normal = mesh.triangle_normals[triangle_index]
-            if normal.magnitude <= 1.0e-12:
+            if (
+                not all(math.isfinite(value) for value in (normal.x, normal.y, normal.z))
+                or normal.magnitude <= 1.0e-12
+            ):
                 rejected += 1
                 continue
             vertices = tuple(mesh.vertices[index] for index in triangle)
@@ -204,6 +207,11 @@ def trace_z_level(
                 - level
                 for point in vertices
             )
+            if not all(math.isfinite(value) for value in values):
+                raise ZLevelFinishingError(
+                    DiagnosticCode.Z_LEVEL_INVALID_CONTACT,
+                    "Implicit Z-Level root không hữu hạn.",
+                )
             intersections = _triangle_intersections(vertices, values, tolerance=schedule.tolerance_mm)
             source = mesh.triangle_sources[triangle_index]
             if len(intersections) == 3 and all(abs(value) <= schedule.tolerance_mm for value in values):
@@ -382,12 +390,26 @@ def _assemble_contours(
         elif parameters.orientation is ZLevelOrientation.AUTOMATIC and orientation is ZLevelOrientation.CLOCKWISE:
             points = tuple(reversed(points))
             orientation = ZLevelOrientation.COUNTER_CLOCKWISE
+        source_region = tuple(
+            sorted(
+                {
+                    str(source)
+                    for item in points
+                    for source in item.source_surface_ids
+                }
+            )
+        )
+        region_id = (
+            f"region:{','.join(source_region)}"
+            if source_region
+            else f"region:pass-{pass_index}-segment-{len(contours)}"
+        )
         contours.append(
             ZLevelContour(
                 pass_index,
                 len(contours),
                 level,
-                f"region-{pass_index}-{len(contours)}",
+                region_id,
                 loop_type,
                 orientation,
                 points,
@@ -405,11 +427,21 @@ def _assemble_contours(
 def _deduplicate_segments(raw: list[_RawSegment], tolerance: float) -> list[_RawSegment]:
     counts: dict[tuple[tuple[int, int, int], tuple[int, int, int]], int] = {}
     for segment in raw:
+        if _distance(segment.first, segment.second) <= tolerance * 0.1:
+            # Zero-length/degenerate edges are not topology evidence.
+            continue
         keys = sorted((_point_key(segment.first, tolerance), _point_key(segment.second, tolerance)))
         key = (keys[0], keys[1])
         counts[key] = counts.get(key, 0) + 1
+    if any(value > 2 for value in counts.values()):
+        raise ZLevelFinishingError(
+            DiagnosticCode.Z_LEVEL_UNSUPPORTED_TOPOLOGY,
+            "Z-Level gặp repeated edge/non-manifold topology không thể chứng minh tương đương.",
+        )
     unique: dict[tuple[tuple[int, int, int], tuple[int, int, int]], _RawSegment] = {}
     for segment in raw:
+        if _distance(segment.first, segment.second) <= tolerance * 0.1:
+            continue
         keys = sorted((_point_key(segment.first, tolerance), _point_key(segment.second, tolerance)))
         shared_edge = (keys[0], keys[1])
         if counts[shared_edge] > 1:
@@ -430,6 +462,20 @@ def _classify_loops(
         for item in contours
         if item.closed and len(item.points) >= 3
     }
+    seen_polygons: set[tuple[tuple[float, float], ...]] = set()
+    for polygon in polygons.values():
+        if abs(_polygon_area(polygon)) <= 1.0e-12:
+            raise ZLevelFinishingError(
+                DiagnosticCode.Z_LEVEL_UNSUPPORTED_TOPOLOGY,
+                "Z-Level tiny/sliver loop bị collapse sau quantization.",
+            )
+        key = tuple(sorted(polygon))
+        if key in seen_polygons:
+            raise ZLevelFinishingError(
+                DiagnosticCode.Z_LEVEL_DUPLICATE_SEGMENT,
+                "Z-Level duplicate contour không được merge ngầm.",
+            )
+        seen_polygons.add(key)
     result: list[ZLevelContour] = []
     for contour in contours:
         polygon = polygons.get(contour.segment_index)
@@ -523,6 +569,10 @@ def _point_evidence(
     tolerance: float,
     contact_resolver: ContactResolver | None,
 ) -> ZLevelPathPoint:
+    # Keep the mesh differential normal as a provenance reference.  A BRep
+    # resolver may return a reversed or non-unit normal; normalize it and reject
+    # a tangent/undefined orientation instead of accepting UV convergence alone.
+    reference_normal = _normalized(normal, tolerance)
     contact_deviation = 0.0
     if contact_resolver is not None:
         try:
@@ -538,8 +588,34 @@ def _point_evidence(
                 "BRep contact resolver trả provenance khác selected face.",
             )
         contact = resolved.contact_point
-        normal = resolved.surface_normal
+        normal = _normalized(resolved.surface_normal, tolerance)
+        orientation_dot = reference_normal.dot(normal)
+        if not math.isfinite(orientation_dot) or abs(orientation_dot) <= 1.0e-8:
+            raise ZLevelFinishingError(
+                DiagnosticCode.Z_LEVEL_INVALID_NORMAL,
+                "Pháp tuyến BRep không nhất quán với differential normal của contact.",
+            )
+        if orientation_dot < 0.0:
+            normal = Vector3(-normal.x, -normal.y, -normal.z)
         contact_deviation = resolved.projection_deviation_mm
+    else:
+        normal = reference_normal
+    if not all(
+        math.isfinite(value)
+        for value in (
+            contact.x,
+            contact.y,
+            contact.z,
+            normal.x,
+            normal.y,
+            normal.z,
+            contact_deviation,
+        )
+    ):
+        raise ZLevelFinishingError(
+            DiagnosticCode.Z_LEVEL_INVALID_CONTACT,
+            "Contact hoặc differential normal Z-Level không hữu hạn.",
+        )
     offset = radius + parameters.surface_allowance_mm
     raw_center = Point3(
         contact.x + normal.x * offset,
@@ -552,10 +628,39 @@ def _point_evidence(
     if contact_resolver is not None and level_deviation > tolerance:
         raise ZLevelFinishingError(
             DiagnosticCode.Z_LEVEL_UNRESOLVED_ROOT,
-            "BRep differential contact làm implicit root lệch quá tolerance.",
+            "Contact 3D làm implicit root lệch quá tolerance.",
         )
     center = frame.point(u, v, level)
     actual_offset = _distance(contact, center)
+    projected = Vector3(
+        center.x - contact.x,
+        center.y - contact.y,
+        center.z - contact.z,
+    )
+    normal_offset = projected.dot(normal)
+    tangential = math.sqrt(
+        max(
+            0.0,
+            projected.dot(projected) - normal_offset * normal_offset,
+        )
+    )
+    if (
+        not math.isfinite(actual_offset)
+        or not math.isfinite(normal_offset)
+        or (
+            contact_resolver is not None
+            and (normal_offset <= tolerance * 0.1 or tangential > tolerance)
+        )
+    ):
+        raise ZLevelFinishingError(
+            DiagnosticCode.Z_LEVEL_INVALID_CONTACT,
+            "Tool center không nằm đúng phía bề mặt hoặc lệch tiếp xúc quá tolerance.",
+        )
+    if contact_resolver is not None and abs(actual_offset - offset) > tolerance:
+        raise ZLevelFinishingError(
+            DiagnosticCode.Z_LEVEL_ALLOWANCE_DEVIATION,
+            "Allowance Z-Level không được áp dụng đúng một lần.",
+        )
     boundary_class = _classify_boundary(contact, frame, boundary, tolerance)
     if boundary_class is ZLevelBoundaryClassification.AMBIGUOUS:
         raise ZLevelFinishingError(DiagnosticCode.Z_LEVEL_AMBIGUOUS_TRIM, "Phân loại trim Z-Level không xác định; đã fail closed.")

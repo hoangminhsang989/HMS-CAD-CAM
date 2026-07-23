@@ -322,6 +322,32 @@ class DiagnosticCode(StrEnum):
     Z_LEVEL_STALE_ARTIFACT = "z_level.stale_artifact"
     Z_LEVEL_GENERATION_FAILED = "z_level.generation_failed"
     Z_LEVEL_FOUNDATION_LIMITATION = "z_level.foundation_limitation"
+    # Stage 8A.3.2 hardening diagnostics.  Shared Parallel diagnostics remain
+    # intentionally available as a legacy safety contract; these codes identify
+    # Z-Level provenance and user-facing fail-closed reasons.
+    Z_LEVEL_SAFETY_CUTTER_GOUGE = "z_level.safety.cutter_gouge"
+    Z_LEVEL_SAFETY_SHANK_COLLISION = "z_level.safety.shank_collision"
+    Z_LEVEL_SAFETY_HOLDER_COLLISION = "z_level.safety.holder_collision"
+    Z_LEVEL_SAFETY_LINK_COLLISION = "z_level.linking.link_collision"
+    Z_LEVEL_SAFETY_RAPID_COLLISION = "z_level.linking.rapid_collision"
+    Z_LEVEL_SAFETY_APPROACH_COLLISION = "z_level.linking.approach_collision"
+    Z_LEVEL_SAFETY_RETRACT_COLLISION = "z_level.linking.retract_collision"
+    Z_LEVEL_SAFETY_PROTECTED_FACE_COLLISION = "z_level.safety.protected_face_collision"
+    Z_LEVEL_SAFETY_BOUNDARY_ESCAPE = "z_level.safety.boundary_escape"
+    Z_LEVEL_SAFETY_HOLE_CROSSING = "z_level.safety.hole_crossing"
+    Z_LEVEL_SAFETY_AMBIGUOUS_CONTACT = "z_level.safety.ambiguous_contact"
+    Z_LEVEL_SAFETY_INVALID_SWEEP = "z_level.safety.invalid_sweep"
+    Z_LEVEL_SAFETY_EXCESSIVE_CHECKS = "z_level.safety.excessive_checks"
+    Z_LEVEL_SAFETY_MISSING_PROTECTED_GEOMETRY = "z_level.safety.missing_protected_geometry"
+    Z_LEVEL_SAFETY_HOLDER_NOT_PROVIDED = "z_level.safety.holder_not_provided"
+    Z_LEVEL_SAFETY_INVALID_HOLDER = "z_level.safety.invalid_holder"
+    Z_LEVEL_SAFETY_UNKNOWN_V2 = "z_level.safety.unknown"
+    Z_LEVEL_SAFETY_INVALID_HASH = "z_level.artifact.invalid_safety_hash"
+    Z_LEVEL_SAFETY_STALE_REPORT = "z_level.artifact.stale_safety_report"
+    Z_LEVEL_ALGORITHM_VERSION_MISMATCH = "z_level.artifact.algorithm_version_mismatch"
+    Z_LEVEL_UNSUPPORTED_TOPOLOGY = "z_level.geometry.unsupported_topology"
+    Z_LEVEL_SAFETY_CANCELLED = "z_level.safety.cancelled"
+    Z_LEVEL_SAFETY_SUPERSEDED = "z_level.safety.superseded"
 
 
 @dataclass(frozen=True, slots=True)
