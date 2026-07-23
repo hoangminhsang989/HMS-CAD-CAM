@@ -30,6 +30,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerStatus,
     OperationManagerStatusCategory,
 )
+from hms_cadcam.ui.localization import translate_status
 
 
 def status(
@@ -44,30 +45,30 @@ def status(
 def current_status(
     category: OperationManagerStatusCategory, tooltip: str
 ) -> OperationManagerStatus:
-    return status(category, OperationManagerSemanticStatus.CURRENT, "CURRENT", tooltip)
+    return status(category, OperationManagerSemanticStatus.CURRENT, "HIỆN HÀNH", tooltip)
 
 
 def tool_status(value: ToolReferenceStatus) -> OperationManagerStatus:
     mapping = {
         ToolReferenceStatus.VALID: (
             OperationManagerSemanticStatus.CURRENT,
-            "CURRENT",
-            "Tool Assembly khớp revision/fingerprint hiện hành.",
+            "HIỆN HÀNH",
+            "Cụm Tool khớp revision/dấu vân tay hiện hành.",
         ),
         ToolReferenceStatus.MISSING: (
             OperationManagerSemanticStatus.NEEDS_INPUT,
-            "MISSING",
-            "Không tìm thấy Tool Assembly được operation tham chiếu.",
+            "THIẾU",
+            "Không tìm thấy Cụm Tool được nguyên công tham chiếu.",
         ),
         ToolReferenceStatus.STALE: (
             OperationManagerSemanticStatus.STALE,
-            "STALE",
-            "Tool Assembly đã thay đổi so với tham chiếu operation.",
+            "ĐÃ LỖI THỜI",
+            "Cụm Tool đã thay đổi so với tham chiếu nguyên công.",
         ),
         ToolReferenceStatus.INCOMPATIBLE_UNIT: (
             OperationManagerSemanticStatus.BLOCKED,
-            "BLOCKED",
-            "Đơn vị Tool Assembly không tương thích.",
+            "BỊ CHẶN",
+            "Đơn vị Cụm Tool không tương thích.",
         ),
     }
     semantic, text, tooltip = mapping[value]
@@ -83,27 +84,27 @@ def calculation_status(
         return status(
             OperationManagerStatusCategory.CALCULATION,
             OperationManagerSemanticStatus.CALCULATING,
-            "CALCULATING",
-            "Toolpath đang được tính bởi workflow hiện có.",
+            "ĐANG TÍNH",
+            "Đường chạy dao đang được tính bởi quy trình hiện có.",
         )
     if value is ArtifactStatus.VALID:
         return current_status(
             OperationManagerStatusCategory.CALCULATION,
-            "Toolpath artifact hiện hành và đã publish.",
+            "Artifact đường chạy dao hiện hành và đã được công bố.",
         )
     if value is ArtifactStatus.DIRTY:
         return status(
             OperationManagerStatusCategory.CALCULATION,
             OperationManagerSemanticStatus.STALE,
-            "STALE",
-            "Input đã thay đổi; cần tính lại toolpath.",
+            "ĐÃ LỖI THỜI",
+            "Dữ liệu đầu vào đã thay đổi; cần tính lại đường chạy dao.",
         )
     if value is ArtifactStatus.FAILED:
         return status(
             OperationManagerStatusCategory.CALCULATION,
             OperationManagerSemanticStatus.FAILED,
-            "FAILED",
-            "Lần tính toolpath gần nhất thất bại.",
+            "THẤT BẠI",
+            "Lần tính đường chạy dao gần nhất thất bại.",
         )
     missing_input = tool_reference_status is not ToolReferenceStatus.VALID
     semantic = (
@@ -114,10 +115,81 @@ def calculation_status(
     return status(
         OperationManagerStatusCategory.CALCULATION,
         semantic,
-        "NEEDS INPUT" if missing_input else "NEEDS CALC",
-        "Cần sửa input trước khi tính toolpath."
+        "CẦN DỮ LIỆU" if missing_input else "CẦN TÍNH",
+        "Cần sửa dữ liệu đầu vào trước khi tính đường chạy dao."
         if missing_input
-        else "Operation chưa có toolpath artifact.",
+        else "Nguyên công chưa có artifact đường chạy dao.",
+    )
+
+
+def parallel_safety_status(
+    operation: Operation,
+    artifact: object | None,
+) -> OperationManagerStatus | None:
+    """Map the Parallel safety contract without implying machine safety."""
+    if operation.strategy_key != "parallel_finishing_3d":
+        return None
+    if not operation.enabled:
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.DISABLED,
+            "ĐÃ TẮT",
+            "Nguyên công Gia công tinh song song đã bị tắt.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.COMPUTING:
+        return status(
+            OperationManagerStatusCategory.CALCULATION,
+            OperationManagerSemanticStatus.CALCULATING,
+            "ỨNG VIÊN",
+            "Đang tạo ứng viên Gia công tinh song song và kiểm tra an toàn.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.DIRTY:
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.STALE,
+            "AN TOÀN ĐÃ LỖI THỜI",
+            "Bằng chứng an toàn không còn khớp dữ liệu đầu vào đã áp dụng.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.FAILED:
+        evidence = {
+            key: value
+            for item in operation.artifact_state.diagnostics
+            for key, value in item.context
+        }
+        value = evidence.get("safety_status", "failed")
+        semantic = (
+            OperationManagerSemanticStatus.BLOCKED
+            if value in {"unsafe", "unknown"}
+            else OperationManagerSemanticStatus.FAILED
+        )
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            semantic,
+            translate_status(value),
+            "Kiểm tra an toàn Gia công tinh song song không tạo được kết quả SẴN SÀNG.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.VALID and artifact is not None:
+        from hms_cadcam.cam.cam3d.parallel import parallel_artifact_has_safe_contract
+
+        if parallel_artifact_has_safe_contract(artifact):
+            return status(
+                OperationManagerStatusCategory.DOMAIN,
+                OperationManagerSemanticStatus.CURRENT,
+                "ĐÃ KIỂM TRA PHẠM VI",
+                "Đã xác minh an toàn trong phạm vi công bố; khoảng hở sẵn sàng cho máy chưa được xác minh.",
+            )
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.STALE,
+            "AN TOÀN KHÔNG HỢP LỆ",
+            "Kết quả Gia công tinh song song thiếu hash/phạm vi an toàn hiện hành "
+            "của thuật toán v3.",
+        )
+    return status(
+        OperationManagerStatusCategory.DOMAIN,
+        OperationManagerSemanticStatus.DRAFT,
+        "CHƯA KIỂM TRA",
+        "Chưa tính kiểm tra an toàn Gia công tinh song song.",
     )
 
 
@@ -130,30 +202,30 @@ def operation_status(
         return status(
             OperationManagerStatusCategory.DOMAIN,
             OperationManagerSemanticStatus.DISABLED,
-            "DISABLED",
-            "Operation bị vô hiệu hóa; các artifact không được coi là đầu ra hiện hành.",
+            "ĐÃ TẮT",
+            "Nguyên công bị tắt; các kết quả không được coi là đầu ra hiện hành.",
         )
     diagnostics = (*operation.diagnostics, *operation.artifact_state.diagnostics)
     if any(item.severity is DiagnosticSeverity.ERROR for item in diagnostics):
         return status(
             OperationManagerStatusCategory.DOMAIN,
             OperationManagerSemanticStatus.BLOCKED,
-            "BLOCKED",
-            "Operation có diagnostic lỗi cần xử lý.",
+            "BỊ CHẶN",
+            "Nguyên công có chẩn đoán lỗi cần xử lý.",
         )
     if any(item.severity is DiagnosticSeverity.WARNING for item in diagnostics):
         return status(
             OperationManagerStatusCategory.DOMAIN,
             OperationManagerSemanticStatus.WARNING,
-            "WARNING",
-            "Operation có diagnostic cảnh báo.",
+            "CẢNH BÁO",
+            "Nguyên công có chẩn đoán cảnh báo.",
         )
     if tool_reference_status is not ToolReferenceStatus.VALID:
         return status(
             OperationManagerStatusCategory.DOMAIN,
             OperationManagerSemanticStatus.NEEDS_INPUT,
-            "NEEDS INPUT",
-            "Tool Assembly chưa hợp lệ.",
+            "CẦN DỮ LIỆU",
+            "Cụm Tool chưa hợp lệ.",
         )
     return status(
         OperationManagerStatusCategory.DOMAIN,
@@ -178,29 +250,29 @@ def simulation_status(
             return status(
                 OperationManagerStatusCategory.SIMULATION,
                 OperationManagerSemanticStatus.CALCULATING,
-                "RUNNING",
-                f"Simulation runtime: {record.state.value}.",
+                "ĐANG CHẠY",
+                f"Trạng thái Mô phỏng trong phiên: {record.state.value}.",
             )
         if record.state is SimulationRunState.STALE:
             return status(
                 OperationManagerStatusCategory.SIMULATION,
                 OperationManagerSemanticStatus.STALE,
-                "STALE",
-                record.diagnostic_message or "Simulation result đã stale.",
+                "ĐÃ LỖI THỜI",
+                record.diagnostic_message or "Kết quả Mô phỏng đã lỗi thời.",
             )
         if record.state is SimulationRunState.FAILED:
             return status(
                 OperationManagerStatusCategory.SIMULATION,
                 OperationManagerSemanticStatus.FAILED,
-                "FAILED",
-                record.diagnostic_message or "Simulation thất bại.",
+                "THẤT BẠI",
+                record.diagnostic_message or "Mô phỏng thất bại.",
             )
     if result is None:
         return status(
             OperationManagerStatusCategory.SIMULATION,
             OperationManagerSemanticStatus.MISSING,
-            "NOT RUN",
-            "Chưa có kết quả Simulation cho operation.",
+            "CHƯA CHẠY",
+            "Chưa có kết quả Mô phỏng cho nguyên công.",
         )
     if (
         operation.artifact_state.status is not ArtifactStatus.VALID
@@ -209,26 +281,26 @@ def simulation_status(
         return status(
             OperationManagerStatusCategory.SIMULATION,
             OperationManagerSemanticStatus.STALE,
-            "STALE",
-            "Simulation không còn khớp toolpath hiện hành.",
+            "ĐÃ LỖI THỜI",
+            "Mô phỏng không còn khớp đường chạy dao hiện hành.",
         )
     if result.status is SimulationStatus.PASS:
         return current_status(
             OperationManagerStatusCategory.SIMULATION,
-            "Simulation PASS và khớp toolpath hiện hành.",
+            "Mô phỏng ĐẠT và khớp đường chạy dao hiện hành.",
         )
     if result.status is SimulationStatus.WARN:
         return status(
             OperationManagerStatusCategory.SIMULATION,
             OperationManagerSemanticStatus.WARNING,
-            "WARNING",
-            "Simulation hoàn thành với cảnh báo.",
+            "CẢNH BÁO",
+            "Mô phỏng hoàn thành với cảnh báo.",
         )
     return status(
         OperationManagerStatusCategory.SIMULATION,
         OperationManagerSemanticStatus.FAILED,
-        "FAILED",
-        "Simulation phát hiện lỗi hoặc va chạm.",
+        "THẤT BẠI",
+        "Mô phỏng phát hiện lỗi hoặc va chạm.",
     )
 
 
@@ -244,8 +316,8 @@ def post_status(
         return status(
             OperationManagerStatusCategory.POST,
             OperationManagerSemanticStatus.MISSING,
-            "NOT GENERATED",
-            "Chưa có Post Result cho operation.",
+            "CHƯA TẠO",
+            "Chưa có kết quả Post cho nguyên công.",
         )
     mapping = {
         PostResultStatus.PUBLISHED: OperationManagerSemanticStatus.CURRENT,
@@ -258,8 +330,8 @@ def post_status(
     return status(
         OperationManagerStatusCategory.POST,
         semantic,
-        result.status.value.upper(),
-        f"Post Result hiện có trạng thái {result.status.value}.",
+        translate_status(result.status),
+        f"Kết quả Post hiện có trạng thái {result.status.value}.",
     )
 
 
@@ -277,8 +349,8 @@ def nc_status(
         nc = status(
             OperationManagerStatusCategory.NC,
             OperationManagerSemanticStatus.MISSING,
-            "MISSING",
-            "Chưa có NC Artifact được quản lý trong project.",
+            "THIẾU",
+            "Chưa có kết quả NC được quản lý trong dự án.",
         )
     else:
         mapping = {
@@ -290,8 +362,8 @@ def nc_status(
         nc = status(
             OperationManagerStatusCategory.NC,
             mapping[artifact.status],
-            artifact.status.value.upper(),
-            f"NC Artifact: {artifact.output_relative_path}.",
+            translate_status(artifact.status),
+            f"Kết quả NC: {artifact.output_relative_path}.",
         )
     export_result = service.nc_export_service.current(
         session.manifest.project_id, operation.operation_id
@@ -300,8 +372,8 @@ def nc_status(
         export = status(
             OperationManagerStatusCategory.EXPORT,
             OperationManagerSemanticStatus.MISSING,
-            "NOT EXPORTED",
-            "Phiên hiện tại chưa có kết quả Export NC.",
+            "CHƯA XUẤT",
+            "Phiên hiện tại chưa có kết quả Xuất NC.",
         )
     else:
         mapping = {
@@ -315,8 +387,8 @@ def nc_status(
         export = status(
             OperationManagerStatusCategory.EXPORT,
             mapping[export_result.status],
-            export_result.status.value.upper(),
-            f"NC Export runtime: {export_result.status.value}.",
+        translate_status(export_result.status),
+            f"Trạng thái Xuất NC trong phiên: {export_result.status.value}.",
         )
     return nc, export
 
@@ -326,7 +398,7 @@ def dirty_reason_summary(operation: Operation) -> str:
     return (
         ", ".join(item.value.replace("_", " ") for item in reasons)
         if reasons
-        else "Artifact đã publish"
+        else "Artifact đã công bố"
     )
 
 

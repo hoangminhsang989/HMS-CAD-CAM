@@ -265,7 +265,7 @@ def test_tapping_ui_create_edit_validate_bind_generate_and_rollback(
     assert strategy.synchronization_policy is TappingSynchronizationPolicy.RIGID
     assert len(operation.geometry_inputs) == 2
     assert workspace.actions["generate"].isEnabled()
-    assert "HOLE PATTERN 2" in workspace.editor.status.text()
+    assert "MẪU LỖ 2" in workspace.editor.status.text()
 
     committed = service.cam_snapshot
     for field, value, diagnostic in (
@@ -283,7 +283,7 @@ def test_tapping_ui_create_edit_validate_bind_generate_and_rollback(
 
     workspace.editor._tapping_fields["pitch"].setText("1.1")
     workspace.tree.setCurrentItem(workspace.tree.topLevelItem(0))
-    tapping_item = _find_item(workspace.tree.topLevelItem(0), "Tapping")
+    tapping_item = _find_item(workspace.tree.topLevelItem(0), "Taro")
     assert tapping_item is not None
     workspace.tree.setCurrentItem(tapping_item)
     assert workspace.editor._tapping_fields["pitch"].text() == "1.1"
@@ -431,7 +431,7 @@ def test_tapping_ui_create_edit_validate_bind_generate_and_rollback(
     workspace._drilling_resolver = _resolved
     workspace.clear_geometry_pick()
     assert _operation(service).geometry_inputs == ()
-    assert "HOLE MISSING" in workspace.editor.status.text()
+    assert "THIẾU LỖ" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     workspace.deleteLater()
 
@@ -518,7 +518,7 @@ def test_tapping_persistence_save_as_autosave_recovery_and_normalization(
     assert service.load_toolpath_artifact(copied_operation.operation_id) == artifact
 
     workspace.bind_project(copied)
-    tapping_item = _find_item(workspace.tree.topLevelItem(0), "Tapping")
+    tapping_item = _find_item(workspace.tree.topLevelItem(0), "Taro")
     assert tapping_item is not None
     workspace.tree.setCurrentItem(tapping_item)
     workspace.editor._tapping_fields["dwell"].setText("0.4")

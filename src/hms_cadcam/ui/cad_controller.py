@@ -358,12 +358,12 @@ class CadUiController(QObject):
             logger.exception("Không thể tạo topology tree cho CAD document")
             self._release_result(result)
             self.progress_changed.emit("Lỗi")
-            self.message.emit("Lỗi topology tree; giữ nguyên document hiện tại.")
+            self.message.emit("Lỗi cây cấu trúc hình học; giữ nguyên tài liệu hiện tại.")
             return
         if not self._viewport.display_document(result.document_id):
             self._release_result(result)
             self.progress_changed.emit("Lỗi")
-            self.message.emit("Lỗi hiển thị CAD; giữ nguyên document hiện tại.")
+            self.message.emit("Lỗi hiển thị CAD; giữ nguyên tài liệu hiện tại.")
             return
         self._active_document_id = result.document_id
         self._active_metadata = result.metadata
@@ -397,7 +397,8 @@ class CadUiController(QObject):
         restored = self._load_project_view_state(result.metadata.geometry_kind)
         if not self._apply_persisted_state(restored):
             self.message.emit(
-                "Không thể khôi phục trọn vẹn CAD view state; giữ trạng thái viewer trước khi apply."
+                "Không thể khôi phục trọn vẹn trạng thái hiển thị CAD; "
+                "giữ trạng thái trình xem trước khi áp dụng."
             )
         self._selected_object_ids = ()
         self._active_selection = ()
@@ -437,7 +438,7 @@ class CadUiController(QObject):
             "open_brep": ("Mở BREP", self.choose_brep),
             "open_iges": ("Mở IGES/IGS", self.choose_iges),
             "open_stl": ("Mở STL", self.choose_stl),
-            "fit_all": ("Fit All", self._viewport.fit_all),
+            "fit_all": ("Hiện toàn bộ", self._viewport.fit_all),
             "measurement": ("Đo BREP", self._measure_current_selection),
         }
         actions: dict[str, QAction] = {}
@@ -448,7 +449,18 @@ class CadUiController(QObject):
             actions[key] = action
         for direction in ViewDirection:
             key = f"view_{direction.value}"
-            action = QAction(direction.value.title(), self)
+            action = QAction(
+                {
+                    "top": "Trên",
+                    "bottom": "Dưới",
+                    "front": "Trước",
+                    "back": "Sau",
+                    "left": "Trái",
+                    "right": "Phải",
+                    "isometric": "Trục đo",
+                }[direction.value],
+                self,
+            )
             action.setObjectName(f"CadView{direction.value.title()}Action")
             action.triggered.connect(
                 lambda _checked=False, value=direction: self.set_view_direction(value)
@@ -470,7 +482,14 @@ class CadUiController(QObject):
         selection_group.setExclusive(True)
         for mode in SelectionMode:
             key = f"selection_{mode.value}"
-            action = QAction(f"Chọn {mode.value.title()}", self, checkable=True)
+            label = {
+                "solid": "khối rắn",
+                "face": "bề mặt",
+                "wire": "chuỗi",
+                "edge": "cạnh",
+                "vertex": "đỉnh",
+            }[mode.value]
+            action = QAction(f"Chọn {label}", self, checkable=True)
             action.setChecked(mode is SelectionMode.SOLID)
             action.setObjectName(f"CadSelection{mode.value.title()}Action")
             action.triggered.connect(
@@ -580,7 +599,7 @@ class CadUiController(QObject):
         except (RuntimeError, TypeError, ValueError):
             logger.exception("Không thể đo selection BREP")
             self.message.emit(
-                "Không thể đo selection BREP; selection hiện tại được giữ nguyên."
+                "Không thể đo lựa chọn BRep; lựa chọn hiện tại được giữ nguyên."
             )
             self._emit_measurements(())
             return
@@ -1253,9 +1272,9 @@ def _format_for_path(path: Path) -> CadFormat | None:
 
 def _display_label(mode: DisplayMode) -> str:
     return {
-        DisplayMode.SHADED: "Shaded",
-        DisplayMode.WIREFRAME: "Wireframe",
-        DisplayMode.SHADED_WITH_EDGES: "Shaded with edges",
+        DisplayMode.SHADED: "Tô bóng",
+        DisplayMode.WIREFRAME: "Khung dây",
+        DisplayMode.SHADED_WITH_EDGES: "Tô bóng kèm cạnh",
     }[mode]
 
 

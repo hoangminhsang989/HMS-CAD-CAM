@@ -145,7 +145,9 @@ def test_basic_advanced_expert_and_widget_construction(
     application.processEvents()
     assert page.schema is schema
     assert page.maximum_disclosure is ParameterDisclosureLevel.BASIC
-    assert not page.footer._compact
+    assert page.footer._compact is (
+        page.width() < page._density_metrics.field_reflow_width
+    )
     operation_name = page._field_widgets["operation_name"]
     assert operation_name.label.text() == "Tên nguyên công *"
     assert operation_name.label.width() >= 80

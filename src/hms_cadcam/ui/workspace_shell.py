@@ -36,28 +36,28 @@ class WorkspaceBar(QToolBar):
         self._group.setExclusive(True)
         self.actions_by_workspace: dict[WorkspaceId, QAction] = {}
         definitions = (
-            (WorkspaceId.HOME, "HOME", True, "Tổng quan dự án và lệnh thường dùng"),
+            (WorkspaceId.HOME, "TRANG CHỦ", True, "Tổng quan dự án và lệnh thường dùng"),
             (WorkspaceId.CAD, "CAD", True, "Thiết kế, nhập và kiểm tra CAD"),
-            (WorkspaceId.MILL_2D, "MILL 2D", True, "Lập trình CAM 2D/2.5D hiện có"),
+            (WorkspaceId.MILL_2D, "PHAY 2D", True, "Lập trình CAM 2D/2.5D hiện có"),
             (
                 WorkspaceId.MILL_3D,
-                "MILL 3D",
+                "PHAY 3D",
                 False,
-                "CAM 3D mới ở mức Foundation; giao diện production chưa triển khai",
+                "CAM 3D mới ở mức nền tảng; giao diện chính thức chưa triển khai",
             ),
             (
                 WorkspaceId.LATHE,
-                "LATHE",
+                "TIỆN",
                 False,
                 "Tiện chưa được triển khai trong HMS",
             ),
             (
                 WorkspaceId.SIMULATION,
-                "SIMULATION",
+                "MÔ PHỎNG",
                 True,
-                "Mở panel mô phỏng hiện có",
+                "Mở bảng mô phỏng hiện có",
             ),
-            (WorkspaceId.POST, "POST", True, "Mở panel Post và Program Assembly"),
+            (WorkspaceId.POST, "POST", True, "Mở bảng Post và Lắp ráp chương trình"),
         )
         for workspace, label, enabled, explanation in definitions:
             action = QAction(label, self)

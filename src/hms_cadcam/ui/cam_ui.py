@@ -9,7 +9,7 @@ from dataclasses import replace
 from typing import Callable
 from uuid import UUID
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt, Signal
+from PySide6.QtCore import QEventLoop, QObject, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from hms_cadcam.cam.domain import (
     ArtifactState, ArtifactStatus, BoringBarGeometry, BoringCoolantMode,
     BoringRetractPolicy, BoringStrategy, BoringValidationError,
-    BoxStock, CamJobId, CamNodeId, ContentFingerprint,
+    BoxStock, CamJobId, CamNodeId, CamSurfaceSelectionId, ContentFingerprint,
     ContourCutDirection, ContourParameters, ContourProfileSource, ContourSide,
     DiagnosticCode, DirtyReason, DrillApproachPolicy, DrillDepthDefinition,
     DrillGeometryInput,
@@ -70,6 +70,7 @@ from hms_cadcam.cam.application import (
     basic_boring_resources,
     basic_drilling_resources,
     basic_mill_resources,
+    basic_parallel_resources,
     basic_reaming_resources,
     basic_tapping_resources,
 )
@@ -124,6 +125,33 @@ from hms_cadcam.ui.function_editor.strategies import (
     prepare_facing_update,
     prepare_pocket_update,
     prepare_drilling_family_update,
+    ParallelEditorContext,
+    ParallelEditorDraftContext,
+    build_parallel_schema,
+    parallel_applied_values,
+    parallel_draft_derived_values,
+    parallel_validation_diagnostics,
+    prepare_parallel_update,
+)
+from hms_cadcam.cam.cam3d import (
+    Cam3DCalculationRequest,
+    Cam3DGeometryService,
+    Cam3DProjectConfig,
+)
+from hms_cadcam.cam.cam3d.parallel import (
+    PARALLEL_FINISHING_ALGORITHM_VERSION,
+    ParallelGeometryEvidence,
+    ParallelFinishingComputeResult,
+    ParallelFinishingParameters,
+    ParallelProgress,
+    calculate_and_publish_parallel_finishing,
+)
+from hms_cadcam.cam.domain import MachiningZone3DId
+from hms_cadcam.ui.parallel_finishing_worker import ParallelFinishingTask
+from hms_cadcam.ui.localization import (
+    localize_widget_tree,
+    translate_status,
+    ui_text,
 )
 
 _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
@@ -140,6 +168,9 @@ class CamWorkspace(QWidget):
     message = Signal(str)
     projection_changed = Signal()
     selection_identity_changed = Signal(object)
+    parallel_progress_changed = Signal(object)
+    parallel_calculation_active = Signal(bool)
+    operation_created = Signal(str)
 
     def __init__(self, service: ProjectService,
                  source_provider: Callable[[], UUID | None],
@@ -160,7 +191,10 @@ class CamWorkspace(QWidget):
                  ] | None = None,
                  simulation_scene_builder: Callable[
                      [SimulationInputSnapshot], tuple[CollisionScene, CollisionBackend]
-                 ] | None = None) -> None:
+                 ] | None = None,
+                 parallel_surface_provider: Callable[[], tuple[object, ...]] | None = None,
+                 parallel_adapter_provider: Callable[[], object] | None = None,
+                 parallel_geometry_bounds_provider: Callable[[], tuple[object, ...]] | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("CamWorkspace")
         self._service = service
@@ -178,6 +212,16 @@ class CamWorkspace(QWidget):
         self._drilling_pick_provider = drilling_pick_provider
         self._drilling_resolver = drilling_resolver
         self._simulation_scene_builder = simulation_scene_builder
+        self._parallel_surface_provider = parallel_surface_provider
+        self._parallel_adapter_provider = parallel_adapter_provider
+        self._parallel_geometry_bounds_provider = parallel_geometry_bounds_provider
+        self._parallel_drafts: dict[OperationId, tuple[object, ...]] = {}
+        self._parallel_draft_evidence: dict[
+            OperationId, ParallelGeometryEvidence
+        ] = {}
+        self._parallel_reports: dict[OperationId, object] = {}
+        self._parallel_task: ParallelFinishingTask | None = None
+        self._parallel_task_generation: int | None = None
         self._simulation_policies: dict[
             OperationId, tuple[SimulationSamplingPolicy, SimulationDisplayPolicy]
         ] = {}
@@ -214,6 +258,8 @@ class CamWorkspace(QWidget):
         self._production_contour_editor_enabled = True
         self._production_pocket_editor_enabled = True
         self._production_drilling_family_editors_enabled = True
+        self._production_parallel_editor_enabled = True
+        self._child_dialog_opener: Callable[..., object] | None = None
         self._facing_preview: tuple[str, ...] = ()
         self._contour_preview: tuple[str, ...] = ()
         self._pocket_preview: tuple[str, ...] = ()
@@ -222,7 +268,7 @@ class CamWorkspace(QWidget):
         self._selected_key: tuple[str, str] | None = None
         self.tree = QTreeWidget()
         self.tree.setObjectName("CamOperationTree")
-        self.tree.setHeaderLabels(["CAM Project / Operation", "Trạng thái"])
+        self.tree.setHeaderLabels(["Dự án CAM / Nguyên công", "Trạng thái"])
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         self.tree.itemChanged.connect(self._item_changed)
         self.editor = _CamPropertiesEditor(self._apply_properties)
@@ -231,8 +277,8 @@ class CamWorkspace(QWidget):
         self.program_assembly_panel = ProgramAssemblyPanel(service)
         self.post_tabs = QTabWidget()
         self.post_tabs.setObjectName("CamPostTabs")
-        self.post_tabs.addTab(self.post_panel, "Post Processor")
-        self.post_tabs.addTab(self.program_assembly_panel, "Program Assembly")
+        self.post_tabs.addTab(self.post_panel, "Bộ xử lý Post")
+        self.post_tabs.addTab(self.program_assembly_panel, "Lắp ráp chương trình")
         self.splitter = QSplitter()
         self.splitter.setObjectName("ClassicCamWorkspaceSplitter")
         self.splitter.addWidget(self.tree)
@@ -264,15 +310,20 @@ class CamWorkspace(QWidget):
         )
         self.post_panel.message.connect(self.message.emit)
         self.program_assembly_panel.message.connect(self.message.emit)
-        for key in ("job", "setup", "resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "parallel_resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "parallel_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
+        localize_widget_tree(self)
 
     def _actions(self) -> dict[str, QAction]:
         definitions = {
-            "job": ("Tạo Job", self.create_job), "setup": ("Tạo Setup", self.create_setup),
+            "job": ("Tạo công việc", self.create_job), "setup": ("Tạo Setup", self.create_setup),
             "resources": ("Tạo Tool/Machine cơ bản", self.create_basic_resources),
+            "parallel_resources": (
+                "Tạo Tool cầu/Máy cho Gia công tinh song song",
+                self.create_basic_parallel_resources,
+            ),
             "tapping_resources": (
                 "Tạo TAP Tool/Machine cơ bản",
                 self.create_basic_tapping_resources,
@@ -285,18 +336,19 @@ class CamWorkspace(QWidget):
                 "Tạo BORING BAR Tool/Machine cơ bản",
                 self.create_basic_boring_resources,
             ),
-            "group": ("Thêm Group", self.add_group),
-            "operation": ("Thêm Facing 2.5D", self.add_operation),
-            "contour_operation": ("Thêm 2D Contour", self.add_contour_operation),
-            "pocket_operation": ("Thêm Pocket 2.5D", self.add_pocket_operation),
-            "drilling_operation": ("Thêm Drilling", self.add_drilling_operation),
-            "tapping_operation": ("Thêm Tapping", self.add_tapping_operation),
-            "reaming_operation": ("Thêm Reaming", self.add_reaming_operation),
-            "boring_operation": ("Thêm Boring", self.add_boring_operation),
-            "generate": ("Generate/Recompute", self.generate_selected),
+            "group": ("Thêm nhóm", self.add_group),
+            "operation": ("Thêm Phay mặt 2.5D", self.add_operation),
+            "contour_operation": ("Thêm Phay biên dạng 2D", self.add_contour_operation),
+            "pocket_operation": ("Thêm Phay hốc 2.5D", self.add_pocket_operation),
+            "parallel_operation": ("Thêm Gia công tinh song song", self.add_parallel_operation),
+            "drilling_operation": ("Thêm Khoan", self.add_drilling_operation),
+            "tapping_operation": ("Thêm Taro", self.add_tapping_operation),
+            "reaming_operation": ("Thêm Doa lỗ", self.add_reaming_operation),
+            "boring_operation": ("Thêm Khoét lỗ", self.add_boring_operation),
+            "generate": ("Tạo/Tính lại", self.generate_selected),
             "visibility": ("Hiện/ẩn toolpath", self.toggle_toolpath_visibility),
-            "pick": ("Bind/Rebind geometry", self.pick_geometry),
-            "clear_pick": ("Clear geometry", self.clear_geometry_pick),
+            "pick": ("Liên kết/Liên kết lại hình học", self.pick_geometry),
+            "clear_pick": ("Xóa hình học", self.clear_geometry_pick),
             "up": ("Lên", lambda: self.move_selected(-1)),
             "down": ("Xuống", lambda: self.move_selected(1)),
             "delete": ("Xóa", self.delete_selected),
@@ -311,6 +363,13 @@ class CamWorkspace(QWidget):
 
     def bind_project(self, session: object) -> None:
         """Clear old identities before rendering a new project snapshot."""
+        if self._parallel_task is not None:
+            self._parallel_task.abandon()
+            self._parallel_task = None
+            self.parallel_calculation_active.emit(False)
+        self._parallel_task_generation = None
+        self._parallel_drafts.clear()
+        self._parallel_reports.clear()
         self._simulation_handle = None
         self._simulation_project_id = None
         self._simulation_policies.clear()
@@ -391,7 +450,13 @@ class CamWorkspace(QWidget):
     def report_function_editor_fallback(self, message: str) -> None:
         """Expose a safe production-schema fallback without mutating CAM state."""
         logger.error("Production Function Editor fallback: %s", message)
-        self._error(f"Function Editor fallback: {message}")
+        self._error(f"Trình chỉnh sửa chức năng dự phòng: {ui_text(message)}")
+
+    def set_child_dialog_opener(
+        self, opener: Callable[..., object] | None
+    ) -> None:
+        """Route complex editor details through the shared popup child slot."""
+        self._child_dialog_opener = opener
 
     def production_function_editor_session(
         self,
@@ -411,6 +476,12 @@ class CamWorkspace(QWidget):
         if node.operation_id is None:
             return None
         operation = setup.operation_tree.get_operation(node.operation_id)
+        if operation.strategy_key == "parallel_finishing_3d":
+            if not self._production_parallel_editor_enabled:
+                return None
+            return self._parallel_production_session(
+                job.job_id, setup, node_id, node.name, operation
+            )
         if operation.strategy_key == "contour_2d":
             if not self._production_contour_editor_enabled:
                 return None
@@ -497,6 +568,518 @@ class CamWorkspace(QWidget):
                 context, draft, variant, action_id, values
             ),
         )
+
+    def _parallel_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one native-free Parallel session over applied project state."""
+        if self._generation is None:
+            return None
+        project = self._service.current_project
+        if project is None:
+            return None
+        parameters = ParallelFinishingParameters.from_operation_parameters(
+            operation.parameters
+        )
+        zone = next(
+            (
+                item
+                for item in self._service.cam3d_config.zones
+                if item.zone_id == parameters.zone_id
+            ),
+            None,
+        )
+        surfaces = (
+            zone.part_surfaces.selection.surfaces if zone is not None else ()
+        )
+        draft_surfaces = self._parallel_drafts.get(operation.operation_id, surfaces)
+        snapshot = self._service.cam_snapshot
+        artifact = self._service.load_toolpath_artifact(operation.operation_id)
+        context = ParallelEditorContext(
+            operation_name,
+            operation,
+            setup,
+            job_id,
+            project.manifest.project_id,
+            zone,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            artifact,
+            self._parallel_reports.get(operation.operation_id),  # type: ignore[arg-type]
+            geometry_resolved=(
+                zone is not None
+                and bool(surfaces)
+                and {item.geometry.reference_id for item in surfaces}
+                == {
+                    item.reference.reference_id
+                    for item in operation.geometry_inputs
+                    if item.role is GeometryInputRole.DRIVE_GEOMETRY
+                }
+            ),
+            geometry_diagnostic=(
+                "Machining zone missing"
+                if zone is None
+                else "Selected face references are stale"
+                if not surfaces
+                else ""
+            ),
+            geometry_evidence=self._parallel_draft_evidence.get(
+                operation.operation_id
+            ),
+        )
+        draft = ParallelEditorDraftContext(
+            tuple(draft_surfaces),  # type: ignore[arg-type]
+            geometry_evidence=self._parallel_draft_evidence.get(
+                operation.operation_id
+            ),
+        )
+        schema = build_parallel_schema(context)
+        applied = parallel_applied_values(context)
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_parallel_production(
+                job_id, setup.setup_id, node_id, context, draft, values
+            ),
+            validation_callback=lambda values: self._validate_parallel_production(
+                schema, context, draft, values
+            ),
+            preview_callback=lambda request: self._preview_parallel_production(
+                context, draft, request
+            ),
+            calculate_callback=lambda values: self._calculate_parallel_production(
+                context, draft, values
+            ),
+            draft_transform_callback=lambda values: parallel_draft_derived_values(
+                context, draft, values
+            ),
+            field_action_callback=lambda action_id, values: self._parallel_field_action(
+                context, draft, action_id, values
+            ),
+        )
+
+    def _parallel_context_is_current(self, context: ParallelEditorContext) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None or self._generation != self._service.cam_generation:
+            return False
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.enabled == context.operation.enabled
+        )
+
+    def _validate_parallel_production(
+        self,
+        schema,
+        context: ParallelEditorContext,
+        draft: ParallelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        if not self._parallel_context_is_current(context):
+            return (
+                FunctionEditorDiagnostic(
+                    "parallel.stale-editor",
+                    "Parallel operation changed; reopen the editor.",
+                    FunctionEditorDiagnosticSeverity.ERROR,
+                    "operation_name",
+                    "operation",
+                ),
+            )
+        return parallel_validation_diagnostics(schema, context, draft, values)
+
+    def _parallel_field_action(
+        self,
+        context: ParallelEditorContext,
+        draft: ParallelEditorDraftContext,
+        action_id: str,
+        _values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        if action_id == "select_parallel_faces":
+            if self._parallel_surface_provider is None:
+                raise ValueError("Parallel FACE selection adapter is unavailable.")
+            selected = self._parallel_surface_provider()
+            if not selected:
+                raise ValueError("Select one or more BRep faces in the viewport.")
+            merged = {_parallel_surface_key(item): item for item in draft.surfaces}
+            for item in selected:
+                if not hasattr(item, "geometry"):
+                    raise TypeError("Parallel selector returned an invalid face reference")
+                key = _parallel_surface_key(item)
+                # Preserve the already-applied stable GeometryReference identity
+                # when the same persistent BRep face is selected again.
+                merged.setdefault(key, item)
+            draft.surfaces = tuple(
+                sorted(merged.values(), key=lambda item: item.fingerprint.digest)
+            )
+            if self._parallel_geometry_bounds_provider is not None:
+                bounds = self._parallel_geometry_bounds_provider()
+                if len(bounds) != len(selected):
+                    raise ValueError("Parallel geometry bounds are stale; select faces again.")
+                evidence = self._parallel_evidence_from_bounds(context, bounds)
+                draft.geometry_evidence = self._union_parallel_evidence(
+                    draft.geometry_evidence, evidence
+                )
+                self._parallel_draft_evidence[
+                    context.operation.operation_id
+                ] = draft.geometry_evidence
+            self._parallel_drafts[context.operation.operation_id] = draft.surfaces
+            return self._parallel_geometry_presentation(context, draft.surfaces)
+        if action_id == "clear_parallel_faces":
+            draft.surfaces = ()
+            draft.geometry_evidence = None
+            self._parallel_draft_evidence.pop(context.operation.operation_id, None)
+            self._parallel_drafts[context.operation.operation_id] = ()
+            return self._parallel_geometry_presentation(context, ())
+        if action_id == "reselect_parallel_faces":
+            draft.surfaces = ()
+            draft.geometry_evidence = None
+            self._parallel_draft_evidence.pop(context.operation.operation_id, None)
+            return self._parallel_field_action(
+                context, draft, "select_parallel_faces", _values
+            )
+        if action_id == "remove_parallel_faces":
+            if self._parallel_surface_provider is None:
+                raise ValueError("Parallel FACE selection adapter is unavailable.")
+            selected = self._parallel_surface_provider()
+            removed = {_parallel_surface_key(item) for item in selected}
+            draft.surfaces = tuple(
+                item
+                for item in draft.surfaces
+                if _parallel_surface_key(item) not in removed
+            )
+            draft.geometry_evidence = None
+            self._parallel_draft_evidence.pop(context.operation.operation_id, None)
+            self._parallel_drafts[context.operation.operation_id] = draft.surfaces
+            return self._parallel_geometry_presentation(context, draft.surfaces)
+        if action_id == "open_parallel_safety_details":
+            self._show_parallel_safety_details(context)
+            return None
+        if action_id == "open_parallel_simulation":
+            artifact = context.artifact
+            from hms_cadcam.cam.cam3d.parallel import parallel_artifact_has_safe_contract
+
+            if (
+                artifact is None
+                or context.operation.artifact_state.status is not ArtifactStatus.VALID
+                or not parallel_artifact_has_safe_contract(artifact)
+            ):
+                raise ValueError(
+                    "Simulation requires a current READY + SAFE algorithm v3 artifact."
+                )
+            self._run_simulation()
+            return None
+        raise ValueError(f"Unsupported Parallel field action: {action_id}")
+
+    @staticmethod
+    def _parallel_evidence_from_bounds(
+        context: ParallelEditorContext,
+        bounds: tuple[object, ...],
+    ) -> ParallelGeometryEvidence:
+        frame = getattr(context.setup, "wcs")
+        origin = frame.origin
+        projected: list[tuple[float, float]] = []
+        for value in bounds:
+            coordinates = (
+                getattr(value, "x_min"),
+                getattr(value, "y_min"),
+                getattr(value, "z_min"),
+                getattr(value, "x_max"),
+                getattr(value, "y_max"),
+                getattr(value, "z_max"),
+            )
+            if not all(isinstance(item, (int, float)) for item in coordinates):
+                raise TypeError("Parallel geometry bounds are invalid")
+            x_min, y_min, z_min, x_max, y_max, z_max = coordinates
+            for x in (x_min, x_max):
+                for y in (y_min, y_max):
+                    for z in (z_min, z_max):
+                        dx, dy, dz = x - origin.x, y - origin.y, z - origin.z
+                        projected.append(
+                            (
+                                dx * frame.x_axis.x
+                                + dy * frame.x_axis.y
+                                + dz * frame.x_axis.z,
+                                dx * frame.y_axis.x
+                                + dy * frame.y_axis.y
+                                + dz * frame.y_axis.z,
+                            )
+                        )
+        if not projected:
+            raise ValueError("Parallel geometry bounds are empty")
+        return ParallelGeometryEvidence(
+            float(min(item[0] for item in projected)),
+            float(max(item[0] for item in projected)),
+            float(min(item[1] for item in projected)),
+            float(max(item[1] for item in projected)),
+            "Hộp bao các bề mặt được chọn trong viewport",
+        )
+
+    @staticmethod
+    def _union_parallel_evidence(
+        current: ParallelGeometryEvidence | None,
+        added: ParallelGeometryEvidence,
+    ) -> ParallelGeometryEvidence:
+        if current is None:
+            return added
+        return ParallelGeometryEvidence(
+            min(current.u_min, added.u_min),
+            max(current.u_max, added.u_max),
+            min(current.v_min, added.v_min),
+            max(current.v_max, added.v_max),
+            "Hộp bao hợp nhất của các bề mặt được chọn",
+        )
+
+    @staticmethod
+    def _parallel_geometry_presentation(
+        context: ParallelEditorContext,
+        surfaces: tuple[object, ...],
+    ) -> dict[str, PresentationValue]:
+        count = len(surfaces)
+        return {
+            "geometry_summary": f"{count} machining face(s) · {'DRAFT' if count else 'MISSING'}",
+            "selected_face_count": str(count),
+            "geometry_reference_summary": (
+                ", ".join(str(item.geometry.reference_id)[:8] for item in surfaces)
+                if surfaces
+                else "none"
+            ),
+            "selected_body_setup_summary": (
+                f"Setup {getattr(context.setup, 'name', '')} · "
+                f"{getattr(context.setup, 'work_offset').name}"
+            ),
+        }
+
+    def _preview_parallel_production(
+        self,
+        context: ParallelEditorContext,
+        draft: ParallelEditorDraftContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        if not self._parallel_context_is_current(context):
+            raise ValueError("Parallel preview is stale.")
+        values = dict(request.values)
+        update = prepare_parallel_update(context, draft, values)
+        return (
+            f"Candidate preview · {len(update.zone.part_surfaces.selection.surfaces)} face(s) · "
+            f"angle {update.parameters.direction_angle_degrees:g}° · "
+            f"stepover {update.parameters.stepover_mm:g} mm · "
+            "not calculated and not SAFE"
+        )
+
+    def _apply_parallel_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: ParallelEditorContext,
+        draft: ParallelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> object:
+        if not self._parallel_context_is_current(context):
+            raise ValueError("Parallel operation changed; reopen the editor.")
+        update = prepare_parallel_update(context, draft, values)
+        old_config = self._service.cam3d_config
+        zones = tuple(
+            item for item in old_config.zones if item.zone_id != update.zone.zone_id
+        ) + (update.zone,)
+        new_config = Cam3DProjectConfig(old_config.project_id, zones)
+        try:
+            self._service.stage_cam3d_config(new_config)
+            changed = self._service.execute_cam_command(
+                lambda app: app.update_tree(
+                    job_id,
+                    setup_id,
+                    lambda tree: tree.replace_operation(update.operation).rename_node(
+                        node_id, update.operation_name
+                    ),
+                ),
+                expected_generation=self._generation,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            self._service.stage_cam3d_config(old_config)
+            raise
+        self._parallel_drafts.pop(context.operation.operation_id, None)
+        self._parallel_draft_evidence.pop(context.operation.operation_id, None)
+        self._parallel_reports.pop(context.operation.operation_id, None)
+        self.refresh(("operation", str(node_id)))
+        self.projection_changed.emit()
+        self.message.emit(
+            "Bản nháp Gia công tinh song song đã áp dụng; chưa tự tính toán."
+        )
+        return changed
+
+    def _calculate_parallel_production(
+        self,
+        context: ParallelEditorContext,
+        draft: ParallelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._parallel_task is not None:
+            raise ValueError("A Parallel calculation is already running.")
+        if not self._parallel_context_is_current(context):
+            raise ValueError("Parallel applied state is stale.")
+        applied = parallel_applied_values(context)
+        if any(values.get(key) != value for key, value in applied.items()):
+            raise ValueError("Calculate uses applied state only; Apply the draft first.")
+        update = prepare_parallel_update(context, draft, applied)
+        if update.operation != context.operation or update.zone != context.zone:
+            raise ValueError("Calculate uses applied state only; Apply the draft first.")
+        if self._parallel_adapter_provider is None:
+            raise ValueError("Parallel OCP calculation adapter is unavailable.")
+        adapter = self._parallel_adapter_provider()
+        generation = self._generation
+        project = self._service.current_project
+        if generation is None or project is None:
+            raise ValueError("Parallel project context is unavailable.")
+        request = Cam3DCalculationRequest.create(
+            project_id=project.manifest.project_id,
+            project_generation=generation,
+            job_id=context.job_id,
+            setup_id=context.operation.setup_id,
+            zone=update.zone,
+            tool_assembly_fingerprint=ContentFingerprint.from_payload(
+                update.assembly.to_dict()
+            ),
+            tool_definition_fingerprint=update.tool.content_fingerprint,
+            safe_motion_policy=update.safe_motion_policy,
+            algorithm="hms_parallel_finishing_mesh_plane",
+            algorithm_version=PARALLEL_FINISHING_ALGORITHM_VERSION,
+        )
+
+        def calculate(cancelled, progress):
+            contact_resolver = adapter.contact_resolver(
+                update.zone.part_surfaces.selection.surfaces
+            )
+            geometry = Cam3DGeometryService()
+            geometry.bind_project(project.manifest.project_id, generation)
+            execution = geometry.calculate(
+                request,
+                adapter,
+                cancellation=cancelled,
+            )
+            if not execution.published or execution.context is None:
+                message = (
+                    execution.diagnostics[0].message
+                    if execution.diagnostics
+                    else "Parallel geometry preparation failed."
+                )
+                raise RuntimeError(message)
+            return calculate_and_publish_parallel_finishing(
+                project.root_path,
+                context.operation,
+                execution.context,
+                assembly=update.assembly,
+                tool=update.tool,
+                holder=update.holder,
+                cancellation=cancelled,
+                progress=progress,
+                contact_resolver=contact_resolver,
+                computing_callback=lambda operation: self._service.begin_parallel_calculation(
+                    operation, expected_generation=generation
+                ),
+                current_operation=lambda: self._current_parallel_operation(
+                    context.operation.operation_id
+                ),
+            )
+
+        task = ParallelFinishingTask(calculate)
+        self._parallel_task = task
+        self._parallel_task_generation = generation
+        task.signals.progress.connect(self._parallel_progress)
+        task.signals.completed.connect(self._parallel_completed)
+        task.signals.failed.connect(self._parallel_failed)
+        task.signals.finished.connect(self._parallel_finished)
+        self.parallel_calculation_active.emit(True)
+        QThreadPool.globalInstance().start(task)
+        return "Parallel calculation started"
+
+    def _current_parallel_operation(self, operation_id: OperationId) -> Operation:
+        current = self._current_facing_operation(operation_id)
+        if current is None:
+            raise RuntimeError("Parallel operation is no longer current")
+        return current
+
+    def _parallel_progress(self, progress: ParallelProgress) -> None:
+        if self._parallel_task is None:
+            return
+        self.parallel_progress_changed.emit(progress)
+
+    def _parallel_completed(self, result: object) -> None:
+        if not isinstance(result, ParallelFinishingComputeResult):
+            self._error("Tác vụ Gia công tinh song song trả về kết quả không hợp lệ.")
+            return
+        generation = self._parallel_task_generation
+        if generation is None:
+            return
+        try:
+            accepted = self._service.commit_parallel_calculation(
+                result, expected_generation=generation
+            )
+        except (ProjectError, RuntimeError, TypeError, ValueError) as error:
+            self._error(str(error))
+            return
+        if not accepted:
+            self._error("Kết quả Gia công tinh song song đã lỗi thời và bị loại bỏ.")
+            return
+        if result.safety_report is not None:
+            self._parallel_reports[result.operation.operation_id] = result.safety_report
+        self.refresh(self._selected_key)
+        self.projection_changed.emit()
+        if result.accepted:
+            self.message.emit(
+                "Parallel Finishing READY · safety verified within declared scope."
+            )
+        else:
+            self._error(
+                result.diagnostics[0].message
+                if result.diagnostics
+                else "Parallel calculation did not publish a READY artifact."
+            )
+
+    def _parallel_failed(self, error: object) -> None:
+        self._error(str(error) or "Parallel calculation failed safely.")
+
+    def _parallel_finished(self) -> None:
+        self._parallel_task = None
+        self._parallel_task_generation = None
+        self.parallel_calculation_active.emit(False)
+
+    def cancel_parallel_calculation(self) -> None:
+        """Request cooperative cancellation without publishing partial output."""
+        if self._parallel_task is not None:
+            self._parallel_task.cancel()
+            self.message.emit("Đang hủy tính toán Gia công tinh song song…")
+
+    def _show_parallel_safety_details(self, context: ParallelEditorContext) -> None:
+        from hms_cadcam.ui.function_editor.parallel_widgets import (
+            ParallelSafetyDiagnosticsDialog,
+        )
+
+        dialog = ParallelSafetyDiagnosticsDialog(
+            context.safety_report,
+            context.operation.diagnostics,
+            self,
+        )
+        if self._child_dialog_opener is not None:
+            self._child_dialog_opener("parallel_diagnostics", dialog, None)
+        else:
+            dialog.open()
 
     def _contour_production_session(
         self,
@@ -1012,7 +1595,7 @@ class CamWorkspace(QWidget):
             self._picked_reference_resolved = True
             self.editor.show_hole_source(update.hole_source, True)
         self.message.emit(
-            f"Đã Apply {context.kind.title}; chưa tự Calculate toolpath."
+            f"Đã áp dụng {ui_text(context.kind.title)}; chưa tự tính đường chạy dao."
         )
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
@@ -1147,7 +1730,7 @@ class CamWorkspace(QWidget):
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
         self.message.emit(
-            f"{context.kind.title} đã Calculate và publish artifact hợp lệ."
+            f"{ui_text(context.kind.title)} đã tính toán và công bố kết quả hợp lệ."
         )
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
@@ -1394,7 +1977,7 @@ class CamWorkspace(QWidget):
                     self._picked_reference_resolved,
                     subject="face",
                 )
-        self.message.emit("Đã Apply Facing; chưa tự Calculate toolpath.")
+        self.message.emit("Đã áp dụng Phay mặt; chưa tự tính đường chạy dao.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -1520,7 +2103,7 @@ class CamWorkspace(QWidget):
                 )
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
-        self.message.emit("Facing đã Calculate và publish artifact hợp lệ.")
+        self.message.emit("Phay mặt đã tính toán và công bố kết quả hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -1681,7 +2264,7 @@ class CamWorkspace(QWidget):
             self._picked_reference = update.geometry_reference
             self._picked_reference_resolved = True
             self.editor.show_reference(update.geometry_reference, True)
-        self.message.emit("Đã Apply 2D Contour; chưa tự Calculate toolpath.")
+        self.message.emit("Đã áp dụng Biên dạng 2D; chưa tự tính đường chạy dao.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -1839,7 +2422,7 @@ class CamWorkspace(QWidget):
                 )
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
-        self.message.emit("2D Contour đã Calculate và publish artifact hợp lệ.")
+        self.message.emit("Biên dạng 2D đã tính toán và công bố kết quả hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -2001,7 +2584,7 @@ class CamWorkspace(QWidget):
             self._picked_reference = update.geometry_reference
             self._picked_reference_resolved = True
             self.editor.show_reference(update.geometry_reference, True)
-        self.message.emit("Đã Apply Pocket 2.5D; chưa tự Calculate toolpath.")
+        self.message.emit("Đã áp dụng Hốc 2.5D; chưa tự tính đường chạy dao.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -2146,7 +2729,7 @@ class CamWorkspace(QWidget):
                 )
                 self._displayed_operation_id = context.operation.operation_id
                 self._toolpath_visibility[context.operation.operation_id] = True
-        self.message.emit("Pocket 2.5D đã Calculate và publish artifact hợp lệ.")
+        self.message.emit("Hốc 2.5D đã tính toán và công bố kết quả hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
@@ -2191,7 +2774,7 @@ class CamWorkspace(QWidget):
         else:
             snapshot = self._service.cam_snapshot
             if not snapshot.jobs:
-                item = QTreeWidgetItem(["Chưa có CAM Job", "MISSING"])
+                item = QTreeWidgetItem(["Chưa có công việc CAM", "MISSING"])
                 item.setDisabled(True)
                 self.tree.addTopLevelItem(item)
             for job in snapshot.jobs:
@@ -2233,6 +2816,11 @@ class CamWorkspace(QWidget):
         self.program_assembly_panel.refresh_sources()
         self.selection_identity_changed.emit(self._selected_key)
         self.projection_changed.emit()
+        self._guard = True
+        try:
+            localize_widget_tree(self)
+        finally:
+            self._guard = False
 
     def _append_nodes(self, parent: QTreeWidgetItem, tree, parent_id, job_id, setup_id) -> None:
         node = tree.get_node(parent_id)
@@ -2313,6 +2901,7 @@ class CamWorkspace(QWidget):
             return
         self._selected_key = (item.data(0, _KIND_ROLE), item.data(0, _ID_ROLE))
         self._show_properties(item)
+        localize_widget_tree(self.editor)
         self.selection_identity_changed.emit(self._selected_key)
 
     def _show_properties(self, item: QTreeWidgetItem) -> None:
@@ -2589,10 +3178,10 @@ class CamWorkspace(QWidget):
                 sampling_policy=cached_result.sampling_policy,
             )
         except (RuntimeError, TypeError, ValueError):
-            self.simulation_panel.set_cache_diagnostic("cache stale")
+            self.simulation_panel.set_cache_diagnostic("bộ nhớ đệm đã lỗi thời")
             return
         if cached_inputs.request.input_fingerprint != cached_result.input_fingerprint:
-            self.simulation_panel.set_cache_diagnostic("cache stale")
+            self.simulation_panel.set_cache_diagnostic("bộ nhớ đệm đã lỗi thời")
             return
         # A cache result retains the original request UUID.  Rebind the
         # freshly captured immutable request to that UUID for the runtime
@@ -2612,7 +3201,7 @@ class CamWorkspace(QWidget):
             cached_result,
             state_callback=self._simulation_state_changed,
         ):
-            self.simulation_panel.set_cache_diagnostic("cache stale")
+            self.simulation_panel.set_cache_diagnostic("bộ nhớ đệm đã lỗi thời")
             return
         self._display_simulation_result(cached_inputs, cached_result)
 
@@ -2709,23 +3298,27 @@ class CamWorkspace(QWidget):
         )
         if not execution.accepted or execution.result is None:
             code = execution.code.value if execution.code is not None else "sim.failed"
-            self.message.emit(f"Simulation: {code} · {execution.message or ''}")
+            self.message.emit(
+                f"Mô phỏng: {code} · {ui_text(execution.message or '')}"
+            )
             return
         try:
             self._service.persist_simulation_result(execution.result)
         except Exception as error:
-            logger.warning("Không thể ghi simulation cache", exc_info=True)
+            logger.warning("Không thể ghi bộ nhớ đệm mô phỏng", exc_info=True)
             self.simulation_panel.set_cache_diagnostic(
                 f"cache write failure: {error}"
             )
         displayed = self._display_simulation_result(inputs, execution.result)
         if displayed:
             self.message.emit(
-                f"Simulation {execution.result.status.value.upper()} đã publish và hiển thị."
+                f"Mô phỏng {translate_status(execution.result.status.value)} "
+                "đã công bố và hiển thị."
             )
         else:
             self.message.emit(
-                "Simulation result đã publish nhưng overlay mới không thể hiển thị; overlay cũ được giữ."
+                "Kết quả mô phỏng đã công bố nhưng lớp phủ mới không thể hiển thị; "
+                "lớp phủ cũ được giữ."
             )
 
     def _simulation_progress_changed(self, progress: SimulationProgress) -> None:
@@ -2955,7 +3548,7 @@ class CamWorkspace(QWidget):
         snapshot = self._service.cam_snapshot if self._service.has_project else None
         source_id = self._source_provider()
         if snapshot is None or snapshot.active_job_id is None or source_id is None:
-            self._error("Cần một CAM Job và một nguồn CAD trong dự án trước khi tạo Setup.")
+            self._error("Cần một công việc CAM và một nguồn CAD trong dự án trước khi tạo thiết lập.")
             return
         unit = _length_unit(self._service.current_project)
         setup = _default_setup(source_id, unit, len(_active_job(snapshot).setups) + 1)
@@ -2990,6 +3583,26 @@ class CamWorkspace(QWidget):
             app.add_holder_definition(holder)
             app.add_tool_assembly(drill_assembly)
             return app.add_tool_assembly(center_assembly)
+
+        changed = self._execute(add_resources)
+        if changed is not None:
+            self.refresh(self._selected_key)
+
+    def create_basic_parallel_resources(self) -> None:
+        """Create a supported ball-end assembly for Parallel Finishing."""
+        if not self._service.has_project:
+            return
+        unit = _length_unit(self._service.current_project)
+        if unit is not LengthUnit.MM:
+            self._error("Gia công tinh song song v1 hiện yêu cầu dự án dùng đơn vị mm.")
+            return
+        tool, holder, assembly, machine = basic_parallel_resources(unit)
+
+        def add_resources(app):
+            app.add_tool_definition(tool)
+            app.add_holder_definition(holder)
+            app.add_tool_assembly(assembly)
+            return app.add_machine_definition(machine)
 
         changed = self._execute(add_resources)
         if changed is not None:
@@ -3071,7 +3684,7 @@ class CamWorkspace(QWidget):
             else self._pick_provider
         )
         if provider is None:
-            self._error("Geometry picking adapter chưa sẵn sàng.")
+            self._error("Bộ tiếp hợp chọn hình học chưa sẵn sàng.")
             return
         generation = self._generation
         try:
@@ -3177,11 +3790,21 @@ class CamWorkspace(QWidget):
             self._face_resolver is not None
             or self._profile_resolver is not None
             or self._drilling_resolver is not None
+            or self._parallel_adapter_provider is not None
         ) and self._generation is not None:
             for job in self._service.cam_snapshot.jobs:
                 for setup in job.setups:
                     for operation in setup.operation_tree.operations:
                         if operation.artifact_state.status is not ArtifactStatus.VALID:
+                            continue
+                        if operation.strategy_key == "parallel_finishing_3d":
+                            if force_invalidate:
+                                invalidated = self._execute(
+                                    lambda app, operation_id=operation.operation_id:
+                                    app.invalidate_operation(
+                                        operation_id, DirtyReason.GEOMETRY_CHANGED,
+                                    )
+                                ) is not None or invalidated
                             continue
                         if (
                             operation.strategy_key not in {
@@ -3374,7 +3997,7 @@ class CamWorkspace(QWidget):
         changed = self._execute(lambda app: app.update_tree(job_id, setup_id,
             lambda value: value.add_operation(parent_id, "Facing 2.5D", operation)))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
 
     def add_contour_operation(self) -> None:
         """Add one editable 2D Contour operation without guessing its profile."""
@@ -3399,7 +4022,7 @@ class CamWorkspace(QWidget):
         changed = self._execute(lambda app: app.update_tree(job_id, setup_id,
             lambda value: value.add_operation(parent_id, "2D Contour", operation)))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
 
     def add_pocket_operation(self) -> None:
         """Add one unbound Pocket operation without guessing its boundary."""
@@ -3428,7 +4051,98 @@ class CamWorkspace(QWidget):
             lambda value: value.add_operation(parent_id, "Pocket 2.5D", operation),
         ))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
+
+    def add_parallel_operation(self) -> None:
+        """Add an unbound Parallel operation; geometry is selected in its editor."""
+        context = self._tree_context()
+        if context is None:
+            return
+        job_id, setup_id, _tree, parent_id = context
+        snapshot = self._service.cam_snapshot
+        setup = next(
+            value
+            for job in snapshot.jobs
+            for value in job.setups
+            if value.setup_id == setup_id
+        )
+        if setup.wcs.origin.unit is not LengthUnit.MM:
+            self._error("Gia công tinh song song v1 hiện yêu cầu thiết lập dùng đơn vị mm.")
+            return
+        assembly = next(
+            (
+                item
+                for item in snapshot.tool_assemblies
+                if any(
+                    tool.tool_id == item.tool_id
+                    and tool.family is ToolFamily.BALL_END_MILL
+                    for tool in snapshot.tool_definitions
+                )
+            ),
+            None,
+        )
+        if assembly is None:
+            assembly = snapshot.tool_assemblies[0] if snapshot.tool_assemblies else None
+        tool_reference = (
+            ToolAssemblyReference.from_assembly(assembly)
+            if assembly is not None
+            else ToolAssemblyReference(
+                ToolAssemblyId.new(),
+                Revision(0),
+                ContentFingerprint.from_payload({"missing": True}),
+                LengthUnit.MM,
+            )
+        )
+        machine = next(
+            (
+                item
+                for item in snapshot.machine_definitions
+                if OperationCapability.MILLING in item.capabilities.operations
+            ),
+            None,
+        )
+        requirement = (
+            None
+            if machine is None
+            else MachineRequirement(
+                machine.machine_id,
+                machine.revision,
+                machine.content_fingerprint,
+                machine.unit,
+                (OperationCapability.MILLING,),
+            )
+        )
+        top = setup.wcs.origin.z
+        parameters = ParallelFinishingParameters(
+            MachiningZone3DId.new(),
+            1.0,
+            clearance_z_mm=top + 50.0,
+            retract_z_mm=top + 40.0,
+            link_clearance_mm=1.0,
+        )
+        node_id, operation_id = CamNodeId.new(), OperationId.new()
+        operation = Operation(
+            operation_id,
+            node_id,
+            OperationFamily.MILLING,
+            setup_id,
+            tool_reference,
+            (),
+            parameters.to_operation_parameters(),
+            requirement,
+        )
+        changed = self._execute(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda value: value.add_operation(
+                    parent_id, "Parallel Finishing", operation
+                ),
+            )
+        )
+        if changed is not None:
+            self._present_created_operation(node_id)
+            self.projection_changed.emit()
 
     def add_drilling_operation(self) -> None:
         """Add one explicitly bound Drilling operation without hole recognition."""
@@ -3436,7 +4150,7 @@ class CamWorkspace(QWidget):
         if context is None:
             return
         if self._drilling_pick_provider is None or self._drilling_resolver is None:
-            self._error("Drilling geometry adapter chưa sẵn sàng.")
+            self._error("Bộ tiếp hợp hình học Khoan chưa sẵn sàng.")
             return
         job_id, setup_id, _tree, parent_id = context
         snapshot = self._service.cam_snapshot
@@ -3470,7 +4184,7 @@ class CamWorkspace(QWidget):
             self._error(str(error))
             return
         if generation is None or generation != self._service.cam_generation:
-            self._error("Phiên tạo Drilling đã stale vì dự án thay đổi.")
+            self._error("Phiên tạo Khoan đã lỗi thời vì dự án thay đổi.")
             return
         node_id, operation_id = CamNodeId.new(), OperationId.new()
         requirement = MachineRequirement(
@@ -3488,7 +4202,7 @@ class CamWorkspace(QWidget):
             lambda value: value.add_operation(parent_id, "Drilling", operation),
         ))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
 
     def add_tapping_operation(self) -> None:
         """Add one validated Tapping operation bound to an explicit hole source."""
@@ -3496,7 +4210,7 @@ class CamWorkspace(QWidget):
         if context is None:
             return
         if self._drilling_pick_provider is None or self._drilling_resolver is None:
-            self._error("tap.geometry_missing: Tapping geometry adapter chưa sẵn sàng.")
+            self._error("tap.geometry_missing: Bộ tiếp hợp hình học Ta rô chưa sẵn sàng.")
             return
         job_id, setup_id, _tree, parent_id = context
         snapshot = self._service.cam_snapshot
@@ -3513,7 +4227,7 @@ class CamWorkspace(QWidget):
             resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
             assembly = _find_drilling_assembly(snapshot, ToolFamily.TAP)
             if assembly is None:
-                raise ValueError("tap.tool_missing: Chưa có Tool Assembly TAP.")
+                raise ValueError("tap.tool_missing: Chưa có cụm Tool TAP.")
             tool = next((
                 value for value in snapshot.tool_definitions
                 if value.tool_id == assembly.tool_id
@@ -3559,7 +4273,7 @@ class CamWorkspace(QWidget):
             self._error(str(error))
             return
         if generation is None or generation != self._service.cam_generation:
-            self._error("tap.stale_result: Phiên tạo Tapping đã stale.")
+            self._error("tap.stale_result: Phiên tạo Ta rô đã lỗi thời.")
             return
         changed = self._execute(lambda app: app.update_tree(
             job_id,
@@ -3567,7 +4281,7 @@ class CamWorkspace(QWidget):
             lambda value: value.add_operation(parent_id, "Tapping", operation),
         ))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
 
     def add_reaming_operation(self) -> None:
         """Add one validated Reaming operation with an explicit pre-hole value."""
@@ -3575,7 +4289,7 @@ class CamWorkspace(QWidget):
         if context is None:
             return
         if self._drilling_pick_provider is None or self._drilling_resolver is None:
-            self._error("ream.geometry_missing: Reaming geometry adapter chưa sẵn sàng.")
+            self._error("ream.geometry_missing: Bộ tiếp hợp hình học Doa chưa sẵn sàng.")
             return
         job_id, setup_id, _tree, parent_id = context
         snapshot = self._service.cam_snapshot
@@ -3592,7 +4306,7 @@ class CamWorkspace(QWidget):
             resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
             assembly = _find_drilling_assembly(snapshot, ToolFamily.REAMER)
             if assembly is None:
-                raise ValueError("ream.tool_missing: Chưa có Tool Assembly REAMER.")
+                raise ValueError("ream.tool_missing: Chưa có cụm Tool REAMER.")
             tool = next((
                 value for value in snapshot.tool_definitions
                 if value.tool_id == assembly.tool_id
@@ -3645,7 +4359,7 @@ class CamWorkspace(QWidget):
             self._error(str(error))
             return
         if generation is None or generation != self._service.cam_generation:
-            self._error("ream.stale_result: Phiên tạo Reaming đã stale.")
+            self._error("ream.stale_result: Phiên tạo Doa đã lỗi thời.")
             return
         changed = self._execute(lambda app: app.update_tree(
             job_id,
@@ -3653,7 +4367,7 @@ class CamWorkspace(QWidget):
             lambda value: value.add_operation(parent_id, "Reaming", operation),
         ))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
 
     def add_boring_operation(self) -> None:
         """Add one validated Boring operation with an explicit pre-bore value."""
@@ -3661,7 +4375,7 @@ class CamWorkspace(QWidget):
         if context is None:
             return
         if self._drilling_pick_provider is None or self._drilling_resolver is None:
-            self._error("bore.geometry_missing: Boring geometry adapter chưa sẵn sàng.")
+            self._error("bore.geometry_missing: Bộ tiếp hợp hình học Tiện lỗ chưa sẵn sàng.")
             return
         job_id, setup_id, _tree, parent_id = context
         snapshot = self._service.cam_snapshot
@@ -3678,7 +4392,7 @@ class CamWorkspace(QWidget):
             resolved = self._drilling_resolver(strategy.geometry, strategy.depth)
             assembly = _find_drilling_assembly(snapshot, ToolFamily.BORING_BAR)
             if assembly is None:
-                raise ValueError("bore.tool_missing: Chưa có Tool Assembly BORING_BAR.")
+                raise ValueError("bore.tool_missing: Chưa có cụm Tool BORING_BAR.")
             tool = next((
                 value for value in snapshot.tool_definitions
                 if value.tool_id == assembly.tool_id
@@ -3737,7 +4451,7 @@ class CamWorkspace(QWidget):
             self._error(str(error))
             return
         if generation is None or generation != self._service.cam_generation:
-            self._error("bore.stale_result: Phiên tạo Boring đã stale.")
+            self._error("bore.stale_result: Phiên tạo Tiện lỗ đã lỗi thời.")
             return
         changed = self._execute(lambda app: app.update_tree(
             job_id,
@@ -3745,7 +4459,12 @@ class CamWorkspace(QWidget):
             lambda value: value.add_operation(parent_id, "Boring", operation),
         ))
         if changed:
-            self.refresh(("operation", str(node_id)))
+            self._present_created_operation(node_id)
+
+    def _present_created_operation(self, node_id: CamNodeId) -> None:
+        """Select and announce a newly persisted operation to the UI shell."""
+        self.refresh(("operation", str(node_id)))
+        self.operation_created.emit(str(node_id))
 
     def generate_selected(self) -> None:
         item = self.tree.currentItem()
@@ -3757,9 +4476,19 @@ class CamWorkspace(QWidget):
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is None or operation.strategy_key not in {
             "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
-            "tapping_v1", "reaming_v1", "boring_v1",
+            "tapping_v1", "reaming_v1", "boring_v1", "parallel_finishing_3d",
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key == "parallel_finishing_3d":
+            session = self.production_function_editor_session()
+            if session is None:
+                self._error("Trình sửa Gia công tinh song song cho sản xuất không khả dụng.")
+                return
+            try:
+                session.calculate_callback(session.applied_mapping())
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self._error(str(error))
             return
         if operation.strategy_key == "boring_v1":
             generation = self._generation
@@ -3786,8 +4515,8 @@ class CamWorkspace(QWidget):
                 or not operation.enabled
             ):
                 self._error(
-                    "bore.invalid_parameters: Draft Boring chưa hợp lệ "
-                    "hoặc chưa được Áp dụng."
+                    "bore.invalid_parameters: Bản nháp Tiện lỗ chưa hợp lệ "
+                    "hoặc chưa được áp dụng."
                 )
                 return
             result = self._service.compute_boring(
@@ -3807,13 +4536,13 @@ class CamWorkspace(QWidget):
                 or current.operation_id != operation.operation_id
             ):
                 self._error(
-                    "bore.stale_result: Kết quả Boring đã stale và không "
+                    "bore.stale_result: Kết quả Tiện lỗ đã lỗi thời và không "
                     "được hiển thị."
                 )
                 return
             if result.accepted and result.artifact is not None:
                 self.message.emit(
-                    "Boring đã Generate và publish artifact hợp lệ."
+                    "Tiện lỗ đã tạo và công bố kết quả hợp lệ."
                 )
                 self.editor.set_error("")
                 failure_message = None
@@ -3853,8 +4582,8 @@ class CamWorkspace(QWidget):
                 or not operation.enabled
             ):
                 self._error(
-                    "ream.invalid_parameters: Draft Reaming chưa hợp lệ "
-                    "hoặc chưa được Áp dụng."
+                    "ream.invalid_parameters: Bản nháp Doa chưa hợp lệ "
+                    "hoặc chưa được áp dụng."
                 )
                 return
             result = self._service.compute_reaming(
@@ -3874,13 +4603,13 @@ class CamWorkspace(QWidget):
                 or current.operation_id != operation.operation_id
             ):
                 self._error(
-                    "ream.stale_result: Kết quả Reaming đã stale và không "
+                    "ream.stale_result: Kết quả Doa đã lỗi thời và không "
                     "được hiển thị."
                 )
                 return
             if result.accepted and result.artifact is not None:
                 self.message.emit(
-                    "Reaming đã Generate và publish artifact hợp lệ."
+                    "Doa đã tạo và công bố kết quả hợp lệ."
                 )
                 self.editor.set_error("")
                 failure_message = None
@@ -3920,8 +4649,8 @@ class CamWorkspace(QWidget):
                 or not operation.enabled
             ):
                 self._error(
-                    "tap.invalid_parameters: Draft Tapping chưa hợp lệ "
-                    "hoặc chưa được Áp dụng."
+                    "tap.invalid_parameters: Bản nháp Ta rô chưa hợp lệ "
+                    "hoặc chưa được áp dụng."
                 )
                 return
             result = self._service.compute_tapping(
@@ -3941,13 +4670,13 @@ class CamWorkspace(QWidget):
                 or current.operation_id != operation.operation_id
             ):
                 self._error(
-                    "tap.stale_result: Kết quả Tapping đã stale và không "
+                    "tap.stale_result: Kết quả Ta rô đã lỗi thời và không "
                     "được hiển thị."
                 )
                 return
             if result.accepted and result.artifact is not None:
                 self.message.emit(
-                    "Tapping đã Generate và publish artifact hợp lệ."
+                    "Ta rô đã tạo và công bố kết quả hợp lệ."
                 )
                 self.editor.set_error("")
                 failure_message = None
@@ -3985,7 +4714,7 @@ class CamWorkspace(QWidget):
                 or not self._picked_reference_resolved
                 or not operation.enabled
             ):
-                self._error("Draft Drilling chưa hợp lệ hoặc chưa được Áp dụng.")
+                self._error("Bản nháp Khoan chưa hợp lệ hoặc chưa được áp dụng.")
                 return
             result = self._service.compute_drilling(
                 operation.operation_id,
@@ -4003,10 +4732,10 @@ class CamWorkspace(QWidget):
                 or current is None
                 or current.operation_id != operation.operation_id
             ):
-                self._error("Kết quả Drilling đã stale và không được hiển thị.")
+                self._error("Kết quả Khoan đã lỗi thời và không được hiển thị.")
                 return
             if result.accepted and result.artifact is not None:
-                self.message.emit("Drilling đã Generate và publish artifact hợp lệ.")
+                self.message.emit("Khoan đã tạo và công bố kết quả hợp lệ.")
                 self.editor.set_error("")
                 failure_message = None
             else:
@@ -4028,7 +4757,7 @@ class CamWorkspace(QWidget):
                     len(operation.geometry_inputs) != 1 or
                     self._picked_reference != operation.geometry_inputs[0].reference or
                     not self._picked_reference_resolved or not operation.enabled):
-                self._error("Draft Pocket chưa hợp lệ hoặc chưa được Áp dụng.")
+                self._error("Bản nháp Hốc chưa hợp lệ hoặc chưa được áp dụng.")
                 return
             result = self._service.compute_pocket(
                 operation.operation_id,
@@ -4042,10 +4771,10 @@ class CamWorkspace(QWidget):
                 service_generation = None
             if (generation != self._generation or generation != service_generation
                     or current is None or current.operation_id != operation.operation_id):
-                self._error("Kết quả Pocket đã stale và không được hiển thị.")
+                self._error("Kết quả Hốc đã lỗi thời và không được hiển thị.")
                 return
             if result.accepted and result.artifact is not None:
-                self.message.emit("Pocket 2.5D đã Generate và publish artifact hợp lệ.")
+                self.message.emit("Hốc 2.5D đã tạo và công bố kết quả hợp lệ.")
                 self.editor.set_error("")
                 failure_message = None
             else:
@@ -4064,7 +4793,7 @@ class CamWorkspace(QWidget):
                     len(operation.geometry_inputs) != 1 or
                     self._picked_reference != operation.geometry_inputs[0].reference or
                     not self._picked_reference_resolved or not operation.enabled):
-                self._error("Draft 2D Contour chưa hợp lệ hoặc chưa được Áp dụng.")
+                self._error("Bản nháp Biên dạng 2D chưa hợp lệ hoặc chưa được áp dụng.")
                 return
             result = self._service.compute_contour(
                 operation.operation_id, expected_generation=self._generation,
@@ -4073,7 +4802,7 @@ class CamWorkspace(QWidget):
             if result.accepted and result.artifact is not None:
                 if self._toolpath_display is not None:
                     self._toolpath_display(result.artifact)
-                self.message.emit("2D Contour đã Generate và publish artifact hợp lệ.")
+                self.message.emit("Biên dạng 2D đã tạo và công bố kết quả hợp lệ.")
                 self.editor.set_error("")
             else:
                 self._error(result.diagnostics[0].message if result.diagnostics else "2D Contour generation thất bại.")
@@ -4085,7 +4814,7 @@ class CamWorkspace(QWidget):
                 self.editor.tool.currentData() != str(operation.tool_assembly.assembly_id) or
                 self.editor.machine.currentData() != (str(machine_id) if machine_id else None) or
                 not operation.enabled):
-            self._error("Draft Facing chưa hợp lệ hoặc chưa được Áp dụng.")
+            self._error("Bản nháp Phay mặt chưa hợp lệ hoặc chưa được áp dụng.")
             return
         result = self._service.compute_facing(
             operation.operation_id,
@@ -4095,7 +4824,7 @@ class CamWorkspace(QWidget):
         if result.accepted and result.artifact is not None:
             if self._toolpath_display is not None:
                 self._toolpath_display(result.artifact)
-            self.message.emit("Facing 2.5D đã Generate và publish artifact hợp lệ.")
+            self.message.emit("Phay mặt 2.5D đã tạo và công bố kết quả hợp lệ.")
             self.editor.set_error("")
         else:
             self._error(result.diagnostics[0].message if result.diagnostics else "Facing generation thất bại.")
@@ -4140,6 +4869,7 @@ class CamWorkspace(QWidget):
             return
         job_id = CamJobId.parse(item.data(0, _JOB_ROLE))
         removed_operation_id: OperationId | None = None
+        removed_parallel_zone_id: MachiningZone3DId | None = None
         if kind == "job":
             changed = self._execute(lambda app: app.delete_job(job_id))
         elif kind == "setup":
@@ -4151,8 +4881,28 @@ class CamWorkspace(QWidget):
                 setup = self._find_setup(item, self._find_job(item))
                 node = setup.operation_tree.get_node(node_id) if setup is not None else None
                 removed_operation_id = node.operation_id if node is not None else None
+                if removed_operation_id is not None and setup is not None:
+                    operation = setup.operation_tree.get_operation(removed_operation_id)
+                    if operation.strategy_key == "parallel_finishing_3d":
+                        removed_parallel_zone_id = (
+                            ParallelFinishingParameters.from_operation_parameters(
+                                operation.parameters
+                            ).zone_id
+                        )
             changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
         if changed is not None:
+            if removed_parallel_zone_id is not None:
+                config = self._service.cam3d_config
+                self._service.stage_cam3d_config(
+                    Cam3DProjectConfig(
+                        config.project_id,
+                        tuple(
+                            zone
+                            for zone in config.zones
+                            if zone.zone_id != removed_parallel_zone_id
+                        ),
+                    )
+                )
             if removed_operation_id is not None:
                 self._service.clear_simulation_result(
                     removed_operation_id,
@@ -4189,11 +4939,42 @@ class CamWorkspace(QWidget):
             replace(value, input_id=GeometryInputId.new())
             for value in original.geometry_inputs
         )
+        duplicate_parameters = original.parameters
+        duplicated_zone = None
+        if original.strategy_key == "parallel_finishing_3d":
+            parameters = ParallelFinishingParameters.from_operation_parameters(
+                original.parameters
+            )
+            new_zone_id = MachiningZone3DId.new()
+            duplicate_parameters = replace(
+                parameters, zone_id=new_zone_id
+            ).to_operation_parameters()
+            source_zone = next(
+                (
+                    value
+                    for value in self._service.cam3d_config.zones
+                    if value.zone_id == parameters.zone_id
+                ),
+                None,
+            )
+            if source_zone is not None:
+                duplicated_zone = replace(
+                    source_zone,
+                    zone_id=new_zone_id,
+                    part_surfaces=replace(
+                        source_zone.part_surfaces,
+                        selection=replace(
+                            source_zone.part_surfaces.selection,
+                            selection_id=CamSurfaceSelectionId.new(),
+                        ),
+                    ),
+                )
         duplicate = replace(
             original,
             operation_id=duplicate_operation_id,
             node_id=duplicate_node_id,
             geometry_inputs=duplicate_geometry,
+            parameters=duplicate_parameters,
             revision=Revision(0),
             artifact_state=ArtifactState(),
             diagnostics=(),
@@ -4202,7 +4983,7 @@ class CamWorkspace(QWidget):
             tree.get_node(value).name
             for value in tree.get_node(node.parent_id).child_ids
         }
-        base_name = f"{node.name} Copy"
+        base_name = f"{node.name} — Bản sao"
         name = base_name
         suffix = 2
         while name in sibling_names:
@@ -4219,10 +5000,18 @@ class CamWorkspace(QWidget):
             )
         )
         if changed is not None:
+            if duplicated_zone is not None:
+                config = self._service.cam3d_config
+                self._service.stage_cam3d_config(
+                    Cam3DProjectConfig(
+                        config.project_id, (*config.zones, duplicated_zone)
+                    )
+                )
             self.refresh(("operation", str(duplicate_node_id)))
             self.projection_changed.emit()
             self.message.emit(
-                f"Đã nhân bản '{node.name}' thành '{name}'; Toolpath cần Calculate lại."
+                f"Đã nhân bản '{node.name}' thành '{name}'; "
+                "đường chạy dao cần tính lại."
             )
 
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -4373,7 +5162,7 @@ class CamWorkspace(QWidget):
                     assembly = next((value for value in snapshot.tool_assemblies
                                      if str(value.assembly_id) == values["tool_id"]), None)
                     if assembly is None:
-                        raise ValueError("Pocket thiếu Tool Assembly hợp lệ.")
+                        raise ValueError("Hốc thiếu cụm Tool hợp lệ.")
                     machine = next((value for value in snapshot.machine_definitions
                                     if str(value.machine_id) == values["machine_id"]), None)
                     if machine is None:
@@ -4454,7 +5243,7 @@ class CamWorkspace(QWidget):
                     ), None)
                     if assembly is None:
                         raise ValueError(
-                            "bore.tool_missing: Boring thiếu Tool Assembly."
+                            "bore.tool_missing: Tiện lỗ thiếu cụm Tool."
                         )
                     tool = next((
                         value for value in snapshot.tool_definitions
@@ -4574,7 +5363,7 @@ class CamWorkspace(QWidget):
                     ), None)
                     if assembly is None:
                         raise ValueError(
-                            "ream.tool_missing: Reaming thiếu Tool Assembly."
+                            "ream.tool_missing: Doa thiếu cụm Tool."
                         )
                     tool = next((
                         value for value in snapshot.tool_definitions
@@ -4689,7 +5478,7 @@ class CamWorkspace(QWidget):
                     ), None)
                     if assembly is None:
                         raise ValueError(
-                            "tap.tool_missing: Tapping thiếu Tool Assembly."
+                            "tap.tool_missing: Ta rô thiếu cụm Tool."
                         )
                     tool = next((
                         value for value in snapshot.tool_definitions
@@ -4802,7 +5591,7 @@ class CamWorkspace(QWidget):
                         if str(value.assembly_id) == values["tool_id"]
                     ), None)
                     if assembly is None:
-                        raise ValueError("Drilling thiếu Tool Assembly hợp lệ.")
+                        raise ValueError("Khoan thiếu cụm Tool hợp lệ.")
                     tool = next((
                         value for value in snapshot.tool_definitions
                         if value.tool_id == assembly.tool_id
@@ -4900,7 +5689,7 @@ class CamWorkspace(QWidget):
             return None
         job = self._find_job(item) if item else _active_job(snapshot)
         if job is None or job.active_setup is None:
-            self._error("Hãy chọn hoặc tạo Setup trước.")
+            self._error("Hãy chọn hoặc tạo thiết lập trước.")
             return None
         setup = self._find_setup(item, job) if item else job.active_setup
         setup = setup or job.active_setup
@@ -5079,6 +5868,26 @@ class CamWorkspace(QWidget):
             return False
 
 
+class _LocalizedValueComboBox(QComboBox):
+    """Show Vietnamese labels while preserving legacy raw-text contracts."""
+
+    def addItems(self, texts) -> None:  # noqa: N802
+        for text in texts:
+            raw = str(text)
+            self.addItem(ui_text(raw), raw)
+
+    def currentText(self) -> str:  # noqa: N802
+        raw = self.currentData()
+        return raw if isinstance(raw, str) else super().currentText()
+
+    def setCurrentText(self, text: str) -> None:  # noqa: N802
+        index = self.findData(text)
+        if index >= 0:
+            self.setCurrentIndex(index)
+            return
+        super().setCurrentText(text)
+
+
 class _CamPropertiesEditor(QWidget):
     draft_changed = Signal()
 
@@ -5118,25 +5927,25 @@ class _CamPropertiesEditor(QWidget):
             "pre_bore", "spindle", "feed_per_revolution", "dwell",
             "tolerance",
         )}
-        self.boundary_source = QComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
-        self.direction = QComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
-        self.profile_source = QComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
-        self.contour_side = QComboBox(); self.contour_side.addItems([item.value for item in ContourSide])
-        self.contour_direction = QComboBox(); self.contour_direction.addItems([item.value for item in ContourCutDirection])
-        self.pocket_entry = QComboBox(); self.pocket_entry.addItems([item.value for item in PocketEntryPolicy])
-        self.pocket_direction = QComboBox(); self.pocket_direction.addItems([item.value for item in PocketCuttingDirection])
-        self.drilling_cycle = QComboBox(); self.drilling_cycle.addItems([item.value for item in DrillingCycle])
-        self.drilling_retract = QComboBox(); self.drilling_retract.addItems([item.value for item in DrillRetractPolicy])
-        self.tapping_hand = QComboBox(); self.tapping_hand.addItems([item.value for item in TappingHand])
-        self.tapping_mode = QComboBox(); self.tapping_mode.addItems([item.value for item in TappingSynchronizationPolicy])
-        self.reaming_spindle_direction = QComboBox(); self.reaming_spindle_direction.addItems([item.value for item in SpindleDirection])
-        self.reaming_retract_policy = QComboBox(); self.reaming_retract_policy.addItems([item.value for item in ReamingRetractPolicy])
-        self.reaming_coolant = QComboBox(); self.reaming_coolant.addItems([item.value for item in ReamingCoolantMode])
+        self.boundary_source = _LocalizedValueComboBox(); self.boundary_source.addItems([item.value for item in FacingBoundarySource])
+        self.direction = _LocalizedValueComboBox(); self.direction.addItems([item.value for item in FacingCutDirection])
+        self.profile_source = _LocalizedValueComboBox(); self.profile_source.addItems([item.value for item in ContourProfileSource])
+        self.contour_side = _LocalizedValueComboBox(); self.contour_side.addItems([item.value for item in ContourSide])
+        self.contour_direction = _LocalizedValueComboBox(); self.contour_direction.addItems([item.value for item in ContourCutDirection])
+        self.pocket_entry = _LocalizedValueComboBox(); self.pocket_entry.addItems([item.value for item in PocketEntryPolicy])
+        self.pocket_direction = _LocalizedValueComboBox(); self.pocket_direction.addItems([item.value for item in PocketCuttingDirection])
+        self.drilling_cycle = _LocalizedValueComboBox(); self.drilling_cycle.addItems([item.value for item in DrillingCycle])
+        self.drilling_retract = _LocalizedValueComboBox(); self.drilling_retract.addItems([item.value for item in DrillRetractPolicy])
+        self.tapping_hand = _LocalizedValueComboBox(); self.tapping_hand.addItems([item.value for item in TappingHand])
+        self.tapping_mode = _LocalizedValueComboBox(); self.tapping_mode.addItems([item.value for item in TappingSynchronizationPolicy])
+        self.reaming_spindle_direction = _LocalizedValueComboBox(); self.reaming_spindle_direction.addItems([item.value for item in SpindleDirection])
+        self.reaming_retract_policy = _LocalizedValueComboBox(); self.reaming_retract_policy.addItems([item.value for item in ReamingRetractPolicy])
+        self.reaming_coolant = _LocalizedValueComboBox(); self.reaming_coolant.addItems([item.value for item in ReamingCoolantMode])
         self.reaming_derived = QLabel("—")
         self.reaming_derived.setWordWrap(True)
-        self.boring_spindle_direction = QComboBox(); self.boring_spindle_direction.addItems([item.value for item in SpindleDirection])
-        self.boring_retract_policy = QComboBox(); self.boring_retract_policy.addItems([item.value for item in BoringRetractPolicy])
-        self.boring_coolant = QComboBox(); self.boring_coolant.addItems([item.value for item in BoringCoolantMode])
+        self.boring_spindle_direction = _LocalizedValueComboBox(); self.boring_spindle_direction.addItems([item.value for item in SpindleDirection])
+        self.boring_retract_policy = _LocalizedValueComboBox(); self.boring_retract_policy.addItems([item.value for item in BoringRetractPolicy])
+        self.boring_coolant = _LocalizedValueComboBox(); self.boring_coolant.addItems([item.value for item in BoringCoolantMode])
         self.boring_derived = QLabel("—")
         self.boring_derived.setWordWrap(True)
         self.boring_tool_details = QLabel("—")
@@ -5144,8 +5953,8 @@ class _CamPropertiesEditor(QWidget):
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
         self.tool = QComboBox(); self.machine = QComboBox()
-        self.setup_kind = QComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
-        self.stock_kind = QComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
+        self.setup_kind = _LocalizedValueComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
+        self.stock_kind = _LocalizedValueComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
         self.enabled = QCheckBox("Được bật")
         self.status = QLabel("—")
         self.toolpath_metadata = QLabel("—")
@@ -5154,7 +5963,7 @@ class _CamPropertiesEditor(QWidget):
         form = QFormLayout(self)
         for label, key in (("Tên", "name"), ("Work offset", "offset"), ("WCS X", "x"), ("WCS Y", "y"), ("WCS Z", "z")):
             form.addRow(label, self._fields[key])
-        form.addRow("Loại Setup", self.setup_kind); form.addRow("Loại Stock", self.stock_kind)
+        form.addRow("Loại thiết lập", self.setup_kind); form.addRow("Loại phôi", self.stock_kind)
         form.addRow("Kích thước A", self._fields["a"]); form.addRow("Kích thước B", self._fields["b"]); form.addRow("Kích thước C", self._fields["c"])
         form.addRow("Nguồn Facing", self.boundary_source); form.addRow("Tool Assembly", self.tool); form.addRow("Máy", self.machine)
         for label, key in (("Top Z", "top"), ("Target Z", "target"), ("Stepdown", "stepdown"),
@@ -5163,7 +5972,8 @@ class _CamPropertiesEditor(QWidget):
                            ("Spindle RPM", "spindle"), ("Raster angle", "angle"), ("Overtravel", "overtravel")):
             form.addRow(label, self._facing_fields[key])
         form.addRow("Hướng cắt", self.direction)
-        form.addRow("Nguồn profile", self.profile_source); form.addRow("Side", self.contour_side)
+        form.addRow("Nguồn cấu hình", self.profile_source)
+        form.addRow("Phía biên dạng", self.contour_side)
         for label, key in (("Contour Top Z", "top"), ("Final depth Z", "final"),
                            ("Contour stepdown", "stepdown"), ("Radial allowance", "radial"),
                            ("Axial allowance", "axial"), ("Contour clearance Z", "clearance"),
@@ -5579,7 +6389,7 @@ class _CamPropertiesEditor(QWidget):
                 f"{number(value.maximum_bore_diameter)}"
             )
         self.toolpath_metadata.setText(
-            f"{value.operation_id} · {value.strategy_key} · {value.pass_count} pass · "
+            f"{value.operation_id} · {value.strategy_key} · {value.pass_count} lượt · "
             f"[{minimum.x:.3f}, {minimum.y:.3f}, {minimum.z:.3f}] → "
             f"[{maximum.x:.3f}, {maximum.y:.3f}, {maximum.z:.3f}] · "
             f"{value.artifact_status.value.upper()}{tapping}"
@@ -5592,7 +6402,7 @@ class _CamPropertiesEditor(QWidget):
     ) -> None:
         """Show a persistent single-hole or pattern binding without runtime IDs."""
         if source is None:
-            self.status.setText("HOLE MISSING · chưa Bind hole pattern")
+            self.status.setText("THIẾU LỖ · chưa liên kết mẫu lỗ")
             return
         state = "RESOLVED" if resolved else "STALE/INVALID"
         references = _hole_references(source)
@@ -5601,13 +6411,14 @@ class _CamPropertiesEditor(QWidget):
                 location.source_kind.value for location in source.locations
             })
             self.status.setText(
-                f"Geometry: {state} · HOLE PATTERN {len(source.locations)} · "
+                f"Hình học: {translate_status(state)} · MẪU LỖ "
+                f"{len(source.locations)} · "
                 f"{', '.join(kinds)}"
             )
             return
         reference = references[0].reference
         self.status.setText(
-            f"Geometry: {state} · {reference.kind.value} · "
+            f"Hình học: {translate_status(state)} · {ui_text(reference.kind.value)} · "
             f"{reference.hint or reference.reference_id}"
         )
 
@@ -5619,12 +6430,16 @@ class _CamPropertiesEditor(QWidget):
         subject: str = "profile",
     ) -> None:
         if reference is None:
-            label = "HOLE" if subject == "hole" else "PROFILE"
-            self.status.setText(f"{label} MISSING — chưa Bind {subject}")
+            localized_subject = ui_text(subject)
+            self.status.setText(
+                f"THIẾU {localized_subject.upper()} — "
+                f"chưa liên kết {localized_subject}"
+            )
         else:
             state = "RESOLVED" if resolved else "STALE/INVALID"
             self.status.setText(
-                f"Geometry: {state} · {reference.kind.value} · "
+                f"Hình học: {translate_status(state)} · "
+                f"{ui_text(reference.kind.value)} · "
                 f"{reference.hint or reference.reference_id}"
             )
 
@@ -6110,7 +6925,7 @@ class _CamPropertiesEditor(QWidget):
             pre_hole_text = self._reaming_fields["pre_hole"].text().strip()
             if not pre_hole_text:
                 self.reaming_derived.setText(
-                    "ream.prehole_missing · pre-hole diameter là bắt buộc"
+                    "ream.prehole_missing · bắt buộc khai báo đường kính lỗ có trước"
                 )
                 return
             nominal = float(nominal_text)
@@ -6148,8 +6963,8 @@ class _CamPropertiesEditor(QWidget):
             if rpm <= 0.0 or feed_per_revolution <= 0.0:
                 raise ValueError("ream.invalid_parameters · RPM/feed mỗi vòng phải > 0")
             self.reaming_derived.setText(
-                f"Stock/side: {stock:g} · Feed/min: "
-                f"{rpm * feed_per_revolution:g} · Cutting depth: {top - final:g}"
+                f"Phôi/mặt bên: {stock:g} · Lượng chạy dao/phút: "
+                f"{rpm * feed_per_revolution:g} · Chiều sâu cắt: {top - final:g}"
             )
         except ValueError as error:
             self.reaming_derived.setText(str(error) or "ream.invalid_parameters")
@@ -6250,7 +7065,7 @@ class _CamPropertiesEditor(QWidget):
             pre_bore_text = self._boring_fields["pre_bore"].text().strip()
             if not pre_bore_text:
                 self.boring_derived.setText(
-                    "bore.prebore_missing · pre-bore diameter là bắt buộc"
+                    "bore.prebore_missing · bắt buộc khai báo đường kính lỗ sơ bộ"
                 )
                 return
             finished = float(finished_text)
@@ -6294,8 +7109,8 @@ class _CamPropertiesEditor(QWidget):
                     "bore.invalid_parameters · RPM/feed mỗi vòng phải > 0"
                 )
             self.boring_derived.setText(
-                f"Radial stock: {stock:g} · Feed/min: "
-                f"{rpm * feed_per_revolution:g} · Cutting depth: {top - final:g}"
+                f"Lượng dư hướng kính: {stock:g} · Lượng chạy dao/phút: "
+                f"{rpm * feed_per_revolution:g} · Chiều sâu cắt: {top - final:g}"
             )
         except ValueError as error:
             self.boring_derived.setText(str(error) or "bore.invalid_parameters")
@@ -6304,7 +7119,7 @@ class _CamPropertiesEditor(QWidget):
         """Expose the current BORING_BAR access envelope and provenance read-only."""
         assembly = self._assemblies_by_id.get(str(self.tool.currentData()))
         if assembly is None:
-            self.boring_tool_details.setText("bore.tool_missing · chưa chọn assembly")
+            self.boring_tool_details.setText("bore.tool_missing · chưa chọn cụm Tool")
             return
         tool = self._tool_definitions_by_id.get(assembly.tool_id)
         holder = self._holders_by_id.get(assembly.holder_id)
@@ -6331,15 +7146,18 @@ class _CamPropertiesEditor(QWidget):
             "?" if holder is None else holder.content_fingerprint.digest[:12]
         )
         self.boring_tool_details.setText(
-            f"{tool.family.value} · min D{geometry.minimum_bore_diameter.value:g} · "
-            f"max D{geometry.maximum_bore_diameter.value:g} · "
-            f"cut {geometry.cutting_length.value:g} · hand {geometry.hand.value} · "
-            f"unit {tool.unit.value} · shank D{tool.shank.diameter.value:g} · "
-            f"usable {tool.usable_length.value:g} · stickout {assembly.stickout.value:g} · "
-            f"assembly rev {assembly.revision.value}/fp {assembly.content_fingerprint.digest[:12]} · "
-            f"tool rev {tool.revision.value}/fp {tool.content_fingerprint.digest[:12]} · "
-            f"holder {holder_text} rev {holder_revision}/fp {holder_fingerprint} · "
-            f"snapshot {'CURRENT' if current else 'STALE'}"
+            f"{tool.family.value} · D nhỏ nhất "
+            f"{geometry.minimum_bore_diameter.value:g} · D lớn nhất "
+            f"{geometry.maximum_bore_diameter.value:g} · chiều dài cắt "
+            f"{geometry.cutting_length.value:g} · tay {geometry.hand.value} · "
+            f"đơn vị {tool.unit.value} · D cán {tool.shank.diameter.value:g} · "
+            f"chiều dài dùng được {tool.usable_length.value:g} · nhô dao "
+            f"{assembly.stickout.value:g} · cụm Tool bản sửa đổi "
+            f"{assembly.revision.value}/fp {assembly.content_fingerprint.digest[:12]} · "
+            f"Tool bản sửa đổi {tool.revision.value}/fp "
+            f"{tool.content_fingerprint.digest[:12]} · Holder {holder_text} "
+            f"bản sửa đổi {holder_revision}/fp {holder_fingerprint} · ảnh chụp "
+            f"{translate_status('CURRENT' if current else 'STALE')}"
         )
 
 
@@ -6665,6 +7483,21 @@ def _find_drilling_assembly(snapshot, family: ToolFamily):
         if tools.get(assembly.tool_id) is not None
         and tools[assembly.tool_id].family is family
     ), None)
+
+
+def _parallel_surface_key(surface: object) -> tuple[object, ...]:
+    """Return the persisted face identity while keeping native OCP handles out."""
+    geometry = getattr(surface, "geometry", None)
+    if geometry is None:
+        raise TypeError("Parallel selector returned an invalid face reference")
+    return (
+        geometry.source_id,
+        geometry.scheme,
+        geometry.scheme_version,
+        geometry.occurrence_path,
+        geometry.subshape_selector,
+        geometry.expected_source_revision,
+    )
 
 
 def _active_job(snapshot):

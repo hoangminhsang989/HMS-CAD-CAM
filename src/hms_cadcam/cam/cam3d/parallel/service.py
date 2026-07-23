@@ -440,6 +440,7 @@ def calculate_and_publish_parallel_finishing(
     progress: ProgressCallback | None = None,
     current_operation: Callable[[], Operation] | None = None,
     contact_resolver: ContactResolver | None = None,
+    computing_callback: Callable[[Operation], bool] | None = None,
 ) -> ParallelFinishingComputeResult:
     """Compute and atomically publish a complete artifact after final stale checks."""
     generator = ParallelFinishingGenerator()
@@ -450,6 +451,17 @@ def calculate_and_publish_parallel_finishing(
             operation, context, assembly=assembly, tool=tool, holder=holder
         )
         computing, token = generator.begin(inputs)
+        if computing_callback is not None and not computing_callback(
+            computing.operation
+        ):
+            diagnostic = ValidationDiagnostic(
+                DiagnosticSeverity.WARNING,
+                DiagnosticCode.PARALLEL_STALE_RESULT,
+                "Parallel calculation became stale before generation started.",
+            )
+            return ParallelFinishingComputeResult(
+                operation, None, None, False, (diagnostic,)
+            )
         candidate = generator.generate(
             computing,
             cancellation=cancellation,

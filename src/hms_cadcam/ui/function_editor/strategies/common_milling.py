@@ -546,7 +546,7 @@ def build_facing_sections(
     if variant is FacingEditorVariant.STOCK:
         geometry_fields.append(
             FunctionEditorField(
-                "geometry_bounds", "Kích thước Stock", FunctionEditorFieldKind.READ_ONLY,
+                "geometry_bounds", "Kích thước phôi", FunctionEditorFieldKind.READ_ONLY,
                 values["geometry_bounds"], source=FunctionEditorValueSource.STOCK,
                 help_key="facing.geometry_bounds", order=20,
                 binding_key="derived.stock_bounds",
@@ -558,7 +558,7 @@ def build_facing_sections(
                 "geometry_reference_id", "Geometry identity", FunctionEditorFieldKind.READ_ONLY,
                 values["geometry_reference_id"], source=FunctionEditorValueSource.GEOMETRY,
                 required=True, disclosure_level=ParameterDisclosureLevel.ADVANCED,
-                tooltip="Persistent GeometryReferenceId; không chứa OCP object.",
+                tooltip="ID tham chiếu hình học ổn định; không chứa đối tượng OCP.",
                 help_key="facing.geometry_identity", order=20,
                 binding_key="operation.geometry_inputs.boundary",
             )
@@ -653,7 +653,7 @@ def build_facing_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(FunctionEditorValidationRule(
                     FunctionEditorValidationKind.MINIMUM, 0.0,
-                    "Stock allowance không được âm.", "facing.allowance_nonnegative",
+                    "Lượng dư phôi không được âm.", "facing.allowance_nonnegative",
                 ),),
             ),
             _number_field(
@@ -681,7 +681,7 @@ def build_facing_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(FunctionEditorValidationRule(
                     FunctionEditorValidationKind.GREATER_THAN_FIELD, "top_height",
-                    "Retract Z phải cao hơn Top Z.", "facing.retract_above_top",
+                    "Z rút dao phải cao hơn Z đỉnh.", "facing.retract_above_top",
                 ),),
             ),
         ),
@@ -703,7 +703,7 @@ def build_facing_sections(
             binding_key="parameters.raster_angle_degrees", order=20,
             default=defaults.get("raster_angle_degrees"),
             disclosure_level=ParameterDisclosureLevel.ADVANCED,
-            help_text="Giá trị hữu hạn được domain chuẩn hóa modulo 180°.",
+            help_text="Giá trị hữu hạn được miền chuẩn hóa theo môđun 180°.",
         ),
     ]
     if variant is FacingEditorVariant.STOCK:

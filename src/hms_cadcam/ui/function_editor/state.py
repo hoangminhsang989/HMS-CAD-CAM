@@ -115,6 +115,9 @@ ApplyCallback = Callable[[Mapping[str, PresentationValue]], object]
 ValidationCallback = Callable[
     [Mapping[str, PresentationValue]], tuple[FunctionEditorDiagnostic, ...]
 ]
+DraftTransformCallback = Callable[
+    [Mapping[str, PresentationValue]], Mapping[str, PresentationValue]
+]
 
 
 class FunctionEditorDraftState:
@@ -129,6 +132,7 @@ class FunctionEditorDraftState:
         operation_key: str = "reference-operation",
         generation: int = 0,
         validation_callback: ValidationCallback | None = None,
+        draft_transform_callback: DraftTransformCallback | None = None,
     ) -> None:
         self.schema = schema
         defaults = {field.field_id: deepcopy(field.value) for field in schema.fields}
@@ -146,6 +150,7 @@ class FunctionEditorDraftState:
         self.operation_key = str(operation_key)
         self.generation = int(generation)
         self._validation_callback = validation_callback
+        self._draft_transform_callback = draft_transform_callback
         self._last_apply_result: object = None
 
     @staticmethod
@@ -207,6 +212,7 @@ class FunctionEditorDraftState:
         candidate.update(
             {field_id: deepcopy(value) for field_id, value in detached.items()}
         )
+        candidate = self._transform_candidate(candidate)
         self._draft = candidate
         self._diagnostics = tuple(
             item for item in self._diagnostics if item.field_id not in changed_ids
@@ -217,6 +223,27 @@ class FunctionEditorDraftState:
             else FunctionEditorDraftStatus.NO_CHANGES
         )
 
+    def _transform_candidate(
+        self, candidate: dict[str, PresentationValue]
+    ) -> dict[str, PresentationValue]:
+        """Recompute declared presentation-only derived values after one edit."""
+        if self._draft_transform_callback is None:
+            return candidate
+        transformed = dict(
+            self._draft_transform_callback(
+                MappingProxyType(deepcopy(candidate))
+            )
+        )
+        known = {field.field_id for field in self.schema.fields}
+        unknown = set(transformed).difference(known)
+        if unknown:
+            raise KeyError(f"Unknown transformed fields: {sorted(unknown)}")
+        self._ensure_values_safe(transformed)
+        candidate.update(
+            {field_id: deepcopy(value) for field_id, value in transformed.items()}
+        )
+        return candidate
+
     def reset_field(self, field_id: str) -> None:
         """Restore one field to its last applied value."""
         self.edit(field_id, deepcopy(self._applied[field_id]))
@@ -226,6 +253,7 @@ class FunctionEditorDraftState:
         section = self.schema.section(section_id)
         for field in section.fields:
             self._draft[field.field_id] = deepcopy(self._applied[field.field_id])
+        self._draft = self._transform_candidate(self._draft)
         self._diagnostics = tuple(
             item for item in self._diagnostics if item.section_id != section_id
         )
@@ -271,6 +299,7 @@ class FunctionEditorDraftState:
         for field in fields:
             if field.default is not None:
                 self._draft[field.field_id] = deepcopy(field.default)
+        self._draft = self._transform_candidate(self._draft)
         self._diagnostics = ()
         self._status = (
             FunctionEditorDraftStatus.MODIFIED

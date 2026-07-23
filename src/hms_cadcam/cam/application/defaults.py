@@ -1,7 +1,7 @@
 """Small validated project resources used by the 7B.1 creation dialog."""
 
 from hms_cadcam.cam.domain import (
-    AffineTransform, Angle, AngleUnit, BoringBarGeometry, CylindricalGeometry,
+    AffineTransform, Angle, AngleUnit, BallEndGeometry, BoringBarGeometry, CylindricalGeometry,
     DrillGeometry,
     FeedRate, FeedUnit, HolderDefinition,
     HolderDefinitionId, HolderSection, KinematicChain, KinematicMount,
@@ -121,6 +121,39 @@ def basic_mill_resources(unit: LengthUnit) -> tuple[
         (SpindleCapability("main", SpindleSpeed(100), SpindleSpeed(10000)),),
         capabilities, chain,
         WorkEnvelope(Length(1000, unit), Length(500, unit), Length(500, unit)),
+    )
+    return tool, holder, assembly, machine
+
+
+def basic_parallel_resources(unit: LengthUnit) -> tuple[
+    ToolDefinition, HolderDefinition, ToolAssembly, MachineDefinition
+]:
+    """Create one project-owned ball-end assembly and compatible mill."""
+    _end_mill, holder, _end_assembly, machine = basic_mill_resources(unit)
+    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
+    tool = ToolDefinition(
+        ToolDefinitionId.new(),
+        "Dao cầu 10",
+        ToolFamily.BALL_END_MILL,
+        unit,
+        BallEndGeometry(
+            Length(10.0 * scale, unit),
+            Length(20.0 * scale, unit),
+        ),
+        Length(100.0 * scale, unit),
+        Length(30.0 * scale, unit),
+        ShankGeometry(
+            Length(10.0 * scale, unit),
+            Length(70.0 * scale, unit),
+        ),
+    )
+    assembly = ToolAssembly.create(
+        ToolAssemblyId.new(),
+        "Cụm dao cầu Parallel 10",
+        tool,
+        Length(40.0 * scale, unit),
+        Length(80.0 * scale, unit),
+        holder,
     )
     return tool, holder, assembly, machine
 

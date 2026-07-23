@@ -55,6 +55,7 @@ class ProjectUiController(QObject):
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
         self._pending_operation: Callable[[], object] | None = None
+        self._project_change_guard: Callable[[], bool] | None = None
         self._autosave_task: ProjectTask | None = None
         self._autosave_pending = False
         self._autosave_generation = 0
@@ -96,10 +97,19 @@ class ProjectUiController(QObject):
         for entry in entries:
             action = menu.addAction(str(entry.path))
             action.triggered.connect(
-                lambda checked=False, path=entry.path: self._start_operation(
-                    lambda: self._service.open_project(path)
-                )
+                lambda checked=False, path=entry.path: self._open_recent(path)
             )
+
+    def set_project_change_guard(self, guard: Callable[[], bool] | None) -> None:
+        """Install a UI-only guard for transient drafts outside project payloads."""
+        self._project_change_guard = guard
+
+    def _can_change_project(self) -> bool:
+        return self._project_change_guard is None or self._project_change_guard()
+
+    def _open_recent(self, path: Path) -> None:
+        if self._can_change_project():
+            self._start_operation(lambda: self._service.open_project(path))
 
     def request_application_close(self) -> bool:
         """Return whether the window can close without losing project work."""
@@ -117,6 +127,8 @@ class ProjectUiController(QObject):
         """Collect New Project inputs and run creation in a worker."""
         values = self._request_destination("Tạo dự án HMS mới")
         if values is None:
+            return
+        if self._service.has_project and not self._can_change_project():
             return
         parent, name, units, overwrite = values
         self._start_operation(
@@ -166,6 +178,8 @@ class ProjectUiController(QObject):
             QFileDialog.Option.ShowDirsOnly,
         )
         if selected:
+            if not self._can_change_project():
+                return
             self._start_operation(lambda: self._service.open_project(Path(selected)))
 
     @Slot()
@@ -187,6 +201,8 @@ class ProjectUiController(QObject):
         )
         if values is None:
             return
+        if not self._can_change_project():
+            return
         parent, name, _units, overwrite = values
         self._start_operation(
             lambda: self._service.save_as(parent, name, overwrite=overwrite)
@@ -196,6 +212,8 @@ class ProjectUiController(QObject):
     def close_project(self) -> None:
         """Close the current project after Save/Discard/Cancel handling."""
         if self.is_autosaving:
+            return
+        if not self._can_change_project():
             return
         if self._close_current_interactively():
             self.project_changed.emit(None)
@@ -387,7 +405,7 @@ class ProjectUiController(QObject):
             generation, project_id
         ):
             return
-        self.message.emit("Đã tạo snapshot autosave.")
+        self.message.emit("Đã tạo ảnh chụp tự động lưu.")
 
     def _autosave_failed(
         self,
@@ -457,8 +475,8 @@ class ProjectUiController(QObject):
         response = QMessageBox.warning(
             self._window,
             "Phát hiện lần đóng bất thường",
-            "Có snapshot autosave hợp lệ từ phiên bị đóng bất thường.\n\n"
-            "Chọn Yes để phục hồi, No để mở dữ liệu chính, hoặc Cancel để dừng.",
+            "Có ảnh chụp tự động lưu hợp lệ từ phiên bị đóng bất thường.\n\n"
+            "Chọn Có để phục hồi, Không để mở dữ liệu chính, hoặc Hủy để dừng.",
             QMessageBox.StandardButton.Yes
             | QMessageBox.StandardButton.No
             | QMessageBox.StandardButton.Cancel,

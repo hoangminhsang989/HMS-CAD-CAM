@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +35,13 @@ from hms_cadcam.cam.simulation import (
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayPolicy,
     SimulationPresentation,
+)
+from hms_cadcam.ui.localization import (
+    LocalizedComboBox,
+    localize_widget_tree,
+    translate_progress_phase,
+    translate_status,
+    ui_text,
 )
 
 _MAX_DISPLAY_POINTS = 1_000_000
@@ -169,8 +175,9 @@ class SimulationPanel(QWidget):
         issue_layout = QVBoxLayout(issue_group)
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter"))
-        self.issue_filter = QComboBox()
-        self.issue_filter.addItems(["ALL", "ERROR", "WARNING", "INFO"])
+        self.issue_filter = LocalizedComboBox()
+        for label in ("ALL", "ERROR", "WARNING", "INFO"):
+            self.issue_filter.addItem(label, label)
         self.clear_issue_selection_button = QPushButton("Clear selection")
         self.copy_issue_button = QPushButton("Copy technical details")
         filter_row.addWidget(self.issue_filter)
@@ -207,6 +214,7 @@ class SimulationPanel(QWidget):
         self.details_button.clicked.connect(self._show_issue_details)
         self.set_policy(self._sampling_policy, self._display_policy)
         self.clear_source()
+        localize_widget_tree(self)
 
     @property
     def sampling_policy(self) -> SimulationSamplingPolicy:
@@ -232,6 +240,7 @@ class SimulationPanel(QWidget):
         self.issue_table.setRowCount(0)
         self.issue_details.setText("—")
         self._set_action_state(can_run=False, active=False, has_result=False)
+        localize_widget_tree(self)
 
     def show_source(
         self,
@@ -244,14 +253,14 @@ class SimulationPanel(QWidget):
         operation, artifact, setup = inputs.operation, inputs.artifact, inputs.setup
         self.source_labels["operation"].setText(
             f"{operation.operation_id} · rev {operation.revision.value} · "
-            f"{'enabled' if operation.enabled else 'disabled'}"
+            f"{'đã bật' if operation.enabled else 'đã tắt'}"
         )
         self.source_labels["artifact"].setText(str(artifact.artifact_id))
         fingerprint = artifact.artifact_fingerprint
         self.source_labels["artifact_state"].setText(
-            f"{operation.artifact_state.status.value.upper()} · "
-            f"{artifact.completion_status.value.upper()} · "
-            f"{fingerprint.digest[:16] if fingerprint else 'no fingerprint'}"
+            f"{translate_status(operation.artifact_state.status.value.upper())} · "
+            f"{translate_status(artifact.completion_status.value.upper())} · "
+            f"{fingerprint.digest[:16] if fingerprint else 'không có dấu vân tay'}"
         )
         self.source_labels["stock"].setText(setup.stock.kind.value.upper())
         self.source_labels["fixtures"].setText(
@@ -259,23 +268,26 @@ class SimulationPanel(QWidget):
         )
         self.source_labels["tooling"].setText(
             f"{inputs.tool.name} / "
-            f"{inputs.holder.name if inputs.holder else 'MISSING'} / "
-            f"{inputs.machine.name if inputs.machine else 'none'}"
+            f"{inputs.holder.name if inputs.holder else 'THIẾU'} / "
+            f"{inputs.machine.name if inputs.machine else 'không có'}"
         )
         self.source_labels["policy"].setText(self._policy_summary())
-        self.source_labels["latest"].setText("IDLE")
-        self.source_labels["current"].setText(f"No current result · {cache_status}")
+        self.source_labels["latest"].setText("ĐANG CHỜ")
+        self.source_labels["current"].setText(
+            f"Không có kết quả hiện hành · {ui_text(cache_status)}"
+        )
         self.source_labels["status"].setText("—")
         self.source_labels["issues"].setText("0")
         self.source_labels["samples"].setText("0")
-        self.source_labels["overlay"].setText("0 / 0 points · 0 / 0 markers")
+        self.source_labels["overlay"].setText("0 / 0 điểm · 0 / 0 dấu")
         self._set_action_state(can_run=can_run, active=False, has_result=False)
+        localize_widget_tree(self)
 
     def show_unavailable(self, operation_id: OperationId, message: str) -> None:
         self.clear_source()
         self.source_labels["operation"].setText(str(operation_id))
-        self.source_labels["latest"].setText(message)
-        self.source_labels["current"].setText("No current result")
+        self.source_labels["latest"].setText(ui_text(message))
+        self.source_labels["current"].setText("Không có kết quả hiện hành")
 
     def set_policy(
         self,
@@ -307,9 +319,9 @@ class SimulationPanel(QWidget):
             path_cap = int(self.policy_fields["maximum_path_points"].text())
             marker_cap = int(self.policy_fields["maximum_markers"].text())
             if not 2 <= path_cap <= _MAX_DISPLAY_POINTS:
-                raise ValueError("Display point cap vượt hard bound")
+                raise ValueError("Giới hạn điểm hiển thị vượt giới hạn cứng")
             if not 1 <= marker_cap <= _MAX_DISPLAY_MARKERS:
-                raise ValueError("Display marker cap vượt hard bound")
+                raise ValueError("Giới hạn dấu hiển thị vượt giới hạn cứng")
             sampling = SimulationSamplingPolicy(
                 max_linear_step=float(self.policy_fields["max_linear_step"].text()),
                 chord_tolerance=float(self.policy_fields["chord_tolerance"].text()),
@@ -324,7 +336,7 @@ class SimulationPanel(QWidget):
             )
             display = SimulationDisplayPolicy(path_cap, marker_cap)
         except (TypeError, ValueError) as error:
-            self.policy_error.setText(f"Policy không hợp lệ: {error}")
+            self.policy_error.setText(f"Chính sách không hợp lệ: {error}")
             return False
         self.set_policy(sampling, display)
         self.policy_applied.emit(sampling, display)
@@ -339,19 +351,19 @@ class SimulationPanel(QWidget):
     def set_run_record(self, record: SimulationRunRecord | None) -> None:
         if record is None:
             self._run_started_at = None
-            self.source_labels["latest"].setText("IDLE")
+            self.source_labels["latest"].setText("ĐANG CHỜ")
             self._set_action_state(
                 can_run=self._inputs is not None,
                 active=False,
                 has_result=self._result is not None,
             )
             return
-        text = record.state.value.upper()
+        text = translate_status(record.state.value.upper())
         self._run_started_at = record.started_at
         if record.diagnostic_code is not None:
             text += f" · {record.diagnostic_code.value}"
         if record.diagnostic_message:
-            text += f" · {record.diagnostic_message}"
+            text += f" · {ui_text(record.diagnostic_message)}"
         self.source_labels["latest"].setText(text)
         self._set_elapsed(record.completed_at)
         active = record.state in {
@@ -364,6 +376,7 @@ class SimulationPanel(QWidget):
             active=active,
             has_result=self._result is not None,
         )
+        localize_widget_tree(self)
 
     def set_progress(self, progress: SimulationProgress) -> None:
         self._set_elapsed(None)
@@ -371,8 +384,9 @@ class SimulationPanel(QWidget):
         percentage_text = "?" if percentage is None else f"{percentage:.1f}%"
         total_text = "?" if progress.total is None else str(progress.total)
         self.progress_label.setText(
-            f"{progress.phase.value} · {progress.processed}/{total_text} · "
-            f"{percentage_text} · issues {progress.issue_count}"
+            f"{translate_progress_phase(progress.phase)} · "
+            f"{progress.processed}/{total_text} · {percentage_text} · "
+            f"{progress.issue_count} vấn đề"
         )
         if percentage is None:
             self.progress_bar.setRange(0, 0)
@@ -389,30 +403,33 @@ class SimulationPanel(QWidget):
     ) -> None:
         self._result = result
         self._presentation = presentation
-        self.source_labels["status"].setText(result.status.value.upper())
+        self.source_labels["status"].setText(
+            translate_status(result.status.value.upper())
+        )
         self.source_labels["issues"].setText(
-            f"errors {result.statistics.error_count} · warnings "
-            f"{result.statistics.warning_count} · total {len(result.issues)}"
+            f"{result.statistics.error_count} lỗi · "
+            f"{result.statistics.warning_count} cảnh báo · "
+            f"tổng {len(result.issues)}"
         )
         self.source_labels["samples"].setText(
-            f"{result.statistics.sampled_point_count} points · "
-            f"{result.statistics.sampled_segment_count} segments"
+            f"{result.statistics.sampled_point_count} điểm · "
+            f"{result.statistics.sampled_segment_count} đoạn"
         )
         if presentation is None:
-            self.source_labels["overlay"].setText("not rendered")
+            self.source_labels["overlay"].setText("chưa kết xuất")
         else:
             self._overlay_visible = presentation.visible
             self.visibility_button.setText(
-                "Hide Overlay" if presentation.visible else "Show Overlay"
+                "Ẩn lớp phủ" if presentation.visible else "Hiện lớp phủ"
             )
             self.source_labels["overlay"].setText(
                 f"{presentation.displayed_path_point_count} / "
-                f"{presentation.total_path_point_count} points · "
+                f"{presentation.total_path_point_count} điểm · "
                 f"{presentation.displayed_marker_count} / "
-                f"{presentation.total_marker_count} markers"
+                f"{presentation.total_marker_count} dấu"
             )
         self.source_labels["current"].setText(
-            "CURRENT" if current else "STALE / NON-CURRENT"
+            "HIỆN HÀNH" if current else "ĐÃ LỖI THỜI / KHÔNG HIỆN HÀNH"
         )
         self._render_issues()
         self._set_action_state(
@@ -420,9 +437,12 @@ class SimulationPanel(QWidget):
             active=False,
             has_result=True,
         )
+        localize_widget_tree(self)
 
-    def mark_result_stale(self, message: str = "STALE / NON-CURRENT") -> None:
-        self.source_labels["current"].setText(message)
+    def mark_result_stale(
+        self, message: str = "ĐÃ LỖI THỜI / KHÔNG HIỆN HÀNH"
+    ) -> None:
+        self.source_labels["current"].setText(ui_text(message))
         self._set_action_state(
             can_run=self._inputs is not None,
             active=False,
@@ -435,8 +455,8 @@ class SimulationPanel(QWidget):
         self.source_labels["status"].setText("—")
         self.source_labels["issues"].setText("0")
         self.source_labels["samples"].setText("0")
-        self.source_labels["overlay"].setText("0 / 0 points · 0 / 0 markers")
-        self.source_labels["current"].setText("No current result")
+        self.source_labels["overlay"].setText("0 / 0 điểm · 0 / 0 dấu")
+        self.source_labels["current"].setText("Không có kết quả hiện hành")
         self.issue_table.setRowCount(0)
         self.issue_details.setText("—")
         self._set_action_state(
@@ -447,7 +467,7 @@ class SimulationPanel(QWidget):
 
     def set_cache_diagnostic(self, text: str) -> None:
         current = self.source_labels["current"].text()
-        self.source_labels["current"].setText(f"{current} · {text}")
+        self.source_labels["current"].setText(f"{current} · {ui_text(text)}")
 
     def clear_issue_selection(self) -> None:
         self.issue_table.clearSelection()
@@ -471,7 +491,7 @@ class SimulationPanel(QWidget):
     def _toggle_visibility(self) -> None:
         self._overlay_visible = not self._overlay_visible
         self.visibility_button.setText(
-            "Hide Overlay" if self._overlay_visible else "Show Overlay"
+            "Ẩn lớp phủ" if self._overlay_visible else "Hiện lớp phủ"
         )
         self.visibility_requested.emit(self._overlay_visible)
 
@@ -479,7 +499,7 @@ class SimulationPanel(QWidget):
         self.issue_table.setRowCount(0)
         if self._result is None:
             return
-        filter_value = self.issue_filter.currentText()
+        filter_value = str(self.issue_filter.currentData())
         markers = {
             marker.issue_index: marker.marker_id
             for marker in self._presentation.markers
@@ -491,20 +511,23 @@ class SimulationPanel(QWidget):
             self.issue_table.insertRow(row)
             evidence = "; ".join(f"{key}={value}" for key, value in issue.evidence)
             values = (
-                issue.severity.value.upper(),
-                issue.category.value,
+                translate_status(issue.severity.value.upper()),
+                ui_text(issue.category.value),
                 f"{issue.operation_id} / {self._result.result_id}",
                 "—" if issue.event_index is None else str(issue.event_index),
                 "—" if issue.segment_index is None else str(issue.segment_index),
                 "—" if issue.sample_index is None else str(issue.sample_index),
                 ", ".join(issue.involved_entities) or "—",
-                f"{issue.message_key} · {evidence}" if evidence else issue.message_key,
+                f"{ui_text(issue.message_key)} · {evidence}"
+                if evidence
+                else ui_text(issue.message_key),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, issue_index)
                 item.setData(Qt.ItemDataRole.UserRole + 1, markers.get(issue_index))
                 self.issue_table.setItem(row, column, item)
+        localize_widget_tree(self.issue_table)
 
     def _selected_issue(self):
         if self._result is None:
@@ -528,10 +551,10 @@ class SimulationPanel(QWidget):
         marker_id = item.data(Qt.ItemDataRole.UserRole + 1)
         evidence = ", ".join(f"{key}={value}" for key, value in issue.evidence)
         self.issue_details.setText(
-            f"{issue.code.value} · event={issue.event_index} · "
-            f"segment={issue.segment_index} · sample={issue.sample_index} · "
-            f"entities={','.join(issue.involved_entities) or '—'} · "
-            f"evidence={evidence or '—'}"
+            f"{issue.code.value} · sự kiện={issue.event_index} · "
+            f"đoạn={issue.segment_index} · mẫu={issue.sample_index} · "
+            f"thực thể={','.join(issue.involved_entities) or '—'} · "
+            f"bằng chứng={evidence or '—'}"
         )
         self.issue_focus_requested.emit(
             SimulationIssueSelection(issue.operation_id, issue_index, marker_id)
@@ -560,10 +583,10 @@ class SimulationPanel(QWidget):
         value = self._sampling_policy
         display = self._display_policy
         return (
-            f"linear {value.max_linear_step:g} · chord {value.chord_tolerance:g} · "
-            f"arc {math.degrees(value.max_arc_angle):g}° · geom "
-            f"{value.geometric_tolerance:g} · samples {value.maximum_samples} · "
-            f"issues {value.maximum_issues} · display "
+            f"bước thẳng {value.max_linear_step:g} · dây cung {value.chord_tolerance:g} · "
+            f"cung {math.degrees(value.max_arc_angle):g}° · hình học "
+            f"{value.geometric_tolerance:g} · mẫu {value.maximum_samples} · "
+            f"vấn đề {value.maximum_issues} · hiển thị "
             f"{display.maximum_path_points}/{display.maximum_markers}"
         )
 

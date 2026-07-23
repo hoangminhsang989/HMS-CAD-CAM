@@ -106,7 +106,7 @@ def test_workspace_selector_and_panel_toggle_are_explicit(tmp_path: Path) -> Non
     mill_3d = window.workspace_bar.actions_by_workspace[WorkspaceId.MILL_3D]
     lathe = window.workspace_bar.actions_by_workspace[WorkspaceId.LATHE]
     assert not mill_3d.isEnabled()
-    assert "Foundation" in mill_3d.toolTip()
+    assert "nền tảng" in mill_3d.toolTip()
     assert not lathe.isEnabled()
     assert "chưa" in lathe.toolTip()
 
@@ -179,7 +179,8 @@ def test_reset_layout_only_changes_ui_state(tmp_path: Path) -> None:
     assert current.manifest.project_id == project_id
     assert current.is_dirty is dirty_before
     assert not window.operation_manager_dock.isHidden()
-    assert not window.function_editor_dock.isHidden()
+    assert window.function_editor_dock.isHidden()
+    assert not window.cam_function_popup.isVisible()
     assert not window.output_dock.isHidden()
     assert window.secondary_dock.isHidden()
     assert window.workspace_bar.active_workspace is WorkspaceId.HOME

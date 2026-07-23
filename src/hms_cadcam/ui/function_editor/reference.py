@@ -57,7 +57,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 choices=("outside", "inside", "on"),
                 required=True,
                 tooltip="Chọn quan hệ của tâm dao với profile.",
-                help_text="Phía dao chỉ là dữ liệu reference trong Stage 9A.4.",
+                help_text="Phía dao chỉ là dữ liệu tham chiếu trong Giai đoạn 9A.4.",
                 order=1,
             ),
         ),
@@ -99,7 +99,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 help_text="Operation tham chiếu Tool Assembly, không nhân bản hình học dao.",
             ),
         ),
-        help_text="Tool hiển thị dao/holder và nguồn; sửa library ở panel riêng.",
+        help_text="Tool hiển thị dao/Holder và nguồn; sửa thư viện ở bảng riêng.",
     )
     cutting = FunctionEditorSection(
         section_id="cutting",
@@ -168,7 +168,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 unit="mm",
                 source=FunctionEditorValueSource.STOCK,
                 required=True,
-                tooltip="Mặt bắt đầu, có nguồn từ Stock.",
+                tooltip="Mặt bắt đầu, có nguồn từ phôi.",
                 order=0,
             ),
             FunctionEditorField(
@@ -208,7 +208,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 value="20.0",
                 unit="mm",
                 source=FunctionEditorValueSource.SETUP,
-                tooltip="Giá trị kế thừa Setup; demo không cho override.",
+                tooltip="Giá trị kế thừa thiết lập; bản minh họa không cho ghi đè.",
                 order=0,
             ),
             FunctionEditorField(
@@ -243,7 +243,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
     advanced = FunctionEditorSection(
         section_id="advanced",
         title="Advanced",
-        summary="3 optional settings",
+        summary="3 thiết lập tùy chọn",
         disclosure_level=ParameterDisclosureLevel.ADVANCED,
         default_expanded=False,
         order=6,
@@ -255,7 +255,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 value=False,
                 default=False,
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
-                tooltip="Tùy chọn reference; không nối CAM generator trong 9A.4.",
+                tooltip="Tùy chọn tham chiếu; không nối bộ tạo CAM trong 9A.4.",
                 order=0,
             ),
             FunctionEditorField(
@@ -294,7 +294,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
     expert = FunctionEditorSection(
         section_id="expert",
         title="Expert",
-        summary="Precision settings · thay đổi có thể tăng thời gian tính",
+        summary="Thiết lập độ chính xác · thay đổi có thể tăng thời gian tính",
         disclosure_level=ParameterDisclosureLevel.EXPERT,
         default_expanded=False,
         order=7,
@@ -310,7 +310,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 source=FunctionEditorValueSource.DEFAULT,
                 disclosure_level=ParameterDisclosureLevel.EXPERT,
                 validators=(_positive("contour.tolerance_positive", "Tolerance"),),
-                tooltip="Reference-only precision field; có trade-off chất lượng/thời gian.",
+                tooltip="Trường độ chính xác chỉ tham chiếu; có đánh đổi chất lượng/thời gian.",
                 help_text="Tolerance nhỏ hơn thường tăng số điểm và thời gian tính.",
                 order=0,
             ),
@@ -321,7 +321,7 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
                 value=False,
                 default=False,
                 disclosure_level=ParameterDisclosureLevel.EXPERT,
-                tooltip="Reference-only; không nối Post hoặc Toolpath IR trong 9A.4.",
+                tooltip="Chỉ tham chiếu; không nối Post hoặc Toolpath IR trong 9A.4.",
                 order=1,
             ),
         ),

@@ -19,7 +19,6 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -66,6 +65,12 @@ from hms_cadcam.cam.post.lowering import PostSourceSnapshot
 from hms_cadcam.cam.simulation import SimulationStatus
 from hms_cadcam.cam.toolpath.model import ToolpathCompletionStatus
 from hms_cadcam.project.exceptions import ProjectError
+from hms_cadcam.ui.localization import (
+    LocalizedComboBox,
+    localize_widget_tree,
+    translate_status,
+    ui_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +316,7 @@ class PostProcessorPanel(QWidget):
         self.state = PostPanelState()
         self._build_ui()
         self._set_enabled(False)
+        localize_widget_tree(self)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -336,7 +342,7 @@ class PostProcessorPanel(QWidget):
 
         profile_group = QGroupBox("Production profile")
         profile_form = QFormLayout(profile_group)
-        self.profile_combo = QComboBox()
+        self.profile_combo = LocalizedComboBox()
         profile = robodrill_21i_profile()
         self.profile_combo.addItem(f"{profile.profile_key} v{profile.profile_version}", profile.profile_key)
         self.profile_combo.setToolTip("Profile immutable; canonical production output is separate from dummy output")
@@ -366,14 +372,14 @@ class PostProcessorPanel(QWidget):
         self.filename_edit = QLineEdit("PROGRAM.fn")
         self.identity_edit = QLineEdit()
         self.safe_z_spin = QDoubleSpinBox(); self.safe_z_spin.setRange(-1_000_000.0, 1_000_000.0); self.safe_z_spin.setDecimals(4); self.safe_z_spin.setSpecialValueText("(missing)"); self.safe_z_spin.setValue(0.0)
-        self.work_offset_combo = QComboBox(); self.work_offset_combo.addItem("G54", "G54")
-        self.cutter_combo = QComboBox()
+        self.work_offset_combo = LocalizedComboBox(); self.work_offset_combo.addItem("G54", "G54")
+        self.cutter_combo = LocalizedComboBox()
         for value, label in ((CutterCompensationPolicy.DISABLED, "DISABLED"), (CutterCompensationPolicy.LEGACY_WORKNC_LEFT, "LEGACY_WORKNC_LEFT (G41)"), (CutterCompensationPolicy.FROM_PROGRAM_IR_ONLY, "FROM_PROGRAM_IR_ONLY")):
             self.cutter_combo.addItem(label, value)
-        self.gate_combo = QComboBox()
+        self.gate_combo = LocalizedComboBox()
         for value, label in ((SimulationGateMode.REQUIRE_PASS, "REQUIRE_PASS"), (SimulationGateMode.ALLOW_WARN, "ALLOW_WARN"), (SimulationGateMode.OPTIONAL, "OPTIONAL")):
             self.gate_combo.addItem(label, value)
-        self.overwrite_combo = QComboBox()
+        self.overwrite_combo = LocalizedComboBox()
         for value, label in ((ExportOverwritePolicy.FAIL_IF_EXISTS, "FAIL_IF_EXISTS"), (ExportOverwritePolicy.REPLACE_IF_SAME_ARTIFACT, "REPLACE_IF_SAME_ARTIFACT"), (ExportOverwritePolicy.REPLACE_EXPLICIT, "REPLACE_EXPLICIT")):
             self.overwrite_combo.addItem(label, value)
         context_form.addRow("Filename", self.filename_edit)
@@ -383,7 +389,7 @@ class PostProcessorPanel(QWidget):
         context_form.addRow("Cutter compensation", self.cutter_combo)
         context_form.addRow("Simulation gate", self.gate_combo)
         context_form.addRow("Overwrite", self.overwrite_combo)
-        self.target_kind_combo = QComboBox()
+        self.target_kind_combo = LocalizedComboBox()
         self.target_kind_combo.addItem("Local / mapped / UNC filesystem", ExportTarget.FILESYSTEM_DIRECTORY)
         self.target_kind_combo.addItem("Data-server directory", ExportTarget.DATA_SERVER_DIRECTORY)
         context_form.addRow("External target type", self.target_kind_combo)
@@ -421,8 +427,9 @@ class PostProcessorPanel(QWidget):
         root.addWidget(self.metadata_label)
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Diagnostics"))
-        from_filter = QComboBox()
-        from_filter.addItems(["ALL", "ERROR", "WARNING", "INFO"])
+        from_filter = LocalizedComboBox()
+        for label in ("ALL", "ERROR", "WARNING", "INFO"):
+            from_filter.addItem(label, label)
         self.diagnostic_filter = from_filter
         filter_row.addWidget(from_filter)
         filter_row.addStretch(1)
@@ -481,7 +488,7 @@ class PostProcessorPanel(QWidget):
             self._source = None; self._draft = None; self._applied = None; self._request = None; self._result = None
             self._set_enabled(False); self._set_status(PostGenerationStatus.MISSING)
             self._show_diagnostics(())
-            self.message.emit(f"Post source unavailable: {error}")
+            self.message.emit(f"Nguồn Post không khả dụng: {ui_text(error)}")
             return
         self._source = source
         self._post_stale_hint = bool(
@@ -533,7 +540,7 @@ class PostProcessorPanel(QWidget):
             self.draft_changed.emit(self._draft)
             self._update_action_enabled()
         except ValueError as error:
-            self.message.emit(str(error))
+            self.message.emit(f"Tham số Post không hợp lệ: {ui_text(error)}")
 
     def reset_draft(self) -> None:
         if self._applied is not None:
@@ -547,7 +554,7 @@ class PostProcessorPanel(QWidget):
             draft = self._draft_from_widgets()
             request = build_production_post_request(self._source, draft)
         except Exception as error:
-            self.message.emit(f"Invalid Post draft: {error}")
+            self.message.emit(f"Bản nháp Post không hợp lệ: {ui_text(error)}")
             return False
         old = self._applied
         self._applied = draft
@@ -559,7 +566,7 @@ class PostProcessorPanel(QWidget):
         self._update_binding_display(draft)
         self._refresh_state()
         self.draft_changed.emit(draft)
-        self.message.emit("Post draft applied atomically; Generate is required.")
+        self.message.emit("Đã áp dụng toàn vẹn bản nháp Post; cần tạo lại kết quả.")
         self._update_action_enabled()
         return True
 
@@ -570,7 +577,7 @@ class PostProcessorPanel(QWidget):
             self._request = build_production_post_request(self._source, self._applied)
             return self._request
         except Exception as error:
-            self.message.emit(f"Post request invalid: {error}")
+            self.message.emit(f"Yêu cầu Post không hợp lệ: {ui_text(error)}")
             return None
 
     def validate_request(self) -> tuple[PostDiagnostic, ...]:
@@ -585,7 +592,7 @@ class PostProcessorPanel(QWidget):
             from hms_cadcam.cam.post.fanuc_robodrill_21i import FanucRobodrill21iAdapter
             diagnostics.extend(FanucRobodrill21iAdapter(request.post_definition).validate_request(request))
         except Exception as error:
-            self.message.emit(f"Post validation failed: {error}")
+            self.message.emit(f"Kiểm tra Post thất bại: {ui_text(error)}")
         self._show_diagnostics(tuple(sorted(set(diagnostics), key=lambda item: (item.severity.value, item.code.value, item.message_key))))
         self._set_status(PostGenerationStatus.CURRENT if not any(item.severity is DiagnosticSeverity.ERROR for item in diagnostics) else PostGenerationStatus.FAILED)
         return tuple(diagnostics)
@@ -635,7 +642,7 @@ class PostProcessorPanel(QWidget):
             if epoch != self._request_epoch:
                 return
         if isinstance(execution, Exception):
-            self.message.emit(f"Post generation failed: {execution}")
+            self.message.emit(f"Tạo Post thất bại: {ui_text(execution)}")
             self._set_status(PostGenerationStatus.FAILED)
             self.progress_changed.emit(PostProgressPhase.FAILED)
             return
@@ -657,7 +664,7 @@ class PostProcessorPanel(QWidget):
         self._set_status(PostGenerationStatus.CURRENT)
         self.progress_changed.emit(PostProgressPhase.COMPLETED)
         self.show_preview()
-        self.message.emit("Production PostResult đã publish; chưa ghi file.")
+        self.message.emit("Kết quả Post sản xuất đã công bố; chưa ghi tệp.")
 
     def generate_sync(self) -> PostResult | None:
         request = self._ensure_request(); source = self._source
@@ -671,7 +678,7 @@ class PostProcessorPanel(QWidget):
             operation_id = source.operation.operation_id
             execution = self._service.post_service.post(request, source, current_source=lambda: self._service.capture_post_source(operation_id))
         except Exception as error:
-            self.message.emit(f"Post generation failed: {error}"); self._set_status(PostGenerationStatus.FAILED); return None
+            self.message.emit(f"Tạo Post thất bại: {ui_text(error)}"); self._set_status(PostGenerationStatus.FAILED); return None
         if not execution.accepted or execution.result is None:
             self._show_diagnostics(execution.diagnostics); self._set_status(PostGenerationStatus.STALE if execution.status is PostResultStatus.STALE else PostGenerationStatus.FAILED); self.progress_changed.emit(PostProgressPhase.STALE if execution.status is PostResultStatus.STALE else PostProgressPhase.FAILED); return None
         if self._generation is not None and self._generation != self._service.cam_generation:
@@ -682,7 +689,7 @@ class PostProcessorPanel(QWidget):
         self._show_diagnostics(execution.diagnostics)
         self._set_status(PostGenerationStatus.CURRENT); self.progress_changed.emit(PostProgressPhase.COMPLETED)
         self.show_preview()
-        self.message.emit("Production PostResult đã publish; chưa ghi file.")
+        self.message.emit("Kết quả Post sản xuất đã công bố; chưa ghi tệp.")
         return self._result
 
     def show_preview(self) -> None:
@@ -693,7 +700,11 @@ class PostProcessorPanel(QWidget):
         payload = text.encode("utf-8")
         newline = "CRLF" if "\r\n" in text and "\n" not in text.replace("\r\n", "") else "LF"
         checksum = hashlib.sha256(payload).hexdigest()
-        self.metadata_label.setText(f"Profile {self._request.post_definition.production_profile.profile_key if self._request and self._request.post_definition.production_profile else '—'} · lines {len(text.splitlines())} · bytes {len(payload)} · {newline} · UTF-8 · SHA-256 {checksum} · NOT CERTIFIED / REVIEW REQUIRED")
+        self.metadata_label.setText(
+            f"Cấu hình {(self._request.post_definition.production_profile.profile_key if self._request and self._request.post_definition.production_profile else '—')} · "
+            f"{len(text.splitlines())} dòng · {len(payload)} byte · {newline} · "
+            f"UTF-8 · SHA-256 {checksum} · CHƯA CHỨNG NHẬN / CẦN RÀ SOÁT"
+        )
 
     def _build_export(self, target: ExportTarget, directory: Path | None = None) -> tuple[NCExportRequest, NCExportSourceSnapshot] | None:
         if self._source is None or self._result is None or self._request is None or self._applied is None:
@@ -719,7 +730,7 @@ class PostProcessorPanel(QWidget):
                 current_source=self._current_export_source,
             )
         except Exception as error:
-            self.message.emit(f"Managed artifact export failed: {error}"); self._set_status(PostGenerationStatus.FAILED); return None
+            self.message.emit(f"Xuất kết quả được quản lý thất bại: {ui_text(error)}"); self._set_status(PostGenerationStatus.FAILED); return None
         self._last_export = execution
         self.progress_changed.emit(PostProgressPhase.VERIFYING)
         self._show_export_diagnostics(execution.diagnostics)
@@ -734,9 +745,14 @@ class PostProcessorPanel(QWidget):
             directory_text = self.target_edit.text().strip()
             directory = Path(directory_text) if directory_text else None
         if directory is None:
-            self.message.emit("Chọn thư mục local/mapped/UNC trước khi Export."); return None
+            self.message.emit("Chọn thư mục cục bộ/ánh xạ/UNC trước khi xuất."); return None
         if self.parent() is not None:
-            answer = QMessageBox.question(self, "Confirm export", f"Export exact production text to:\n{directory}\n\nNOT MACHINE CERTIFIED")
+            answer = QMessageBox.question(
+                self,
+                "Xác nhận xuất",
+                f"Xuất chính xác nội dung sản xuất đến:\n{directory}\n\n"
+                "CHƯA ĐƯỢC CHỨNG NHẬN CHO MÁY",
+            )
             if answer is not QMessageBox.StandardButton.Yes:
                 return None
         export = self._build_export(self._applied.target_kind, directory)
@@ -749,7 +765,7 @@ class PostProcessorPanel(QWidget):
                 current_source=self._current_export_source,
             )
         except Exception as error:
-            self.message.emit(f"External export failed: {error}"); return None
+            self.message.emit(f"Xuất ra ngoài thất bại: {ui_text(error)}"); return None
         self._last_export = execution; self._show_export_diagnostics(execution.diagnostics); self._refresh_state(); return execution.result
 
     def _current_export_source(self) -> NCExportSourceSnapshot:
@@ -764,10 +780,10 @@ class PostProcessorPanel(QWidget):
 
     def show_export_details(self) -> None:
         if self._last_export is None:
-            self.message.emit("Chưa có external/managed export result."); return
+            self.message.emit("Chưa có kết quả xuất ra ngoài hoặc được quản lý."); return
         result = self._last_export.result
         if result is None:
-            self.message.emit("Export failed; managed artifact is retained when available."); return
+            self.message.emit("Xuất thất bại; kết quả được quản lý vẫn được giữ nếu có."); return
         self.message.emit(f"Export {result.status.value}: {result.project_managed_relative_path} · {result.byte_length} bytes · SHA-256 {result.sha256}")
 
     def clear_post_result(self) -> None:
@@ -781,7 +797,11 @@ class PostProcessorPanel(QWidget):
         if self._operation_id is None or not hasattr(self._service, "current_project") or self._service.current_project is None:
             return
         if confirm is None:
-            answer = QMessageBox.question(self, "Clear managed artifact", "Delete only the project-managed NC artifact and sidecar?")
+            answer = QMessageBox.question(
+                self,
+                "Xóa kết quả được quản lý",
+                "Chỉ xóa kết quả NC do dự án quản lý và tệp kèm?",
+            )
             confirm = answer is QMessageBox.StandardButton.Yes
         if not confirm:
             return
@@ -790,7 +810,7 @@ class PostProcessorPanel(QWidget):
             self._service.nc_export_service.clear_managed_artifact(project.root_path, project.manifest.project_id, self._operation_id)
             self._refresh_state()
         except Exception as error:
-            self.message.emit(f"Clear managed artifact failed: {error}")
+            self.message.emit(f"Xóa kết quả được quản lý thất bại: {ui_text(error)}")
 
     def _set_status_if_stale(self) -> bool:
         if self._generation is not None and self._generation != self._service.cam_generation:
@@ -798,7 +818,7 @@ class PostProcessorPanel(QWidget):
         return False
 
     def _browse_target(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Select export directory")
+        directory = QFileDialog.getExistingDirectory(self, "Chọn thư mục xuất")
         if directory:
             self.target_edit.setText(directory)
 
@@ -833,13 +853,18 @@ class PostProcessorPanel(QWidget):
         )
         profile = robodrill_21i_profile()
         self.state = PostPanelState(source.project_id, source.operation.operation_id, self._operation_name, source.operation.strategy_key, source.operation.artifact_state.status.value.upper(), source.artifact.artifact_id, source.artifact.completion_status.value.upper(), source.artifact.artifact_fingerprint.digest if source.artifact.artifact_fingerprint else None, sim_status, sim.result_fingerprint.digest if sim else None, profile.profile_key, profile.profile_version, source.machine.name if source.machine else "MISSING", source.tool.name if source.tool else "MISSING", source.holder.name if source.holder else "MISSING", self.binding_fingerprint.text() if self.binding_fingerprint.text() != "—" else None, post_status, status, ExternalExportUiStatus.EXPORTED if self._last_export and getattr(self._last_export, "accepted", False) else ExternalExportUiStatus.NEVER_EXPORTED, result.output_checksum if result else None, len(result.canonical_text.encode("utf-8")) if result else 0)
-        self.project_value.setText(str(source.project_id)); self.setup_value.setText(source.setup.name); self.operation_value.setText(f"{self._operation_name or 'Operation'} · {source.operation.operation_id} · {source.operation.strategy_key}"); self.source_value.setText(f"{source.artifact.artifact_id} · {source.artifact.completion_status.value.upper()}\n{source.artifact.artifact_fingerprint.digest if source.artifact.artifact_fingerprint else '—'}"); self.simulation_value.setText(f"{sim_status} · {sim.result_fingerprint.digest if sim else '—'}"); self.machine_value.setText(self.state.machine); self.tool_value.setText(f"{self.state.tool} / {self.state.holder}"); self.status_label.setText(f"Post {post_status.value.upper()} · Managed {status.value.upper()} · External {self.state.external_status.value.upper()}")
+        self.project_value.setText(str(source.project_id)); self.setup_value.setText(source.setup.name); self.operation_value.setText(f"{self._operation_name or 'Nguyên công'} · {source.operation.operation_id} · {source.operation.strategy_key}"); self.source_value.setText(f"{source.artifact.artifact_id} · {translate_status(source.artifact.completion_status.value.upper())}\n{source.artifact.artifact_fingerprint.digest if source.artifact.artifact_fingerprint else '—'}"); self.simulation_value.setText(f"{translate_status(sim_status)} · {sim.result_fingerprint.digest if sim else '—'}"); self.machine_value.setText(self.state.machine); self.tool_value.setText(f"{self.state.tool} / {self.state.holder}"); self.status_label.setText(f"Post {translate_status(post_status.value.upper())} · Được quản lý {translate_status(status.value.upper())} · Bên ngoài {translate_status(self.state.external_status.value.upper())}")
         self.state_changed.emit(self.state)
         self._update_action_enabled()
+        localize_widget_tree(self)
 
     def _set_status(self, status: PostGenerationStatus) -> None:
         self.state = replace(self.state, post_status=status)
-        self.status_label.setText(f"Post {status.value.upper()} · Managed {self.state.managed_status.value.upper()} · External {self.state.external_status.value.upper()}")
+        self.status_label.setText(
+            f"Post {translate_status(status.value.upper())} · Được quản lý "
+            f"{translate_status(self.state.managed_status.value.upper())} · "
+            f"Bên ngoài {translate_status(self.state.external_status.value.upper())}"
+        )
         self.state_changed.emit(self.state)
         self._update_action_enabled()
 
@@ -868,14 +893,15 @@ class PostProcessorPanel(QWidget):
         self._render_diagnostics()
 
     def _render_diagnostics(self) -> None:
-        selected = str(self.diagnostic_filter.currentText()).casefold() if hasattr(self, "diagnostic_filter") else "all"
+        selected = str(self.diagnostic_filter.currentData()).casefold() if hasattr(self, "diagnostic_filter") else "all"
         self.diagnostics.setRowCount(0)
         for diagnostic in self._diagnostic_values:
             if selected != "all" and diagnostic.severity.value.casefold() != selected:
                 continue
             row = self.diagnostics.rowCount(); self.diagnostics.insertRow(row)
-            values = (diagnostic.severity.value.upper(), diagnostic.code.value, diagnostic.message_key, str(getattr(diagnostic, "record_index", None) or ""), "; ".join(f"{key}={value}" for key, value in diagnostic.evidence), str(getattr(diagnostic, "operation_id", None) or "NC export"))
+            values = (translate_status(diagnostic.severity.value.upper()), diagnostic.code.value, ui_text(diagnostic.message_key), str(getattr(diagnostic, "record_index", None) or ""), "; ".join(f"{key}={value}" for key, value in diagnostic.evidence), str(getattr(diagnostic, "operation_id", None) or "Xuất NC"))
             for column, value in enumerate(values): self.diagnostics.setItem(row, column, QTableWidgetItem(value))
+        localize_widget_tree(self.diagnostics)
 
     def _show_export_diagnostics(self, diagnostics: tuple[NCExportDiagnostic, ...]) -> None:
         self._diagnostic_values = tuple(diagnostics)

@@ -1,13 +1,87 @@
-# Nhiệm vụ hiện tại — Stage 8A.2.2
+# Nhiệm vụ hiện tại — Stage 8A.2.3
 
 ## Trạng thái ưu tiên
 
 - Functional UI baseline: `24d2a42` — hoàn thành đánh giá đồng bộ giao diện
   phay 2D Stage 9A.5.4.
+- **Stage 8A.2.3 — Parallel Finishing Production Function Editor — COMPLETED.**
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
 - **Stage 9A.6 — Drilling Family Production Function Editors — COMPLETED.**
 - **Stage 8A.2.1 — Parallel Finishing Foundation — COMPLETED.**
 - **Stage 8A.2.2 — Parallel Finishing Hardening and Collision Safety — COMPLETED.**
+
+## Kết quả hoàn thành Stage 8A.2.3
+
+- Production Function Editor native-free cho Parallel Finishing, dùng trực tiếp
+  algorithm v3/payload v1 và safety pipeline Stage 8A.2.2.
+- Geometry, ball-end tool/holder, direction, cut parameters, clearance/retract,
+  conservative linking, capability và structured safety diagnostics.
+- Preview/Apply/Calculate/Cancel, worker progress, latest-wins, Operation Manager,
+  persistence schema v4 và Simulation/Post fail-closed gates.
+- Native Windows review cuối gồm 19 trạng thái và một montage; người dùng đã
+  duyệt GUI để hoàn tất Stage 8A.2.3.
+- UX CAM tự động-first đã được bổ sung cho Parallel: Basic chỉ giữ Hình học,
+  Dao, Chất lượng và Tham số tự động; Advanced có manual override riêng và giữ
+  giá trị nhập sai để sửa.
+- Shared automatic-parameter contract được lưu trong payload primitive hiện có,
+  tham gia effective/artifact fingerprint; algorithm v3, strategy v1 và SQLite
+  schema v4 không đổi.
+- Gói duyệt bổ sung gồm 15 ảnh (14 trạng thái + một montage) tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_AUTO/`; kết quả đã được hợp nhất vào
+  gói duyệt cuối được người dùng chấp thuận.
+- Kiến trúc thao tác CAM tập trung đang chuyển sang cột trái + một popup modeless
+  duy nhất: single-click chỉ chọn, double-click/Enter mở, dirty-switch có ba lựa
+  chọn rõ ràng và tối đa một popup con. Cả 9 production editor dùng chung host.
+- Registry minh họa HMS vector đã bao phủ 9 editor; Parallel có scene động theo
+  One-way/Zigzag, hướng, linking, quality và Auto/Tùy chỉnh bằng debounce nhẹ.
+- Tạo nguyên công thành công phát identity đã persist để MainWindow mở ngay
+  đúng operation trong popup singleton; command lỗi/hủy không mở nhầm editor.
+- Gói duyệt popup gồm 24 trạng thái và một montage tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_POPUP/` đã được tạo bằng QPA Windows
+  native, Segoe UI, DPI 150% và kiểm tra trực quan; kết quả đã được hợp nhất vào
+  gói duyệt cuối được người dùng chấp thuận.
+- Compact density policy dùng chung đã thay popup 920×700/min 720×600 bằng target
+  responsive 587×630, 624×702 và 672×778; footer cố định, cuộn dọc, minh họa
+  thu gọn, child limits, geometry preference/clamp và DPI logical metrics áp dụng
+  cho đủ chín editor. Gói review mới gồm 24 trạng thái và một montage tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_POPUP_COMPACT/`, gồm bằng chứng
+  native Qt scale 125%/150%; kết quả đã được hợp nhất vào gói duyệt cuối được
+  người dùng chấp thuận.
+- One-screen Basic dùng responsive grid hai cột ở ba work-area target; Parallel
+  gom Hình học/Tool, Chất lượng/Minh họa và tóm tắt tự động sáu ô, không còn
+  scrollbar dọc ở trạng thái thường. `IllustrationViewport` dùng fit-inside,
+  aspect ratio theo registry và semantic riêng cho đủ chín operation/Parallel
+  state/Boring. Review mới nằm tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_GRID_ILLUSTRATIONS/`; kết quả đã
+  được hợp nhất vào gói duyệt cuối được người dùng chấp thuận.
+- Giao diện production dùng catalog tiếng Việt tập trung; audit tĩnh tại
+  `reference_private/DERIVED/UI_VIETNAMESE_AUDIT/` đạt 1046 chuỗi tĩnh và 11150
+  chuỗi runtime qua 21 trạng thái, số chuỗi chưa dịch bằng 0.
+- QA khóa cuối đạt 235/235 focused liên chức năng và 1461 passed, 2 deselected
+  toàn repository; compileall, `pip check` và harness Windows native 25 artifact
+  đều đạt. Static/runtime untranslated cùng bằng 0: 1046 chuỗi tĩnh và 11150
+  chuỗi runtime qua 21 trạng thái.
+- Machine-ready clearance vẫn `false`, production Post chưa hỗ trợ và icon tiếp
+  tục DEFERRED.
+- Final review đã khóa mapper chín tên chức năng tiếng Việt, Operation
+  Manager hai dòng compact, bốn renderer/semantic Parallel tách biệt, legend và
+  child `Đóng minh họa` có focus restore. Harness cuối ghi 24 ảnh + montage tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_FINAL_GUI/` và kết thúc sạch sau khi
+  đóng dự án thử trước cửa sổ. Kết quả đã được hợp nhất vào gói duyệt cuối được
+  người dùng chấp thuận.
+- Sửa clipping/DPI đã bỏ height cap của scroll content/section, reset stretch
+  cũ khi reflow, tính chiều cao theo size hint/font native và dùng scrollbar
+  `AsNeeded`. Basic fit không cuộn dọc ở native 100%/125% khi đủ work area;
+  DPI 150% hoặc logical height thấp dùng một cột và cuộn dọc thật, footer vẫn
+  cố định, không cuộn ngang. Summary giữ đủ sáu nhãn/giá trị bằng layout hai cột
+  hoặc label-trên/value-dưới; Operation Manager hẹp dùng indentation 6 px/status
+  tối đa 64 px và selected row có nền tương phản.
+- Review clipping gồm 19 ảnh + montage tại
+  `reference_private/DERIVED/UI_STAGE_8A2_3_DPI_CLIPPING_FIX/`. Bounds matrix
+  bao phủ 100/125/150% và DPR 2.0; QA đạt 235/235 focused và 1470 passed,
+  2 deselected toàn repository. Audit đạt 1046 chuỗi tĩnh, 11145 chuỗi runtime
+  qua 21 trạng thái, untranslated bằng 0; `pip check` và compileall đều đạt.
+  Người dùng đã duyệt package; Stage 8A.2.3 được đánh dấu **COMPLETED**.
 
 ## Phạm vi Stage 8A.2.2 đã hoàn thành
 
@@ -114,7 +188,8 @@
 
 ## Ràng buộc chuyển giai đoạn
 
-- Không thay đổi domain, codec, Toolpath IR, Simulation, Post hoặc SQLite schema.
+- Giữ algorithm v3, payload v1, Toolpath IR và SQLite schema v4; không mở rộng
+  sang strategy CAM 3D khác hoặc production Post.
 - Stage 9A.5.4 và các production editor Facing, Planar Facing, Contour, Pocket
   tiếp tục là baseline giao diện cần bảo toàn.
 - Stage 9A.I1 icon pack tiếp tục deferred; không sửa icon trong Stage 9A.6.

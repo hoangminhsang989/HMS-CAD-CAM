@@ -50,6 +50,7 @@ from hms_cadcam.ui.function_editor.model import (
     PresentationValue,
 )
 from hms_cadcam.ui.function_editor.schema import FunctionEditorSchema
+from hms_cadcam.ui.localization import ui_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,13 +667,13 @@ def build_pocket_sections(
                 source=FunctionEditorValueSource.GEOMETRY,
                 required=True,
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
-                tooltip="Persistent typed ID; không phải display name hay OCP object.",
+                tooltip="ID định kiểu ổn định; không phải tên hiển thị hay đối tượng OCP.",
                 help_key="pocket.geometry_identity",
                 order=30,
                 binding_key="operation.geometry_inputs.boundary",
             ),
         ),
-        "Một closed region; island được chẩn đoán fail-closed theo contract v1.",
+        "Một vùng kín; đảo được chẩn đoán theo nguyên tắc chặn an toàn của hợp đồng v1.",
         order=20,
     )
     tool = FunctionEditorSection(
@@ -756,7 +757,7 @@ def build_pocket_sections(
                 order=30,
                 default=defaults.get("stepover"),
                 validators=(_minimum("pocket.stepover_positive", "Stepover phải lớn hơn 0."),),
-                help_text="Khoảng cách tuyệt đối; domain yêu cầu nhỏ hơn đường kính dao.",
+                help_text="Khoảng cách tuyệt đối; miền yêu cầu nhỏ hơn đường kính dao.",
             ),
             _number_field(
                 "radial_stock_allowance",
@@ -811,7 +812,7 @@ def build_pocket_sections(
                 binding_key="parameters.top_z",
                 order=10,
                 default=defaults.get("top_z"),
-                help_text="Tọa độ tuyệt đối trong Setup WCS; phải khớp plane của boundary.",
+                help_text="Tọa độ tuyệt đối trong WCS thiết lập; phải khớp mặt phẳng của biên.",
             ),
             _number_field(
                 "bottom_z",
@@ -945,7 +946,7 @@ def build_pocket_sections(
                     FunctionEditorValidationRule(
                         FunctionEditorValidationKind.GREATER_THAN_FIELD,
                         "top_z",
-                        "Retract Z phải cao hơn Top Z.",
+                        "Z rút dao phải cao hơn Z đỉnh.",
                         "pocket.retract_above_top",
                     ),
                 ),
@@ -1049,8 +1050,9 @@ def build_pocket_schema(context: PocketEditorContext) -> FunctionEditorSchema:
         FunctionEditorSummary(
             context.operation_name,
             (
-                f"Pocket 2.5D · Offset · {str(data['cutting_direction']).title()} · "
-                f"Stepover {_number(data['stepover'], 'stepover'):g} · Top/Depth "
+                f"Hốc 2.5D · Bù · {ui_text(data['cutting_direction'])} · "
+                f"Bước ngang {_number(data['stepover'], 'stepover'):g} · "
+                "Z đỉnh/Chiều sâu "
                 f"{_number(data['top_z'], 'top_z'):g}/"
                 f"{_number(data['bottom_z'], 'bottom_z'):g} {data['unit']}"
             ),

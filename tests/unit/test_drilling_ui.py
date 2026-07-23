@@ -234,7 +234,7 @@ def test_drilling_ui_create_edit_bind_cycles_generate_and_diagnostics(
 
     workspace.clear_geometry_pick()
     assert service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0].geometry_inputs == ()
-    assert "HOLE MISSING" in workspace.editor.status.text()
+    assert "THIẾU LỖ" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     selected["hole"] = replacement
     workspace.pick_geometry()
@@ -252,7 +252,7 @@ def test_drilling_ui_create_edit_bind_cycles_generate_and_diagnostics(
     )
     workspace._drilling_resolver = lambda _geometry, _depth: stale
     workspace.cad_context_changed()
-    assert "STALE/INVALID" in workspace.editor.status.text()
+    assert "ĐÃ LỖI THỜI/KHÔNG HỢP LỆ" in workspace.editor.status.text()
     assert service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0].artifact_state.status is ArtifactStatus.DIRTY
     workspace.deleteLater()
 
@@ -288,7 +288,7 @@ def test_drilling_persistence_save_as_autosave_recovery_and_stale_callback(
     assert copied_operation.geometry_inputs == (geometry_input,)
     assert service.load_toolpath_artifact(copied_operation.operation_id) == artifact
     workspace.bind_project(copied)
-    drilling_item = _find_item(workspace.tree.topLevelItem(0), "Drilling")
+    drilling_item = _find_item(workspace.tree.topLevelItem(0), "Khoan")
     assert drilling_item is not None
     workspace.tree.setCurrentItem(drilling_item)
 
@@ -310,7 +310,7 @@ def test_drilling_persistence_save_as_autosave_recovery_and_stale_callback(
     assert not recovered.is_dirty
 
     workspace.bind_project(service.current_project)
-    drilling_item = _find_item(workspace.tree.topLevelItem(0), "Drilling")
+    drilling_item = _find_item(workspace.tree.topLevelItem(0), "Khoan")
     assert drilling_item is not None
     workspace.tree.setCurrentItem(drilling_item)
     original_compute = service.compute_drilling
@@ -324,7 +324,7 @@ def test_drilling_persistence_save_as_autosave_recovery_and_stale_callback(
     displayed_before = len(viewer.displayed)
     workspace.generate_selected()
     assert len(viewer.displayed) == displayed_before
-    assert "stale" in workspace.editor.error.text().lower()
+    assert "lỗi thời" in workspace.editor.error.text().lower()
 
     cad_only = ProjectService.create_default(tmp_path / "cad-only-config")
     cad_session = cad_only.new_project(tmp_path, "CAD Only")

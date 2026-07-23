@@ -1,5 +1,14 @@
 """Public Parallel Finishing and fail-closed safety API."""
 
+from .automatic import (
+    PARALLEL_AUTOMATIC_PARAMETER_KEYS,
+    PARALLEL_AUTOMATIC_POLICY_KEY,
+    PARALLEL_AUTOMATIC_POLICY_VERSION,
+    ParallelAutomaticContext,
+    ParallelGeometryEvidence,
+    resolve_parallel_automatic_contract,
+)
+
 from .models import (
     PARALLEL_FINISHING_ALGORITHM_VERSION,
     PARALLEL_FINISHING_STRATEGY_KEY,
@@ -70,6 +79,12 @@ from .safety_models import (
 )
 
 __all__ = [
+    "PARALLEL_AUTOMATIC_PARAMETER_KEYS",
+    "PARALLEL_AUTOMATIC_POLICY_KEY",
+    "PARALLEL_AUTOMATIC_POLICY_VERSION",
+    "ParallelAutomaticContext",
+    "ParallelGeometryEvidence",
+    "resolve_parallel_automatic_contract",
     "PARALLEL_FINISHING_ALGORITHM_VERSION",
     "PARALLEL_FINISHING_STRATEGY_KEY",
     "PARALLEL_FINISHING_STRATEGY_VERSION",

@@ -6,12 +6,18 @@ from PySide6.QtCore import QModelIndex, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QApplication, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
+from hms_cadcam.ui.localization import ui_text
 from hms_cadcam.ui.operation_manager_model import NODE_ROLE
 from hms_cadcam.ui.operation_manager_types import (
     OperationManagerNode,
     OperationManagerNodeKind,
     OperationManagerSemanticStatus,
 )
+from hms_cadcam.ui.ui_tokens import CAM_POPUP_DENSITY
+
+
+_TREE_ROW_HEIGHT = CAM_POPUP_DENSITY.metrics_for(QSize(1600, 900)).tree_row_height
+_OPERATION_ROW_HEIGHT = 38
 
 
 _STATUS_COLORS = {
@@ -49,6 +55,8 @@ class OperationManagerDelegate(QStyledItemDelegate):
         prepared.icon = prepared.icon.__class__()
         style = prepared.widget.style() if prepared.widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, prepared, painter, prepared.widget)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, QColor("#176aa6"))
         painter.save()
         if index.column() == 0:
             self._paint_name(painter, option.rect, option, node)
@@ -60,9 +68,13 @@ class OperationManagerDelegate(QStyledItemDelegate):
         self, option: QStyleOptionViewItem, index: QModelIndex
     ) -> QSize:
         node = index.data(NODE_ROLE)
-        if isinstance(node, OperationManagerNode) and node.kind is OperationManagerNodeKind.OPERATION:
-            return QSize(option.rect.width(), 42)
-        return QSize(option.rect.width(), 28)
+        height = (
+            max(_OPERATION_ROW_HEIGHT, option.fontMetrics.height() * 2 + 7)
+            if isinstance(node, OperationManagerNode)
+            and node.kind is OperationManagerNodeKind.OPERATION
+            else _TREE_ROW_HEIGHT
+        )
+        return QSize(option.rect.width(), height)
 
     @staticmethod
     def _paint_name(
@@ -78,7 +90,6 @@ class OperationManagerDelegate(QStyledItemDelegate):
         text_width = max(0, rect.right() - text_left - 4)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         main_color = QColor("#ffffff" if selected else "#1f2e3a")
-        secondary_color = QColor("#e5eef6" if selected else "#5d6b78")
         label_font = QFont(option.font)
         if node.kind in {
             OperationManagerNodeKind.PROJECT,
@@ -90,31 +101,43 @@ class OperationManagerDelegate(QStyledItemDelegate):
         painter.setFont(label_font)
         painter.setPen(main_color)
         metrics = painter.fontMetrics()
-        if node.kind is OperationManagerNodeKind.OPERATION:
-            label_rect = QRect(text_left, rect.top() + 3, text_width, 19)
+        if node.kind is not OperationManagerNodeKind.OPERATION:
             painter.drawText(
-                label_rect,
+                QRect(text_left, rect.top(), text_width, rect.height()),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                metrics.elidedText(node.label, Qt.TextElideMode.ElideRight, text_width),
-            )
-            secondary_font = QFont(option.font)
-            secondary_font.setPointSizeF(max(7.5, option.font.pointSizeF() - 1.0))
-            painter.setFont(secondary_font)
-            painter.setPen(secondary_color)
-            secondary_metrics = painter.fontMetrics()
-            summary_rect = QRect(text_left, rect.top() + 21, text_width, 17)
-            painter.drawText(
-                summary_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                secondary_metrics.elidedText(
-                    node.secondary_summary, Qt.TextElideMode.ElideRight, text_width
+                metrics.elidedText(
+                    ui_text(node.label), Qt.TextElideMode.ElideRight, text_width
                 ),
             )
             return
+
+        main_rect = QRect(text_left, rect.top() + 2, text_width, metrics.height() + 2)
         painter.drawText(
-            QRect(text_left, rect.top(), text_width, rect.height()),
+            main_rect,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            metrics.elidedText(node.label, Qt.TextElideMode.ElideRight, text_width),
+            metrics.elidedText(
+                ui_text(node.label), Qt.TextElideMode.ElideRight, text_width
+            ),
+        )
+        secondary_font = QFont(option.font)
+        secondary_font.setPointSizeF(max(7.0, option.font.pointSizeF() - 1.0))
+        painter.setFont(secondary_font)
+        painter.setPen(QColor("#e3edf4" if selected else "#5f7180"))
+        secondary_metrics = painter.fontMetrics()
+        secondary_rect = QRect(
+            text_left,
+            rect.bottom() - secondary_metrics.height() - 2,
+            text_width,
+            secondary_metrics.height(),
+        )
+        painter.drawText(
+            secondary_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            secondary_metrics.elidedText(
+                compact_operation_summary(node),
+                Qt.TextElideMode.ElideRight,
+                text_width,
+            ),
         )
 
     @staticmethod
@@ -134,7 +157,7 @@ class OperationManagerDelegate(QStyledItemDelegate):
         available = max(18, rect.width() - 8)
         text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, available - 10)
         width = min(available, metrics.horizontalAdvance(text) + 10)
-        pill = QRect(rect.right() - width - 4, rect.center().y() - 9, width, 18)
+        pill = QRect(rect.right() - width - 4, rect.center().y() - 8, width, 16)
         if option.state & QStyle.StateFlag.State_Selected:
             painter.setBrush(QColor("#ffffff"))
             painter.setPen(QPen(QColor("#d9e9f5")))
@@ -144,6 +167,18 @@ class OperationManagerDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(pill, 4, 4)
         painter.setPen(QColor(foreground))
         painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, text)
+
+
+def compact_operation_summary(node: OperationManagerNode) -> str:
+    """Return type and Tool only; the complete summary remains in the tooltip."""
+    if node.kind is not OperationManagerNodeKind.OPERATION:
+        return ui_text(node.secondary_summary)
+    parts = tuple(
+        ui_text(part.strip())
+        for part in node.secondary_summary.split("·")
+        if part.strip()
+    )
+    return " · ".join(parts[:2])
 
 
 def _draw_status_mark(

@@ -784,13 +784,13 @@ def test_production_page_preview_apply_calculate_policy_and_responsive_widths(
         application.processEvents()
         assert page.scroll_area.horizontalScrollBar().maximum() == 0
         assert page.footer.isVisible()
-        assert page._compact is (width < 400)
+        assert page._compact is (width < page._density_metrics.field_reflow_width)
     page._field_changed("stepover", "4.0")
     page.footer.buttons[FunctionEditorAction.PREVIEW].click()
     assert len(previews) == 1
     assert applied == [] and calculations == []
     assert page.state.is_dirty
-    assert page.preview_status.text() == "Preview CURRENT"
+    assert page.preview_status.text() == "Bản xem trước HIỆN HÀNH"
     assert not page.footer.buttons[FunctionEditorAction.CALCULATE].isEnabled()
     page.footer.buttons[FunctionEditorAction.APPLY].click()
     assert len(applied) == 1 and calculations == []
@@ -901,7 +901,7 @@ def test_host_schema_failure_falls_back_to_legacy_with_diagnostic() -> None:
     host.show()
     application.processEvents()
     assert host.current_mode == "legacy"
-    assert host.mode_label.text() == "FALLBACK"
+    assert host.mode_label.text() == "DỰ PHÒNG"
     assert diagnostics == ["broken facing schema"]
     assert "broken facing schema" in host.legacy_adapter.state_summary.text()
     _dispose(host, application)

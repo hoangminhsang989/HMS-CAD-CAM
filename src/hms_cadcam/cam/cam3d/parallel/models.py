@@ -162,6 +162,9 @@ class ParallelFinishingParameters:
     linking_mode: ParallelLinkingMode = ParallelLinkingMode.RETRACT_BETWEEN_SEGMENTS
     feed_rate_mm_per_minute: float = 500.0
     maximum_segment_length_mm: float = 2.0
+    clearance_z_mm: float = 50.0
+    retract_z_mm: float = 40.0
+    link_clearance_mm: float = 1.0
     SERIALIZATION_VERSION: ClassVar[int] = PARALLEL_FINISHING_STRATEGY_VERSION
 
     def __post_init__(self) -> None:
@@ -183,6 +186,15 @@ class ParallelFinishingParameters:
             raise CamValidationError(
                 "Parallel maximum segment length is outside safe limits"
             )
+        clearance = _finite(self.clearance_z_mm, "Parallel clearance Z")
+        retract = _finite(self.retract_z_mm, "Parallel retract Z")
+        link_clearance = _finite(
+            self.link_clearance_mm, "Parallel link clearance"
+        )
+        if clearance < retract:
+            raise CamValidationError("Parallel clearance Z must not be below retract Z")
+        if link_clearance < 0.0 or link_clearance > 1_000.0:
+            raise CamValidationError("Parallel link clearance is outside safe limits")
         if not isinstance(self.cut_direction, ParallelCutDirection) or not isinstance(
             self.linking_mode, ParallelLinkingMode
         ):
@@ -191,6 +203,9 @@ class ParallelFinishingParameters:
         object.__setattr__(self, "direction_angle_degrees", angle)
         object.__setattr__(self, "feed_rate_mm_per_minute", feed)
         object.__setattr__(self, "maximum_segment_length_mm", spacing)
+        object.__setattr__(self, "clearance_z_mm", clearance)
+        object.__setattr__(self, "retract_z_mm", retract)
+        object.__setattr__(self, "link_clearance_mm", link_clearance)
 
     @property
     def fingerprint(self) -> ContentFingerprint:
@@ -207,6 +222,9 @@ class ParallelFinishingParameters:
                 ("feed_rate_mm_per_minute", self.feed_rate_mm_per_minute),
                 ("linking_mode", self.linking_mode.value),
                 ("maximum_segment_length_mm", self.maximum_segment_length_mm),
+                ("clearance_z_mm", self.clearance_z_mm),
+                ("retract_z_mm", self.retract_z_mm),
+                ("link_clearance_mm", self.link_clearance_mm),
                 ("stepover_mm", self.stepover_mm),
                 ("zone_id", str(self.zone_id)),
             ),
@@ -232,7 +250,13 @@ class ParallelFinishingParameters:
             "linking_mode",
             "feed_rate_mm_per_minute",
         }
-        optional = {"maximum_segment_length_mm"}
+        optional = {
+            "automatic_parameter_contract",
+            "maximum_segment_length_mm",
+            "clearance_z_mm",
+            "retract_z_mm",
+            "link_clearance_mm",
+        }
         if not required.issubset(payload) or not set(payload).issubset(required | optional):
             raise CamValidationError("Parallel parameter payload is malformed")
         try:
@@ -244,6 +268,9 @@ class ParallelFinishingParameters:
                 ParallelLinkingMode(payload["linking_mode"]),
                 payload["feed_rate_mm_per_minute"],  # type: ignore[arg-type]
                 payload.get("maximum_segment_length_mm", 2.0),  # type: ignore[arg-type]
+                payload.get("clearance_z_mm", 50.0),  # type: ignore[arg-type]
+                payload.get("retract_z_mm", 40.0),  # type: ignore[arg-type]
+                payload.get("link_clearance_mm", 1.0),  # type: ignore[arg-type]
             )
         except (TypeError, ValueError) as error:
             raise CamValidationError("Parallel parameter payload is invalid") from error

@@ -53,6 +53,7 @@ from hms_cadcam.ui.function_editor.model import (
     PresentationValue,
 )
 from hms_cadcam.ui.function_editor.schema import FunctionEditorSchema
+from hms_cadcam.ui.localization import ui_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,7 +620,7 @@ def build_contour_sections(
                 source=FunctionEditorValueSource.GEOMETRY,
                 required=True,
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
-                tooltip="Persistent typed ID; không phải tên hiển thị hay OCP object.",
+                tooltip="ID định kiểu ổn định; không phải tên hiển thị hay đối tượng OCP.",
                 help_key="contour.geometry_identity",
                 order=30,
                 binding_key="operation.geometry_inputs.profile",
@@ -833,7 +834,7 @@ def build_contour_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
         ),
-        "Top, final depth và chính sách chia lớp trong Setup WCS.",
+        "Đỉnh, chiều sâu cuối và chính sách chia lớp trong WCS thiết lập.",
         order=50,
     )
     linking = FunctionEditorSection(
@@ -862,7 +863,7 @@ def build_contour_sections(
                     FunctionEditorValidationRule(
                         FunctionEditorValidationKind.GREATER_THAN_FIELD,
                         "top_height",
-                        "Retract Z phải cao hơn Top Z.",
+                        "Z rút dao phải cao hơn Z đỉnh.",
                         "contour.retract_above_top",
                     ),
                 ),
@@ -1012,9 +1013,10 @@ def build_contour_schema(context: ContourEditorContext) -> FunctionEditorSchema:
         FunctionEditorSummary(
             context.operation_name,
             (
-                f"Contour 2D · {parameters.side.value.upper()} · "
-                f"{parameters.direction.value.title()} · Top {parameters.top_height.value:g} · "
-                f"Depth {parameters.final_depth.value:g} {parameters.unit.value}"
+                f"Biên dạng 2D · {ui_text(parameters.side.value)} · "
+                f"{ui_text(parameters.direction.value)} · Z đỉnh "
+                f"{parameters.top_height.value:g} · Chiều sâu "
+                f"{parameters.final_depth.value:g} {parameters.unit.value}"
             ),
             tool=assembly_name,
             geometry=geometry,

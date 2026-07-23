@@ -1220,7 +1220,7 @@ def build_drilling_family_schema(
             "process",
             "CYCLE / PROCESS",
             _process_fields(context, values, unit),
-            "Chỉ các mode được domain v1 mô hình hóa.",
+            "Chỉ các chế độ được miền v1 mô hình hóa.",
             order=40,
         ),
         FunctionEditorSection(
@@ -1289,7 +1289,7 @@ def build_drilling_family_schema(
             "advanced",
             "ADVANCED",
             _advanced_fields(context, values, unit),
-            "Tham số ít dùng nhưng đã có domain support.",
+            "Tham số ít dùng nhưng đã được miền v1 hỗ trợ.",
             disclosure_level=ParameterDisclosureLevel.ADVANCED,
             default_expanded=False,
             order=80,
@@ -1341,7 +1341,7 @@ def build_drilling_family_schema(
         FunctionEditorStrategyKey(f"{context.kind.strategy_key}_9a6"),
         FunctionEditorSummary(
             context.operation_name,
-            f"{context.kind.title} · domain v1",
+            f"{context.kind.title} · miền v1",
             tool_name,
             f"{_hole_count(context.hole_source)} lỗ",
             context.operation.artifact_state.status.value.upper(),

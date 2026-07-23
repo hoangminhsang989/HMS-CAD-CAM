@@ -19,7 +19,6 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -72,6 +71,13 @@ from hms_cadcam.ui.post_ui import (
     PostPanelDraft,
     build_production_post_request,
     sanitize_post_filename,
+)
+from hms_cadcam.ui.localization import (
+    LocalizedComboBox,
+    localize_widget_tree,
+    translate_progress_phase,
+    translate_status,
+    ui_text,
 )
 
 
@@ -380,6 +386,7 @@ class ProgramAssemblyPanel(QWidget):
         self._apply_shared_widgets(self._applied_shared)
         self._set_project_enabled(False)
         self._refresh_projection()
+        localize_widget_tree(self)
 
     @staticmethod
     def _default_shared_draft() -> AssemblySharedDraft:
@@ -430,7 +437,7 @@ class ProgramAssemblyPanel(QWidget):
         self.profile_value = QLabel("—")
         self.simulation_summary = QLabel("PASS 0 · WARN 0 · OPTIONAL MISSING 0 · FAIL 0 · STALE/MALFORMED 0")
         self.simulation_summary.setWordWrap(True)
-        self.artifact_summary = QLabel("Assembly — · Managed — · External —")
+        self.artifact_summary = QLabel("Lắp ráp — · Được quản lý — · Bên ngoài —")
         self.artifact_summary.setWordWrap(True)
         for label, widget in (
             ("Project", self.project_value),
@@ -449,28 +456,28 @@ class ProgramAssemblyPanel(QWidget):
         self.filename_edit.setObjectName("AssemblyFilename")
         self.metadata_edit = QLineEdit()
         self.metadata_edit.setPlaceholderText("customer=HMS; part=...")
-        self.profile_combo = QComboBox()
+        self.profile_combo = LocalizedComboBox()
         profile = robodrill_21i_profile()
         self.profile_combo.addItem(
             f"{profile.profile_key} v{profile.profile_version}", profile.profile_key
         )
-        self.work_offset_combo = QComboBox()
+        self.work_offset_combo = LocalizedComboBox()
         self.work_offset_combo.addItem("G54", "G54")
-        self.gate_combo = QComboBox()
+        self.gate_combo = LocalizedComboBox()
         for mode in (
             SimulationGateMode.REQUIRE_PASS,
             SimulationGateMode.ALLOW_WARN,
             SimulationGateMode.OPTIONAL,
         ):
             self.gate_combo.addItem(mode.value.upper(), mode)
-        self.overwrite_combo = QComboBox()
+        self.overwrite_combo = LocalizedComboBox()
         for policy in (
             ExportOverwritePolicy.FAIL_IF_EXISTS,
             ExportOverwritePolicy.REPLACE_IF_SAME_ARTIFACT,
             ExportOverwritePolicy.REPLACE_EXPLICIT,
         ):
             self.overwrite_combo.addItem(policy.value.upper(), policy)
-        self.target_kind_combo = QComboBox()
+        self.target_kind_combo = LocalizedComboBox()
         self.target_kind_combo.addItem(
             "Local / mapped / UNC", ExportTarget.FILESYSTEM_DIRECTORY
         )
@@ -557,7 +564,7 @@ class ProgramAssemblyPanel(QWidget):
         self.safe_z_spin.setRange(-1_000_000.0, 1_000_000.0)
         self.safe_z_spin.setDecimals(4)
         self.safe_z_spin.setSpecialValueText("(missing)")
-        self.compensation_combo = QComboBox()
+        self.compensation_combo = LocalizedComboBox()
         for policy, label in (
             (CutterCompensationPolicy.DISABLED, "DISABLED"),
             (
@@ -623,7 +630,7 @@ class ProgramAssemblyPanel(QWidget):
         self.search_edit.setPlaceholderText("Search exact preview")
         self.search_button = QPushButton("Find Next")
         self.copy_checksum_button = QPushButton("Copy Checksum")
-        self.section_combo = QComboBox()
+        self.section_combo = LocalizedComboBox()
         self.jump_section_button = QPushButton("Jump to Section")
         for widget in (
             self.search_edit,
@@ -644,8 +651,9 @@ class ProgramAssemblyPanel(QWidget):
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Diagnostics"))
-        self.diagnostic_filter = QComboBox()
-        self.diagnostic_filter.addItems(["ALL", "ERROR", "WARNING", "INFO"])
+        self.diagnostic_filter = LocalizedComboBox()
+        for label in ("ALL", "ERROR", "WARNING", "INFO"):
+            self.diagnostic_filter.addItem(label, label)
         filter_row.addWidget(self.diagnostic_filter)
         filter_row.addStretch(1)
         root.addLayout(filter_row)
@@ -1029,7 +1037,9 @@ class ProgramAssemblyPanel(QWidget):
                 draft.global_metadata,
             )
         except Exception as error:
-            self.message.emit(f"Invalid assembly context draft: {error}")
+            self.message.emit(
+                f"Bản nháp ngữ cảnh lắp ráp không hợp lệ: {ui_text(error)}"
+            )
             self._shared_widget_dirty = True
             self._update_action_enabled()
             return False
@@ -1045,7 +1055,9 @@ class ProgramAssemblyPanel(QWidget):
                 self._external_status = ExternalExportUiStatus.OUTDATED
         self._shared_widget_dirty = False
         self._refresh_projection()
-        self.message.emit("Assembly context đã Apply atomically; không tự Generate/Export.")
+        self.message.emit(
+            "Đã áp dụng toàn vẹn ngữ cảnh lắp ráp; không tự tạo hoặc xuất."
+        )
         return True
 
     def _shared_draft_from_widgets(self) -> AssemblySharedDraft:
@@ -1692,7 +1704,7 @@ class ProgramAssemblyPanel(QWidget):
         self._refresh_managed_entry()
         self._render_operations()
         self._refresh_projection()
-        self.message.emit("ProgramAssemblyResult đã publish; chưa ghi file.")
+        self.message.emit("Kết quả lắp ráp chương trình đã công bố; chưa ghi tệp.")
         return result
 
     def _retain_current_or_fail(self, request: ProgramAssemblyRequest) -> None:
@@ -1723,9 +1735,10 @@ class ProgramAssemblyPanel(QWidget):
         self._navigation = self._build_navigation(self._result)
         self.section_combo.clear()
         for item in self._navigation:
-            name = self._operation_names.get(item.operation_id, "Operation")
+            name = self._operation_names.get(item.operation_id, "Nguyên công")
             self.section_combo.addItem(
-                f"{item.section_index + 1}. {name} · lines {item.start_line}-{item.end_line}",
+                f"{item.section_index + 1}. {name} · dòng "
+                f"{item.start_line}-{item.end_line}",
                 str(item.operation_id),
             )
         profile = self._result.plan
@@ -1733,20 +1746,20 @@ class ProgramAssemblyPanel(QWidget):
         self.metadata_label.setText(
             " · ".join(
                 (
-                    f"Profile {profile.production_profile_id} v{profile.production_profile_version}",
-                    f"operations {stats.operation_count}",
-                    f"sections {stats.section_count}",
-                    f"tool changes {stats.tool_change_count}",
-                    f"lines {stats.line_count}",
-                    f"bytes {stats.byte_length}",
+                    f"Cấu hình {profile.production_profile_id} v{profile.production_profile_version}",
+                    f"{stats.operation_count} nguyên công",
+                    f"{stats.section_count} phần",
+                    f"{stats.tool_change_count} lần đổi Tool",
+                    f"{stats.line_count} dòng",
+                    f"{stats.byte_length} byte",
                     "CRLF",
-                    "UTF-8 / ASCII-compatible",
+                    "UTF-8 / tương thích ASCII",
                     f"SHA-256 {self._result.output_checksum}",
-                    "validation PASSED",
-                    f"assembly {self._result.result_fingerprint.digest if self._result.result_fingerprint else '—'}",
-                    "ordered provenance "
+                    "kiểm tra ĐẠT",
+                    f"lắp ráp {self._result.result_fingerprint.digest if self._result.result_fingerprint else '—'}",
+                    "nguồn gốc có thứ tự "
                     + ",".join(str(value) for value in self._result.ordered_operation_ids),
-                    "NOT CERTIFIED / REVIEW REQUIRED",
+                    "CHƯA CHỨNG NHẬN / CẦN RÀ SOÁT",
                 )
             )
         )
@@ -1858,7 +1871,9 @@ class ProgramAssemblyPanel(QWidget):
                 export[0], export[1], current_source=self._current_export_source
             )
         except Exception as error:
-            self.message.emit(f"Managed assembly save failed: {error}")
+            self.message.emit(
+                f"Lưu kết quả lắp ráp được quản lý thất bại: {ui_text(error)}"
+            )
             self._set_status(ProgramAssemblyUiStatus.FAILED)
             return None
         self._last_export = execution
@@ -1873,7 +1888,7 @@ class ProgramAssemblyPanel(QWidget):
             value = self.target_edit.text().strip()
             destination = Path(value) if value else None
         if destination is None:
-            self.message.emit("Chọn destination local/mapped/UNC trước khi Export.")
+            self.message.emit("Chọn đích cục bộ/ánh xạ/UNC trước khi xuất.")
             return None
         export = self._build_export(self._applied_shared.target_kind, destination)
         if export is None or self._result is None:
@@ -1881,19 +1896,21 @@ class ProgramAssemblyPanel(QWidget):
         if confirm is None and self.parent() is not None:
             stats = self._result.statistics
             summary = (
-                f"Project: {self._project_name}\n"
-                f"Job/Setup: {self.state.job_id} / {self.state.setup_id}\n"
-                f"Operations: {', '.join(self._operation_names.get(value, str(value)) for value in self._operation_ids)}\n"
-                f"Profile: {self.state.profile_key}\n"
-                f"Tools/sections: {len({draft.tool_station for draft in self._operation_drafts.values()})} / {stats.section_count}\n"
-                f"Destination: {destination}\n"
-                f"Filename: {self._result.plan.shared_context.file_name}\n"
-                f"Bytes/SHA-256: {stats.byte_length} / {self._result.output_checksum}\n"
-                f"Overwrite: {self._applied_shared.overwrite_policy.value}\n"
-                f"Simulation: {self.simulation_summary.text()}\n\n"
-                "NOT MACHINE CERTIFIED"
+                f"Dự án: {self._project_name}\n"
+                f"Công việc/Setup: {self.state.job_id} / {self.state.setup_id}\n"
+                f"Nguyên công: {', '.join(self._operation_names.get(value, str(value)) for value in self._operation_ids)}\n"
+                f"Cấu hình: {self.state.profile_key}\n"
+                f"Tool/phần: {len({draft.tool_station for draft in self._operation_drafts.values()})} / {stats.section_count}\n"
+                f"Đích: {destination}\n"
+                f"Tên file: {self._result.plan.shared_context.file_name}\n"
+                f"Byte/SHA-256: {stats.byte_length} / {self._result.output_checksum}\n"
+                f"Ghi đè: {self._applied_shared.overwrite_policy.value}\n"
+                f"Mô phỏng: {self.simulation_summary.text()}\n\n"
+                "CHƯA ĐƯỢC CHỨNG NHẬN CHO MÁY"
             )
-            answer = QMessageBox.question(self, "Confirm assembly export", summary)
+            answer = QMessageBox.question(
+                self, "Xác nhận xuất chương trình lắp ráp", summary
+            )
             confirm = answer is QMessageBox.StandardButton.Yes
         if confirm is False:
             return None
@@ -1903,7 +1920,7 @@ class ProgramAssemblyPanel(QWidget):
             )
         except Exception as error:
             self._external_status = ExternalExportUiStatus.FAILED
-            self.message.emit(f"External assembly export failed: {error}")
+            self.message.emit(f"Xuất lắp ráp ra ngoài thất bại: {ui_text(error)}")
             self._refresh_projection()
             return None
         self._last_export = execution
@@ -1960,8 +1977,8 @@ class ProgramAssemblyPanel(QWidget):
         if confirm is None:
             answer = QMessageBox.question(
                 self,
-                "Clear managed assembly artifact",
-                "Delete only this project-managed assembly NC artifact and sidecar?",
+                "Xóa kết quả lắp ráp được quản lý",
+                "Chỉ xóa kết quả NC lắp ráp do dự án quản lý và tệp kèm?",
             )
             confirm = answer is QMessageBox.StandardButton.Yes
         if not confirm:
@@ -1973,7 +1990,9 @@ class ProgramAssemblyPanel(QWidget):
                 entry.assembly_result_id,
             )
         except Exception as error:
-            self.message.emit(f"Clear managed assembly artifact failed: {error}")
+            self.message.emit(
+                f"Xóa kết quả lắp ráp được quản lý thất bại: {ui_text(error)}"
+            )
             return
         self._managed_entry = None
         self._refresh_managed_entry()
@@ -1982,7 +2001,7 @@ class ProgramAssemblyPanel(QWidget):
     def show_diagnostics(self) -> None:
         self.diagnostics.setFocus()
         self.message.emit(
-            f"Assembly diagnostics: {len(self._diagnostic_values)} item(s)."
+            f"Chẩn đoán lắp ráp: {len(self._diagnostic_values)} hạng mục."
         )
 
     def _set_diagnostics(self, diagnostics: tuple[object, ...]) -> None:
@@ -2002,7 +2021,7 @@ class ProgramAssemblyPanel(QWidget):
             self._set_diagnostics(tuple(diagnostics))
 
     def _render_diagnostics(self) -> None:
-        selected = self.diagnostic_filter.currentText().casefold()
+        selected = str(self.diagnostic_filter.currentData()).casefold()
         self.diagnostics.setRowCount(0)
         for diagnostic in self._diagnostic_values:
             severity = getattr(diagnostic, "severity", DiagnosticSeverity.ERROR)
@@ -2015,12 +2034,12 @@ class ProgramAssemblyPanel(QWidget):
             record_index = getattr(diagnostic, "record_index", None)
             evidence = getattr(diagnostic, "evidence", ())
             values = (
-                severity.value.upper(),
+                translate_status(severity.value.upper()),
                 getattr(getattr(diagnostic, "code", None), "value", "export.unknown"),
                 str(operation_id or ""),
                 "" if section_index is None else str(section_index + 1),
                 "" if record_index is None else str(record_index),
-                str(getattr(diagnostic, "message_key", "")),
+                ui_text(getattr(diagnostic, "message_key", "")),
                 "; ".join(f"{key}={value}" for key, value in evidence),
             )
             for column, value in enumerate(values):
@@ -2028,6 +2047,7 @@ class ProgramAssemblyPanel(QWidget):
                 if column == 0:
                     item.setData(_DIAGNOSTIC_ROLE, diagnostic)
                 self.diagnostics.setItem(row, column, item)
+        localize_widget_tree(self.diagnostics)
 
     def _diagnostic_selection_changed(self) -> None:
         row = self.diagnostics.currentRow()
@@ -2126,7 +2146,7 @@ class ProgramAssemblyPanel(QWidget):
                     compatibility = "OK"
                 values = (
                     str(index + 1),
-                    self._operation_names.get(operation_id, "Operation"),
+                    self._operation_names.get(operation_id, "Nguyên công"),
                     strategy,
                     operation_status,
                     artifact_status,
@@ -2161,6 +2181,7 @@ class ProgramAssemblyPanel(QWidget):
             self.operation_table.selectRow(0)
         else:
             self._load_operation_widgets(None)
+        localize_widget_tree(self.operation_table)
 
     def _select_operation_row(self, operation_id: OperationId) -> None:
         for row in range(self.operation_table.rowCount()):
@@ -2344,24 +2365,27 @@ class ProgramAssemblyPanel(QWidget):
             f"{self.state.profile_key} · MM · G54 · ABSOLUTE · XY · .fn · CRLF · UTF-8"
         )
         self.simulation_summary.setText(
-            f"PASS {passed} · WARN {warned} · OPTIONAL MISSING {missing} · FAIL {failed} · STALE/MALFORMED {stale}"
+            f"ĐẠT {passed} · CẢNH BÁO {warned} · TÙY CHỌN THIẾU {missing} · "
+            f"KHÔNG ĐẠT {failed} · LỖI THỜI/SAI DẠNG {stale}"
         )
         self.artifact_summary.setText(
-            f"Assembly {self.state.assembly_status.value.upper()} · "
-            f"Managed {managed.value.upper()} · "
-            f"External {self._external_status.value.upper()} · "
-            f"operations {len(self._operation_ids)} · sections {self.state.section_count} · "
-            f"tool changes {self.state.tool_change_count} · bytes {self.state.byte_count} · "
+            f"Lắp ráp {translate_status(self.state.assembly_status.value.upper())} · "
+            f"Được quản lý {translate_status(managed.value.upper())} · "
+            f"Bên ngoài {translate_status(self._external_status.value.upper())} · "
+            f"{len(self._operation_ids)} nguyên công · {self.state.section_count} phần · "
+            f"{self.state.tool_change_count} lần đổi Tool · {self.state.byte_count} byte · "
             f"SHA-256 {self.state.checksum or '—'}"
         )
         self.status_label.setText(
-            f"Program {self.state.assembly_status.value.upper()} · "
-            f"Phase {self.state.progress_phase.value.upper()} · "
-            f"Managed {managed.value.upper()} · External {self._external_status.value.upper()} · "
-            "NOT CERTIFIED / REVIEW REQUIRED"
+            f"Chương trình {translate_status(self.state.assembly_status.value.upper())} · "
+            f"Giai đoạn {translate_progress_phase(self.state.progress_phase)} · "
+            f"Được quản lý {translate_status(managed.value.upper())} · "
+            f"Bên ngoài {translate_status(self._external_status.value.upper())} · "
+            "CHƯA CHỨNG NHẬN / CẦN RÀ SOÁT"
         )
         self.state_changed.emit(self.state)
         self._update_action_enabled()
+        localize_widget_tree(self)
 
     def _set_status(self, status: ProgramAssemblyUiStatus) -> None:
         self.state = replace(self.state, assembly_status=status)
@@ -2448,7 +2472,7 @@ class ProgramAssemblyPanel(QWidget):
 
     def _browse_target(self) -> None:
         directory = QFileDialog.getExistingDirectory(
-            self, "Select assembly export directory"
+            self, "Chọn thư mục xuất chương trình lắp ráp"
         )
         if directory:
             self.target_edit.setText(directory)

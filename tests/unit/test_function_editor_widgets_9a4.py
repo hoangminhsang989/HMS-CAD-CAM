@@ -139,7 +139,7 @@ def test_field_renders_unit_source_default_help_and_accessibility() -> None:
     stepdown = page._field_widgets["stepdown"]
 
     assert safe.unit_label.text() == "mm"
-    assert safe.source_label.text() == "Nguồn: Setup"
+    assert safe.source_label.text() == "Nguồn: Thiết lập"
     assert stepdown.default_label.isVisible()
     assert "mm" in stepdown.accessibleName()
     assert stepdown.editor.accessibleName()
@@ -282,8 +282,10 @@ def test_responsive_widths_have_internal_scroll_and_compact_footer() -> None:
         assert page.footer.isVisible()
         assert page._field_widgets["stepdown"].label.text()
         assert page._field_widgets["stepdown"].unit_label.text() == "mm"
-        assert page._compact is (width < 400)
-        assert page.footer._compact is (width < 400)
+        assert page._compact is (width < page._density_metrics.field_reflow_width)
+        assert page.footer._compact is (
+            width < page._density_metrics.field_reflow_width
+        )
     _dispose(page, application)
 
 

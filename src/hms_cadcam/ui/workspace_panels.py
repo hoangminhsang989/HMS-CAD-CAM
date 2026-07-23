@@ -36,17 +36,17 @@ class DiagnosticsHost(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DiagnosticsHost")
-        self.setAccessibleName("Diagnostics và tác vụ nền")
+        self.setAccessibleName("Chẩn đoán và tác vụ nền")
         self.output = output
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         header, self.collapse_button = _panel_header(
-            "Diagnostics & Activity", "Thu gọn Diagnostics"
+            "Chẩn đoán & Hoạt động", "Thu gọn Chẩn đoán"
         )
         self.collapse_button.clicked.connect(self.collapse_requested)
         root.addWidget(header)
-        self.activity_label = QLabel("INFO · Không có tác vụ nền đang chạy")
+        self.activity_label = QLabel("THÔNG TIN · Không có tác vụ nền đang chạy")
         self.activity_label.setObjectName("DiagnosticSeverityInfo")
         self.activity_label.setAccessibleName("Trạng thái tác vụ nền")
         self.activity_label.setContentsMargins(8, 3, 8, 3)
@@ -62,7 +62,7 @@ class DiagnosticsHost(QWidget):
             "error": "DiagnosticSeverityError",
         }.get(normalized, "DiagnosticSeverityInfo")
         prefix = {"warning": "CẢNH BÁO", "error": "LỖI"}.get(
-            normalized, "INFO"
+            normalized, "THÔNG TIN"
         )
         self.activity_label.setObjectName(object_name)
         self.activity_label.setText(f"{prefix} · {text}")
@@ -88,17 +88,17 @@ class SecondaryPanelHost(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         header, self.collapse_button = _panel_header(
-            "Simulation / Post", "Thu gọn panel quy trình phụ"
+            "Mô phỏng / Post", "Thu gọn bảng quy trình phụ"
         )
         self.collapse_button.clicked.connect(self.collapse_requested)
         root.addWidget(header)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("SecondaryWorkflowTabs")
-        self.tabs.setAccessibleName("Chọn Simulation hoặc Post")
+        self.tabs.setAccessibleName("Chọn Mô phỏng hoặc Post")
         self.simulation_scroll = _scroll_host(simulation_panel, "SimulationScrollArea")
         self.post_scroll = _scroll_host(post_tabs, "PostScrollArea")
-        self.tabs.addTab(self.simulation_scroll, "Simulation")
-        self.tabs.addTab(self.post_scroll, "Post / Program Assembly")
+        self.tabs.addTab(self.simulation_scroll, "Mô phỏng")
+        self.tabs.addTab(self.post_scroll, "Post / Lắp ráp chương trình")
         root.addWidget(self.tabs, 1)
 
     def select_simulation(self) -> None:

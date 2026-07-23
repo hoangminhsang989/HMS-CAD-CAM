@@ -17,7 +17,7 @@ class CadViewportPlaceholder(QWidget):
         self.setMinimumSize(520, 360)
         self._right_toolbar = self._create_right_toolbar()
         self._context_toolbar = self._create_context_toolbar()
-        self._view_label = QLabel("Mặt phẳng XY  |  Top", self)
+        self._view_label = QLabel("Mặt phẳng XY  |  Trên", self)
         self._view_label.setStyleSheet(
             "background: rgba(255,255,255,220); border: 1px solid #c4cbd3; "
             "padding: 5px 9px; color: #2d3742;"
@@ -28,13 +28,13 @@ class CadViewportPlaceholder(QWidget):
         toolbar.setObjectName("ViewportTools")
         toolbar.setOrientation(Qt.Orientation.Vertical)
         for text, tooltip in (
-            ("＋", "Zoom in"),
-            ("⌖", "Fit all"),
-            ("◉", "Zoom window"),
+            ("＋", "Phóng to"),
+            ("⌖", "Hiện toàn bộ"),
+            ("◉", "Phóng theo cửa sổ"),
             ("↻", "Xoay khung nhìn"),
-            ("▧", "Wireframe"),
-            ("◫", "Shaded"),
-            ("▤", "Layers"),
+            ("▧", "Khung dây"),
+            ("◫", "Tô bóng"),
+            ("▤", "Lớp"),
             ("⚙", "Thiết lập hiển thị"),
         ):
             action = toolbar.addAction(text)
@@ -108,7 +108,7 @@ class CadViewportPlaceholder(QWidget):
         painter.drawText(
             QRect(0, 18, self.width(), 26),
             Qt.AlignmentFlag.AlignHCenter,
-            "CAD VIEWPORT  •  PLACEHOLDER",
+            "VIEWPORT CAD  •  VỊ TRÍ TẠM",
         )
         painter.end()
 

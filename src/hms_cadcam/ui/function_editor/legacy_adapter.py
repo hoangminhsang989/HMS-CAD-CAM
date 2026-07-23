@@ -33,7 +33,7 @@ class LegacyFunctionEditorAdapter(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("LegacyFunctionEditorAdapter")
-        self.setAccessibleName("Legacy Editor adapter")
+        self.setAccessibleName("Bộ chuyển tiếp trình chỉnh sửa cũ")
         self.editor = editor
         self._tree = tree
         self._dirty = False
@@ -47,17 +47,17 @@ class LegacyFunctionEditorAdapter(QWidget):
         summary_layout = QVBoxLayout(summary)
         summary_layout.setContentsMargins(8, 6, 8, 6)
         top = QHBoxLayout()
-        self.selection_summary = QLabel("Chưa chọn operation")
+        self.selection_summary = QLabel("Chưa chọn nguyên công")
         self.selection_summary.setObjectName("FunctionEditorSummaryTitle")
         self.selection_summary.setWordWrap(True)
         top.addWidget(self.selection_summary, 1)
-        badge = QLabel("LEGACY EDITOR")
+        badge = QLabel("TRÌNH CHỈNH SỬA CŨ")
         badge.setObjectName("FunctionEditorLegacyBadge")
-        badge.setAccessibleName("Editor production cũ")
+        badge.setAccessibleName("Trình chỉnh sửa sản xuất cũ")
         top.addWidget(badge)
         summary_layout.addLayout(top)
         self.state_summary = QLabel(
-            "Chưa migrate strategy · dùng nguyên validation và Apply hiện tại."
+            "Chiến lược chưa được chuyển đổi · giữ nguyên kiểm tra và áp dụng hiện tại."
         )
         self.state_summary.setObjectName("PanelSummary")
         self.state_summary.setWordWrap(True)
@@ -75,7 +75,7 @@ class LegacyFunctionEditorAdapter(QWidget):
                 form.setRowVisible(classic_apply, False)
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("FunctionEditorScrollArea")
-        self.scroll_area.setAccessibleName("Nội dung Legacy Editor")
+        self.scroll_area.setAccessibleName("Nội dung trình chỉnh sửa cũ")
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -88,18 +88,18 @@ class LegacyFunctionEditorAdapter(QWidget):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(8, 6, 8, 6)
         footer_layout.addStretch(1)
-        self.apply_button = QPushButton("Apply")
+        self.apply_button = QPushButton("Áp dụng")
         self.apply_button.setObjectName("PrimaryPanelAction")
-        self.apply_button.setAccessibleName("Áp dụng bản nháp bằng Legacy Editor")
+        self.apply_button.setAccessibleName("Áp dụng bản nháp bằng trình chỉnh sửa cũ")
         self.apply_button.setToolTip(
-            "Dùng nguyên parse, validation và atomic CAM command hiện tại"
+            "Giữ nguyên phân tích, kiểm tra và lệnh CAM nguyên tử hiện tại"
         )
         self.apply_button.clicked.connect(apply_callback)
         footer_layout.addWidget(self.apply_button)
-        self.close_button = QPushButton("Close")
-        self.close_button.setAccessibleName("Đóng Function Editor")
+        self.close_button = QPushButton("Đóng")
+        self.close_button.setAccessibleName("Đóng trình chỉnh sửa chức năng")
         self.close_button.setToolTip(
-            "Ẩn panel; draft legacy vẫn theo lifecycle hiện tại, không tự Apply"
+            "Ẩn bảng; bản nháp cũ vẫn theo vòng đời hiện tại, không tự áp dụng"
         )
         self.close_button.clicked.connect(self.close_requested)
         footer_layout.addWidget(self.close_button)
@@ -122,17 +122,17 @@ class LegacyFunctionEditorAdapter(QWidget):
             # Qt may emit modelReset while child widgets are being destroyed.
             return
         if item is None:
-            self.selection_summary.setText("Chưa chọn operation")
+            self.selection_summary.setText("Chưa chọn nguyên công")
             self.state_summary.setText(
-                "Chọn một node trong Operation Manager để mở Legacy Editor."
+                "Chọn một nút trong Quản lý nguyên công để mở trình chỉnh sửa cũ."
             )
             self._dirty = False
             return
-        self.selection_summary.setText(item.text(0) or "Selection")
+        self.selection_summary.setText(item.text(0) or "Vùng chọn")
         status = item.text(1).strip() or "Không có trạng thái"
-        draft = " · Draft modified" if self._dirty else ""
+        draft = " · Bản nháp đã sửa" if self._dirty else ""
         self.state_summary.setText(
-            f"Legacy Editor · Trạng thái: {status}{draft}"
+            f"Trình chỉnh sửa cũ · Trạng thái: {status}{draft}"
         )
 
     def selection_changed(self) -> None:

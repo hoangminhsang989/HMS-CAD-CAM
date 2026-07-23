@@ -223,7 +223,7 @@ def test_two_operation_generation_preview_and_reorder_checksum(tmp_path: Path) -
     assert first is not None
     assert panel.state.assembly_status is ProgramAssemblyUiStatus.CURRENT
     assert panel.preview_source_text == first.canonical_text
-    assert "NOT CERTIFIED / REVIEW REQUIRED" in panel.metadata_label.text()
+    assert "CHƯA CHỨNG NHẬN / CẦN RÀ SOÁT" in panel.metadata_label.text()
     assert len(panel.navigation) == 2
     assert panel.jump_to_operation(sources[1].operation.operation_id)
     checksum = first.output_checksum

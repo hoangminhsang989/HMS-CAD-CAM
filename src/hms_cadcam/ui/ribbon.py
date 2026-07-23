@@ -48,7 +48,7 @@ class RibbonWidget(QTabWidget):
                             self._project_actions.get("save", "Lưu"),
                         ),
                     ),
-                    ("Clipboard", ("Cắt", "Sao chép", "Dán")),
+                    ("Bảng tạm", ("Cắt", "Sao chép", "Dán")),
                     (
                         "CAD",
                         (
@@ -56,7 +56,7 @@ class RibbonWidget(QTabWidget):
                             self._cad_actions.get("open_brep", "Mở BREP"),
                             self._cad_actions.get("open_iges", "Mở IGES"),
                             self._cad_actions.get("open_stl", "Mở STL"),
-                            self._cad_actions.get("fit_all", "Fit All"),
+                            self._cad_actions.get("fit_all", "Hiện toàn bộ"),
                         ),
                     ),
                     ("Phân tích", ("Đo", "Thuộc tính", "Thống kê")),
@@ -64,14 +64,14 @@ class RibbonWidget(QTabWidget):
             ),
             "Trang chủ",
         )
-        self.addTab(self._future_page("Wireframe", ("Điểm", "Đường", "Cung", "Bo góc")), "Wireframe")
-        self.addTab(self._future_page("Surfaces", ("Tạo mặt", "Offset", "Trim", "Blend")), "Surfaces")
-        self.addTab(self._future_page("Solids", ("Khối", "Extrude", "Boolean", "Fillet")), "Solids")
-        self.addTab(self._future_page("Model Prep", ("Move", "Push", "Simplify", "Heal")), "Model Prep")
-        self.addTab(self._future_page("Mesh", ("Tạo mesh", "Sửa mesh", "Giảm lưới", "Kiểm tra")), "Mesh")
-        self.addTab(self._future_page("Drafting", ("Kích thước", "Ghi chú", "Hatch", "Layer")), "Drafting")
-        self.addTab(self._future_page("Transform", ("Di chuyển", "Xoay", "Đối xứng", "Scale")), "Transform")
-        self.addTab(self._future_page("Machine", ("Máy", "Dao", "Thiết lập", "Toolpath")), "Machine")
+        self.addTab(self._future_page("Khung dây", ("Điểm", "Đường", "Cung", "Bo góc")), "Khung dây")
+        self.addTab(self._future_page("Bề mặt", ("Tạo mặt", "Dịch biên", "Cắt xén", "Nối chuyển tiếp")), "Bề mặt")
+        self.addTab(self._future_page("Khối rắn", ("Khối", "Đùn", "Boolean", "Bo tròn")), "Khối rắn")
+        self.addTab(self._future_page("Chuẩn bị mô hình", ("Di chuyển", "Đẩy", "Đơn giản hóa", "Sửa lỗi")), "Chuẩn bị mô hình")
+        self.addTab(self._future_page("Lưới", ("Tạo lưới", "Sửa lưới", "Giảm lưới", "Kiểm tra")), "Lưới")
+        self.addTab(self._future_page("Bản vẽ", ("Kích thước", "Ghi chú", "Mặt cắt", "Lớp")), "Bản vẽ")
+        self.addTab(self._future_page("Biến đổi", ("Di chuyển", "Xoay", "Đối xứng", "Tỷ lệ")), "Biến đổi")
+        self.addTab(self._future_page("Máy", ("Máy", "Dao", "Thiết lập", "Đường chạy dao")), "Máy")
         self.addTab(
             self._page(
                 (
@@ -120,7 +120,7 @@ class RibbonWidget(QTabWidget):
                     ),
                 )
             ),
-            "View",
+            "Hiển thị",
         )
 
     def _future_page(self, group_name: str, commands: Iterable[str]) -> QWidget:

@@ -5,8 +5,18 @@ from hms_cadcam.cam.application.defaults import (
     basic_boring_resources,
     basic_drilling_resources,
     basic_mill_resources,
+    basic_parallel_resources,
     basic_reaming_resources,
     basic_tapping_resources,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    AutomaticParameterValue,
+    AutomaticValidationResult,
+    CamQualityProfile,
 )
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator, FacingInputs, resolve_box_facing_region,
@@ -60,9 +70,12 @@ from hms_cadcam.cam.application.pocket import (
     pocket_depth_levels,
 )
 
-__all__ = ["CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
+__all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
+           "AutomaticParameterMode", "AutomaticParameterStatus", "AutomaticParameterValue",
+           "AutomaticValidationResult", "CamQualityProfile",
+           "CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
-           "FacingGenerator", "FacingInputs", "basic_boring_resources", "basic_drilling_resources", "basic_mill_resources",
+           "FacingGenerator", "FacingInputs", "basic_boring_resources", "basic_drilling_resources", "basic_mill_resources", "basic_parallel_resources",
            "basic_reaming_resources",
            "basic_tapping_resources",
            "offset_contour", "reconcile_artifacts",

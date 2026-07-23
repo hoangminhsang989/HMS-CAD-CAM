@@ -284,9 +284,9 @@ def test_reaming_ui_atomic_draft_validation_picking_generate_and_viewer(
     assert strategy.retract_policy is ReamingRetractPolicy.CONTROLLED_FEED
     assert len(operation.geometry_inputs) == 2
     assert workspace.actions["generate"].isEnabled()
-    assert "HOLE PATTERN 2" in workspace.editor.status.text()
-    assert "Stock/side: 0.1" in workspace.editor.reaming_derived.text()
-    assert "Feed/min: 50" in workspace.editor.reaming_derived.text()
+    assert "MẪU LỖ 2" in workspace.editor.status.text()
+    assert "Phôi/mặt bên: 0.1" in workspace.editor.reaming_derived.text()
+    assert "Lượng chạy dao/phút: 50" in workspace.editor.reaming_derived.text()
     service.save()
     assert not service.is_dirty
 
@@ -405,7 +405,7 @@ def test_reaming_ui_atomic_draft_validation_picking_generate_and_viewer(
     workspace.editor._reaming_fields["spindle"].setText("600")
     workspace.editor._reaming_fields["feed_per_revolution"].setText("0.12")
     workspace.editor._reaming_fields["dwell"].setText("0.2")
-    assert "Feed/min: 72" in workspace.editor.reaming_derived.text()
+    assert "Lượng chạy dao/phút: 72" in workspace.editor.reaming_derived.text()
     workspace.editor._submit()
     applied = ReamingStrategy.from_operation_parameters(_operation(service).parameters)
     assert applied.feed_per_minute.value == pytest.approx(72.0)
@@ -445,7 +445,7 @@ def test_reaming_ui_atomic_draft_validation_picking_generate_and_viewer(
     workspace._drilling_resolver = _resolved
     workspace.clear_geometry_pick()
     assert _operation(service).geometry_inputs == ()
-    assert "HOLE MISSING" in workspace.editor.status.text()
+    assert "THIẾU LỖ" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     workspace.deleteLater()
 
@@ -684,7 +684,7 @@ def test_reaming_inch_ui_and_persistence_lifecycle(tmp_path) -> None:
     assert service.load_toolpath_artifact(copied_operation.operation_id) == artifact
 
     workspace.bind_project(copied)
-    reaming_item = _find_item(workspace.tree.topLevelItem(0), "Reaming")
+    reaming_item = _find_item(workspace.tree.topLevelItem(0), "Doa lỗ")
     assert reaming_item is not None
     workspace.tree.setCurrentItem(reaming_item)
     workspace.editor._reaming_fields["dwell"].setText("0.4")

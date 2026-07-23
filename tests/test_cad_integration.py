@@ -644,9 +644,9 @@ def test_document_and_selection_update_tree_and_properties(tmp_path: Path) -> No
         )
         for column in (0, 1)
     ]
-    assert "CAD document" in tree_text
-    assert "Topology" in tree_text
-    assert "Bounding box" in tree_text
+    assert "Tài liệu CAD" in tree_text
+    assert "Cấu trúc hình học" in tree_text
+    assert "Hộp bao" in tree_text
     metadata = window.cad_controller.active_metadata
     assert metadata is not None
     document_properties = {
@@ -656,7 +656,7 @@ def test_document_and_selection_update_tree_and_properties(tmp_path: Path) -> No
         for row in range(window._properties_table.rowCount())
     }
     assert document_properties["Định dạng"] == "BREP"
-    assert "Bounding box" in document_properties
+    assert "Hộp bao" in document_properties
     item = SelectionMetadata(
         metadata.document_id,
         f"{metadata.document_id}:face:1",
@@ -671,8 +671,8 @@ def test_document_and_selection_update_tree_and_properties(tmp_path: Path) -> No
         )
         for row in range(window._properties_table.rowCount())
     }
-    assert properties["Loại topology"] == "FACE"
-    assert properties["Selection ID"] == item.selection_id
+    assert properties["Loại cấu trúc hình học"] == "FACE"
+    assert properties["ID lựa chọn"] == item.selection_id
     window.close()
 
 

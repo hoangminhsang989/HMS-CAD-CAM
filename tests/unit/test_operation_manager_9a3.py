@@ -12,9 +12,9 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QAbstractItemModel, QCoreApplication, QEvent, QSettings, Qt  # noqa: E402
+from PySide6.QtCore import QAbstractItemModel, QCoreApplication, QEvent, QRect, QSettings, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QStyleOptionViewItem  # noqa: E402
 
 from hms_cadcam.cam.domain import (  # noqa: E402
     ArtifactState,
@@ -33,6 +33,10 @@ from hms_cadcam.cam.simulation.runtime import SimulationRunState  # noqa: E402
 from hms_cadcam.project.service import ProjectService  # noqa: E402
 from hms_cadcam.ui.cam_ui import CamWorkspace  # noqa: E402
 from hms_cadcam.ui.operation_manager import OperationManagerPanel  # noqa: E402
+from hms_cadcam.ui.operation_manager_delegate import (  # noqa: E402
+    OperationManagerDelegate,
+    compact_operation_summary,
+)
 from hms_cadcam.ui.operation_manager_model import OperationManagerModel  # noqa: E402
 from hms_cadcam.ui.operation_manager_projection import (  # noqa: E402
     OperationManagerProjectionBuilder,
@@ -208,7 +212,7 @@ def test_no_project_and_cad_only_have_honest_empty_states(tmp_path) -> None:
         assert panel.state_title.text() == "Dự án hiện chỉ có CAD"
         assert any(
             item.kind is OperationManagerNodeKind.EMPTY_STATE
-            and item.status.text == "CAD ONLY"
+                and item.status.text == "CHỈ CÓ CAD"
             for item in panel.model.projection.nodes
         )
     finally:
@@ -275,10 +279,10 @@ def test_status_categories_filters_and_operation_summary_are_honest(tmp_path) ->
             OperationManagerStatusCategory.NC,
             OperationManagerStatusCategory.EXPORT,
         }
-        assert "Facing 2.5D" in operation.secondary_summary
-        assert "TP NEEDS CALC" in operation.secondary_summary
-        assert "SIM NOT RUN" in operation.secondary_summary
-        assert "NC MISSING" in operation.secondary_summary
+        assert "Phay mặt 2.5D" in operation.secondary_summary
+        assert "Đường dao CẦN TÍNH" in operation.secondary_summary
+        assert "Mô phỏng CHƯA CHẠY" in operation.secondary_summary
+        assert "NC THIẾU" in operation.secondary_summary
 
         workspace.set_selected_enabled(False)
         application.processEvents()
@@ -307,6 +311,134 @@ def test_status_categories_filters_and_operation_summary_are_honest(tmp_path) ->
         stale = _node(panel, OperationManagerNodeKind.OPERATION)
         assert stale.is_stale
         assert panel.model.index_for_node_id(stale.node_id).isValid()
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
+def test_operation_rows_use_localized_two_line_names_tooltips_badges_and_dpi(
+    tmp_path,
+) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    try:
+        panel.resize(300, 680)
+        panel.show()
+        application.processEvents()
+        assert {
+            key: workspace.actions[key].text()
+            for key in (
+                "operation",
+                "contour_operation",
+                "pocket_operation",
+                "parallel_operation",
+                "drilling_operation",
+                "tapping_operation",
+                "reaming_operation",
+                "boring_operation",
+            )
+        } == {
+            "operation": "Thêm Phay mặt 2.5D",
+            "contour_operation": "Thêm Phay biên dạng 2D",
+            "pocket_operation": "Thêm Phay hốc 2.5D",
+            "parallel_operation": "Thêm Gia công tinh song song",
+            "drilling_operation": "Thêm Khoan",
+            "tapping_operation": "Thêm Taro",
+            "reaming_operation": "Thêm Doa lỗ",
+            "boring_operation": "Thêm Khoét lỗ",
+        }
+        operation = _node(panel, OperationManagerNodeKind.OPERATION)
+        index = panel.model.index_for_node_id(operation.node_id)
+        tool_name = service.cam_snapshot.tool_assemblies[0].name
+        assert operation.label == "Phay mặt 2.5D"
+        assert compact_operation_summary(operation) == (
+            f"Phay mặt 2.5D · {tool_name}"
+        )
+        tooltip = str(panel.model.data(index, Qt.ItemDataRole.ToolTipRole))
+        accessible = str(
+            panel.model.data(index, Qt.ItemDataRole.AccessibleTextRole)
+        )
+        assert "Phay mặt 2.5D" in tooltip
+        assert tool_name in tooltip
+        assert "Trạng thái" in accessible
+        status_index = index.siblingAtColumn(1)
+        assert panel.model.data(status_index, Qt.ItemDataRole.DisplayRole)
+        assert panel.view.header().sectionSize(1) == 70
+        assert panel.view.indentation() == 10
+        assert panel.view.horizontalScrollBar().maximum() == 0
+
+        delegate = panel.view.itemDelegate()
+        assert isinstance(delegate, OperationManagerDelegate)
+        base_option = QStyleOptionViewItem()
+        base_option.rect = QRect(0, 0, 150, 40)
+        base_option.font = panel.view.font()
+        base_height = delegate.sizeHint(base_option, index).height()
+        assert 38 <= base_height <= 44
+        short = base_option.fontMetrics.elidedText(
+            "Khoan", Qt.TextElideMode.ElideRight, 80
+        )
+        long_name = base_option.fontMetrics.elidedText(
+            "Gia công tinh song song", Qt.TextElideMode.ElideRight, 120
+        )
+        assert short == "Khoan"
+        assert len(long_name.rstrip("…’")) >= 7
+        for scale in (1.25, 1.5):
+            option = QStyleOptionViewItem(base_option)
+            option.font.setPointSizeF(panel.view.font().pointSizeF() * scale)
+            assert delegate.sizeHint(option, index).height() >= base_height
+
+        snapshot = service.cam_snapshot
+        job, setup = snapshot.jobs[0], snapshot.jobs[0].setups[0]
+        operation_node_id = setup.operation_tree.operations[0].node_id
+        service.execute_cam_command(
+            lambda app: app.update_tree(
+                job.job_id,
+                setup.setup_id,
+                lambda tree: tree.rename_node(
+                    operation_node_id,
+                    "Tinh mặt khuôn rất dài theo yêu cầu khách hàng",
+                ),
+            )
+        )
+        workspace.refresh()
+        custom = _node(panel, OperationManagerNodeKind.OPERATION)
+        custom_index = panel.model.index_for_node_id(custom.node_id)
+        custom_tooltip = str(
+            panel.model.data(custom_index, Qt.ItemDataRole.ToolTipRole)
+        )
+        assert custom.label == "Tinh mặt khuôn rất dài theo yêu cầu khách hàng"
+        assert "Phay mặt 2.5D" in custom.secondary_summary
+        assert custom.label in custom_tooltip
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
+def test_narrow_operation_manager_preserves_primary_name_before_metadata(
+    tmp_path,
+) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    try:
+        panel.view.setFixedWidth(260)
+        panel.resize(424, 600)
+        panel.show()
+        for _ in range(3):
+            application.processEvents()
+        operation = _node(panel, OperationManagerNodeKind.OPERATION)
+        index = panel.model.index_for_node_id(operation.node_id)
+        first_column = panel.view.header().sectionSize(0)
+        depth = 0
+        parent = index.parent()
+        while parent.isValid():
+            depth += 1
+            parent = parent.parent()
+        readable_width = first_column - depth * panel.view.indentation() - 25
+        assert panel.view.indentation() == 6
+        assert panel.view.header().sectionSize(1) <= 64
+        assert readable_width >= panel.view.fontMetrics().horizontalAdvance(
+            "Gia công"
+        )
+        assert panel.view.horizontalScrollBar().maximum() == 0
+        assert operation.label in str(
+            panel.model.data(index, Qt.ItemDataRole.ToolTipRole)
+        )
     finally:
         _dispose(service, workspace, panel, application)
 
@@ -366,37 +498,37 @@ def test_enabled_needs_calculation_warning_and_error_filters(tmp_path) -> None:
             ArtifactStatus.MISSING,
             ToolReferenceStatus.VALID,
             OperationManagerSemanticStatus.DRAFT,
-            "NEEDS CALC",
+            "CẦN TÍNH",
         ),
         (
             ArtifactStatus.MISSING,
             ToolReferenceStatus.MISSING,
             OperationManagerSemanticStatus.NEEDS_INPUT,
-            "NEEDS INPUT",
+            "CẦN DỮ LIỆU",
         ),
         (
             ArtifactStatus.COMPUTING,
             ToolReferenceStatus.VALID,
             OperationManagerSemanticStatus.CALCULATING,
-            "CALCULATING",
+            "ĐANG TÍNH",
         ),
         (
             ArtifactStatus.VALID,
             ToolReferenceStatus.VALID,
             OperationManagerSemanticStatus.CURRENT,
-            "CURRENT",
+            "HIỆN HÀNH",
         ),
         (
             ArtifactStatus.DIRTY,
             ToolReferenceStatus.VALID,
             OperationManagerSemanticStatus.STALE,
-            "STALE",
+            "ĐÃ LỖI THỜI",
         ),
         (
             ArtifactStatus.FAILED,
             ToolReferenceStatus.VALID,
             OperationManagerSemanticStatus.FAILED,
-            "FAILED",
+            "THẤT BẠI",
         ),
     ],
 )
@@ -416,17 +548,17 @@ def test_calculation_status_matrix(
         (
             SimulationStatus.PASS,
             OperationManagerSemanticStatus.CURRENT,
-            "CURRENT",
+            "HIỆN HÀNH",
         ),
         (
             SimulationStatus.WARN,
             OperationManagerSemanticStatus.WARNING,
-            "WARNING",
+            "CẢNH BÁO",
         ),
         (
             SimulationStatus.FAIL,
             OperationManagerSemanticStatus.FAILED,
-            "FAILED",
+            "THẤT BẠI",
         ),
     ],
 )
@@ -456,17 +588,17 @@ def test_simulation_result_status_matrix(result_status, semantic, text) -> None:
         (
             SimulationRunState.RUNNING,
             OperationManagerSemanticStatus.CALCULATING,
-            "RUNNING",
+            "ĐANG CHẠY",
         ),
         (
             SimulationRunState.STALE,
             OperationManagerSemanticStatus.STALE,
-            "STALE",
+            "ĐÃ LỖI THỜI",
         ),
         (
             SimulationRunState.FAILED,
             OperationManagerSemanticStatus.FAILED,
-            "FAILED",
+            "THẤT BẠI",
         ),
     ],
 )
@@ -621,6 +753,43 @@ def test_child_selection_synchronizes_operation_and_default_opens_correct_panel(
         _dispose(service, workspace, panel, application)
 
 
+def test_single_click_only_selects_but_double_click_and_enter_request_editor(
+    tmp_path,
+) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    requests: list[bool] = []
+    panel.editor_requested.connect(lambda: requests.append(True))
+    try:
+        operation = _node(panel, OperationManagerNodeKind.OPERATION)
+        index = panel.model.index_for_node_id(operation.node_id)
+        panel.view.setCurrentIndex(index)
+        application.processEvents()
+        assert requests == []
+
+        panel.view.doubleClicked.emit(index)
+        assert requests == [True]
+        panel.view.setFocus()
+        QTest.keyClick(panel.view, Qt.Key.Key_Return)
+        assert requests == [True, True]
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
+def test_successful_function_creation_announces_selected_operation(tmp_path) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    created: list[str] = []
+    workspace.operation_created.connect(created.append)
+    try:
+        before = len(_operation_nodes(panel))
+        workspace.actions["operation"].trigger()
+        application.processEvents()
+
+        assert len(_operation_nodes(panel)) == before + 1
+        assert created == [workspace.selected_identity[1]]
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
 def test_expansion_and_selection_are_user_only_and_restore_by_identity(tmp_path) -> None:
     application, service, workspace, panel, settings = _environment(tmp_path)
     second = None
@@ -688,11 +857,11 @@ def test_model_has_no_row_widgets_drag_drop_and_actions_explain_disabled_state(
         panel.view.setCurrentIndex(index)
         panel.commands.update_state()
         assert not panel.commands.simulate.isEnabled()
-        assert "CURRENT" in panel.commands.simulate.toolTip()
+        assert "HIỆN HÀNH" in panel.commands.simulate.toolTip()
         assert panel.commands.duplicate.isEnabled()
         assert panel.commands.duplicate.toolTip() == "Nhân bản"
         assert not panel.commands.clear_toolpath.isEnabled()
-        assert "command" in panel.commands.clear_toolpath.toolTip()
+        assert "lệnh" in panel.commands.clear_toolpath.toolTip()
     finally:
         _dispose(service, workspace, panel, application)
 
@@ -710,7 +879,7 @@ def test_duplicate_action_routes_through_operation_manager(tmp_path) -> None:
         operations = _operation_nodes(panel)
         assert len(operations) == 2
         assert len({item.domain_identity.value for item in operations}) == 2
-        assert any(item.label.endswith("Copy") for item in operations)
+        assert any(item.label.endswith("Bản sao") for item in operations)
     finally:
         _dispose(service, workspace, panel, application)
 
@@ -730,14 +899,14 @@ def test_context_menus_are_node_scoped_and_opening_them_has_no_side_effect(
             action.text() for action in operation_menu.actions() if not action.isSeparator()
         }
         assert {
-            "Chỉnh sửa",
+            "Mở",
             "Tính lại",
             "Mô phỏng",
-            "Generate Post",
-            "Thêm vào Program Assembly",
+                "Tạo Post",
+                "Thêm vào Lắp ráp chương trình",
             "Xóa",
         }.issubset(operation_labels)
-        assert "Xóa Toolpath Artifact" not in operation_labels
+        assert "Xóa kết quả đường chạy dao" not in operation_labels
 
         toolpath = _node(panel, OperationManagerNodeKind.TOOLPATH)
         panel.view.setCurrentIndex(panel.model.index_for_node_id(toolpath.node_id))
@@ -748,9 +917,9 @@ def test_context_menus_are_node_scoped_and_opening_them_has_no_side_effect(
             if not action.isSeparator()
         )
         assert toolpath_labels == (
-            "Hiện/ẩn toolpath",
+            "Hiện/ẩn đường chạy dao",
             "Tính lại",
-            "Xóa Toolpath Artifact",
+            "Xóa kết quả đường chạy dao",
         )
         assert service.cam_snapshot == before
         assert service.post_service.results() == post_before

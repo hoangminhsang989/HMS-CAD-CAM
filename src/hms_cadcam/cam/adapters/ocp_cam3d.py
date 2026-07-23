@@ -46,6 +46,7 @@ from hms_cadcam.cam.cam3d.models import (
     CamSurfaceReference,
     CamSurfaceRole,
 )
+from hms_cadcam.cam.cam3d.parallel import ContactResolver
 from hms_cadcam.cam.domain import (
     GeometryFingerprint,
     GeometryReference,
@@ -188,6 +189,21 @@ class OcpCam3DSurfaceAdapter:
                 surface,
                 evidence=(("error_type", type(error).__name__),),
             ) from error
+
+    def contact_resolver(
+        self,
+        surfaces: tuple[CamSurfaceReference, ...],
+    ) -> ContactResolver:
+        """Create an isolated BRep contact resolver for a worker calculation."""
+        if not isinstance(surfaces, tuple) or not surfaces:
+            raise ValueError("Parallel contact resolver requires selected faces")
+        from hms_cadcam.cam.adapters.ocp_parallel_contact import (
+            OcpParallelContactResolver,
+        )
+
+        return OcpParallelContactResolver(
+            tuple((surface, self._resolve(surface)) for surface in surfaces)
+        )
 
     def _resolve(self, surface: CamSurfaceReference) -> TopoDS_Face:
         if not isinstance(surface, CamSurfaceReference):

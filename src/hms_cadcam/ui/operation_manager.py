@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QAction, QKeyEvent
+from PySide6.QtGui import QAction, QKeyEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -47,6 +47,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerNodeKind,
 )
 from hms_cadcam.ui.operation_manager_projection import OperationManagerProjectionBuilder
+from hms_cadcam.ui.localization import localize_widget_tree
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,11 @@ class OperationManagerView(QTreeView):
     default_requested = Signal()
     delete_requested = Signal()
     context_requested = Signal()
+    viewport_width_changed = Signal(int)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self.viewport_width_changed.emit(self.viewport().width())
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
@@ -157,7 +163,7 @@ class OperationManagerPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("OperationManagerHost")
-        self.setAccessibleName("Operation Manager")
+        self.setAccessibleName("Quản lý nguyên công")
         self._workspace = workspace
         self._service = service
         self._source_actions = source_actions
@@ -186,9 +192,10 @@ class OperationManagerPanel(QWidget):
         self.model = OperationManagerModel(self)
         self.view = OperationManagerView(self)
         self.view.setObjectName("OperationManagerTree")
-        self.view.setAccessibleName("Cây Project Job Setup và operation CAM")
+        self.view.setAccessibleName("Cây dự án, công việc, thiết lập và nguyên công CAM")
         self.view.setAccessibleDescription(
-            "Cây một selection, dùng domain ID ổn định; Enter mở mục, Delete yêu cầu xác nhận."
+            "Cây chọn một mục, dùng ID miền ổn định; phím nhập mở mục, "
+            "phím xóa yêu cầu xác nhận."
         )
         self.view.setModel(self.model)
         self.view.setItemDelegate(OperationManagerDelegate(self.view))
@@ -201,14 +208,18 @@ class OperationManagerPanel(QWidget):
         self.view.setAlternatingRowColors(False)
         self.view.setRootIsDecorated(True)
         self.view.setItemsExpandable(True)
+        self.view.setIndentation(10)
         self.view.setAllColumnsShowFocus(True)
         self.view.setUniformRowHeights(False)
+        self.view.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header = self.view.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(1, 86)
+        header.resizeSection(1, 70)
         root.addWidget(self.view, 1)
         self.state_frame = self._empty_state_frame()
         root.addWidget(self.state_frame)
@@ -224,9 +235,11 @@ class OperationManagerPanel(QWidget):
         self.view.expanded.connect(lambda _index: self._save_state())
         self.view.collapsed.connect(lambda _index: self._save_state())
         self.view.customContextMenuRequested.connect(self._show_context_menu)
+        self.view.doubleClicked.connect(lambda _index: self.commands.trigger_default())
         self.view.default_requested.connect(self.commands.trigger_default)
         self.view.delete_requested.connect(self._delete_from_keyboard)
         self.view.context_requested.connect(self._show_keyboard_context_menu)
+        self.view.viewport_width_changed.connect(self._apply_tree_width_policy)
         self.search.textChanged.connect(self._filter_changed)
         self.filter.currentIndexChanged.connect(self._filter_changed)
         workspace.projection_changed.connect(self.refresh)
@@ -237,7 +250,28 @@ class OperationManagerPanel(QWidget):
         workspace.program_assembly_panel.state_changed.connect(
             lambda state: self._downstream_state_changed("program", state)
         )
+        localize_widget_tree(self)
         self.refresh()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        """Preserve the operation name before secondary text at narrow widths."""
+        super().resizeEvent(event)
+        self._apply_tree_width_policy(self.view.viewport().width())
+
+    def _apply_tree_width_policy(self, available_width: int) -> None:
+        """Allocate logical width to the primary operation name first."""
+        narrow = available_width < 290
+        self.view.setIndentation(6 if narrow else 10)
+        status_width = max(
+            60,
+            min(
+                70,
+                self.view.fontMetrics().horizontalAdvance("CẦN TÍNH") + 18,
+            ),
+        )
+        self.view.header().resizeSection(
+            1, min(status_width, 64) if narrow else status_width
+        )
 
     def current_node(self) -> OperationManagerNode | None:
         return self.model.node_for_index(self.view.currentIndex())
@@ -353,14 +387,14 @@ class OperationManagerPanel(QWidget):
         frame.setObjectName("PanelHeader")
         layout = QHBoxLayout(frame)
         layout.setContentsMargins(8, 5, 5, 5)
-        title = QLabel("Operation Manager")
+        title = QLabel("Quản lý nguyên công")
         title.setObjectName("PanelTitle")
         layout.addWidget(title)
         layout.addStretch(1)
         self.collapse_button = QToolButton()
         self.collapse_button.setText("×")
-        self.collapse_button.setAccessibleName("Thu gọn Operation Manager")
-        self.collapse_button.setToolTip("Thu gọn Operation Manager")
+        self.collapse_button.setAccessibleName("Thu gọn Quản lý nguyên công")
+        self.collapse_button.setToolTip("Thu gọn Quản lý nguyên công")
         self.collapse_button.setAutoRaise(True)
         self.collapse_button.clicked.connect(self.collapse_requested)
         layout.addWidget(self.collapse_button)
@@ -376,13 +410,13 @@ class OperationManagerPanel(QWidget):
         self.project_label.setObjectName("OperationManagerProject")
         self.project_label.setWordWrap(True)
         self.project_label.setAccessibleName("Dự án hiện hành")
-        self.context_label = QLabel("Job — · Setup — · Máy —")
+        self.context_label = QLabel("Công việc — · Thiết lập — · Máy —")
         self.context_label.setObjectName("PanelSummary")
         self.context_label.setWordWrap(True)
-        self.context_label.setAccessibleName("Job Setup và máy hiện hành")
-        self.counts_label = QLabel("0 operation · 0 cảnh báo · 0 lỗi")
+        self.context_label.setAccessibleName("Công việc, thiết lập và máy hiện hành")
+        self.counts_label = QLabel("0 nguyên công · 0 cảnh báo · 0 lỗi")
         self.counts_label.setObjectName("OperationManagerCounts")
-        self.counts_label.setAccessibleName("Tổng hợp trạng thái operation")
+        self.counts_label.setAccessibleName("Tổng hợp trạng thái nguyên công")
         layout.addWidget(self.project_label)
         layout.addWidget(self.context_label)
         layout.addWidget(self.counts_label)
@@ -395,18 +429,18 @@ class OperationManagerPanel(QWidget):
         layout.setSpacing(4)
         self.search = QLineEdit()
         self.search.setObjectName("OperationSearch")
-        self.search.setAccessibleName("Tìm trong Operation Manager")
+        self.search.setAccessibleName("Tìm trong Quản lý nguyên công")
         self.search.setClearButtonEnabled(True)
-        self.search.setPlaceholderText("Tên, strategy, dao, status hoặc ID…")
+        self.search.setPlaceholderText("Tên, chiến lược, dao, trạng thái hoặc ID…")
         self.filter = QComboBox()
         self.filter.setObjectName("OperationStatusFilter")
-        self.filter.setAccessibleName("Lọc trạng thái Operation Manager")
+        self.filter.setAccessibleName("Lọc trạng thái Quản lý nguyên công")
         labels = {
             OperationManagerFilter.ALL: "Tất cả",
             OperationManagerFilter.ENABLED: "Đang bật",
             OperationManagerFilter.DISABLED: "Đã tắt",
             OperationManagerFilter.NEEDS_CALCULATION: "Cần tính",
-            OperationManagerFilter.STALE: "Stale",
+            OperationManagerFilter.STALE: "Đã lỗi thời",
             OperationManagerFilter.WARNINGS: "Cảnh báo",
             OperationManagerFilter.ERRORS: "Lỗi",
         }
@@ -418,16 +452,16 @@ class OperationManagerPanel(QWidget):
         return widget
 
     def _toolbar(self) -> QToolBar:
-        self.toolbar = QToolBar("Lệnh Operation Manager")
+        self.toolbar = QToolBar("Lệnh Quản lý nguyên công")
         self.toolbar.setObjectName("OperationManagerTools")
-        self.toolbar.setAccessibleName("Lệnh theo selection Operation Manager")
+        self.toolbar.setAccessibleName("Lệnh theo vùng chọn của Quản lý nguyên công")
         self.toolbar.setMovable(False)
         self.toolbar.setFloatable(False)
         self.add_button = QToolButton(self.toolbar)
         self.add_button.setObjectName("OperationAddMenuButton")
-        self.add_button.setText("+ Thêm")
-        self.add_button.setAccessibleName("Thêm operation")
-        self.add_button.setToolTip("Chọn strategy operation để thêm")
+        self.add_button.setText("+ Thêm nguyên công")
+        self.add_button.setAccessibleName("Thêm nguyên công")
+        self.add_button.setToolTip("Chọn chiến lược nguyên công để thêm")
         self.add_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.add_button.setMenu(self._add_menu())
         self.toolbar.addWidget(self.add_button)
@@ -436,9 +470,9 @@ class OperationManagerPanel(QWidget):
     def _install_toolbar_commands(self) -> None:
         for action, text, accessible in (
             (self.commands.recalculate, "Tính", "Tính lại toolpath"),
-            (self.commands.simulate, "Sim", "Chạy Simulation"),
-            (self.commands.post, "Post", "Mở Post hoặc Program Assembly"),
-            (self.commands.delete, "Xóa", "Xóa selection có xác nhận"),
+            (self.commands.simulate, "Mô phỏng", "Chạy mô phỏng"),
+            (self.commands.post, "Post", "Mở Post hoặc Lắp ráp chương trình"),
+            (self.commands.delete, "Xóa", "Xóa vùng chọn có xác nhận"),
         ):
             action.setObjectName(f"OperationManager{accessible.replace(' ', '')}Action")
             button = QToolButton(self.toolbar)
@@ -449,18 +483,29 @@ class OperationManagerPanel(QWidget):
         self.more_button = QToolButton(self.toolbar)
         self.more_button.setObjectName("OperationMoreMenuButton")
         self.more_button.setText("•••")
-        self.more_button.setAccessibleName("Thêm thao tác Operation Manager")
+        self.more_button.setAccessibleName("Thêm thao tác Quản lý nguyên công")
         self.more_button.setToolTip("Tạo tài nguyên và thao tác ít dùng")
         self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.more_button.setMenu(self._more_menu())
         self.toolbar.addWidget(self.more_button)
 
     def _add_menu(self) -> QMenu:
-        menu = QMenu("Thêm operation", self)
+        menu = QMenu("Thêm nguyên công", self)
+        menu.addSection("CAM 2D / Phay")
         for key in (
             "operation",
             "contour_operation",
             "pocket_operation",
+        ):
+            action = self._source_actions.get(key)
+            if action is not None:
+                menu.addAction(action)
+        menu.addSection("CAM 3D")
+        action = self._source_actions.get("parallel_operation")
+        if action is not None:
+            menu.addAction(action)
+        menu.addSection("Gia công lỗ")
+        for key in (
             "drilling_operation",
             "tapping_operation",
             "reaming_operation",
@@ -469,6 +514,7 @@ class OperationManagerPanel(QWidget):
             action = self._source_actions.get(key)
             if action is not None:
                 menu.addAction(action)
+        localize_widget_tree(menu)
         return menu
 
     def _more_menu(self) -> QMenu:
@@ -477,6 +523,7 @@ class OperationManagerPanel(QWidget):
             "job",
             "setup",
             "resources",
+            "parallel_resources",
             "tapping_resources",
             "reaming_resources",
             "boring_resources",
@@ -517,6 +564,7 @@ class OperationManagerPanel(QWidget):
             action = self._source_actions.get(key)
             if action is not None:
                 menu.addAction(action)
+        localize_widget_tree(menu)
         return menu
 
     def _empty_state_frame(self) -> QFrame:
@@ -540,10 +588,10 @@ class OperationManagerPanel(QWidget):
     def _update_header(self, header) -> None:
         self.project_label.setText(header.project_name)
         self.context_label.setText(
-            f"Job {header.active_job} · Setup {header.active_setup} · {header.machine}"
+            f"Công việc {header.active_job} · Thiết lập {header.active_setup} · {header.machine}"
         )
         self.counts_label.setText(
-            f"{header.operation_count} operation · "
+            f"{header.operation_count} nguyên công · "
             f"{header.warning_count} cảnh báo · {header.error_count} lỗi"
         )
 
@@ -706,14 +754,18 @@ class OperationManagerPanel(QWidget):
         )
         if not has_jobs:
             self.state_title.setText("Dự án hiện chỉ có CAD")
-            self.state_message.setText("Tạo CAM Job khi sẵn sàng lập trình gia công.")
+            self.state_message.setText("Tạo công việc CAM khi sẵn sàng lập trình gia công.")
             action = self._source_actions.get("job")
             self._add_action_button(action, "Tạo CAM Job")
             self.state_frame.show()
         elif has_setups and operation_count == 0:
-            self.state_title.setText("Setup chưa có operation")
-            self.state_message.setText("Thêm operation đầu tiên bằng strategy hiện có.")
-            self._add_action_button(self.commands.add_operation, "Thêm operation đầu tiên")
+            self.state_title.setText("Thiết lập chưa có nguyên công")
+            self.state_message.setText(
+                "Thêm nguyên công đầu tiên bằng chiến lược hiện có."
+            )
+            self._add_action_button(
+                self.commands.add_operation, "Thêm nguyên công đầu tiên"
+            )
             self.state_frame.show()
         else:
             self.state_frame.hide()

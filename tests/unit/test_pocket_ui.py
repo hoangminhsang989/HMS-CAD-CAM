@@ -157,7 +157,7 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     assert operation.strategy_key == "pocket_2_5d"
     assert operation.geometry_inputs == ()
     assert not workspace.actions["generate"].isEnabled()
-    assert "PROFILE MISSING" in workspace.editor.status.text()
+    assert "THIẾU BIÊN DẠNG" in workspace.editor.status.text()
 
     workspace.pick_geometry()
     assert "RESOLVED" in workspace.editor.status.text()
@@ -181,7 +181,7 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     before_missing_tool = service.cam_snapshot
     workspace.editor._submit()
     assert service.cam_snapshot == before_missing_tool
-    assert "Tool Assembly" in workspace.editor.error.text()
+    assert "cụm Tool" in workspace.editor.error.text()
     workspace.editor.tool.setCurrentIndex(0)
     original_execute = service.execute_cam_command
     workspace.editor._pocket_fields["bottom"].setText("48.25")
@@ -198,7 +198,7 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     monkeypatch.setattr(service, "execute_cam_command", original_execute)
     workspace.editor._pocket_fields["bottom"].setText("48.5")
     job_item = workspace.tree.topLevelItem(0)
-    pocket_item = _find_item(job_item, "Pocket 2.5D")
+    pocket_item = _find_item(job_item, "Phay hốc 2.5D")
     assert pocket_item is not None
     workspace.tree.setCurrentItem(job_item)
     workspace.tree.setCurrentItem(pocket_item)
@@ -229,7 +229,7 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     workspace.cad_context_changed()
     stale_operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert stale_operation.artifact_state.status is ArtifactStatus.DIRTY
-    assert "STALE/INVALID" in workspace.editor.status.text()
+    assert "ĐÃ LỖI THỜI/KHÔNG HỢP LỆ" in workspace.editor.status.text()
     workspace._profile_resolver = lambda _reference: SimpleNamespace(
         status=GeometryResolutionStatus.RESOLVED,
     )
@@ -245,7 +245,7 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     workspace.clear_geometry_pick()
     cleared = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert cleared.geometry_inputs == ()
-    assert "PROFILE MISSING" in workspace.editor.status.text()
+    assert "THIẾU BIÊN DẠNG" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     workspace.deleteLater()
 
@@ -283,7 +283,7 @@ def test_pocket_ui_persistence_save_as_autosave_recovery_and_stale_display(
     assert copied_operation.geometry_inputs == (geometry_input,)
     assert service.load_toolpath_artifact(copied_operation.operation_id) == artifact
     workspace.bind_project(copied)
-    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Pocket 2.5D")
+    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Phay hốc 2.5D")
     assert pocket_item is not None
     workspace.tree.setCurrentItem(pocket_item)
 
@@ -306,7 +306,7 @@ def test_pocket_ui_persistence_save_as_autosave_recovery_and_stale_display(
 
     workspace._generation = service.cam_generation
     workspace.bind_project(service.current_project)
-    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Pocket 2.5D")
+    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Phay hốc 2.5D")
     assert pocket_item is not None
     workspace.tree.setCurrentItem(pocket_item)
     selected["reference"] = geometry_input.reference
@@ -325,13 +325,13 @@ def test_pocket_ui_persistence_save_as_autosave_recovery_and_stale_display(
     displayed_before_stale = len(viewer.displayed)
     workspace.generate_selected()
     assert len(viewer.displayed) == displayed_before_stale
-    assert "stale" in workspace.editor.error.text().lower()
+    assert "lỗi thời" in workspace.editor.error.text().lower()
 
     cad_only = ProjectService.create_default(tmp_path / "cad-only-config")
     cad_session = cad_only.new_project(tmp_path, "CAD Only")
     workspace._service = cad_only
     workspace.bind_project(cad_session)
-    assert workspace.tree.topLevelItem(0).text(0) == "Chưa có CAM Job"
+    assert workspace.tree.topLevelItem(0).text(0) == "Chưa có công việc CAM"
     assert viewer.cleared > 0
     cad_only.close_project()
     workspace.bind_project(None)
@@ -350,8 +350,8 @@ def test_pocket_generation_failure_keeps_diagnostic_and_failed_status(tmp_path) 
     operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert operation.artifact_state.status is ArtifactStatus.FAILED
     assert workspace.editor.error.text()
-    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Pocket 2.5D")
-    assert pocket_item is not None and "FAILED" in pocket_item.text(1)
+    pocket_item = _find_item(workspace.tree.topLevelItem(0), "Phay hốc 2.5D")
+    assert pocket_item is not None and "Thất bại" in pocket_item.text(1)
     workspace.deleteLater()
 
 

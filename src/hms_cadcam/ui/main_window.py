@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
+    QWidget,
 )
 
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
 from hms_cadcam.cam.adapters import (
     OcpContourProfileResolver,
+    OcpCam3DSurfaceAdapter,
     OcpDrillingGeometryResolver,
     OcpPlanarFaceResolver,
 )
@@ -41,7 +43,9 @@ from hms_cadcam.cam.domain import (
     LengthUnit, PocketGeometryInput, ResolvedContourProfile,
     ResolvedDrillingGeometry, ResolvedMachiningGeometry, ResolvedPocketGeometry,
     Vector3,
+    Revision,
 )
+from hms_cadcam.cam.cam3d import CamSurfaceReference, CamSurfaceRole
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
     BoundingDimensions,
@@ -67,12 +71,12 @@ from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
 from hms_cadcam.ui.project_controller import ProjectUiController
+from hms_cadcam.ui.cam_function_popup import CAMFunctionPopupHost
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
 from hms_cadcam.ui.ui_tokens import (
     DIAGNOSTICS_DEFAULT_HEIGHT,
     DIAGNOSTICS_MAX_HEIGHT,
-    FUNCTION_EDITOR_DEFAULT_WIDTH,
     FUNCTION_EDITOR_MAX_WIDTH,
     FUNCTION_EDITOR_MIN_WIDTH,
     OPERATION_MANAGER_DEFAULT_WIDTH,
@@ -97,6 +101,7 @@ from hms_cadcam.ui.workspace_shell import (
     WorkspaceId,
 )
 from hms_cadcam.ui.simulation_geometry_adapter import ActiveOcpFixtureResolver
+from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
@@ -128,7 +133,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setObjectName("HmsMainWindow")
-        self.setWindowTitle("HMS CAD/CAM — Design")
+        self.setWindowTitle("HMS CAD/CAM — Thiết kế")
         self.resize(1500, 900)
         self.setMinimumSize(1024, 680)
         self.setDockNestingEnabled(True)
@@ -195,6 +200,9 @@ class MainWindow(QMainWindow):
             drilling_pick_provider=self._current_drilling_reference,
             drilling_resolver=self._resolve_drilling_geometry,
             simulation_scene_builder=self._build_simulation_scene,
+            parallel_surface_provider=self._current_parallel_surfaces,
+            parallel_adapter_provider=self._parallel_surface_adapter,
+            parallel_geometry_bounds_provider=self._current_parallel_bounds,
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_workspace.toolbar.hide()
@@ -206,9 +214,9 @@ class MainWindow(QMainWindow):
             self.cam_workspace.actions,
             self.project_controller.actions,
         )
-        self.operation_manager_dock = QDockWidget("Operation Manager", self)
+        self.operation_manager_dock = QDockWidget("Quản lý nguyên công", self)
         self.operation_manager_dock.setObjectName("OperationManagerDock")
-        self.operation_manager_dock.setAccessibleName("Operation Manager")
+        self.operation_manager_dock.setAccessibleName("Quản lý nguyên công")
         self.operation_manager_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -226,24 +234,49 @@ class MainWindow(QMainWindow):
             selection_restore=self.cam_workspace.select_identity,
             selection_exists=self.cam_workspace.selection_exists,
             fallback_callback=self.cam_workspace.report_function_editor_fallback,
+            follow_selection=False,
         )
         self.cam_workspace.projection_changed.connect(
             self.function_editor_host.refresh_current
         )
-        self.function_editor_dock = QDockWidget("Function Editor", self)
+        self.cam_workspace.parallel_progress_changed.connect(
+            self.function_editor_host.update_calculation_progress
+        )
+        self.cam_workspace.parallel_calculation_active.connect(
+            self.function_editor_host.set_calculation_active
+        )
+        self.function_editor_host.calculation_cancel_requested.connect(
+            self.cam_workspace.cancel_parallel_calculation
+        )
+        self.cam_function_popup = CAMFunctionPopupHost(
+            self.function_editor_host,
+            self._layout_store.settings,
+            self,
+        )
+        self.cam_workspace.set_child_dialog_opener(
+            self.cam_function_popup.adopt_child_dialog
+        )
+        self.project_controller.set_project_change_guard(
+            self._prepare_cam_popup_for_project_change
+        )
+        # Hidden compatibility object for older saved dock layouts. Production
+        # CAM editing is hosted exclusively by ``cam_function_popup``.
+        self.function_editor_dock = QDockWidget(
+            "Trình chỉnh sửa chức năng", self
+        )
         self.function_editor_dock.setObjectName("FunctionEditorDock")
-        self.function_editor_dock.setAccessibleName("Function Editor")
+        self.function_editor_dock.setAccessibleName("Trình chỉnh sửa chức năng")
         self.function_editor_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.function_editor_dock.setMinimumWidth(FUNCTION_EDITOR_MIN_WIDTH)
         self.function_editor_dock.setMaximumWidth(FUNCTION_EDITOR_MAX_WIDTH)
-        self.function_editor_dock.setWidget(self.function_editor_host)
+        self.function_editor_dock.setWidget(QWidget())
 
         self.diagnostics_host = DiagnosticsHost(self._output)
-        self.output_dock.setWindowTitle("Diagnostics & Activity")
-        self.output_dock.setAccessibleName("Diagnostics và tác vụ nền")
+        self.output_dock.setWindowTitle("Chẩn đoán & Hoạt động")
+        self.output_dock.setAccessibleName("Chẩn đoán và tác vụ nền")
         self.output_dock.setMaximumHeight(DIAGNOSTICS_MAX_HEIGHT)
         self.output_dock.setWidget(self.diagnostics_host)
         self.diagnostics_dock = self.output_dock
@@ -252,9 +285,9 @@ class MainWindow(QMainWindow):
             self.cam_workspace.simulation_panel,
             self.cam_workspace.post_tabs,
         )
-        self.secondary_dock = QDockWidget("Simulation / Post", self)
+        self.secondary_dock = QDockWidget("Mô phỏng / Post", self)
         self.secondary_dock.setObjectName("SecondaryWorkflowDock")
-        self.secondary_dock.setAccessibleName("Panel Simulation và Post")
+        self.secondary_dock.setAccessibleName("Bảng Mô phỏng và Post")
         self.secondary_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -277,16 +310,15 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
         self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
-        self.tabifyDockWidget(self.properties_dock, self.function_editor_dock)
-        self.tabifyDockWidget(self.function_editor_dock, self.secondary_dock)
+        self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
         self.operation_manager_dock.raise_()
-        self.function_editor_dock.raise_()
         self.project_dock.hide()
         self.properties_dock.hide()
         self.secondary_dock.hide()
+        self.function_editor_dock.hide()
         self.resizeDocks(
-            [self.operation_manager_dock, self.function_editor_dock],
-            [OPERATION_MANAGER_DEFAULT_WIDTH, FUNCTION_EDITOR_DEFAULT_WIDTH],
+            [self.operation_manager_dock],
+            [OPERATION_MANAGER_DEFAULT_WIDTH],
             Qt.Orientation.Horizontal,
         )
         self.resizeDocks(
@@ -304,9 +336,7 @@ class MainWindow(QMainWindow):
         self.operation_manager_host.editor_requested.connect(
             self._show_function_editor
         )
-        self.function_editor_host.collapse_requested.connect(
-            self.function_editor_dock.hide
-        )
+        self.cam_workspace.operation_created.connect(self._show_function_editor)
         self.diagnostics_host.collapse_requested.connect(self.output_dock.hide)
         self.secondary_panel_host.collapse_requested.connect(self.secondary_dock.hide)
         self._build_panel_visibility_actions()
@@ -337,6 +367,7 @@ class MainWindow(QMainWindow):
         )
         self._handle_project_change(self.project_controller.service.current_project)
         self._restore_workspace_layout()
+        localize_widget_tree(self)
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
             reason = viewport_status.error or "Không xác định"
@@ -365,7 +396,7 @@ class MainWindow(QMainWindow):
         self._view_menu = menu_bar.addMenu("Hiển thị")
         cad_viewer_menu = menu_bar.addMenu("CAD")
         cam_menu = menu_bar.addMenu("CAM")
-        cam_workspace_action = QAction("Mở CAM Workspace", self)
+        cam_workspace_action = QAction("Mở không gian làm việc CAM", self)
         cam_workspace_action.triggered.connect(self._show_cam_workspace)
         cam_menu.addAction(cam_workspace_action)
         for title in ("Máy", "Toolpath", "Setup"):
@@ -411,8 +442,8 @@ class MainWindow(QMainWindow):
         for key in ("new", "open", "save"):
             toolbar.addAction(self.project_controller.actions[key])
         for standard_icon, tooltip in (
-            (QStyle.StandardPixmap.SP_ArrowBack, "Undo"),
-            (QStyle.StandardPixmap.SP_ArrowForward, "Redo"),
+            (QStyle.StandardPixmap.SP_ArrowBack, "Hoàn tác"),
+            (QStyle.StandardPixmap.SP_ArrowForward, "Làm lại"),
         ):
             action = toolbar.addAction(self.style().standardIcon(standard_icon), "")
             action.setToolTip(f"{tooltip} — chưa khả dụng")
@@ -425,33 +456,27 @@ class MainWindow(QMainWindow):
         definitions = (
             (
                 "operation_manager",
-                "Operation Manager",
+                "Quản lý nguyên công",
                 self.operation_manager_dock,
-                "Bật hoặc tắt Operation Manager",
-            ),
-            (
-                "function_editor",
-                "Function Editor",
-                self.function_editor_dock,
-                "Bật hoặc tắt Function Editor",
+                "Bật hoặc tắt Quản lý nguyên công",
             ),
             (
                 "diagnostics",
-                "Diagnostics & Activity",
+                "Chẩn đoán & Hoạt động",
                 self.output_dock,
-                "Bật hoặc tắt Diagnostics và nhật ký tác vụ",
+                "Bật hoặc tắt Chẩn đoán và nhật ký tác vụ",
             ),
             (
                 "secondary",
-                "Simulation / Post",
+                "Mô phỏng / Post",
                 self.secondary_dock,
-                "Bật hoặc tắt panel quy trình phụ",
+                "Bật hoặc tắt bảng quy trình phụ",
             ),
             (
                 "project_topology",
-                "Project / Topology",
+                "Dự án / Topology",
                 self.project_dock,
-                "Bật hoặc tắt cây Project và Topology CAD",
+                "Bật hoặc tắt cây Dự án và Topology CAD",
             ),
             (
                 "cad_properties",
@@ -468,14 +493,23 @@ class MainWindow(QMainWindow):
             action.setStatusTip(tooltip)
             self._view_menu.addAction(action)
             self.panel_actions[key] = action
+        popup_action = QAction("Chỉnh sửa nguyên công CAM", self)
+        popup_action.setObjectName("ViewFunctionEditorAction")
+        popup_action.setToolTip(
+            "Mở cửa sổ chỉnh sửa cho nguyên công đang chọn; không tự áp dụng"
+        )
+        popup_action.setStatusTip(popup_action.toolTip())
+        popup_action.triggered.connect(self._show_function_editor)
+        self._view_menu.addAction(popup_action)
+        self.panel_actions["function_editor"] = popup_action
         self._view_menu.addSeparator()
-        self.reset_workspace_action = QAction("Reset Workspace Layout", self)
+        self.reset_workspace_action = QAction("Khôi phục bố cục làm việc", self)
         self.reset_workspace_action.setObjectName("ResetWorkspaceLayoutAction")
         self.reset_workspace_action.setToolTip(
             "Khôi phục bố cục UI mặc định; không thay đổi dữ liệu dự án"
         )
         self.reset_workspace_action.setStatusTip(
-            "Chỉ reset vị trí và trạng thái panel của giao diện"
+            "Chỉ khôi phục vị trí và trạng thái bảng của giao diện"
         )
         self.reset_workspace_action.triggered.connect(self.reset_workspace_layout)
         self._view_menu.addAction(self.reset_workspace_action)
@@ -485,13 +519,16 @@ class MainWindow(QMainWindow):
         self.workspace_bar.set_active_workspace(WorkspaceId.MILL_2D)
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
-        self.function_editor_dock.show()
-        self.function_editor_dock.raise_()
 
     def _show_function_editor(self) -> None:
-        """Reveal the existing editor without changing or applying its draft."""
-        self.function_editor_dock.show()
-        self.function_editor_dock.raise_()
+        """Open the selected operation in the one shared CAM popup."""
+        self.cam_function_popup.open_current_operation()
+
+    def _prepare_cam_popup_for_project_change(self) -> bool:
+        """Protect an unapplied CAM draft before closing or replacing a project."""
+        if self.function_editor_host.active_session is None:
+            return True
+        return self.function_editor_host.request_close()
 
     def _workspace_changed(self, workspace_value: str) -> None:
         """Update shell presentation only; never calculate, post or export."""
@@ -499,8 +536,6 @@ class MainWindow(QMainWindow):
         if workspace is WorkspaceId.MILL_2D:
             self.operation_manager_dock.show()
             self.operation_manager_dock.raise_()
-            self.function_editor_dock.show()
-            self.function_editor_dock.raise_()
         elif workspace is WorkspaceId.CAD:
             self.project_dock.show()
             self.project_dock.raise_()
@@ -545,19 +580,17 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
         self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
-        self.tabifyDockWidget(self.properties_dock, self.function_editor_dock)
-        self.tabifyDockWidget(self.function_editor_dock, self.secondary_dock)
+        self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
         self.project_dock.hide()
         self.properties_dock.hide()
         self.secondary_dock.hide()
+        self.function_editor_dock.hide()
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
-        self.function_editor_dock.show()
-        self.function_editor_dock.raise_()
         self.output_dock.show()
         self.resizeDocks(
-            [self.operation_manager_dock, self.function_editor_dock],
-            [OPERATION_MANAGER_DEFAULT_WIDTH, FUNCTION_EDITOR_DEFAULT_WIDTH],
+            [self.operation_manager_dock],
+            [OPERATION_MANAGER_DEFAULT_WIDTH],
             Qt.Orientation.Horizontal,
         )
         self.resizeDocks(
@@ -574,8 +607,8 @@ class MainWindow(QMainWindow):
             self._apply_default_workspace_layout()
         else:
             self.resizeDocks(
-                [self.operation_manager_dock, self.function_editor_dock],
-                [snapshot.operation_manager_width, snapshot.function_editor_width],
+                [self.operation_manager_dock],
+                [snapshot.operation_manager_width],
                 Qt.Orientation.Horizontal,
             )
             self.resizeDocks(
@@ -590,6 +623,7 @@ class MainWindow(QMainWindow):
                 self.secondary_panel_host.select_simulation()
             elif workspace is WorkspaceId.POST:
                 self.secondary_panel_host.select_post()
+        self.function_editor_dock.hide()
         clamp_window_to_available_screens(self)
 
     def _current_geometry_reference(self):
@@ -603,6 +637,57 @@ class MainWindow(QMainWindow):
         if selection.topology is SelectionMode.FACE:
             return self._planar_face_resolver().bind_selection(selection)
         raise GeometryPickError("Planar Facing requires exactly one FACE selection.")
+
+    def _parallel_surface_adapter(self) -> OcpCam3DSurfaceAdapter:
+        """Return the active project-owned CAM 3D BRep adapter."""
+        session = self.project_controller.service.current_project
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        mapping = self.cad_controller.persistent_object_map
+        if (
+            not isinstance(self._cad_kernel, OcpCadKernel)
+            or session is None
+            or document_id is None
+            or source_id is None
+            or mapping is None
+        ):
+            raise GeometryPickError(
+                "No active OCP CAD source is available for Parallel Finishing."
+            )
+        return OcpCam3DSurfaceAdapter(
+            self._cad_kernel,
+            document_id,
+            source_id,
+            session.manifest.project_id,
+            mapping,
+            source_revision=Revision(0),
+        )
+
+    def _current_parallel_surfaces(self) -> tuple[CamSurfaceReference, ...]:
+        """Bind all currently selected BRep faces to persistent CAM 3D IDs."""
+        selections = self.cad_controller.active_selection
+        if not selections or any(
+            item.topology is not SelectionMode.FACE for item in selections
+        ):
+            raise GeometryPickError(
+                "Parallel Finishing requires one or more selected BRep FACE objects."
+            )
+        adapter = self._parallel_surface_adapter()
+        return tuple(
+            adapter.bind_selection(item, CamSurfaceRole.PART)
+            for item in selections
+        )
+
+    def _current_parallel_bounds(self) -> tuple[object, ...]:
+        """Return OCP-free bounds matching the current Parallel face selection."""
+        selections = self.cad_controller.active_selection
+        if not selections or any(
+            item.topology is not SelectionMode.FACE for item in selections
+        ):
+            raise GeometryPickError(
+                "Parallel Finishing requires one or more selected BRep FACE objects."
+            )
+        return tuple(item.bounding_box for item in selections)
 
     def _planar_face_resolver(self) -> OcpPlanarFaceResolver:
         session = self.project_controller.service.current_project
@@ -787,7 +872,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _create_project_dock(self) -> QDockWidget:
-        dock = QDockWidget("Topology / Quản lý dự án", self)
+        dock = QDockWidget("Cấu trúc hình học / Quản lý dự án", self)
         dock.setObjectName("ProjectManagerDock")
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         tabs = QTabWidget()
@@ -876,14 +961,14 @@ class MainWindow(QMainWindow):
             self._append_cad_document_node(root)
             root.setDisabled(self._active_document_metadata is None)
             self._project_tree.addTopLevelItem(root)
-            self.setWindowTitle("HMS CAD/CAM — Design")
+            self.setWindowTitle("HMS CAD/CAM — Thiết kế")
             self._project_status.setText("KHÔNG CÓ DỰ ÁN")
             self._tree_sync_guard = False
             return
         dirty_marker = " *" if session.is_dirty else ""
         root = QTreeWidgetItem([session.manifest.project_name, "Đã sửa" if session.is_dirty else "Đã lưu"])
         root.addChild(QTreeWidgetItem(["Đơn vị", session.manifest.units.value]))
-        sources = QTreeWidgetItem(["File nguồn", str(len(session.manifest.source_files))])
+        sources = QTreeWidgetItem(["Tệp nguồn", str(len(session.manifest.source_files))])
         for record in session.manifest.source_files:
             sources.addChild(QTreeWidgetItem([record.original_name, record.sha256[:12]]))
         root.addChild(sources)
@@ -896,6 +981,18 @@ class MainWindow(QMainWindow):
         self._tree_sync_guard = False
 
     def _handle_project_change(self, session: object) -> None:
+        new_project_key = (
+            str(session.manifest.project_id)
+            if isinstance(session, ProjectSession)
+            else None
+        )
+        previous_project_key = getattr(self, "_cam_popup_project_key", None)
+        if (
+            previous_project_key is not None
+            and previous_project_key != new_project_key
+        ):
+            self.cam_function_popup.invalidate_project()
+        self._cam_popup_project_key = new_project_key
         source_binding = None
         if isinstance(session, ProjectSession):
             source_binding = self._find_project_cad_source(session)
@@ -1076,7 +1173,7 @@ class MainWindow(QMainWindow):
             self._show_object_properties(node.object_id)
             return
         rows = [
-            ("Loại topology", item.topology.value.upper()),
+            ("Loại cấu trúc hình học", item.topology.value.upper()),
             ("Selection ID", item.selection_id),
             ("Document ID", str(item.document_id)),
             ("Bounding box", _format_bounds(item.bounding_box)),
@@ -1154,25 +1251,27 @@ class MainWindow(QMainWindow):
     def _set_properties(self, rows: tuple[tuple[str, str], ...]) -> None:
         self._properties_table.setRowCount(len(rows))
         for row, (name, value) in enumerate(rows):
-            self._properties_table.setItem(row, 0, QTableWidgetItem(name))
-            self._properties_table.setItem(row, 1, QTableWidgetItem(value))
+            self._properties_table.setItem(row, 0, QTableWidgetItem(ui_text(name)))
+            self._properties_table.setItem(row, 1, QTableWidgetItem(ui_text(value)))
 
     def _append_cad_document_node(self, root: QTreeWidgetItem) -> None:
         metadata = self._active_document_metadata
         if metadata is None:
             return
-        document = QTreeWidgetItem(["CAD document", metadata.cad_format.value.upper()])
+        document = QTreeWidgetItem(
+            ["Tài liệu CAD", metadata.cad_format.value.upper()]
+        )
         tree = self._active_document_tree
         if tree is not None and tree.document_id == metadata.document_id:
             self._configure_object_item(document, tree.root)
-        document.addChild(QTreeWidgetItem(["Document ID", str(metadata.document_id)]))
-        document.addChild(QTreeWidgetItem(["Geometry", metadata.geometry_kind.value]))
+        document.addChild(QTreeWidgetItem(["ID tài liệu", str(metadata.document_id)]))
+        document.addChild(QTreeWidgetItem(["Hình học", metadata.geometry_kind.value]))
         if metadata.topology_counts is not None:
             counts = metadata.topology_counts
             document.addChild(
                 QTreeWidgetItem(
                     [
-                        "Topology",
+                        "Cấu trúc hình học",
                         f"S={counts.solids}, F={counts.faces}, E={counts.edges}",
                     ]
                 )
@@ -1182,18 +1281,21 @@ class MainWindow(QMainWindow):
             document.addChild(
                 QTreeWidgetItem(
                     [
-                        "Mesh",
+                        "Lưới",
                         f"V={statistics.vertices}, T={statistics.triangles}",
                     ]
                 )
             )
         document.addChild(
-            QTreeWidgetItem(["Bounding box", _format_bounds(metadata.bounding_box)])
+            QTreeWidgetItem(["Hộp bao", _format_bounds(metadata.bounding_box)])
         )
         if tree is not None and tree.document_id == metadata.document_id:
             is_xcaf = any(node.occurrence_id is not None for node in tree.root.children)
             topology = QTreeWidgetItem(
-                ["Assembly occurrences" if is_xcaf else "Topology objects", "Lazy"]
+                [
+                    "Thực thể lắp ráp" if is_xcaf else "Đối tượng cấu trúc hình học",
+                    "Nạp khi cần",
+                ]
             )
             topology.setData(0, _TOPOLOGY_GROUP_ROLE, True)
             for node in tree.root.children:
@@ -1300,7 +1402,7 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         menu.addAction(
-            "Show",
+            "Hiện",
             lambda: self.cad_controller.set_object_visibility(
                 document_id,
                 object_id,
@@ -1308,7 +1410,7 @@ class MainWindow(QMainWindow):
             ),
         )
         menu.addAction(
-            "Hide",
+            "Ẩn",
             lambda: self.cad_controller.set_object_visibility(
                 document_id,
                 object_id,
@@ -1317,24 +1419,24 @@ class MainWindow(QMainWindow):
         )
         menu.addSeparator()
         menu.addAction(
-            "Isolate",
+            "Cô lập",
             lambda: self.cad_controller.isolate_object(document_id, object_id),
         )
         menu.addAction(
-            "Reset Isolate",
+            "Bỏ cô lập",
             lambda: self.cad_controller.reset_isolate(document_id),
         )
         menu.addSeparator()
         menu.addAction(
-            "Color…",
+            "Màu…",
             lambda: self._choose_object_color(document_id, object_id),
         )
         menu.addAction(
-            "Transparency…",
+            "Độ trong suốt…",
             lambda: self._choose_object_transparency(document_id, object_id),
         )
         menu.addAction(
-            "Reset Appearance",
+            "Khôi phục hiển thị",
             lambda: self.cad_controller.reset_object_appearance(
                 document_id, object_id
             ),
@@ -1430,7 +1532,7 @@ class MainWindow(QMainWindow):
         return None
 
     def _update_import_status(self, status: str) -> None:
-        self._import_status.setText(f"CAD: {status}")
+        self._import_status.setText(f"CAD: {ui_text(status)}")
         severity = "error" if "lỗi" in status.casefold() else "info"
         if hasattr(self, "diagnostics_host"):
             self.diagnostics_host.set_activity(f"CAD: {status}", severity=severity)
@@ -1453,7 +1555,6 @@ class MainWindow(QMainWindow):
         if (
             width < 1200
             and self.operation_manager_dock.isVisible()
-            and self.function_editor_dock.isVisible()
         ):
             self.operation_manager_dock.hide()
             self._responsive_collapsed_operation_manager = True
@@ -1464,7 +1565,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Prevent closing during I/O and protect unsaved project state."""
-        if self.project_controller.request_application_close():
+        if (
+            self._prepare_cam_popup_for_project_change()
+            and self.project_controller.request_application_close()
+        ):
             self._layout_store.save(
                 self,
                 active_workspace=self.workspace_bar.active_workspace.value,

@@ -28,7 +28,7 @@ def build_planar_face_facing_schema(
         FunctionEditorStrategyKey("planar_face_facing_9a5_1"),
         FunctionEditorSummary(
             context.operation_name,
-            "Planar Face Facing 2.5D",
+            "Phay mặt phẳng 2.5D",
             tool="Tool Assembly đã bind",
             geometry=geometry,
             operation_status=context.operation.artifact_state.status.value.upper(),

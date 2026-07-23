@@ -6,12 +6,13 @@ from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QInputDialog, QMenu, QWidget
 
 from hms_cadcam.ui.operation_manager_types import (
     OperationManagerCapability,
     OperationManagerNode,
     OperationManagerNodeKind,
+    OperationManagerSemanticStatus,
 )
 
 
@@ -33,50 +34,54 @@ class OperationManagerActions(QObject):
         self._workspace = workspace
         self._source = source_actions
         self._current_node = current_node
-        self.add_operation = self._action("Thêm operation", self._add_default)
+        self.add_operation = self._action("Thêm nguyên công", self._add_default)
         self.recalculate = self._action("Tính lại", self._recalculate)
+        self.cancel_calculation = self._action(
+            "Hủy tính toán", self._cancel_calculation
+        )
         self.simulate = self._action("Mô phỏng", self._simulate)
         self.post = self._action("Post", self._post)
-        self.generate_post = self._action("Generate Post", self._generate_post)
+        self.generate_post = self._action("Tạo Post", self._generate_post)
         self.add_to_program = self._action(
-            "Thêm vào Program Assembly", self._add_to_program
+            "Thêm vào Lắp ráp chương trình", self._add_to_program
         )
-        self.open_simulation = self._action("Mở Simulation", self._open_simulation)
-        self.open_post = self._action("Mở Post Preview", self._post)
-        self.export_nc = self._action("Export NC", self._export_nc)
+        self.open_simulation = self._action("Mở Mô phỏng", self._open_simulation)
+        self.open_post = self._action("Mở bản xem trước Post", self._post)
+        self.export_nc = self._action("Xuất NC", self._export_nc)
         self.show_export_details = self._action(
-            "Hiện chi tiết NC/Export", self._show_export_details
+            "Hiện chi tiết NC/Xuất", self._show_export_details
         )
         self.delete = self._action("Xóa", self._delete)
-        self.open = self._action("Chỉnh sửa", self._open)
+        self.open = self._action("Mở", self._open)
         self.rename = self._action("Đổi tên", self._rename)
         self.enable = self._action("Bật", lambda: self._set_enabled(True))
         self.disable = self._action("Tắt", lambda: self._set_enabled(False))
         self.move_up = self._action("Di chuyển lên", lambda: self._trigger("up"))
         self.move_down = self._action("Di chuyển xuống", lambda: self._trigger("down"))
         self.bind_geometry = self._action(
-            "Bind/Rebind geometry", lambda: self._trigger("pick")
+            "Liên kết/Liên kết lại hình học", lambda: self._trigger("pick")
         )
         self.clear_geometry = self._action(
-            "Clear geometry", lambda: self._trigger("clear_pick")
+            "Xóa hình học", lambda: self._trigger("clear_pick")
         )
         self.toggle_toolpath = self._action(
-            "Hiện/ẩn toolpath", lambda: self._trigger("visibility")
+            "Hiện/ẩn đường chạy dao", lambda: self._trigger("visibility")
         )
         self.clear_simulation = self._action(
-            "Xóa kết quả Simulation", self._clear_simulation
+            "Xóa kết quả Mô phỏng", self._clear_simulation
         )
-        self.clear_post = self._action("Xóa Post Result", self._clear_post)
-        self.clear_nc = self._action("Xóa NC Artifact", self._clear_nc)
-        self.clear_toolpath = self._action("Xóa Toolpath Artifact", lambda: None)
+        self.clear_post = self._action("Xóa kết quả Post", self._clear_post)
+        self.clear_nc = self._action("Xóa kết quả NC", self._clear_nc)
+        self.clear_toolpath = self._action("Xóa kết quả đường chạy dao", lambda: None)
         _disable(
             self.clear_toolpath,
-            "Chưa có command xóa Toolpath Artifact an toàn trong application service.",
+            "Chưa có lệnh xóa kết quả đường chạy dao an toàn trong dịch vụ ứng dụng.",
         )
         self.duplicate = self._action("Nhân bản", self._duplicate)
         self.all_actions = (
             self.add_operation,
             self.recalculate,
+            self.cancel_calculation,
             self.simulate,
             self.post,
             self.generate_post,
@@ -111,7 +116,7 @@ class OperationManagerActions(QObject):
             self.add_operation,
             OperationManagerCapability.ADD_OPERATION,
             capabilities,
-            "Chọn Setup, Operations hoặc Group để thêm operation.",
+            "Chọn thiết lập, danh sách nguyên công hoặc nhóm để thêm nguyên công.",
         )
         source_generate = self._source.get("generate")
         can_recalculate = (
@@ -122,7 +127,20 @@ class OperationManagerActions(QObject):
         _set_enabled(
             self.recalculate,
             can_recalculate,
-            "Draft operation phải hợp lệ, đã áp dụng và có đủ geometry/tool/machine.",
+            "Bản nháp nguyên công phải hợp lệ, đã áp dụng và có đủ hình học/Tool/máy.",
+        )
+        can_cancel = (
+            node is not None
+            and any(
+                item.semantic is OperationManagerSemanticStatus.CALCULATING
+                for item in node.statuses
+            )
+            and "parallel_finishing_3d" in node.search_terms
+        )
+        _set_enabled(
+            self.cancel_calculation,
+            can_cancel,
+            "Chỉ có thể hủy tác vụ Gia công tinh song song đang tính.",
         )
         can_simulate = (
             OperationManagerCapability.SIMULATE in capabilities
@@ -131,13 +149,13 @@ class OperationManagerActions(QObject):
         _set_enabled(
             self.simulate,
             can_simulate,
-            "Cần toolpath CURRENT và Simulation preflight hợp lệ.",
+            "Cần đường chạy dao HIỆN HÀNH và kiểm tra trước Mô phỏng hợp lệ.",
         )
         self._set_capability(
             self.post,
             OperationManagerCapability.POST,
             capabilities,
-            "Chọn operation, Post Result, NC Artifact hoặc Program Assembly.",
+            "Chọn nguyên công, kết quả Post, kết quả NC hoặc Lắp ráp chương trình.",
         )
         kind = node.kind if node is not None else None
         can_generate_post = (
@@ -152,18 +170,18 @@ class OperationManagerActions(QObject):
         _set_enabled(
             self.generate_post,
             can_generate_post,
-            "Post source/gate phải hợp lệ và không có tác vụ Post đang chạy.",
+            "Nguồn/cổng Post phải hợp lệ và không có tác vụ Post đang chạy.",
         )
         _set_enabled(
             self.add_to_program,
             kind is OperationManagerNodeKind.OPERATION
             and self._workspace.program_assembly_panel.add_button.isEnabled(),
-            "Operation phải hợp lệ và chưa có trong Program Assembly hiện tại.",
+            "Nguyên công phải hợp lệ và chưa có trong Lắp ráp chương trình hiện tại.",
         )
         _set_enabled(
             self.open_simulation,
             kind is OperationManagerNodeKind.SIMULATION,
-            "Chọn node Simulation.",
+            "Chọn nút Mô phỏng.",
         )
         _set_enabled(
             self.open_post,
@@ -173,97 +191,97 @@ class OperationManagerActions(QObject):
                 OperationManagerNodeKind.NC_ARTIFACT,
                 OperationManagerNodeKind.PROGRAM_ASSEMBLY,
             },
-            "Chọn Post Result, NC Artifact hoặc Program Assembly.",
+            "Chọn kết quả Post, kết quả NC hoặc Lắp ráp chương trình.",
         )
         _set_enabled(
             self.export_nc,
             kind is OperationManagerNodeKind.NC_ARTIFACT
             and self._workspace.post_panel.export_button.isEnabled(),
-            "Cần NC hiện hành và cấu hình Export hợp lệ.",
+            "Cần NC hiện hành và cấu hình Xuất hợp lệ.",
         )
         _set_enabled(
             self.show_export_details,
             kind is OperationManagerNodeKind.NC_ARTIFACT
             and self._workspace.post_panel.export_details_button.isEnabled(),
-            "Chưa có kết quả Export NC để xem.",
+            "Chưa có kết quả Xuất NC để xem.",
         )
         self._set_capability(
             self.delete,
             OperationManagerCapability.DELETE,
             capabilities,
-            "Node này không có command xóa trong domain hiện tại.",
+            "Nút này không có lệnh xóa trong miền hiện tại.",
         )
         self._set_capability(
             self.duplicate,
             OperationManagerCapability.DUPLICATE,
             capabilities,
-            "Chỉ operation có identity domain mới được nhân bản.",
+            "Chỉ nguyên công có định danh miền mới được nhân bản.",
         )
         self._set_capability(
             self.rename,
             OperationManagerCapability.RENAME,
             capabilities,
-            "Node trình chiếu không hỗ trợ đổi tên.",
+            "Nút trình chiếu không hỗ trợ đổi tên.",
         )
         self._set_capability(
             self.enable,
             OperationManagerCapability.ENABLE,
             capabilities,
-            "Node đang bật hoặc không hỗ trợ thay đổi enabled.",
+            "Nút đang bật hoặc không hỗ trợ thay đổi trạng thái bật/tắt.",
         )
         self._set_capability(
             self.disable,
             OperationManagerCapability.DISABLE,
             capabilities,
-            "Node đang tắt hoặc không hỗ trợ thay đổi enabled.",
+            "Nút đang tắt hoặc không hỗ trợ thay đổi trạng thái bật/tắt.",
         )
         self._set_capability(
             self.move_up,
             OperationManagerCapability.MOVE_UP,
             capabilities,
-            "Chỉ Group/Operation có thứ tự domain mới được di chuyển.",
+            "Chỉ Nhóm/Nguyên công có thứ tự miền mới được di chuyển.",
         )
         self._set_capability(
             self.move_down,
             OperationManagerCapability.MOVE_DOWN,
             capabilities,
-            "Chỉ Group/Operation có thứ tự domain mới được di chuyển.",
+            "Chỉ Nhóm/Nguyên công có thứ tự miền mới được di chuyển.",
         )
         self._set_capability(
             self.bind_geometry,
             OperationManagerCapability.BIND_GEOMETRY,
             capabilities,
-            "Chọn operation hoặc Geometry của operation.",
+            "Chọn nguyên công hoặc Hình học của nguyên công.",
         )
         self._set_capability(
             self.clear_geometry,
             OperationManagerCapability.CLEAR_GEOMETRY,
             capabilities,
-            "Chọn operation hoặc Geometry của operation.",
+            "Chọn nguyên công hoặc Hình học của nguyên công.",
         )
         self._set_capability(
             self.toggle_toolpath,
             OperationManagerCapability.TOGGLE_TOOLPATH,
             capabilities,
-            "Chọn operation có presentation toolpath.",
+            "Chọn nguyên công có hiển thị đường chạy dao.",
         )
         _set_enabled(
             self.clear_simulation,
             OperationManagerCapability.CLEAR_SIMULATION in capabilities
             and self._workspace.simulation_panel.clear_button.isEnabled(),
-            "Chưa có kết quả Simulation để xóa.",
+            "Chưa có kết quả Mô phỏng để xóa.",
         )
         _set_enabled(
             self.clear_post,
             OperationManagerCapability.CLEAR_POST in capabilities
             and self._workspace.post_panel.clear_post_button.isEnabled(),
-            "Chưa có Post Result runtime để xóa.",
+            "Chưa có kết quả Post trong phiên để xóa.",
         )
         _set_enabled(
             self.clear_nc,
             OperationManagerCapability.CLEAR_NC in capabilities
             and self._workspace.post_panel.clear_managed_button.isEnabled(),
-            "Chưa có NC Artifact được quản lý để xóa.",
+            "Chưa có kết quả NC được quản lý để xóa.",
         )
         self.open.setEnabled(node is not None)
 
@@ -279,6 +297,7 @@ class OperationManagerActions(QObject):
         if kind is OperationManagerNodeKind.OPERATION:
             menu.addAction(self.open)
             menu.addAction(self.recalculate)
+            menu.addAction(self.cancel_calculation)
             menu.addAction(self.simulate)
             menu.addAction(self.generate_post)
             menu.addAction(self.add_to_program)
@@ -286,6 +305,7 @@ class OperationManagerActions(QObject):
             menu.addAction(self.enable)
             menu.addAction(self.disable)
             menu.addAction(self.duplicate)
+            menu.addAction(self.rename)
             menu.addAction(self.delete)
         elif kind is OperationManagerNodeKind.OPERATION_GEOMETRY:
             menu.addAction(self.open)
@@ -381,6 +401,10 @@ class OperationManagerActions(QObject):
     def _recalculate(self) -> None:
         self._trigger("generate")
 
+    def _cancel_calculation(self) -> None:
+        self._ensure_selection()
+        self._workspace.cancel_parallel_calculation()
+
     def _simulate(self) -> None:
         self._ensure_selection()
         self.simulation_requested.emit()
@@ -444,7 +468,14 @@ class OperationManagerActions(QObject):
         self._ensure_selection()
         item = self._workspace.tree.currentItem()
         if item is not None:
-            self._workspace.tree.editItem(item, 0)
+            name, accepted = QInputDialog.getText(
+                self.parent(),
+                "Đổi tên",
+                "Tên mới:",
+                text=item.text(0),
+            )
+            if accepted and name.strip():
+                item.setText(0, name.strip())
 
     def _set_enabled(self, enabled: bool) -> None:
         self._ensure_selection()

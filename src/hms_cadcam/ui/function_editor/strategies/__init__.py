@@ -46,6 +46,21 @@ from hms_cadcam.ui.function_editor.strategies.drilling import build_drilling_sch
 from hms_cadcam.ui.function_editor.strategies.tapping import build_tapping_schema
 from hms_cadcam.ui.function_editor.strategies.reaming import build_reaming_schema
 from hms_cadcam.ui.function_editor.strategies.boring import build_boring_schema
+from hms_cadcam.ui.function_editor.strategies.parallel import (
+    PARALLEL_EDITOR_ID,
+    PARALLEL_EDITOR_STRATEGY_KEY,
+    ParallelEditorContext,
+    ParallelEditorDraftContext,
+    ParallelOperationUpdate,
+    ParallelSafetyPresentation,
+    build_parallel_schema,
+    parallel_applied_values,
+    parallel_draft_derived_values,
+    parallel_safety_presentation,
+    parallel_validation_diagnostics,
+    prepare_parallel_update,
+    validate_parallel_schema_contract,
+)
 
 __all__ = [
     "ContourEditorContext",
@@ -58,6 +73,12 @@ __all__ = [
     "PocketEditorContext",
     "PocketEditorDraftContext",
     "PocketOperationUpdate",
+    "PARALLEL_EDITOR_ID",
+    "PARALLEL_EDITOR_STRATEGY_KEY",
+    "ParallelEditorContext",
+    "ParallelEditorDraftContext",
+    "ParallelOperationUpdate",
+    "ParallelSafetyPresentation",
     "DrillingFamilyEditorContext",
     "DrillingFamilyEditorDraftContext",
     "DrillingFamilyEditorKind",
@@ -68,6 +89,7 @@ __all__ = [
     "build_facing_schema",
     "build_planar_face_facing_schema",
     "build_pocket_schema",
+    "build_parallel_schema",
     "build_reaming_schema",
     "build_tapping_schema",
     "contour_applied_values",
@@ -75,13 +97,19 @@ __all__ = [
     "drilling_family_geometry_values",
     "facing_applied_values",
     "pocket_applied_values",
+    "parallel_applied_values",
+    "parallel_draft_derived_values",
+    "parallel_safety_presentation",
+    "parallel_validation_diagnostics",
     "prepare_contour_update",
     "prepare_drilling_family_update",
     "prepare_facing_update",
     "prepare_pocket_update",
+    "prepare_parallel_update",
     "strategy_from_operation",
     "validate_contour_schema_contract",
     "validate_drilling_family_schema_contract",
     "validate_facing_schema_contract",
     "validate_pocket_schema_contract",
+    "validate_parallel_schema_contract",
 ]

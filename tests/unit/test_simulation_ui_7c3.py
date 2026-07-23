@@ -54,12 +54,12 @@ def test_panel_run_enable_clear_show_hide_and_result_status() -> None:
     assert not panel.cancel_button.isEnabled()
 
     panel.set_result(result, None, current=True)
-    assert panel.source_labels["status"].text() == "PASS"
+    assert panel.source_labels["status"].text() == "ĐẠT"
     assert panel.clear_button.isEnabled()
     panel.visibility_button.click()
-    assert panel.visibility_button.text() == "Show Overlay"
+    assert panel.visibility_button.text() == "Hiện lớp phủ"
     panel.clear_result_display()
-    assert panel.source_labels["current"].text() == "No current result"
+    assert panel.source_labels["current"].text() == "Không có kết quả hiện hành"
     panel.deleteLater()
 
 def test_policy_invalid_draft_does_not_mutate_and_reset_is_deterministic() -> None:
@@ -86,7 +86,7 @@ def test_warning_issue_filter_sort_selection_and_technical_copy() -> None:
     panel = SimulationPanel()
     panel.show_source(inputs, can_run=True)
     panel.set_result(result, None, current=True)
-    assert panel.source_labels["status"].text() == "WARN"
+    assert panel.source_labels["status"].text() == "CẢNH BÁO"
     assert panel.issue_table.rowCount() == len(result.issues)
 
     panel.issue_filter.setCurrentText("ERROR")

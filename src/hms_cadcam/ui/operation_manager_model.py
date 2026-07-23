@@ -11,6 +11,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerProjection,
     node_matches_filter,
 )
+from hms_cadcam.ui.localization import translate_status, ui_text
 
 
 NODE_ROLE = int(Qt.ItemDataRole.UserRole) + 101
@@ -121,17 +122,24 @@ class OperationManagerModel(QAbstractItemModel):
         if node is None:
             return None
         if role == Qt.ItemDataRole.DisplayRole:
-            return node.label if index.column() == 0 else node.status.text
+            return (
+                ui_text(node.label)
+                if index.column() == 0
+                else translate_status(node.status.text)
+            )
         if role == Qt.ItemDataRole.ToolTipRole:
             statuses = "\n".join(
-                f"{item.category.value.upper()} · {item.text}: {item.tooltip}"
+                f"{ui_text(item.category.value.upper())} · "
+                f"{translate_status(item.text)}: {ui_text(item.tooltip)}"
                 for item in node.statuses
             )
-            return f"{node.label}\n{node.secondary_summary}\n{statuses}"
+            return (
+                f"{ui_text(node.label)}\n{ui_text(node.secondary_summary)}\n{statuses}"
+            )
         if role == Qt.ItemDataRole.AccessibleTextRole:
             return (
-                f"{node.label}. {node.secondary_summary}. "
-                f"Trạng thái {node.status.text}."
+                f"{ui_text(node.label)}. {ui_text(node.secondary_summary)}. "
+                f"Trạng thái {translate_status(node.status.text)}."
             )
         if role == NODE_ROLE:
             return node

@@ -21,7 +21,7 @@ def build_facing_schema(context: FacingEditorContext) -> FunctionEditorSchema:
         FunctionEditorStrategyKey("facing_stock_box_9a5_1"),
         FunctionEditorSummary(
             context.operation_name,
-            "Facing 2.5D · Stock BOX",
+            "Phay mặt 2.5D · Phôi dạng hộp",
             tool="Tool Assembly đã bind",
             geometry="Mặt trên Stock BOX",
             operation_status=context.operation.artifact_state.status.value.upper(),

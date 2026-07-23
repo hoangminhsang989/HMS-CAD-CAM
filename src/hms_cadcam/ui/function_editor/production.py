@@ -22,6 +22,9 @@ ProductionCalculateCallback = Callable[[Mapping[str, PresentationValue]], object
 ProductionFieldActionCallback = Callable[
     [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
 ]
+ProductionDraftTransformCallback = Callable[
+    [Mapping[str, PresentationValue]], Mapping[str, PresentationValue]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +42,7 @@ class FunctionEditorProductionSession:
     preview_callback: ProductionPreviewCallback
     calculate_callback: ProductionCalculateCallback
     field_action_callback: ProductionFieldActionCallback | None = None
+    draft_transform_callback: ProductionDraftTransformCallback | None = None
 
     def __post_init__(self) -> None:
         if not self.selection_key[0] or not self.selection_key[1]:

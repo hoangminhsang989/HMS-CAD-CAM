@@ -251,19 +251,19 @@ def test_boring_ui_atomic_draft_picking_generate_and_viewer(
     assert strategy.feed_per_minute.value == pytest.approx(60.0)
     assert len(operation.geometry_inputs) == 2
     assert workspace.actions["generate"].isEnabled()
-    assert "HOLE PATTERN 2" in workspace.editor.status.text()
-    assert "Radial stock: 1" in workspace.editor.boring_derived.text()
-    assert "Feed/min: 60" in workspace.editor.boring_derived.text()
+    assert "MẪU LỖ 2" in workspace.editor.status.text()
+    assert "Lượng dư hướng kính: 1" in workspace.editor.boring_derived.text()
+    assert "Lượng chạy dao/phút: 60" in workspace.editor.boring_derived.text()
     assert workspace.editor.tool.count() == 1
     assert "boring_bar" in workspace.editor.boring_tool_details.text()
-    assert "snapshot CURRENT" in workspace.editor.boring_tool_details.text()
-    assert "shank D12" in workspace.editor.boring_tool_details.text()
-    assert "assembly rev 0/fp" in workspace.editor.boring_tool_details.text()
+    assert "ảnh chụp HIỆN HÀNH" in workspace.editor.boring_tool_details.text()
+    assert "D cán 12" in workspace.editor.boring_tool_details.text()
+    assert "cụm Tool bản sửa đổi 0/fp" in workspace.editor.boring_tool_details.text()
     service.save()
     assert not service.is_dirty
 
     workspace.editor._boring_fields["pre_bore"].setText("17.8")
-    assert "Radial stock: 1.1" in workspace.editor.boring_derived.text()
+    assert "Lượng dư hướng kính: 1.1" in workspace.editor.boring_derived.text()
     assert _operation(service) == operation
     assert not service.is_dirty
     workspace.editor._boring_fields["pre_bore"].setText("18.0")
@@ -390,7 +390,7 @@ def test_boring_ui_atomic_draft_picking_generate_and_viewer(
     workspace.editor._boring_fields["spindle"].setText("700")
     workspace.editor._boring_fields["feed_per_revolution"].setText("0.12")
     workspace.editor._boring_fields["dwell"].setText("0.2")
-    assert "Feed/min: 84" in workspace.editor.boring_derived.text()
+    assert "Lượng chạy dao/phút: 84" in workspace.editor.boring_derived.text()
     workspace.editor._submit()
     applied = BoringStrategy.from_operation_parameters(_operation(service).parameters)
     assert applied.feed_per_minute.value == pytest.approx(84.0)
@@ -432,7 +432,7 @@ def test_boring_ui_atomic_draft_picking_generate_and_viewer(
     workspace._drilling_resolver = _resolved
     workspace.clear_geometry_pick()
     assert _operation(service).geometry_inputs == ()
-    assert "HOLE MISSING" in workspace.editor.status.text()
+    assert "THIẾU LỖ" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     workspace.deleteLater()
 
@@ -722,7 +722,7 @@ def test_boring_inch_ui_and_persistence_lifecycle(tmp_path) -> None:
     assert service.load_toolpath_artifact(copied_operation.operation_id) == artifact
 
     workspace.bind_project(copied)
-    boring_item = _find_item(workspace.tree.topLevelItem(0), "Boring")
+    boring_item = _find_item(workspace.tree.topLevelItem(0), "Khoét lỗ")
     assert boring_item is not None
     workspace.tree.setCurrentItem(boring_item)
     workspace.editor._boring_fields["dwell"].setText("0.4")

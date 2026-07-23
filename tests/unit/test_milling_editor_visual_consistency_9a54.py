@@ -160,7 +160,9 @@ def test_responsive_header_footer_and_internal_scroll_are_consistent() -> None:
                 application.processEvents()
                 assert page.scroll_area.horizontalScrollBar().maximum() == 0
                 assert page.footer.isVisible()
-                assert page.footer._compact is (width < 400)
+                assert page.footer._compact is (
+                    width < page._density_metrics.field_reflow_width
+                )
                 heights.append(page.summary.height())
             assert max(heights) - min(heights) <= 2
     finally:
@@ -177,7 +179,7 @@ def test_source_default_and_inline_error_have_text_and_focus() -> None:
         application.processEvents()
         derived = page._field_widgets["final_depth_summary"]
         recommended = page._field_widgets["stepover"]
-        assert derived.source_label.text() == "Nguồn: Derived"
+        assert derived.source_label.text() == "Nguồn: Suy ra"
         assert derived.source_label.isVisible()
         assert recommended.default_label.isVisible()
         before_height = page._field_widgets["stepdown"].height()
