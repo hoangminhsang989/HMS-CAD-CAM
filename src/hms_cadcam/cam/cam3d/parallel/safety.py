@@ -682,7 +682,10 @@ def _motions(
         expected_start: ParallelPathPoint | None = None
         expected_end: ParallelPathPoint | None = None
         if segment is not None:
-            if action.startswith("cut."):
+            if action == "cut.close":
+                expected_start = segment.points[-1]
+                expected_end = segment.points[0]
+            elif action.startswith("cut."):
                 point_index = int(action.rsplit(".", 1)[1])
                 if not 1 <= point_index < len(segment.points):
                     raise CamValidationError("Parallel cut provenance is malformed")

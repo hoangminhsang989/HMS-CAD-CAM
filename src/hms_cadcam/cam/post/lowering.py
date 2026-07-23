@@ -236,6 +236,10 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
             raise CamValidationError(
                 "Parallel artifact is not SAFE with verified holder scope for post-processing"
             )
+    if source.operation.strategy_key == "z_level_finishing_3d":
+        raise CamValidationError(
+            "Production Post cho Z-Level chưa được chứng nhận trong Stage 8A.3.1"
+        )
     if source.artifact.unit not in capabilities.supported_units:
         raise CamValidationError("Artifact unit is unsupported by post definition")
     required_capability = {

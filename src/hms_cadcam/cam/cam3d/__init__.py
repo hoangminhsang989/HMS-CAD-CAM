@@ -59,6 +59,7 @@ from hms_cadcam.cam.cam3d.service import (
     Cam3DCalculationRequest,
     Cam3DGeometryService,
 )
+from hms_cadcam.cam.cam3d import zlevel
 
 __all__ = [
     "BoundaryInclusionPolicy3D",
@@ -108,4 +109,5 @@ __all__ = [
     "rebind_zone_project",
     "validate_safe_motion",
     "wcs_fingerprint",
+    "zlevel",
 ]

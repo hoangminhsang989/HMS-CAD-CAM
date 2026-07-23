@@ -1,9 +1,10 @@
-# Nhiệm vụ hiện tại — Stage 8A.2.3
+# Nhiệm vụ hiện tại — Stage 8A.3.1
 
 ## Trạng thái ưu tiên
 
 - Functional UI baseline: `24d2a42` — hoàn thành đánh giá đồng bộ giao diện
   phay 2D Stage 9A.5.4.
+- **Stage 8A.3.1 — Z-Level Finishing Foundation — COMPLETED.**
 - **Stage 8A.2.3 — Parallel Finishing Production Function Editor — COMPLETED.**
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack: DEFERRED.**
 - **Stage 9A.6 — Drilling Family Production Function Editors — COMPLETED.**

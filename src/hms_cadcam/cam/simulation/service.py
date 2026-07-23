@@ -69,6 +69,14 @@ def build_simulation_request(*, operation: Operation, artifact: ToolpathArtifact
                 SimulationIssueCode.SOURCE_UNSUPPORTED,
                 "Parallel artifact has no current SAFE collision-validation contract",
             )
+    if operation.strategy_key == "z_level_finishing_3d":
+        from hms_cadcam.cam.cam3d.zlevel import z_level_artifact_has_safe_contract
+
+        if not z_level_artifact_has_safe_contract(artifact):
+            _source_error(
+                SimulationIssueCode.SOURCE_UNSUPPORTED,
+                "Z-Level artifact has no current SAFE collision-validation contract",
+            )
     if artifact.coordinate_space is not CoordinateSpace.SETUP_WCS:
         _source_error(SimulationIssueCode.SOURCE_UNSUPPORTED, "Simulation v1 requires SETUP_WCS toolpath coordinates")
     if artifact.source_operation_id != operation.operation_id or artifact.operation_revision != operation.revision:
