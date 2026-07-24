@@ -11,6 +11,7 @@ from hms_cadcam.ui.function_editor.model import (
     PresentationValue,
 )
 from hms_cadcam.ui.function_editor.schema import FunctionEditorSchema
+from hms_cadcam.cam.domain import ToolProfileSaveMode, ToolProfileSavePreview
 
 
 ProductionApplyCallback = Callable[[Mapping[str, PresentationValue]], object]
@@ -24,6 +25,26 @@ ProductionFieldActionCallback = Callable[
 ]
 ProductionDraftTransformCallback = Callable[
     [Mapping[str, PresentationValue]], Mapping[str, PresentationValue]
+]
+ProductionToolProfileConfirmCallback = Callable[[ToolProfileSaveMode], object]
+ProductionToolProfilePreviewCallback = Callable[
+    [ToolProfileSaveMode],
+    ToolProfileSavePreview,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolProfileSaveInteraction:
+    """Qt-free preview and confirmation callbacks for one Function Editor."""
+
+    preview: ToolProfileSavePreview
+    confirm_callback: ProductionToolProfileConfirmCallback
+    preview_callback: ProductionToolProfilePreviewCallback
+
+
+ProductionToolProfileInteractionCallback = Callable[
+    [Mapping[str, PresentationValue], frozenset[str]],
+    ToolProfileSaveInteraction,
 ]
 
 
@@ -43,6 +64,9 @@ class FunctionEditorProductionSession:
     calculate_callback: ProductionCalculateCallback
     field_action_callback: ProductionFieldActionCallback | None = None
     draft_transform_callback: ProductionDraftTransformCallback | None = None
+    tool_profile_interaction_callback: (
+        ProductionToolProfileInteractionCallback | None
+    ) = None
 
     def __post_init__(self) -> None:
         if not self.selection_key[0] or not self.selection_key[1]:

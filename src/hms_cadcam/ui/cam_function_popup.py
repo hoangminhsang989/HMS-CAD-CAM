@@ -35,7 +35,9 @@ from hms_cadcam.ui.cam_illustrations import (
     CAMIllustrationState,
 )
 from hms_cadcam.ui.function_editor.host import FunctionEditorHost
+from hms_cadcam.ui.function_editor.production import ToolProfileSaveInteraction
 from hms_cadcam.ui.localization import localize_widget_tree, operation_display_name
+from hms_cadcam.ui.tool_program_profiles import ToolProfileSavePreviewDialog
 from hms_cadcam.ui.ui_tokens import (
     CAM_POPUP_DENSITY,
     CAMPopupMetrics,
@@ -332,6 +334,28 @@ class CAMFunctionPopupHost(QDialog):
                 illustration_focus
                 if isinstance(illustration_focus, QWidget)
                 else self.focusWidget(),
+            )
+            return
+        if kind == "tool_profile_save" and isinstance(
+            payload, ToolProfileSaveInteraction
+        ):
+            dialog = ToolProfileSavePreviewDialog(
+                payload.preview,
+                self,
+                preview_provider=payload.preview_callback,
+            )
+
+            def confirm(mode: object) -> None:
+                try:
+                    payload.confirm_callback(mode)  # type: ignore[arg-type]
+                except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                    logger.error("Không thể lưu cấu hình Tool: %s", error)
+                    return
+                QTimer.singleShot(0, self.editor_host.refresh_current)
+
+            dialog.confirmed.connect(confirm)
+            self.adopt_child_dialog(
+                "tool_profile_save", dialog, self.focusWidget()
             )
             return
         if kind != "tool_selector" or not isinstance(payload, dict):

@@ -103,6 +103,7 @@ class FunctionEditorAction(StrEnum):
     VALIDATE = "validate"
     CALCULATE = "calculate"
     APPLY = "apply"
+    SAVE_TOOL_PROFILE = "save_tool_profile"
     CLOSE = "close"
 
 
@@ -330,7 +331,14 @@ class FunctionEditorFooter:
     """Contextual action policy for a Function Editor page."""
 
     actions: tuple[FunctionEditorAction, ...] = field(
-        default_factory=lambda: tuple(FunctionEditorAction)
+        default_factory=lambda: (
+            FunctionEditorAction.RESET_DRAFT,
+            FunctionEditorAction.PREVIEW,
+            FunctionEditorAction.VALIDATE,
+            FunctionEditorAction.CALCULATE,
+            FunctionEditorAction.APPLY,
+            FunctionEditorAction.CLOSE,
+        )
     )
     preview_supported: bool = False
     calculate_supported: bool = False

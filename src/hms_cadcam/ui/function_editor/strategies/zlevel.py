@@ -67,6 +67,9 @@ from hms_cadcam.cam.domain import (
     ToolFamily,
 )
 from hms_cadcam.cam.toolpath import MarkerEvent, ToolpathArtifact
+from hms_cadcam.cam.tool_profile_integration import (
+    apply_tool_profile_to_automatic_contract,
+)
 from hms_cadcam.ui.function_editor.model import (
     ApplicabilityOperator,
     FunctionEditorAction,
@@ -506,12 +509,30 @@ def _resolve_automatic_contract(
             "safety_scope", "declared_geometry_and_tool_assembly"
         ),
     }
-    return resolve_z_level_automatic_contract(
+    contract = resolve_z_level_automatic_contract(
         _automatic_context(context, draft, values),
         _quality_profile(values, stored),
         stored=stored,
         manual_flags=flags,
         override_values=overrides,
+    )
+    assembly_id = str(
+        values.get("tool_assembly_id", context.operation.tool_assembly.assembly_id)
+    )
+    _assembly, tool, holder = _assembly_resources(context, assembly_id)
+    if tool is None:
+        return contract
+    return apply_tool_profile_to_automatic_contract(
+        contract,
+        tool,
+        "z_level_finishing_3d",
+        operation_override_keys=frozenset(
+            key for key, enabled in flags.items() if enabled
+        ),
+        operation_id=str(context.operation.operation_id),
+        holder_fingerprint=(
+            holder.content_fingerprint if holder is not None else None
+        ),
     )
 
 
@@ -2330,6 +2351,7 @@ def build_z_level_schema(context: ZLevelEditorContext) -> FunctionEditorSchema:
                 FunctionEditorAction.PREVIEW,
                 FunctionEditorAction.VALIDATE,
                 FunctionEditorAction.APPLY,
+                FunctionEditorAction.SAVE_TOOL_PROFILE,
                 FunctionEditorAction.CALCULATE,
                 FunctionEditorAction.CLOSE,
             ),

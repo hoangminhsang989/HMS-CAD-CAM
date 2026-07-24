@@ -1353,6 +1353,11 @@ def build_drilling_family_schema(
                 FunctionEditorAction.PREVIEW,
                 FunctionEditorAction.VALIDATE,
                 FunctionEditorAction.APPLY,
+                *(
+                    (FunctionEditorAction.SAVE_TOOL_PROFILE,)
+                    if context.kind is DrillingFamilyEditorKind.DRILLING
+                    else ()
+                ),
                 FunctionEditorAction.CALCULATE,
                 FunctionEditorAction.CLOSE,
             ),

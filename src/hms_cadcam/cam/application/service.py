@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from hms_cadcam.cam.domain import (
+    DEFAULT_TOOL_PROFILE_REGISTRY,
     ArtifactStatus, CamChildNotFoundError, CamJob, CamJobId, CamNodeId,
     ContourParameters, DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
     DrillGeometryInput, DrillDepthDefinition, DrillingStrategy, DrillValidationError,
@@ -19,7 +20,11 @@ from hms_cadcam.cam.domain import (
     ReamingStrategy, ReamingValidationError,
     BoringStrategy, BoringValidationError,
     TappingStrategy, TappingValidationError, ToolDefinition,
+    ToolCommonDefaults, ToolDefinitionId, ToolProfileDiffKind,
+    ToolProfileSavePreview, ToolProfileValidationState,
+    ToolProgramProfile, ToolProgramProfileId,
     ValidationDiagnostic, WcsFrame, WorkOffset,
+    build_profile_from_preview, duplicate_tool_program_profile,
 )
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
@@ -27,7 +32,12 @@ from hms_cadcam.cam.persistence.models import CamProjectSnapshot
 from hms_cadcam.cam.toolpath import ToolpathArtifact
 from hms_cadcam.cam.toolpath.validation import ToolpathPublishResult, publish_toolpath
 from hms_cadcam.cam.domain.operation import ComputationToken
-from hms_cadcam.cam.domain.revision import DependencyFingerprint
+from hms_cadcam.cam.domain.revision import (
+    ContentFingerprint,
+    DependencyFingerprint,
+    Revision,
+)
+from hms_cadcam.cam.domain.tool_profiles import utc_profile_now
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator,
 )
@@ -278,6 +288,270 @@ class CamApplicationService:
 
     def add_tool_definition(self, value: ToolDefinition) -> CamProjectSnapshot:
         return self._append_unique("tool_definitions", value, "tool_id")
+
+    def save_tool_program_profile(
+        self,
+        preview: ToolProfileSavePreview,
+        *,
+        expected_configuration_revision: Revision,
+        holder_fingerprint: ContentFingerprint | None = None,
+    ) -> CamProjectSnapshot:
+        """Confirm one preview and stale only matching strategy operations."""
+        if not isinstance(preview, ToolProfileSavePreview):
+            raise TypeError("Tool profile preview is invalid")
+        if any(
+            item.kind is ToolProfileDiffKind.INVALID for item in preview.entries
+        ):
+            raise ValueError("Tool profile preview contains invalid values")
+        with self._lock:
+            tool = _find_tool(self._snapshot, preview.tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = build_profile_from_preview(
+                tool,
+                preview,
+                holder_fingerprint=holder_fingerprint,
+            )
+            profiles = tuple(
+                item
+                for item in tool.program_profiles
+                if item.profile_id != profile.profile_id
+            ) + (profile,)
+            changed_tool = replace(
+                tool,
+                program_profiles=profiles,
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool,
+                changed_tool,
+                affected_strategies=(preview.strategy_id,),
+            )
+
+    def update_tool_common_defaults(
+        self,
+        tool_id: ToolDefinitionId,
+        defaults: ToolCommonDefaults,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Update shared defaults without changing physical Tool/assembly identity."""
+        if not isinstance(defaults, ToolCommonDefaults):
+            raise TypeError("Tool common defaults are invalid")
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            changed = replace(
+                tool,
+                common_defaults=defaults,
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool,
+                changed,
+                affected_strategies=tuple(
+                    item.strategy_id
+                    for item in DEFAULT_TOOL_PROFILE_REGISTRY.schemas
+                ),
+            )
+
+    def set_tool_program_profile_enabled(
+        self,
+        tool_id: ToolDefinitionId,
+        profile_id: ToolProgramProfileId,
+        enabled: bool,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Enable/disable explicitly; enabling never resolves an ambiguous pair."""
+        if type(enabled) is not bool:
+            raise TypeError("Tool profile enabled state is invalid")
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = _find_profile(tool, profile_id)
+            if enabled and any(
+                item.profile_id != profile_id
+                and item.strategy_id == profile.strategy_id
+                and item.enabled
+                for item in tool.program_profiles
+            ):
+                raise ValueError(
+                    "Only one Tool profile per strategy can be enabled implicitly"
+                )
+            changed_profile = replace(
+                profile,
+                enabled=enabled,
+                updated_at=_tool_profile_timestamp(profile.updated_at),
+                revision=profile.revision.next(),
+            )
+            changed = replace(
+                tool,
+                program_profiles=tuple(
+                    changed_profile if item.profile_id == profile_id else item
+                    for item in tool.program_profiles
+                ),
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool, changed, affected_strategies=(profile.strategy_id,)
+            )
+
+    def reset_tool_program_profile(
+        self,
+        tool_id: ToolDefinitionId,
+        profile_id: ToolProgramProfileId,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Reset one profile to an explicitly empty sparse configuration."""
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = _find_profile(tool, profile_id)
+            reset_profile = replace(
+                profile,
+                values=(),
+                validation_state=ToolProfileValidationState.CONFIGURED,
+                updated_at=_tool_profile_timestamp(profile.updated_at),
+                revision=profile.revision.next(),
+            )
+            changed = replace(
+                tool,
+                program_profiles=tuple(
+                    reset_profile if item.profile_id == profile_id else item
+                    for item in tool.program_profiles
+                ),
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool, changed, affected_strategies=(profile.strategy_id,)
+            )
+
+    def delete_tool_program_profile(
+        self,
+        tool_id: ToolDefinitionId,
+        profile_id: ToolProgramProfileId,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Delete only the selected optional profile."""
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = _find_profile(tool, profile_id)
+            changed = replace(
+                tool,
+                program_profiles=tuple(
+                    item
+                    for item in tool.program_profiles
+                    if item.profile_id != profile_id
+                ),
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool, changed, affected_strategies=(profile.strategy_id,)
+            )
+
+    def rename_tool_program_profile(
+        self,
+        tool_id: ToolDefinitionId,
+        profile_id: ToolProgramProfileId,
+        display_name: str,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Rename presentation metadata without staling calculation artifacts."""
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = _find_profile(tool, profile_id)
+            changed_profile = replace(
+                profile,
+                display_name=display_name,
+                updated_at=_tool_profile_timestamp(profile.updated_at),
+                revision=profile.revision.next(),
+            )
+            changed = replace(
+                tool,
+                program_profiles=tuple(
+                    changed_profile if item.profile_id == profile_id else item
+                    for item in tool.program_profiles
+                ),
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool, changed, affected_strategies=()
+            )
+
+    def duplicate_tool_definition(
+        self,
+        tool_id: ToolDefinitionId,
+        *,
+        name: str | None = None,
+    ) -> ToolDefinition:
+        """Copy Tool and profiles with new IDs, keeping copied profiles disabled."""
+        with self._lock:
+            source = _find_tool(self._snapshot, tool_id)
+            duplicate_id = ToolDefinitionId.new()
+            base = replace(
+                source,
+                tool_id=duplicate_id,
+                name=name or f"{source.name} — Bản sao",
+                revision=Revision(0),
+                program_profiles=(),
+                configuration_revision=Revision(0),
+            )
+            profiles = tuple(
+                replace(
+                    duplicate_tool_program_profile(
+                        item, new_tool_id=duplicate_id
+                    ),
+                    source_tool_revision=base.revision,
+                    source_tool_fingerprint=base.content_fingerprint,
+                )
+                for item in source.program_profiles
+            )
+            duplicate = replace(base, program_profiles=profiles)
+            self._snapshot = replace(
+                self._snapshot,
+                tool_definitions=(*self._snapshot.tool_definitions, duplicate),
+            )
+            return duplicate
+
+    def _replace_tool_configuration(
+        self,
+        current: ToolDefinition,
+        changed: ToolDefinition,
+        *,
+        affected_strategies: tuple[str, ...],
+    ) -> CamProjectSnapshot:
+        if current.tool_id != changed.tool_id:
+            raise ValueError("Tool configuration update changed Tool identity")
+        snapshot = replace(
+            self._snapshot,
+            tool_definitions=tuple(
+                changed if item.tool_id == current.tool_id else item
+                for item in self._snapshot.tool_definitions
+            ),
+        )
+        affected_ids: set[OperationId] = set()
+        if current.configuration_fingerprint != changed.configuration_fingerprint:
+            for strategy_id in affected_strategies:
+                snapshot, current_affected = _stale_tool_strategy_operations(
+                    snapshot, current.tool_id, strategy_id
+                )
+                affected_ids.update(current_affected)
+        self._snapshot = snapshot
+        for operation_id in sorted(affected_ids, key=str):
+            self._simulation.mark_stale(operation_id)
+            self._post.mark_stale(operation_id)
+        return _clone_snapshot(self._snapshot)
 
     def add_holder_definition(self, value: HolderDefinition) -> CamProjectSnapshot:
         return self._append_unique("holder_definitions", value, "holder_id")
@@ -1335,6 +1609,62 @@ def _find_operation(snapshot: CamProjectSnapshot, operation_id: OperationId) -> 
                 if operation.operation_id == operation_id:
                     return operation
     raise CamChildNotFoundError(f"Operation does not exist: {operation_id}")
+
+
+def _find_tool(
+    snapshot: CamProjectSnapshot, tool_id: ToolDefinitionId
+) -> ToolDefinition:
+    for tool in snapshot.tool_definitions:
+        if tool.tool_id == tool_id:
+            return tool
+    raise CamChildNotFoundError(f"Tool does not exist: {tool_id}")
+
+
+def _find_profile(
+    tool: ToolDefinition, profile_id: ToolProgramProfileId
+) -> ToolProgramProfile:
+    for profile in tool.program_profiles:
+        if profile.profile_id == profile_id:
+            return profile
+    raise CamChildNotFoundError(f"Tool profile does not exist: {profile_id}")
+
+
+def _tool_profile_timestamp(previous=None):
+    current = utc_profile_now()
+    return current if previous is None or current >= previous else previous
+
+
+def _stale_tool_strategy_operations(
+    snapshot: CamProjectSnapshot,
+    tool_id: ToolDefinitionId,
+    strategy_id: str,
+) -> tuple[CamProjectSnapshot, tuple[OperationId, ...]]:
+    """Dirty only operations whose selected assembly uses this Tool/strategy."""
+    assembly_ids = {
+        item.assembly_id
+        for item in snapshot.tool_assemblies
+        if item.tool_id == tool_id
+    }
+    result = snapshot
+    affected: list[OperationId] = []
+    for job in snapshot.jobs:
+        for setup in job.setups:
+            for operation in setup.operation_tree.operations:
+                if (
+                    operation.tool_assembly.assembly_id not in assembly_ids
+                    or operation.strategy_key != strategy_id
+                ):
+                    continue
+                state = operation.artifact_state.mark_dirty(
+                    DirtyReason.PARAMETERS_CHANGED
+                )
+                if state == operation.artifact_state:
+                    continue
+                affected.append(operation.operation_id)
+                result = _replace_operation(
+                    result, replace(operation, artifact_state=state)
+                )
+    return result, tuple(sorted(affected, key=str))
 
 
 def _replace_operation(snapshot: CamProjectSnapshot, changed: Operation) -> CamProjectSnapshot:

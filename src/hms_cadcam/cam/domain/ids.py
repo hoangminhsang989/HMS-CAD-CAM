@@ -95,6 +95,13 @@ class ToolDefinitionId(_CamUuidId):
 
 
 @dataclass(frozen=True, slots=True)
+class ToolProgramProfileId(_CamUuidId):
+    """Identity of one optional strategy-specific Tool profile."""
+
+    PREFIX: ClassVar[str] = "tool_program_profile"
+
+
+@dataclass(frozen=True, slots=True)
 class HolderDefinitionId(_CamUuidId):
     """Identity of one holder definition."""
 
@@ -269,6 +276,7 @@ CAM_ID_TYPES: tuple[type[_CamUuidId], ...] = (
     OperationId,
     GeometryInputId,
     ToolDefinitionId,
+    ToolProgramProfileId,
     HolderDefinitionId,
     ToolAssemblyId,
     MachineDefinitionId,

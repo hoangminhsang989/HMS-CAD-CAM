@@ -179,6 +179,9 @@ class FunctionEditorHost(QWidget):
         field_action_callback: Callable[
             [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
         ] | None = None,
+        tool_profile_interaction_callback: Callable[
+            [Mapping[str, PresentationValue], frozenset[str]], object
+        ] | None = None,
         close_confirmation: Callable[[FunctionEditorDraftState], bool]
         | None = None,
     ) -> FunctionEditorPage:
@@ -200,6 +203,7 @@ class FunctionEditorHost(QWidget):
             preview_callback=preview_callback,  # type: ignore[arg-type]
             calculate_callback=calculate_callback,
             field_action_callback=field_action_callback,
+            tool_profile_interaction_callback=tool_profile_interaction_callback,
             close_confirmation=close_confirmation,
         )
         page.close_requested.connect(self._framework_close_requested)
@@ -234,6 +238,9 @@ class FunctionEditorHost(QWidget):
             validation_callback=session.validation_callback,
             draft_transform_callback=session.draft_transform_callback,
             field_action_callback=session.field_action_callback,
+            tool_profile_interaction_callback=(
+                session.tool_profile_interaction_callback
+            ),
             close_confirmation=self._confirm_close,
         )
         self._active_session = session

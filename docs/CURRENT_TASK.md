@@ -1,7 +1,8 @@
-# Nhiệm vụ hiện tại — Stage 8A.3.3
+# Nhiệm vụ hiện tại — Stage 8A.4.1
 
 ## Trạng thái ưu tiên
 
+- **Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình — COMPLETED.**
 - **Stage 8A.3.3 — Z-Level Finishing Production Function Editor — COMPLETED.**
 - **Stage 8A.3.2 — COMPLETED.**
 - **Stage 8A.3.1 — COMPLETED.**
@@ -9,9 +10,26 @@
 - **Stage 9A.6 — COMPLETED.**
 - **Stage 9A.I1 — DEFERRED.**
 
-Stage 8A.3.3 đã hoàn tất; chưa bắt đầu stage kế tiếp và hiện không có stage nào
-được đánh dấu `IN PROGRESS`. Các phần bên dưới là lịch sử baseline và được giữ
-lại để truy vết.
+Stage 8A.4.1 đã hoàn thành Tool common defaults typed, cấu hình Tool tùy chọn và
+thưa theo strategy, ba schema thật, resolver/provenance, preview xác nhận lưu từ
+nguyên công, persistence và tích hợp Function Editor có giới hạn. Tool payload
+v2 giữ tương thích Tool v1; SQLite tiếp tục schema v4.
+
+Focused QA cuối của phần Stage 8A.4.1 đạt **41 passed**. Review harness
+chạy trong tiến trình QPA Windows sạch theo font mặc định production Segoe UI,
+kiểm tra coverage và chữ ký pixel từng glyph trước capture; 16/16 PNG có
+missing/replacement/tofu = 0. Package GUI 24 file đã được người dùng duyệt;
+Stage 8A.4.2 chưa được bắt đầu.
+
+Regression tập trung liên quan đạt **307 passed**. QA toàn repository đạt
+**1601 passed, 2 deselected**; `pip check` và `compileall src tests tools` sạch.
+
+Compatibility theo Tool family mới là kiến trúc fail-closed; chưa triển khai
+thuật toán CAM đa họ Tool. Cấu hình Tool không phải chứng nhận an toàn,
+Production Post không đổi và machine-ready chưa được chứng nhận. Quy trình ba
+bước hoàn chỉnh, chương trình mẫu và Import/Export profile vẫn ngoài phạm vi.
+
+Tài liệu contract: `docs/CAM_TOOL_PROGRAM_PROFILES_8A4_1.md`.
 
 ## Kết quả hoàn thành Stage 8A.3.3
 

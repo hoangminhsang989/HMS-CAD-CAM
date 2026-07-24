@@ -69,6 +69,9 @@ from hms_cadcam.cam.domain import (
     Setup,
 )
 from hms_cadcam.cam.toolpath import MarkerEvent, ToolpathArtifact
+from hms_cadcam.cam.tool_profile_integration import (
+    apply_tool_profile_to_automatic_contract,
+)
 from hms_cadcam.ui.function_editor.model import (
     ApplicabilityOperator,
     FunctionEditorAction,
@@ -406,12 +409,30 @@ def _resolve_automatic_contract(
         "surface_allowance_mm": values.get("surface_allowance_mm", allowance),
         "cut_direction": values.get("cut_direction", parameters.cut_direction.value),
     }
-    return resolve_parallel_automatic_contract(
+    contract = resolve_parallel_automatic_contract(
         _automatic_context(context, draft, values),
         _quality_profile(values, stored),
         stored=stored,
         manual_flags=flags,
         override_values=overrides,
+    )
+    assembly_id = str(
+        values.get("tool_assembly_id", context.operation.tool_assembly.assembly_id)
+    )
+    _assembly, tool, holder = _assembly_resources(context, assembly_id)
+    if tool is None:
+        return contract
+    return apply_tool_profile_to_automatic_contract(
+        contract,
+        tool,
+        "parallel_finishing_3d",
+        operation_override_keys=frozenset(
+            key for key, enabled in flags.items() if enabled
+        ),
+        operation_id=str(context.operation.operation_id),
+        holder_fingerprint=(
+            holder.content_fingerprint if holder is not None else None
+        ),
     )
 
 
@@ -477,12 +498,14 @@ def _surfaces(context: ParallelEditorContext) -> tuple[CamSurfaceReference, ...]
 
 def _assembly_resources(
     context: ParallelEditorContext,
+    assembly_id: str | None = None,
 ) -> tuple[ToolAssembly | None, ToolDefinition | None, HolderDefinition | None]:
+    target = assembly_id or str(context.operation.tool_assembly.assembly_id)
     assembly = next(
         (
             item
             for item in context.tool_assemblies
-            if item.assembly_id == context.operation.tool_assembly.assembly_id
+            if str(item.assembly_id) == target
         ),
         None,
     )
@@ -1826,6 +1849,7 @@ def build_parallel_schema(context: ParallelEditorContext) -> FunctionEditorSchem
                 FunctionEditorAction.PREVIEW,
                 FunctionEditorAction.VALIDATE,
                 FunctionEditorAction.APPLY,
+                FunctionEditorAction.SAVE_TOOL_PROFILE,
                 FunctionEditorAction.CALCULATE,
                 FunctionEditorAction.CLOSE,
             ),

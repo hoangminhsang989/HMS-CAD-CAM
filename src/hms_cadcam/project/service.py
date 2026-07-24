@@ -414,7 +414,7 @@ class ProjectService:
         session.cam_snapshot = changed
         if changed != before:
             session.is_dirty = True
-            self._simulation_runs.cancel_all(stale=True)
+            self._mark_changed_operation_simulations(before, changed)
             self._remove_deleted_operation_simulations(session, before, changed)
             self._reconcile_nc_artifacts(session, changed)
         return changed
@@ -1034,6 +1034,34 @@ class ProjectService:
                     "Không thể xóa simulation cache của operation %s",
                     operation_id,
                     exc_info=True,
+                )
+
+    def _mark_changed_operation_simulations(
+        self,
+        before: CamProjectSnapshot,
+        after: CamProjectSnapshot,
+    ) -> None:
+        """Stale only runtime results whose operation dependency changed."""
+        before_operations = {
+            operation.operation_id: operation
+            for job in before.jobs
+            for setup in job.setups
+            for operation in setup.operation_tree.operations
+        }
+        after_operations = {
+            operation.operation_id: operation
+            for job in after.jobs
+            for setup in job.setups
+            for operation in setup.operation_tree.operations
+        }
+        for operation_id in sorted(
+            before_operations.keys() & after_operations.keys(),
+            key=str,
+        ):
+            if before_operations[operation_id] != after_operations[operation_id]:
+                self._simulation_runs.mark_stale(
+                    operation_id,
+                    "Phụ thuộc của nguyên công đã thay đổi.",
                 )
 
     def _reconcile_nc_artifacts(

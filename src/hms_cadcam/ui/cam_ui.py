@@ -44,8 +44,10 @@ from hms_cadcam.cam.domain import (
     ResolvedDrillingGeometry, ResolvedPocketGeometry,
     SpindleDirection, SpindleSpeed, TappingHand, TappingStrategy,
     TappingSynchronizationPolicy, TappingValidationError, ToolAssemblyId,
-    ToolAssemblyReference,
+    ToolAssemblyReference, ToolProfileSaveMode,
     ToolFamily,
+    DEFAULT_TOOL_PROFILE_REGISTRY,
+    preview_tool_profile_capture,
     Vector3, WcsFrame, WorkOffset,
     HMS_GEOMETRY_REFERENCE_SCHEME, HMS_GEOMETRY_REFERENCE_SCHEME_VERSION,
 )
@@ -97,7 +99,10 @@ from hms_cadcam.ui.function_editor.model import (
     FunctionEditorPreviewRequest,
     PresentationValue,
 )
-from hms_cadcam.ui.function_editor.production import FunctionEditorProductionSession
+from hms_cadcam.ui.function_editor.production import (
+    FunctionEditorProductionSession,
+    ToolProfileSaveInteraction,
+)
 from hms_cadcam.ui.function_editor.strategies import (
     ContourEditorContext,
     ContourEditorDraftContext,
@@ -715,6 +720,14 @@ class CamWorkspace(QWidget):
             field_action_callback=lambda action_id, values: self._z_level_field_action(
                 context, draft, action_id, values
             ),
+            tool_profile_interaction_callback=lambda values, changed: (
+                self._tool_profile_save_interaction(
+                    "z_level_finishing_3d",
+                    operation.operation_id,
+                    values,
+                    changed,
+                )
+            ),
         )
 
     def _z_level_context_is_current(
@@ -1278,6 +1291,14 @@ class CamWorkspace(QWidget):
             ),
             field_action_callback=lambda action_id, values: self._parallel_field_action(
                 context, draft, action_id, values
+            ),
+            tool_profile_interaction_callback=lambda values, changed: (
+                self._tool_profile_save_interaction(
+                    "parallel_finishing_3d",
+                    operation.operation_id,
+                    values,
+                    changed,
+                )
             ),
         )
 
@@ -1964,7 +1985,125 @@ class CamWorkspace(QWidget):
             field_action_callback=lambda action_id, values: self._drilling_family_field_action(
                 context, draft, action_id, values
             ),
+            tool_profile_interaction_callback=(
+                (
+                    lambda values, changed: self._tool_profile_save_interaction(
+                        "drilling_v1",
+                        operation.operation_id,
+                        values,
+                        changed,
+                    )
+                )
+                if kind is DrillingFamilyEditorKind.DRILLING
+                else None
+            ),
         )
+
+    def _tool_profile_save_interaction(
+        self,
+        strategy_id: str,
+        operation_id: OperationId,
+        values: Mapping[str, PresentationValue],
+        changed_fields: frozenset[str],
+    ) -> ToolProfileSaveInteraction:
+        """Build preview/confirm callbacks without mutating the current draft."""
+        if self._generation is None:
+            raise RuntimeError("Dự án hiện tại không còn hoạt động.")
+        operation = self._current_facing_operation(operation_id)
+        if operation is None:
+            raise RuntimeError("Nguyên công hiện tại không còn tồn tại.")
+        snapshot = self._service.cam_snapshot
+        assembly_text = str(
+            values.get(
+                "tool_assembly_id", operation.tool_assembly.assembly_id
+            )
+        )
+        assembly = next(
+            (
+                item
+                for item in snapshot.tool_assemblies
+                if str(item.assembly_id) == assembly_text
+            ),
+            None,
+        )
+        if assembly is None:
+            raise ValueError("Cụm Tool đã chọn không còn tồn tại.")
+        tool = next(
+            (
+                item
+                for item in snapshot.tool_definitions
+                if item.tool_id == assembly.tool_id
+            ),
+            None,
+        )
+        if tool is None:
+            raise ValueError("Tool đã chọn không còn tồn tại.")
+        holder = next(
+            (
+                item
+                for item in snapshot.holder_definitions
+                if assembly.holder_id is not None
+                and item.holder_id == assembly.holder_id
+            ),
+            None,
+        )
+        schema = DEFAULT_TOOL_PROFILE_REGISTRY.schema(strategy_id)
+        overridden: set[str] = set()
+        for descriptor in schema.fields:
+            if (
+                descriptor.override_flag_id is not None
+                and bool(values.get(descriptor.override_flag_id, False))
+            ):
+                overridden.add(descriptor.field_id)
+            if (
+                descriptor.field_id in changed_fields
+                or descriptor.operation_field_id in changed_fields
+            ):
+                overridden.add(descriptor.field_id)
+            if (
+                strategy_id == "drilling_v1"
+                and descriptor.operation_field_id in values
+            ):
+                overridden.add(descriptor.field_id)
+
+        def make_preview(mode: ToolProfileSaveMode):
+            return preview_tool_profile_capture(
+                tool,
+                strategy_id,
+                schema.display_name_vi,
+                values,
+                overridden_field_ids=frozenset(overridden),
+                mode=mode,
+                source_unit=(
+                    assembly.unit
+                    if strategy_id == "drilling_v1"
+                    else None
+                ),
+                registry=DEFAULT_TOOL_PROFILE_REGISTRY,
+            )
+
+        preview = make_preview(ToolProfileSaveMode.OVERRIDES_ONLY)
+
+        def confirm(mode: ToolProfileSaveMode) -> object:
+            if not isinstance(mode, ToolProfileSaveMode):
+                raise TypeError("Lựa chọn lưu cấu hình Tool không hợp lệ.")
+            confirmed = make_preview(mode)
+            return self._service.execute_cam_command(
+                lambda app: app.save_tool_program_profile(
+                    confirmed,
+                    expected_configuration_revision=(
+                        tool.configuration_revision
+                    ),
+                    holder_fingerprint=(
+                        holder.content_fingerprint
+                        if holder is not None
+                        else None
+                    ),
+                ),
+                expected_generation=self._generation,
+            )
+
+        return ToolProfileSaveInteraction(preview, confirm, make_preview)
 
     def _drilling_family_context_is_current(
         self, context: DrillingFamilyEditorContext

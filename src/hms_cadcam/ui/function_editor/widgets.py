@@ -61,6 +61,9 @@ CloseConfirmation = Callable[[FunctionEditorDraftState], bool]
 FieldActionCallback = Callable[
     [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
 ]
+ToolProfileInteractionCallback = Callable[
+    [Mapping[str, PresentationValue], frozenset[str]], object
+]
 
 _STATUS_LABELS = {
     FunctionEditorDraftStatus.NO_CHANGES: "Không có thay đổi",
@@ -324,6 +327,7 @@ class FunctionEditorFooterWidget(QFrame):
         FunctionEditorAction.VALIDATE: "Kiểm tra",
         FunctionEditorAction.CALCULATE: "Tính toán",
         FunctionEditorAction.APPLY: "Áp dụng",
+        FunctionEditorAction.SAVE_TOOL_PROFILE: "Lưu cho Tool",
         FunctionEditorAction.CLOSE: "Đóng",
     }
 
@@ -398,6 +402,9 @@ class FunctionEditorFooterWidget(QFrame):
                 "Chỉ dùng trạng thái đã áp dụng, hiện hành và hợp lệ"
             ),
             FunctionEditorAction.APPLY: "Áp dụng bản nháp hợp lệ bằng một lệnh nguyên tử",
+            FunctionEditorAction.SAVE_TOOL_PROFILE: (
+                "Xem trước rồi lưu thiết lập cho Tool và chương trình hiện tại"
+            ),
             FunctionEditorAction.CLOSE: "Đóng trình chỉnh sửa; bản nháp chưa áp dụng cần xác nhận",
         }[action]
 
@@ -475,6 +482,21 @@ class FunctionEditorFooterWidget(QFrame):
             )
             preview.setToolTip(reason)
             preview.setAccessibleDescription(reason)
+        save_profile = self.buttons.get(FunctionEditorAction.SAVE_TOOL_PROFILE)
+        if save_profile is not None:
+            enabled = state.status not in {
+                FunctionEditorDraftStatus.INVALID,
+                FunctionEditorDraftStatus.APPLYING,
+                FunctionEditorDraftStatus.STALE,
+            }
+            save_profile.setEnabled(enabled)
+            reason = (
+                self._tooltip(FunctionEditorAction.SAVE_TOOL_PROFILE)
+                if enabled
+                else "Sửa lỗi hoặc tải lại nguyên công trước khi lưu cấu hình Tool"
+            )
+            save_profile.setToolTip(reason)
+            save_profile.setAccessibleDescription(reason)
         if self._calculation_active:
             reason = "Đang tính toán; dùng Hủy tính toán để dừng."
             for action, button in self.buttons.items():
@@ -511,6 +533,9 @@ class FunctionEditorPage(QWidget):
         preview_callback: PreviewCallback | None = None,
         calculate_callback: CalculateCallback | None = None,
         field_action_callback: FieldActionCallback | None = None,
+        tool_profile_interaction_callback: (
+            ToolProfileInteractionCallback | None
+        ) = None,
         close_confirmation: CloseConfirmation | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -527,6 +552,9 @@ class FunctionEditorPage(QWidget):
         self._preview_callback = preview_callback
         self._calculate_callback = calculate_callback
         self._field_action_callback = field_action_callback
+        self._tool_profile_interaction_callback = (
+            tool_profile_interaction_callback
+        )
         self._close_confirmation = close_confirmation
         self._section_widgets: dict[str, FunctionEditorSectionWidget] = {}
         self._field_widgets: dict[str, FunctionEditorFieldWidget] = {}
@@ -1405,6 +1433,30 @@ class FunctionEditorPage(QWidget):
                 self.calculate_requested.emit(snapshot)
             except (KeyError, RuntimeError, TypeError, ValueError) as error:
                 self.preview_status.setText(f"Lỗi tính toán: {ui_text(error)}")
+                self.preview_status.setVisible(True)
+        elif action is FunctionEditorAction.SAVE_TOOL_PROFILE:
+            if self._tool_profile_interaction_callback is None:
+                self.preview_status.setText(
+                    "Chương trình hiện tại chưa hỗ trợ lưu cấu hình Tool."
+                )
+                self.preview_status.setVisible(True)
+                return
+            try:
+                changed = frozenset(
+                    key
+                    for key, value in self.state.values.items()
+                    if self.state.applied_values.get(key) != value
+                )
+                interaction = self._tool_profile_interaction_callback(
+                    self.state.values, changed
+                )
+                self.child_popup_requested.emit(
+                    "tool_profile_save", interaction
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self.preview_status.setText(
+                    f"Không thể chuẩn bị cấu hình Tool: {ui_text(error)}"
+                )
                 self.preview_status.setVisible(True)
         elif action is FunctionEditorAction.CLOSE:
             self.request_close()

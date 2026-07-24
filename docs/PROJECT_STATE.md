@@ -1,5 +1,38 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình
+
+- Stage 8A.4.1 đã **COMPLETED** trên baseline `af3bbf3`; package GUI đã được
+  người dùng duyệt và chưa bắt đầu Stage 8A.4.2.
+- Phạm vi hoàn thành chỉ gồm common defaults, profile tùy chọn theo strategy,
+  schema/validation, persistence, resolver/provenance, stale rules, Tool editor,
+  tests, tài liệu và review package.
+- `ToolDefinition` giữ payload v1 nguyên trạng khi chưa có cấu hình và dùng
+  payload v2 khi có common defaults/profile; physical fingerprint không đổi,
+  configuration fingerprint được tách riêng.
+- Registry đã có schema typed riêng cho Z-Level, Parallel và Khoan. Resolver
+  dùng precedence operation override → Tool profile → common defaults →
+  automatic policy → safe fallback, kèm provenance/dependency contribution.
+- Function Editor Z-Level/Parallel đọc profile theo Tool đang chọn, manual
+  override luôn thắng; Z-Level/Parallel/Khoan có preview xác nhận lưu cho Tool
+  và không tự Calculate.
+- Profile thay đổi calculation semantics chỉ stale operation cùng Tool/strategy;
+  metadata trình bày không stale Simulation. Safety/Simulation/Post gate cũ
+  không được lưu trong profile và tiếp tục fail-closed.
+- Review package Git-ignored có đúng 24 file (16 PNG có hash riêng, 7 JSON,
+  1 Markdown). Cả ba DPI dùng QPA Windows và font production Segoe UI; probe
+  coverage/pixel cho missing, replacement và tofu đều bằng 0; người dùng đã
+  duyệt package và focused QA cuối đạt 41 passed.
+- Regression tập trung đạt 307 passed; full QA đạt **1601 passed,
+  2 deselected**. `pip check` và `compileall src tests tools` đều đạt.
+- Không triển khai quy trình ba bước hoàn chỉnh, chương trình mẫu,
+  Import/Export profile, thay đổi thuật toán CAM/Tool đa họ, Production Post
+  hoặc chứng nhận machine-ready trong stage này.
+- Compatibility theo Tool family chỉ là kiến trúc fail-closed; cấu hình Tool
+  không phải chứng nhận an toàn và không tạo claim G-code production.
+- SQLite giữ schema **v4**, không migration; Tool/project v4 cũ, Save/Open và
+  Autosave đã được kiểm tra tương thích ngược.
+
 ## Checkpoint Stage 8A.3.3 — Z-Level Production Function Editor
 
 - Stage 8A.3.3 đã **COMPLETED**; package GUI native Windows cuối đã được người

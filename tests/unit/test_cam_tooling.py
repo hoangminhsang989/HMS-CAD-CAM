@@ -164,7 +164,7 @@ def test_cutting_length_cannot_exceed_usable_length() -> None:
 
 def test_future_tool_version_is_rejected() -> None:
     payload = _tool().to_dict()
-    payload["format_version"] = 2
+    payload["format_version"] = 3
 
     with pytest.raises(UnsupportedCamSchemaError):
         ToolDefinition.from_dict(payload)

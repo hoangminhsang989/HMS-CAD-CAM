@@ -23,12 +23,18 @@ from hms_cadcam.cam.domain.revision import (
     Revision,
 )
 from hms_cadcam.cam.domain.spatial import _strict_payload
+from hms_cadcam.cam.domain.tool_profiles import (
+    DEFAULT_TOOL_PROFILE_REGISTRY,
+    ToolCommonDefaults,
+    ToolProgramProfile,
+)
 from hms_cadcam.cam.domain.units import Angle, AngleUnit, Length, LengthUnit
 
 _TOOL_FORMAT = "HMS_CAM_TOOL_DEFINITION"
 _HOLDER_FORMAT = "HMS_CAM_HOLDER_DEFINITION"
 _ASSEMBLY_FORMAT = "HMS_CAM_TOOL_ASSEMBLY"
 _VERSION = 1
+_TOOL_VERSION = 2
 _BORING_BAR_GEOMETRY_VERSION = 1
 
 
@@ -753,7 +759,10 @@ class ToolDefinition:
     coolant_capabilities: tuple[ToolCoolantCapability, ...] = ()
     manufacturer: str | None = None
     model: str | None = None
-    SERIALIZATION_VERSION: ClassVar[int] = _VERSION
+    common_defaults: ToolCommonDefaults = ToolCommonDefaults()
+    program_profiles: tuple[ToolProgramProfile, ...] = ()
+    configuration_revision: Revision = Revision(0)
+    SERIALIZATION_VERSION: ClassVar[int] = _TOOL_VERSION
 
     def __post_init__(self) -> None:
         if not isinstance(self.tool_id, ToolDefinitionId):
@@ -803,14 +812,91 @@ class ToolDefinition:
             self, "manufacturer", _optional_text(self.manufacturer, "Manufacturer")
         )
         object.__setattr__(self, "model", _optional_text(self.model, "Tool model"))
+        if not isinstance(self.common_defaults, ToolCommonDefaults):
+            raise CamValidationError("Tool common defaults are invalid")
+        if not isinstance(self.program_profiles, tuple) or any(
+            not isinstance(item, ToolProgramProfile)
+            for item in self.program_profiles
+        ):
+            raise CamValidationError("Tool program profiles must be a typed tuple")
+        ordered_profiles = tuple(
+            sorted(self.program_profiles, key=lambda item: str(item.profile_id))
+        )
+        if len({item.profile_id for item in ordered_profiles}) != len(
+            ordered_profiles
+        ):
+            raise CamInvariantError("Tool program profile IDs must be unique")
+        for profile in ordered_profiles:
+            if profile.tool_id != self.tool_id:
+                raise CamInvariantError("Tool program profile belongs to another Tool")
+            schema = DEFAULT_TOOL_PROFILE_REGISTRY.schema(profile.strategy_id)
+            if profile.profile_schema_version != schema.profile_schema_version:
+                raise CamValidationError("Tool profile schema version is unsupported")
+            schema.normalize_values(profile.sparse_mapping)
+        object.__setattr__(self, "program_profiles", ordered_profiles)
+        if not isinstance(self.configuration_revision, Revision):
+            raise CamValidationError("Tool configuration revision is invalid")
 
     @property
     def content_fingerprint(self) -> ContentFingerprint:
-        """Return a deterministic fingerprint of this immutable snapshot."""
-        return ContentFingerprint.from_payload(self.to_dict())
+        """Fingerprint physical Tool content without optional profile metadata."""
+        return ContentFingerprint.from_payload(self._physical_payload())
+
+    @property
+    def configuration_fingerprint(self) -> ContentFingerprint:
+        """Hash only calculation-relevant common/profile configuration."""
+        return ContentFingerprint.from_payload(
+            {
+                "common_defaults": self.common_defaults.to_dict(),
+                "profiles": [
+                    {
+                        "profile_id": str(item.profile_id),
+                        "fingerprint": item.fingerprint.to_dict(),
+                    }
+                    for item in self.program_profiles
+                ],
+            }
+        )
+
+    def profiles_for_strategy(
+        self, strategy_id: str
+    ) -> tuple[ToolProgramProfile, ...]:
+        """Return deterministic optional profiles for one strategy."""
+        return tuple(
+            item
+            for item in self.program_profiles
+            if item.strategy_id == strategy_id
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize this tool definition."""
+        if (
+            self.common_defaults.is_empty
+            and not self.program_profiles
+            and self.configuration_revision == Revision(0)
+        ):
+            return self._physical_payload()
+        return {
+            "format": _TOOL_FORMAT,
+            "format_version": _TOOL_VERSION,
+            "tool_id": str(self.tool_id),
+            "name": self.name,
+            "family": self.family.value,
+            "unit": self.unit.value,
+            "cutting_geometry": self.cutting_geometry.to_dict(),
+            "overall_length": _length_dict(self.overall_length),
+            "usable_length": _length_dict(self.usable_length),
+            "shank": self.shank.to_dict(),
+            "revision": self.revision.to_dict(),
+            "coolant_capabilities": [item.value for item in self.coolant_capabilities],
+            "manufacturer": self.manufacturer,
+            "model": self.model,
+            "common_defaults": self.common_defaults.to_dict(),
+            "program_profiles": [item.to_dict() for item in self.program_profiles],
+            "configuration_revision": self.configuration_revision.to_dict(),
+        }
+
+    def _physical_payload(self) -> dict[str, Any]:
         return {
             "format": _TOOL_FORMAT,
             "format_version": _VERSION,
@@ -831,25 +917,57 @@ class ToolDefinition:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ToolDefinition":
         """Deserialize atomically into one tool definition."""
-        _strict_payload(
-            data,
-            format_name=_TOOL_FORMAT,
-            version=_VERSION,
-            fields={
-                "tool_id",
-                "name",
-                "family",
-                "unit",
-                "cutting_geometry",
-                "overall_length",
-                "usable_length",
-                "shank",
-                "revision",
-                "coolant_capabilities",
-                "manufacturer",
-                "model",
-            },
-        )
+        if not isinstance(data, dict):
+            raise CamValidationError("Tool definition payload is malformed")
+        version = data.get("format_version")
+        base_fields = {
+            "tool_id",
+            "name",
+            "family",
+            "unit",
+            "cutting_geometry",
+            "overall_length",
+            "usable_length",
+            "shank",
+            "revision",
+            "coolant_capabilities",
+            "manufacturer",
+            "model",
+        }
+        if version == _VERSION:
+            _strict_payload(
+                data,
+                format_name=_TOOL_FORMAT,
+                version=_VERSION,
+                fields=base_fields,
+            )
+            common_defaults = ToolCommonDefaults()
+            program_profiles: tuple[ToolProgramProfile, ...] = ()
+            configuration_revision = Revision(0)
+        elif version == _TOOL_VERSION:
+            _strict_payload(
+                data,
+                format_name=_TOOL_FORMAT,
+                version=_TOOL_VERSION,
+                fields={
+                    *base_fields,
+                    "common_defaults",
+                    "program_profiles",
+                    "configuration_revision",
+                },
+            )
+            raw_profiles = data["program_profiles"]
+            if not isinstance(raw_profiles, list):
+                raise CamValidationError("Tool program profiles must be a list")
+            common_defaults = ToolCommonDefaults.from_dict(data["common_defaults"])
+            program_profiles = tuple(
+                ToolProgramProfile.from_dict(item) for item in raw_profiles
+            )
+            configuration_revision = Revision.from_dict(
+                data["configuration_revision"]
+            )
+        else:
+            raise UnsupportedCamSchemaError("Unsupported Tool definition version")
         coolant = data["coolant_capabilities"]
         if not isinstance(coolant, list):
             raise CamValidationError("Tool coolant payload must be a list")
@@ -872,6 +990,9 @@ class ToolDefinition:
             capabilities,
             data["manufacturer"],
             data["model"],
+            common_defaults,
+            program_profiles,
+            configuration_revision,
         )
 
 
