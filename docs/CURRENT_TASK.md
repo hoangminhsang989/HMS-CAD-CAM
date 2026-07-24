@@ -1,4 +1,38 @@
-# Nhiệm vụ hiện tại — Stage 8A.3.2
+# Nhiệm vụ hiện tại — Stage 8A.3.3
+
+## Trạng thái ưu tiên
+
+- **Stage 8A.3.3 — Z-Level Finishing Production Function Editor — COMPLETED.**
+- **Stage 8A.3.2 — COMPLETED.**
+- **Stage 8A.3.1 — COMPLETED.**
+- **Stage 8A.2.3 — COMPLETED.**
+- **Stage 9A.6 — COMPLETED.**
+- **Stage 9A.I1 — DEFERRED.**
+
+Stage 8A.3.3 đã hoàn tất; chưa bắt đầu stage kế tiếp và hiện không có stage nào
+được đánh dấu `IN PROGRESS`. Các phần bên dưới là lịch sử baseline và được giữ
+lại để truy vết.
+
+## Kết quả hoàn thành Stage 8A.3.3
+
+- Z-Level Finishing Production Function Editor đã hoàn tất trên hợp đồng
+  algorithm v2, payload v1 và SQLite schema v4; không tăng phiên bản.
+- Basic/Advanced editor, tham số tự động và tùy chỉnh thủ công, lifecycle
+  Apply/Calculate/Cancel, worker nền, persistence, Operation Manager,
+  accessibility, minh họa và responsive/DPI đã có mã chạy được và QA.
+- Simulation chỉ mở cho artifact hiện hành **READY + SAFE v2**. Production Post
+  tiếp tục fail-closed; không tạo claim G-code production.
+- Machine-ready clearance chưa được xác minh hoặc chứng nhận; chưa kiểm chứng
+  trên máy CNC thật.
+- Dependency không đổi; icon không đổi và Stage 9A.I1 tiếp tục `DEFERRED`.
+- Package review native Windows gồm 27 ảnh kỹ thuật, 1 montage, 9 JSON và
+  1 Markdown (38 file, 28/28 PNG có hash riêng) đã được người dùng duyệt.
+- Localization audit bao phủ 115.103 record; mọi leak, raw namespace/model
+  token, chuỗi lặp và acronym không được phép đều bằng 0.
+- QA khóa cuối: **302 passed** focused; **1559 passed, 2 deselected** toàn
+  repository; `pip check`, `compileall` và `git diff --check` đều đạt.
+
+# Lịch sử — Stage 8A.3.2
 
 ## Trạng thái ưu tiên
 
@@ -215,3 +249,16 @@
   tiếp tục là baseline giao diện cần bảo toàn.
 - Stage 9A.I1 icon pack tiếp tục deferred; không sửa icon trong Stage 9A.6.
 - Không tự động bắt đầu stage tiếp theo sau khi hoàn tất Stage 9A.6.
+# Ghi chú triển khai — Stage 8A.3.3
+
+## Trạng thái ưu tiên
+
+- **Stage 8A.3.3 — Z-Level Finishing Production Function Editor — xem mục hiện tại ở đầu tài liệu.**
+- **Stage 8A.3.2 — COMPLETED.**
+- **Stage 8A.3.1 — COMPLETED.**
+- **Stage 8A.2.3 — COMPLETED.**
+- **Stage 8A.2.2 — COMPLETED.**
+- **Stage 9A.6 — COMPLETED.**
+- **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack — DEFERRED.**
+
+Phần này được giữ lại để truy vết; không stage nào khác đang `IN PROGRESS`.

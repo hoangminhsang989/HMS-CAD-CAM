@@ -42,6 +42,7 @@ from hms_cadcam.cam.application import (
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
 from hms_cadcam.cam.cam3d.parallel import ParallelFinishingComputeResult
+from hms_cadcam.cam.cam3d.zlevel import ZLevelFinishingComputeResult
 from hms_cadcam.cam.domain import (
     DrillDepthDefinition, DrillGeometryInput, GeometryReference, Operation, OperationId,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
@@ -532,6 +533,42 @@ class ProjectService:
             return False
         before = self._cam_application.snapshot
         accepted = self._cam_application.commit_parallel_calculation(result)
+        session.cam_snapshot = self._cam_application.snapshot
+        if accepted and session.cam_snapshot != before:
+            session.is_dirty = True
+            self._simulation_runs.mark_stale(result.operation.operation_id)
+            self._nc_export_service.mark_operation_stale(result.operation.operation_id)
+        return accepted
+
+    def begin_z_level_calculation(
+        self,
+        computing: Operation,
+        *,
+        expected_generation: int,
+    ) -> bool:
+        """Stage a Z-Level worker token only for the active project generation."""
+        session = self._require_current()
+        if expected_generation != self._cam_application.generation:
+            return False
+        before = self._cam_application.snapshot
+        accepted = self._cam_application.begin_z_level_calculation(computing)
+        session.cam_snapshot = self._cam_application.snapshot
+        if accepted and session.cam_snapshot != before:
+            session.is_dirty = True
+        return accepted
+
+    def commit_z_level_calculation(
+        self,
+        result: ZLevelFinishingComputeResult,
+        *,
+        expected_generation: int,
+    ) -> bool:
+        """Commit a SAFE/failed Z-Level result through the project lifecycle."""
+        session = self._require_current()
+        if expected_generation != self._cam_application.generation:
+            return False
+        before = self._cam_application.snapshot
+        accepted = self._cam_application.commit_z_level_calculation(result)
         session.cam_snapshot = self._cam_application.snapshot
         if accepted and session.cam_snapshot != before:
             session.is_dirty = True

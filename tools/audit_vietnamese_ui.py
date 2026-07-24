@@ -10,8 +10,39 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+from types import MappingProxyType
 from typing import Iterable
 
+from hms_cadcam.cam.automatic_parameters import (
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    CamQualityProfile,
+)
+from hms_cadcam.cam.cam3d.zlevel.models import (
+    ZLevelArtifactStatus,
+    ZLevelBoundaryClassification,
+    ZLevelBoundaryPolicy,
+    ZLevelLinkingMode,
+    ZLevelLoopType,
+    ZLevelOrientation,
+    ZLevelProgressPhase,
+)
+from hms_cadcam.cam.domain import (
+    ArtifactStatus,
+    DirtyReason,
+    SetupKind,
+    StockKind,
+    ToolReferenceStatus,
+)
+from hms_cadcam.cam.post import (
+    NCArtifactStatus,
+    NCExportStatus,
+    PostResultStatus,
+)
+from hms_cadcam.cam.simulation import (
+    SimulationRunState,
+    SimulationStatus,
+)
 from hms_cadcam.ui.localization import (
     DISPLAY_VALUE_MAPPINGS,
     OPERATION_DISPLAY_NAMES,
@@ -20,6 +51,10 @@ from hms_cadcam.ui.localization import (
     UI_TRANSLATIONS,
     ui_text,
 )
+from hms_cadcam.ui.operation_manager_types import (
+    OperationManagerSemanticStatus,
+    OperationManagerStatusCategory,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +62,98 @@ DEFAULT_OUTPUT = (
     REPOSITORY_ROOT / "reference_private" / "DERIVED" / "UI_VIETNAMESE_AUDIT"
 )
 PRODUCTION_UI_ROOT = REPOSITORY_ROOT / "src" / "hms_cadcam" / "ui"
+
+APPROVED_TECHNICAL_TERMS = (
+    "CAD",
+    "CAM",
+    "CNC",
+    "Tool",
+    "Holder",
+    "Post",
+    "G-code",
+    "Toolpath IR",
+    "SQLite",
+    "OCP",
+    "BRep",
+    "UUID/ID",
+    "version/hash",
+    "U/V/W",
+    "đơn vị kỹ thuật",
+)
+RAW_NAMESPACE_PREFIXES = (
+    "DOMAIN",
+    "CALCULATION",
+    "SIMULATION",
+    "EXPORT",
+)
+RAW_MODEL_TOKENS = (
+    "Function Editor",
+    "production-",
+    "Z-Level",
+    "Stickout",
+    "assembly",
+    "geometry",
+    "revision",
+    "missing",
+    "Setup",
+    "MILL",
+    "Stock",
+    "domain",
+    "offset",
+    "box",
+)
+_INTERNAL_MODEL_ENUM_TYPES = (
+    SetupKind,
+    StockKind,
+    ToolReferenceStatus,
+    ArtifactStatus,
+    DirtyReason,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    CamQualityProfile,
+    ZLevelOrientation,
+    ZLevelBoundaryPolicy,
+    ZLevelLinkingMode,
+    ZLevelBoundaryClassification,
+    ZLevelLoopType,
+    ZLevelArtifactStatus,
+    ZLevelProgressPhase,
+    SimulationStatus,
+    SimulationRunState,
+    PostResultStatus,
+    NCExportStatus,
+    NCArtifactStatus,
+    OperationManagerStatusCategory,
+    OperationManagerSemanticStatus,
+)
+INTERNAL_MODEL_VALUE_CATALOG = MappingProxyType(
+    {
+        enum_type.__name__: tuple(item.value for item in enum_type)
+        for enum_type in _INTERNAL_MODEL_ENUM_TYPES
+    }
+)
+_APPROVED_INTERNAL_ENUM_VALUES = frozenset({"post", "nc"})
+_INTERNAL_MODEL_VALUES = tuple(
+    sorted(
+        {
+            str(value)
+            for enum_values in INTERNAL_MODEL_VALUE_CATALOG.values()
+            for value in enum_values
+            if len(str(value)) >= 3
+            and str(value).casefold() not in _APPROVED_INTERNAL_ENUM_VALUES
+        },
+        key=lambda item: (-len(item), item.casefold(), item),
+    )
+)
+_INTERNAL_MODEL_VALUE_BY_CASEFOLD = {
+    value.casefold(): value for value in _INTERNAL_MODEL_VALUES
+}
+_INTERNAL_MODEL_ENUM_PATTERN = re.compile(
+    r"(?<![\w.-])(?:"
+    + "|".join(re.escape(value) for value in _INTERNAL_MODEL_VALUES)
+    + r")(?![\w.-])",
+    re.IGNORECASE,
+)
 
 _UI_CONSTRUCTORS = {
     "FunctionEditorDiagnostic",
@@ -143,10 +270,38 @@ _ENGLISH_UI_WORDS = {
     "typed", "unavailable", "unknown", "unresolved", "unsafe", "unverified", "validate", "validation", "verified",
     "viewport", "warning", "workflow", "workspace", "way", "zigzag",
 }
+FORBIDDEN_UI_PHRASES = (
+    "safety contract",
+    "projection",
+    "viewport",
+    "WCS",
+    "trim",
+    "trimmed",
+    "validator",
+    "Machining zone",
+    "Parallel Setup",
+    "contract",
+    "Stage",
+    "topology",
+    "dependency",
+    "panel",
+    "popup",
+    "fallback",
+    "clearance",
+    "retract",
+    "Manager",
+    "Top/Bottom/Stepdown",
+)
 _WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _CODE_OR_ID = re.compile(
     r"^(?:[A-Za-z][A-Za-z0-9]*[._-][A-Za-z0-9_.-]*|G\d+|M\d+|T\d+|v?\d+(?:\.\d+)*)$"
 )
+_DUPLICATE_WORD = re.compile(r"[^\W_]+(?:[-/][^\W_]+)*", re.UNICODE)
+_DUPLICATE_JOINER = re.compile(r"[ \t]*(?:·[ \t]*)?")
+_UNAPPROVED_ACRONYM_PATTERN = re.compile(
+    r"(?<![\w./-])(?:CW/CCW|CCW|CW)(?![\w./-])"
+)
+_APPROVED_VIETNAMESE_REDUPLICATIONS = frozenset({"song song"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +438,155 @@ def _english_matches(text: str) -> tuple[str, ...]:
     )
 
 
+def _forbidden_phrase_matches(text: str) -> tuple[str, ...]:
+    return tuple(
+        phrase
+        for phrase in FORBIDDEN_UI_PHRASES
+        if re.search(
+            rf"(?<![\w.-]){re.escape(phrase)}(?![\w.-])",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _raw_token_occurs(text: str, token: str) -> bool:
+    suffix = "" if token.endswith(("-", "_")) else r"(?![\w.-])"
+    return (
+        re.search(
+            rf"(?<![\w.-]){re.escape(token)}{suffix}",
+            text,
+            re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def raw_namespace_matches(text: str) -> tuple[str, ...]:
+    """Return internal status namespaces rendered before a middle dot."""
+    return tuple(
+        namespace
+        for namespace in RAW_NAMESPACE_PREFIXES
+        if re.search(
+            rf"(?<![\w.-]){re.escape(namespace)}\s*·",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def raw_model_token_matches(text: str) -> tuple[str, ...]:
+    """Return known production-model vocabulary leaked into presentation text."""
+    return tuple(token for token in RAW_MODEL_TOKENS if _raw_token_occurs(text, token))
+
+
+def raw_internal_enum_matches(text: str) -> tuple[str, ...]:
+    """Return raw enum values sourced from production model classes."""
+    return tuple(
+        sorted(
+            {
+                _INTERNAL_MODEL_VALUE_BY_CASEFOLD[match.group(0).casefold()]
+                for match in _INTERNAL_MODEL_ENUM_PATTERN.finditer(text)
+            },
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+
+
+def raw_user_facing_internal_matches(text: str) -> tuple[str, ...]:
+    """Return all namespace, model-token and production-enum leaks."""
+    return tuple(
+        sorted(
+            {
+                *raw_namespace_matches(text),
+                *raw_model_token_matches(text),
+                *raw_internal_enum_matches(text),
+            },
+            key=lambda item: (item.casefold(), item),
+        )
+    )
+
+
+def duplicate_user_facing_phrase_matches(text: str) -> tuple[str, ...]:
+    """Return adjacent repeated word sequences without crossing a sentence."""
+    tokens = tuple(_DUPLICATE_WORD.finditer(text))
+    matches: dict[str, str] = {}
+    maximum_width = min(2, len(tokens) // 2)
+    for width in range(maximum_width, 0, -1):
+        for index in range(len(tokens) - (2 * width) + 1):
+            first = tokens[index : index + width]
+            second = tokens[index + width : index + (2 * width)]
+            if any(
+                re.fullmatch(
+                    r"[ \t]+",
+                    text[left.end() : right.start()],
+                )
+                is None
+                for phrase in (first, second)
+                for left, right in zip(phrase, phrase[1:], strict=False)
+            ):
+                continue
+            if tuple(item.group(0).casefold() for item in first) != tuple(
+                item.group(0).casefold() for item in second
+            ):
+                continue
+            if not any(
+                character.isalpha()
+                for item in first
+                for character in item.group(0)
+            ):
+                continue
+            joiner = text[first[-1].end() : second[0].start()]
+            if _DUPLICATE_JOINER.fullmatch(joiner) is None:
+                continue
+            if "·" in joiner:
+                before = text[: first[0].start()].rstrip()
+                after = text[second[-1].end() :].lstrip()
+                if (before and not before.endswith("·")) or (
+                    after and not after.startswith("·")
+                ):
+                    continue
+            rendered = re.sub(
+                r"\s+",
+                " ",
+                text[first[0].start() : second[-1].end()],
+            ).strip()
+            if rendered.casefold() in _APPROVED_VIETNAMESE_REDUPLICATIONS:
+                continue
+            matches.setdefault(rendered.casefold(), rendered)
+    return tuple(
+        matches[key]
+        for key in sorted(matches, key=lambda item: (item, matches[item]))
+    )
+
+
+def unapproved_user_facing_acronym_matches(text: str) -> tuple[str, ...]:
+    """Return direction acronyms that are not approved presentation terms."""
+    return tuple(
+        dict.fromkeys(
+            match.group(0)
+            for match in _UNAPPROVED_ACRONYM_PATTERN.finditer(text)
+        )
+    )
+
+
 def _classify(text: str, context: str) -> tuple[str, tuple[str, ...]]:
     stripped = text.strip()
+    localized = ui_text(stripped)
+    rendered = localized if context == "ui_text" else stripped
+    forbidden = _forbidden_phrase_matches(rendered)
+    if forbidden:
+        return "untranslated", forbidden
+    presentation = localized if localized != stripped else rendered
+    duplicate_phrases = duplicate_user_facing_phrase_matches(presentation)
+    if duplicate_phrases:
+        return "untranslated", duplicate_phrases
+    unapproved_acronyms = unapproved_user_facing_acronym_matches(presentation)
+    if unapproved_acronyms:
+        return "untranslated", unapproved_acronyms
+    raw_internal = raw_user_facing_internal_matches(presentation)
+    if raw_internal:
+        return "untranslated", raw_internal
     technical = _technical_matches(stripped)
     code_prefix = re.match(r"^([a-z][a-z0-9_.-]+)\s*[·:]\s*(.*)$", stripped)
     code_message = (
@@ -298,7 +600,11 @@ def _classify(text: str, context: str) -> tuple[str, tuple[str, ...]]:
         technical and not _english_matches(stripped)
     ):
         return "allowlisted", technical or (stripped,)
-    if context == "ui_text" or stripped in UI_TRANSLATIONS or ui_text(stripped) != stripped:
+    if (
+        (context == "ui_text" and rendered != stripped)
+        or stripped in UI_TRANSLATIONS
+        or ui_text(stripped) != stripped
+    ):
         return "translated", ()
     english = _english_matches(stripped)
     if english:
@@ -396,6 +702,18 @@ def _classify_runtime(
     categories = _runtime_categories(stripped)
     if not stripped:
         return "translated", (), categories
+    forbidden = _forbidden_phrase_matches(stripped)
+    if forbidden:
+        return "untranslated", forbidden, categories
+    duplicate_phrases = duplicate_user_facing_phrase_matches(stripped)
+    if duplicate_phrases:
+        return "untranslated", duplicate_phrases, categories
+    unapproved_acronyms = unapproved_user_facing_acronym_matches(stripped)
+    if unapproved_acronyms:
+        return "untranslated", unapproved_acronyms, categories
+    raw_internal = raw_user_facing_internal_matches(stripped)
+    if raw_internal:
+        return "untranslated", raw_internal, categories
     if stripped.startswith("Mã phạm vi nội bộ:"):
         raw_scope = stripped.split(":", 1)[1].strip()
         if raw_scope in DISPLAY_VALUE_MAPPINGS["safety_scope"]:
@@ -536,6 +854,24 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
                                 item,
                                 f"model_tooltip[{row},{column}]",
                                 model.data(index, Qt.ItemDataRole.ToolTipRole) or "",
+                            )
+                            add(
+                                item,
+                                f"model_accessible_text[{row},{column}]",
+                                model.data(
+                                    index,
+                                    Qt.ItemDataRole.AccessibleTextRole,
+                                )
+                                or "",
+                            )
+                            add(
+                                item,
+                                f"model_accessible_description[{row},{column}]",
+                                model.data(
+                                    index,
+                                    Qt.ItemDataRole.AccessibleDescriptionRole,
+                                )
+                                or "",
                             )
                         if first.isValid():
                             try:

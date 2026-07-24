@@ -10,8 +10,10 @@ from hms_cadcam.cam.domain import ArtifactStatus
 from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.localization import (
+    display_value,
     operation_display_name,
     operation_type_display_name,
+    setup_display_name,
 )
 from hms_cadcam.ui.operation_manager_status import (
     calculation_status,
@@ -20,6 +22,7 @@ from hms_cadcam.ui.operation_manager_status import (
     nc_status,
     operation_status,
     parallel_safety_status,
+    z_level_safety_status,
     post_status,
     setup_machine_name,
     simulation_status,
@@ -49,6 +52,7 @@ _SUPPORTED_STRATEGIES = frozenset(
         "contour_2d",
         "pocket_2_5d",
         "parallel_finishing_3d",
+        "z_level_finishing_3d",
         "drilling_v1",
         "tapping_v1",
         "reaming_v1",
@@ -63,6 +67,7 @@ _STRATEGY_SEARCH_ALIASES = {
     "contour_2d": "Contour 2D",
     "pocket_2_5d": "Pocket 2.5D",
     "parallel_finishing_3d": "Parallel Finishing",
+    "z_level_finishing_3d": "Z-Level Finishing",
     "drilling_v1": "Drilling",
     "tapping_v1": "Tapping",
     "reaming_v1": "Reaming",
@@ -204,7 +209,7 @@ class OperationManagerProjectionBuilder:
                 job.job_id,
                 project_node,
                 job.name,
-                f"{len(job.setups)} Setup",
+                f"{len(job.setups)} thiết lập",
                 (
                     status(
                         StatusCategory.DOMAIN,
@@ -257,7 +262,11 @@ class OperationManagerProjectionBuilder:
         header = OperationManagerHeader(
             session.manifest.project_name,
             active_job.name if active_job is not None else "Chưa có công việc",
-            active_setup.name if active_setup is not None else "Chưa có Setup",
+            (
+                setup_display_name(active_setup.name)
+                if active_setup is not None
+                else "Chưa có thiết lập"
+            ),
             setup_machine_name(snapshot, active_setup),
             operation_count,
             warning_count,
@@ -292,19 +301,19 @@ class OperationManagerProjectionBuilder:
             EntityKind.SETUP,
             setup.setup_id,
             job_node,
-            setup.name,
-            f"{setup.kind.value.upper()} · {setup.work_offset.name} · "
+            setup_display_name(setup.name),
+            f"{display_value(setup.kind, 'setup_kind')} · {setup.work_offset.name} · "
             f"{setup_machine_name(snapshot, setup)}",
             (
                 status(
                     StatusCategory.DOMAIN,
                     semantic,
                     semantic.value.upper(),
-                    "Setup bị vô hiệu hóa."
+                    "Thiết lập bị vô hiệu hóa."
                     if not setup.enabled
-                    else "Setup đang hoạt động."
+                    else "Thiết lập đang hoạt động."
                     if active
-                    else "Setup khả dụng.",
+                    else "Thiết lập khả dụng.",
                 ),
             ),
             enabled=setup.enabled,
@@ -326,7 +335,7 @@ class OperationManagerProjectionBuilder:
             setup_node,
             "Hình học",
             "Mô hình gia công theo nguồn dự án",
-            (current_status(StatusCategory.DOMAIN, "Đã liên kết geometry"),),
+            (current_status(StatusCategory.DOMAIN, "Đã liên kết hình học"),),
             enabled=setup.enabled,
             order=0,
             search_terms=(setup.model_reference.source_id,),
@@ -336,9 +345,9 @@ class OperationManagerProjectionBuilder:
             EntityKind.STOCK,
             setup.setup_id,
             setup_node,
-            "Stock",
+            "Phôi",
             stock_summary(setup.stock),
-            (current_status(StatusCategory.DOMAIN, "Stock hợp lệ"),),
+            (current_status(StatusCategory.DOMAIN, "Phôi hợp lệ"),),
             enabled=setup.enabled,
             order=1,
             legacy=LegacySelection("setup", str(setup.setup_id)),
@@ -358,9 +367,9 @@ class OperationManagerProjectionBuilder:
                     if setup.operation_tree.operations
                     else SemanticStatus.DRAFT,
                     "SẴN SÀNG" if setup.operation_tree.operations else "BẢN NHÁP",
-                    "Danh sách theo thứ tự domain hiện có."
+                    "Danh sách theo thứ tự dữ liệu hiện có."
                     if setup.operation_tree.operations
-                    else "Setup chưa có nguyên công.",
+                    else "Thiết lập chưa có nguyên công.",
                 ),
             ),
             enabled=setup.enabled,
@@ -436,7 +445,7 @@ class OperationManagerProjectionBuilder:
             setup.setup_id,
             setup_node,
             "Tools",
-            f"{len(tools)} assembly đang dùng",
+            f"{len(tools)} cụm Tool đang dùng",
             (
                 status(
                     StatusCategory.DOMAIN,
@@ -457,8 +466,8 @@ class OperationManagerProjectionBuilder:
                 tool.assembly_id,
                 tools_node,
                 tool.name,
-                f"Stickout {tool.stickout.value:g} {tool.unit.value}",
-                (current_status(StatusCategory.DOMAIN, "Tool Assembly hiện hành"),),
+                f"Chiều nhô {tool.stickout.value:g} {tool.unit.value}",
+                (current_status(StatusCategory.DOMAIN, "Cụm Tool hiện hành"),),
                 order=order,
                 search_terms=(tool.tool_id,),
                 node_identity=f"{setup.setup_id}:{tool.assembly_id}",
@@ -565,10 +574,15 @@ class OperationManagerProjectionBuilder:
         calculation = calculation_status(operation, assessed_tool)
         parallel_artifact = (
             service.load_toolpath_artifact(operation.operation_id)
-            if operation.strategy_key == "parallel_finishing_3d"
+            if operation.strategy_key
+            in {"parallel_finishing_3d", "z_level_finishing_3d"}
             else None
         )
-        safety = parallel_safety_status(operation, parallel_artifact)
+        safety = (
+            z_level_safety_status(operation, parallel_artifact)
+            if operation.strategy_key == "z_level_finishing_3d"
+            else parallel_safety_status(operation, parallel_artifact)
+        )
         simulation = simulation_status(
             service, operation, simulations.get(operation.operation_id)
         )
@@ -605,15 +619,29 @@ class OperationManagerProjectionBuilder:
         ):
             capabilities.append(Capability.SIMULATE)
         legacy = LegacySelection("operation", str(cam_node.node_id))
+        if operation.strategy_key == "z_level_finishing_3d":
+            # Keep the production row compact and truthful: custom operation
+            # names stay primary while the secondary line exposes the minimum
+            # Z-Level evidence needed for review.
+            secondary_summary = (
+                f"Tool cầu {tool_name} · {len(operation.geometry_inputs)} mặt · "
+                f"Tính {calculation.text} · "
+                f"An toàn {safety.text if safety is not None else 'Chưa kiểm tra'} · "
+                f"Mô phỏng {simulation.text} · NC {nc.text}"
+            )
+        else:
+            secondary_summary = (
+                f"{strategy_name} · {tool_name} · Đường dao {calculation.text} · "
+                f"An toàn {safety.text if safety is not None else 'N/A'} · "
+                f"Mô phỏng {simulation.text} · NC {nc.text}"
+            )
         operation_node = collector.add(
             NodeKind.OPERATION,
             EntityKind.OPERATION,
             operation.operation_id,
             parent_node,
             display_name,
-            f"{strategy_name} · {tool_name} · Đường dao {calculation.text} · "
-            f"An toàn {safety.text if safety is not None else 'N/A'} · "
-            f"Mô phỏng {simulation.text} · NC {nc.text}",
+            secondary_summary,
             (
                 operation_status(operation, assessed_tool, calculation),
                 calculation,
@@ -681,7 +709,12 @@ class OperationManagerProjectionBuilder:
         geometry_missing = (
             not operation.geometry_inputs
             and operation.strategy_key
-            in {"contour_2d", "pocket_2_5d", "parallel_finishing_3d"}
+            in {
+                "contour_2d",
+                "pocket_2_5d",
+                "parallel_finishing_3d",
+                "z_level_finishing_3d",
+            }
         )
         geometry_identity = (
             operation.geometry_inputs[0].reference.reference_id
@@ -696,7 +729,7 @@ class OperationManagerProjectionBuilder:
             "Hình học",
             f"{len(operation.geometry_inputs)} liên kết"
             if operation.geometry_inputs
-            else "Kế thừa Setup/model hoặc tham số strategy",
+            else "Kế thừa Thiết lập/mô hình hoặc tham số chiến lược",
             (
                 status(
                     StatusCategory.DOMAIN,
@@ -704,9 +737,9 @@ class OperationManagerProjectionBuilder:
                     if geometry_missing
                     else SemanticStatus.CURRENT,
                     "CẦN DỮ LIỆU" if geometry_missing else "HIỆN HÀNH",
-                    "Operation cần bind geometry."
+                    "Nguyên công cần liên kết hình học."
                     if geometry_missing
-                    else "Hình học đến từ nguyên công hoặc Setup/mô hình.",
+                    else "Hình học đến từ nguyên công hoặc Thiết lập/mô hình.",
                 ),
             ),
             enabled=operation.enabled,

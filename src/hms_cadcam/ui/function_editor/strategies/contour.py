@@ -779,7 +779,7 @@ def build_contour_sections(
                 binding_key="parameters.top_height",
                 order=10,
                 default=defaults.get("top_height"),
-                help_text="Tọa độ tuyệt đối trong Setup WCS; không phải machine coordinate.",
+                help_text="Tọa độ tuyệt đối trong hệ tọa độ Thiết lập; không phải tọa độ máy.",
             ),
             _number_field(
                 "final_depth",
@@ -834,7 +834,7 @@ def build_contour_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
         ),
-        "Đỉnh, chiều sâu cuối và chính sách chia lớp trong WCS thiết lập.",
+            "Đỉnh, chiều sâu cuối và chính sách chia lớp trong hệ tọa độ Thiết lập.",
         order=50,
     )
     linking = FunctionEditorSection(
@@ -908,7 +908,7 @@ def build_contour_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
             ),
         ),
-        "Clearance, retract và linear lead v1; mọi Z đều thuộc Setup WCS.",
+        "Khoảng an toàn, rút dao và dẫn dao tuyến tính v1; mọi Z đều thuộc hệ tọa độ Thiết lập.",
         disclosure_level=ParameterDisclosureLevel.ADVANCED,
         default_expanded=False,
         order=60,
@@ -971,7 +971,7 @@ def build_contour_sections(
                 values["start_policy"],
                 source=FunctionEditorValueSource.DEFAULT,
                 disclosure_level=ParameterDisclosureLevel.EXPERT,
-                tooltip="Algorithm contract v1: midpoint có (X, Y) nhỏ nhất; không có override.",
+                tooltip="Hợp đồng thuật toán v1: midpoint có (X, Y) nhỏ nhất; không có tùy chỉnh.",
                 help_text="Presentation chỉ đọc; policy này vẫn round-trip nguyên trong codec/fingerprint.",
                 help_key="contour.start_policy",
                 order=10,

@@ -29,7 +29,6 @@ TECHNICAL_TERMS = (
     "UUID",
     "ID",
     "HMS",
-    "WCS",
     "G54",
     "XYZ",
     "CRLF",
@@ -43,6 +42,7 @@ TECHNICAL_TERMS = (
 
 OPERATION_DISPLAY_NAMES = MappingProxyType(
     {
+        "Z-Level Finishing": "Gia công tinh theo cao độ Z",
         "Facing 2.5D": "Phay mặt 2.5D",
         "Planar Face Facing": "Phay các mặt phẳng",
         "2D Contour": "Phay biên dạng 2D",
@@ -58,6 +58,8 @@ OPERATION_DISPLAY_NAMES = MappingProxyType(
 
 _OPERATION_STRATEGY_DISPLAY_NAMES = MappingProxyType(
     {
+        "z_level_finishing_3d": "Gia công tinh theo cao độ Z",
+        "z_level_finishing_3d_8a3_3": "Gia công tinh theo cao độ Z",
         "facing_2_5d": OPERATION_DISPLAY_NAMES["Facing 2.5D"],
         "facing_stock_box_9a5_1": OPERATION_DISPLAY_NAMES["Facing 2.5D"],
         "planar_face_facing_9a5_1": OPERATION_DISPLAY_NAMES["Planar Face Facing"],
@@ -105,6 +107,13 @@ def operation_display_name(
     return operation_type_display_name(strategy_key or "")
 
 
+def setup_display_name(value: object) -> str:
+    """Localize only the generated Setup name while preserving custom names."""
+    text = str(value).strip()
+    generated = re.fullmatch(r"Setup\s+(\d+)", text, re.IGNORECASE)
+    return f"Thiết lập {generated.group(1)}" if generated is not None else text
+
+
 DISPLAY_VALUE_MAPPINGS = MappingProxyType(
     {
         "operation_display_name": OPERATION_DISPLAY_NAMES,
@@ -123,6 +132,35 @@ DISPLAY_VALUE_MAPPINGS = MappingProxyType(
                 "SECONDARY": "Phụ",
                 "ACTIVE": "Đang sử dụng",
                 "INACTIVE": "Không hoạt động",
+            }
+        ),
+        "setup_kind": MappingProxyType(
+            {
+                "general": "CHUNG",
+                "mill": "PHAY",
+                "turn": "TIỆN",
+                "mill_turn": "PHAY/TIỆN",
+            }
+        ),
+        "stock_kind": MappingProxyType(
+            {
+                "box": "Khối hộp",
+                "cylinder": "Khối trụ",
+                "from_model": "Từ mô hình",
+                "custom_geometry": "Hình học tùy chỉnh",
+            }
+        ),
+        "dirty_reason": MappingProxyType(
+            {
+                "geometry_changed": "Hình học đã thay đổi",
+                "wcs_changed": "Hệ tọa độ đã thay đổi",
+                "stock_changed": "Phôi đã thay đổi",
+                "fixture_changed": "Đồ gá đã thay đổi",
+                "tool_changed": "Tool đã thay đổi",
+                "machine_changed": "Máy đã thay đổi",
+                "parameters_changed": "Tham số đã thay đổi",
+                "upstream_changed": "Dữ liệu đầu vào đã thay đổi",
+                "artifact_missing": "Thiếu kết quả tính toán",
             }
         ),
         "holder_state": MappingProxyType(
@@ -175,6 +213,74 @@ DISPLAY_VALUE_MAPPINGS = MappingProxyType(
             {
                 "one_way": "Một chiều",
                 "zigzag": "Zích zắc",
+            }
+        ),
+        # Stable automatic-policy values are mapped only at the presentation
+        # boundary.  The persisted enum values remain English and unchanged.
+        "quality_profile": MappingProxyType(
+            {
+                "fast": "Nhanh",
+                "balanced": "Cân bằng",
+                "high": "Chất lượng cao",
+            }
+        ),
+        "automatic_mode": MappingProxyType(
+            {"auto": "Tự động", "manual": "Thủ công"}
+        ),
+        "automatic_status": MappingProxyType(
+            {
+                "resolved": "Đã xác định",
+                "needs_confirmation": "Cần xác nhận",
+                "unsupported": "Không được hỗ trợ",
+                "unresolved": "Chưa xác định",
+            }
+        ),
+        "z_level_orientation": MappingProxyType(
+            {
+                "automatic": "Tự động",
+                "u": "Theo trục U",
+                "v": "Theo trục V",
+            }
+        ),
+        "z_level_machining_frame": MappingProxyType(
+            {"setup_wcs": "Hệ tọa độ Thiết lập"}
+        ),
+        "z_level_boundary_policy": MappingProxyType(
+            {"trimmed_face": "Biên mặt đã cắt xén"}
+        ),
+        "z_level_contour_ordering": MappingProxyType(
+            {
+                "top_down_nearest_safe": "Từ cao xuống thấp · gần và an toàn",
+                "top_down_lexicographic": "Từ cao xuống thấp · theo thứ tự",
+            }
+        ),
+        "z_level_linking_mode": MappingProxyType(
+            {
+                "retract_clearance": "Rút dao về mặt phẳng an toàn",
+                "conservative_direct": "Liên kết trực tiếp có kiểm tra",
+            }
+        ),
+        "z_level_safety_scope": MappingProxyType(
+            {
+                "declared_geometry_and_tool_assembly": (
+                    "Hình học và cụm Tool đã khai báo"
+                )
+            }
+        ),
+        "z_level_protected_geometry_scope": MappingProxyType(
+            {
+                "part_boundary_only": "Chỉ biên chi tiết",
+                "declared_protected_geometry": "Hình học bảo vệ đã khai báo",
+            }
+        ),
+        "z_level_approach_retract_policy": MappingProxyType(
+            {"retract_then_rapid": "Rút dao rồi chạy nhanh"}
+        ),
+        "z_level_safety_sampling_policy": MappingProxyType(
+            {
+                "standard": "Tiêu chuẩn",
+                "dense": "Dày",
+                "very_dense": "Rất dày",
             }
         ),
     }
@@ -319,6 +425,45 @@ UI_TRANSLATIONS = MappingProxyType(
         "Persistent face IDs": "ID bề mặt cố định",
         "Ball-end tool": "Tool cầu",
         "Ball-end tool required.": "Cần Tool cầu.",
+        "Ball-end Tool": "Tool cầu",
+        "Ball-end": "Tool cầu",
+        "Ball - D10 mm": "Cầu · D10 mm",
+        "Tools": "Tool",
+        "Tool Assembly": "Cụm Tool",
+        "PRIMARY": "Chính",
+        "override": "tùy chỉnh thủ công",
+        "guardrail": "giới hạn bảo vệ",
+        "artifact": "kết quả tính toán",
+        "safety": "an toàn",
+        "contour": "đường đồng mức",
+        "machine-ready": "sẵn sàng chạy máy",
+        "Production Post": "Post sản xuất",
+        "fail-closed": "chặn an toàn",
+        "Rút dao bảo thủ · fallback fail-closed": (
+            "Rút dao bảo thủ · chuyển sang phương án chặn an toàn."
+        ),
+        "algorithm v2": "Thuật toán v2",
+        "payload v1": "Phiên bản dữ liệu v1",
+        "algorithm v1": "Thuật toán v1",
+        "algorithm v3": "Thuật toán v3",
+        "payload v3": "Phiên bản dữ liệu v3",
+        "safety contract": "hợp đồng an toàn",
+        "projection hiện hành": "dữ liệu hiển thị hiện hành",
+        "viewport": "vùng hiển thị CAD",
+        "WCS": "hệ tọa độ",
+        "WCS của Thiết lập": "Hệ tọa độ Thiết lập",
+        "Machining zone": "vùng gia công",
+        "Machining zone missing": "Thiếu vùng gia công",
+        "Parallel Setup": "Thiết lập cao độ Z",
+        "safety scope": "phạm vi an toàn",
+        "safety sampling": "lấy mẫu an toàn",
+        "machine-ready clearance": "khoảng hở sẵn sàng chạy máy",
+        "Direct link": "Liên kết trực tiếp",
+        "direct link": "liên kết trực tiếp",
+        "UNKNOWN": "CHƯA XÁC ĐỊNH",
+        "UNSAFE": "KHÔNG AN TOÀN",
+        "SAFE": "AN TOÀN",
+        "READY": "SẴN SÀNG",
         "Tool details": "Chi tiết Tool",
         "Tool / Shank": "Tool / Cán dao",
         "Holder State": "Trạng thái Holder",
@@ -667,7 +812,7 @@ UI_TRANSLATIONS = MappingProxyType(
         "Evidence": "Bằng chứng",
         "Source": "Nguồn",
         "Program Assembly · Production Workflow 7D.3.2": "Lắp ráp chương trình · Quy trình sản xuất 7D.3.2",
-        "Profile / WCS": "Cấu hình / WCS",
+        "Profile / WCS": "Cấu hình / hệ tọa độ",
         "Simulation gates": "Cổng mô phỏng",
         "Artifacts": "Các kết quả",
         "Project / shared production context": "Dự án / ngữ cảnh sản xuất dùng chung",
@@ -828,7 +973,7 @@ UI_TRANSLATIONS = MappingProxyType(
         "Stepover không được lớn hơn đường kính dao.": "Bước ngang không được lớn hơn đường kính dao.",
         "Climb, conventional hoặc bidirectional theo contract Facing v1.": "Phay thuận, phay nghịch hoặc hai chiều theo hợp đồng Phay mặt v1.",
         "Facing v1 yêu cầu Top Z bằng mặt trên Stock BOX.": "Phay mặt v1 yêu cầu Z đỉnh bằng mặt trên của Phôi dạng hộp.",
-        "Top, target, allowance và phân lớp theo Setup WCS.": "Đỉnh, đích, lượng dư và phân lớp theo WCS thiết lập.",
+        "Top, target, allowance và phân lớp theo Setup WCS.": "Đỉnh, đích, lượng dư và phân lớp theo hệ tọa độ Thiết lập.",
         "Override ít dùng thuộc contract Facing v1.": "Giá trị ghi đè ít dùng thuộc hợp đồng Phay mặt v1.",
         "Contour v1 nhận đúng một loop kín LINE/ARC; không tự đảo geometry.": "Biên dạng v1 nhận đúng một vòng kín LINE/ARC; không tự đảo hình học.",
         "Select/Rebind tạo GeometryReference typed; preview không giữ OCP object.": "Chọn/Liên kết lại tạo tham chiếu hình học có kiểu; phần xem trước không giữ đối tượng OCP.",
@@ -841,10 +986,10 @@ UI_TRANSLATIONS = MappingProxyType(
         "Generator quyết định traversal từ Side + Direction; không sửa geometry.": "Bộ tạo quyết định thứ tự chạy từ Phía + Hướng; không sửa hình học.",
         "Contour v1 offset trong HMS; không có CONTROL/WEAR, D offset hoặc G41/G42.": "Biên dạng v1 bù trong HMS; không có CONTROL/WEAR, bù D hoặc G41/G42.",
         "Side, cutting direction, allowance và tốc độ công nghệ.": "Phía, hướng cắt, lượng dư và tốc độ công nghệ.",
-        "Tọa độ tuyệt đối trong Setup WCS; không phải machine coordinate.": "Tọa độ tuyệt đối trong WCS thiết lập; không phải tọa độ máy.",
+        "Tọa độ tuyệt đối trong Setup WCS; không phải machine coordinate.": "Tọa độ tuyệt đối trong hệ tọa độ Thiết lập; không phải tọa độ máy.",
         "Chiều cắt đi theo -Z; axial allowance được cộng vào final cutter depth.": "Chiều cắt đi theo -Z; lượng dư dọc trục được cộng vào chiều sâu dao cuối.",
         "Contour v1 luôn dùng linear lead-in và linear lead-out cùng chiều dài.": "Biên dạng v1 luôn dùng dẫn dao vào và ra tuyến tính cùng chiều dài.",
-        "Clearance, retract và linear lead v1; mọi Z đều thuộc Setup WCS.": "Khoảng an toàn, rút dao và dẫn dao tuyến tính v1; mọi Z đều thuộc WCS thiết lập.",
+        "Clearance, retract và linear lead v1; mọi Z đều thuộc Setup WCS.": "Khoảng an toàn, rút dao và dẫn dao tuyến tính v1; mọi Z đều thuộc hệ tọa độ Thiết lập.",
         "Lặp lại loop tại lớp cuối; không phải rest machining.": "Lặp lại vòng tại lớp cuối; không phải gia công phần còn lại.",
         "Machine requirement hiện có; domain kiểm tra capability/feed/spindle.": "Yêu cầu máy hiện có; miền kiểm tra khả năng/lượng chạy dao/trục chính.",
         "Tùy chọn ít dùng nhưng có trong Contour v1.": "Tùy chọn ít dùng nhưng có trong Biên dạng v1.",
@@ -857,15 +1002,15 @@ UI_TRANSLATIONS = MappingProxyType(
         "Generator Pocket v1 chỉ có deterministic inward offset loops.": "Bộ tạo Hốc v1 chỉ có các vòng bù vào trong xác định.",
         "Đổi traversal của offset loops; không tự đảo geometry nguồn.": "Đổi thứ tự chạy của các vòng bù; không tự đảo hình học nguồn.",
         "Offset pattern, direction, stepover, wall allowance và tốc độ cắt.": "Mẫu bù, hướng, bước ngang, lượng dư thành và tốc độ cắt.",
-        "Nominal bottom trong Setup WCS; floor allowance nâng final cutter Z.": "Đáy danh nghĩa trong WCS thiết lập; lượng dư đáy nâng Z dao cuối.",
+        "Nominal bottom trong Setup WCS; floor allowance nâng final cutter Z.": "Đáy danh nghĩa trong hệ tọa độ Thiết lập; lượng dư đáy nâng Z dao cuối.",
         "Derived = Bottom Z + floor allowance; không phải input thứ hai.": "Giá trị dẫn xuất = Z đáy + lượng dư đáy; không phải đầu vào thứ hai.",
         "Số lớp đã Apply": "Số lớp đã áp dụng",
         "Derived theo thuật toán pocket_depth_levels hiện có.": "Được dẫn xuất theo thuật toán pocket_depth_levels hiện có.",
-        "Absolute Setup-WCS Z, chia lớp và hai allowance độc lập của domain v1.": "Z tuyệt đối của WCS thiết lập, chia lớp và hai lượng dư độc lập của miền v1.",
+        "Absolute Setup-WCS Z, chia lớp và hai allowance độc lập của domain v1.": "Z tuyệt đối của hệ tọa độ Thiết lập, chia lớp và hai lượng dư độc lập của miền v1.",
         "Pocket v1 chỉ hỗ trợ vertical plunge; không có ramp/helix/pre-drill.": "Hốc v1 chỉ hỗ trợ cắm dao thẳng; không có vào dao dốc/xoắn/khoan trước.",
         "Generator plunge thẳng tại start của từng offset loop.": "Bộ tạo cắm dao thẳng tại điểm đầu của từng vòng bù.",
         "Domain yêu cầu Clearance >= Retract > Top.": "Miền yêu cầu Khoảng an toàn >= Rút dao > Đỉnh.",
-        "Safe motion v1 chỉ có explicit Clearance và Retract trong Setup WCS.": "Chuyển động an toàn v1 chỉ có Khoảng an toàn và Rút dao tường minh trong WCS thiết lập.",
+        "Safe motion v1 chỉ có explicit Clearance và Retract trong Setup WCS.": "Chuyển động an toàn v1 chỉ có Khoảng an toàn và Rút dao tường minh trong hệ tọa độ Thiết lập.",
         "Precision của offset/depth algorithm; giá trị nhỏ có thể tăng chi phí tính.": "Độ chính xác của thuật toán bù/chiều sâu; giá trị nhỏ có thể tăng chi phí tính.",
         "Precision duy nhất thực sự tồn tại trong Pocket v1.": "Độ chính xác duy nhất thực sự tồn tại trong Hốc v1.",
         # Parallel validation and safety diagnostics (codes remain unchanged).
@@ -950,6 +1095,7 @@ _PREFIX_TRANSLATIONS = (
 
 
 _PHRASE_TRANSLATIONS = (
+    ("Operation Manager", "Trình quản lý nguyên công"),
     ("Safe — verified within declared scope", "An toàn — đã xác minh trong phạm vi công bố"),
     ("Not calculated", "Chưa tính toán"),
     ("Candidate", "Ứng viên"),
@@ -999,6 +1145,59 @@ _PHRASE_TRANSLATIONS = (
 )
 
 
+_USER_FACING_TERM_TRANSLATIONS = (
+    # Keep safety-stage wording as a single phrase so the generic ``safety``
+    # replacement below cannot leave the English suffix visible.
+    (
+        r"\bSafety\s+contract\s+Stage\s+8A\.3\.2\b",
+        "hợp đồng an toàn giai đoạn 8A.3.2",
+    ),
+    (r"\bsafety\s+contract\b", "hợp đồng an toàn"),
+    (r"\bStage\s+8A\.3\.2\b", "giai đoạn 8A.3.2"),
+    (r"\bsafety\s+validator\b", "bộ kiểm tra an toàn"),
+    (r"\bMachining\s+zone\b", "vùng gia công"),
+    (r"\bviewport\b", "vùng hiển thị CAD"),
+    (r"\bWCS\b", "hệ tọa độ"),
+    (r"\btopology\b", "cấu trúc liên kết hình học"),
+    (r"\bdependency\b", "dữ liệu phụ thuộc"),
+    (r"\bpanel\b", "bảng"),
+    (r"\bpopup\b", "cửa sổ"),
+    (r"\bfallback\b", "phương án thay thế"),
+    (r"\bclearance\b", "an toàn"),
+    (r"\bretract\b", "rút dao"),
+    (r"\bManager\b", "Trình quản lý"),
+    (r"\bTop/Bottom/Stepdown\b", "Trên/Dưới/Bước xuống"),
+    (r"\btrimmed\b", "đã cắt xén"),
+    (r"\btrim\b", "cắt xén"),
+    (r"\bvalidator\b", "bộ kiểm tra"),
+    (r"\bprojection\b", "dữ liệu hiển thị"),
+    (r"\btoolpath\b", "đường chạy dao"),
+    (r"\bstale\b", "đã lỗi thời"),
+    (r"\bBall-end\s+Tool\b", "Tool cầu"),
+    (r"\bBall-end\s+tool\b", "Tool cầu"),
+    (r"\bBall\s*-\s*D(?=\d)", "Cầu · D"),
+    (r"\bBall\s*·\s*D(?=\d)", "Cầu · D"),
+    (r"\bBall\b", "Cầu"),
+    (r"\bTools\b", "Tool"),
+    (r"\bTool\s+Assembly\b", "Cụm Tool"),
+    (r"\bPRIMARY\b", "Chính"),
+    (r"\boverride\b", "tùy chỉnh thủ công"),
+    (r"\bguardrail\b", "giới hạn bảo vệ"),
+    (r"\bartifact\b", "kết quả tính toán"),
+    (r"\bsafety\b", "an toàn"),
+    (r"\bcontour\b", "đường đồng mức"),
+    (r"\bmachine-ready\b", "sẵn sàng chạy máy"),
+    (r"\bProduction\s+Post\b", "Post sản xuất"),
+    (r"\bfail-closed\b", "chặn an toàn"),
+    (r"\balgorithm\s+v([123])\b", r"Thuật toán v\1"),
+    (r"\bpayload\s+v([123])\b", r"Phiên bản dữ liệu v\1"),
+    (r"\bdirect\s+link\b", "liên kết trực tiếp"),
+    (r"\bUNKNOWN\b", "CHƯA XÁC ĐỊNH"),
+    (r"\bUNSAFE\b", "KHÔNG AN TOÀN"),
+    (r"\bSAFE\b", "AN TOÀN"),
+)
+
+
 def translate_progress_phase(value: object) -> str:
     """Return a Vietnamese phase label without mutating its enum value."""
     raw = getattr(value, "value", value)
@@ -1017,6 +1216,25 @@ def translate_status(value: object) -> str:
     return "".join(UI_TRANSLATIONS.get(part.strip(), part) if index % 2 == 0 else part for index, part in enumerate(parts))
 
 
+def operation_manager_status_category_display_name(
+    value: object,
+    *,
+    project_context: bool = False,
+) -> str:
+    """Map an internal Operation Manager namespace at its presentation boundary."""
+    raw = getattr(value, "value", value)
+    text = str(raw).strip().casefold()
+    if text == "domain":
+        return "DỰ ÁN" if project_context else "TRẠNG THÁI"
+    return {
+        "calculation": "TÍNH TOÁN",
+        "simulation": "MÔ PHỎNG",
+        "post": "Post",
+        "nc": "NC",
+        "export": "XUẤT NC",
+    }.get(text, str(raw))
+
+
 def ui_text(value: object) -> str:
     """Translate one known system presentation string into Vietnamese.
 
@@ -1031,7 +1249,9 @@ def ui_text(value: object) -> str:
         return direct
     if ":" in text:
         prefix, remainder = text.split(":", 1)
-        if prefix.startswith(("parallel.", "field.", "simulation.", "post.")):
+        if prefix.startswith(
+            ("parallel.", "z_level.", "field.", "simulation.", "post.")
+        ):
             return f"{prefix}: {ui_text(remainder.strip())}"
     match = re.fullmatch(
         r"Unexpected cutter contact outside the declared contact zone on motion (\d+)\.",
@@ -1092,8 +1312,18 @@ def ui_text(value: object) -> str:
         protect_internal_token,
         text,
     )
+    # Diagnostic/strategy IDs are also emitted as dotted tokens without a
+    # colon (for example ``parallel.safety.holder_collision``).  Keep those
+    # stable while translating surrounding user-facing prose.
+    translated = re.sub(
+        r"\b(?:[a-z][a-z0-9_-]*\.)+[a-z][a-z0-9_.-]*\b",
+        protect_internal_token,
+        translated,
+    )
     for source, target in _PHRASE_TRANSLATIONS:
         translated = re.sub(re.escape(source), target, translated, flags=re.IGNORECASE)
+    for pattern, target in _USER_FACING_TERM_TRANSLATIONS:
+        translated = re.sub(pattern, target, translated, flags=re.IGNORECASE)
     for source, target in UI_TRANSLATIONS.items():
         if source.isupper() and len(source) >= 4:
             translated = re.sub(
@@ -1240,7 +1470,9 @@ __all__ = [
     "iter_catalog_entries",
     "localize_widget_tree",
     "operation_display_name",
+    "operation_manager_status_category_display_name",
     "operation_type_display_name",
+    "setup_display_name",
     "translate_progress_phase",
     "translate_status",
     "ui_text",

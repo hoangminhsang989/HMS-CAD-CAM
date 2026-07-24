@@ -1250,12 +1250,12 @@ def build_drilling_family_schema(
             "cutting",
             "CUTTING PARAMETERS",
             _cutting_fields(context, values, unit),
-            "Spindle, feed và coolant theo contract hiện có.",
+            "Trục chính, lượng chạy dao và tưới nguội theo hợp đồng hiện có.",
             order=60,
         ),
         FunctionEditorSection(
             "linking",
-            "CLEARANCE / RETRACT",
+            "AN TOÀN / RÚT DAO",
             (
                 _number_field(
                     "clearance_height", "Clearance", values["clearance_height"],

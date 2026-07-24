@@ -7,18 +7,23 @@ models to one editor implementation.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 import json
 import math
 import re
 from enum import StrEnum
 from typing import Any, TypeAlias
+import zlib
 
 from hms_cadcam.cam.domain import ContentFingerprint, DependencyFingerprint
 
 
 AUTOMATIC_PARAMETER_CONTRACT_KEY = "automatic_parameter_contract"
 AUTOMATIC_PARAMETER_CONTRACT_VERSION = 1
+_COMPRESSED_ENCODING = "zlib-base64-v1"
+_MAX_PARAMETER_LENGTH = 4096
+_MAX_DECOMPRESSED_LENGTH = 65_536
 _KEY = re.compile(r"[a-z][a-z0-9_.-]{0,127}")
 
 AutomaticPrimitive: TypeAlias = str | int | float | bool | None
@@ -246,7 +251,17 @@ class AutomaticParameterContract:
         payload = json.dumps(
             self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
-        if len(payload) > 4096:
+        if len(payload) <= _MAX_PARAMETER_LENGTH:
+            return payload
+        compressed = base64.b64encode(
+            zlib.compress(payload.encode("utf-8"), level=9)
+        ).decode("ascii")
+        payload = json.dumps(
+            {"encoding": _COMPRESSED_ENCODING, "payload": compressed},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(payload) > _MAX_PARAMETER_LENGTH:
             raise ValueError("Automatic parameter contract exceeds parameter capacity")
         return payload
 
@@ -274,12 +289,45 @@ class AutomaticParameterContract:
 
     @classmethod
     def from_json(cls, payload: str) -> "AutomaticParameterContract":
-        if not isinstance(payload, str) or not payload or len(payload) > 4096:
+        if (
+            not isinstance(payload, str)
+            or not payload
+            or len(payload) > _MAX_PARAMETER_LENGTH
+        ):
             raise ValueError("Automatic contract JSON is invalid")
         try:
             data: Any = json.loads(payload)
         except json.JSONDecodeError as error:
             raise ValueError("Automatic contract JSON is malformed") from error
+        if (
+            isinstance(data, dict)
+            and set(data) == {"encoding", "payload"}
+            and data.get("encoding") == _COMPRESSED_ENCODING
+            and isinstance(data.get("payload"), str)
+        ):
+            try:
+                packed = base64.b64decode(data["payload"], validate=True)
+                decompressor = zlib.decompressobj()
+                decoded = decompressor.decompress(
+                    packed,
+                    _MAX_DECOMPRESSED_LENGTH + 1,
+                )
+                if (
+                    len(decoded) > _MAX_DECOMPRESSED_LENGTH
+                    or decompressor.unconsumed_tail
+                    or not decompressor.eof
+                ):
+                    raise ValueError("Compressed automatic contract is oversized")
+                data = json.loads(decoded.decode("utf-8"))
+            except (
+                UnicodeDecodeError,
+                ValueError,
+                zlib.error,
+                json.JSONDecodeError,
+            ) as error:
+                raise ValueError(
+                    "Compressed automatic contract JSON is malformed"
+                ) from error
         return cls.from_dict(data)
 
 

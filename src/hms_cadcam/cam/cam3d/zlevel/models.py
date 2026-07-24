@@ -380,7 +380,7 @@ class ZLevelFinishingParameters:
             f"frame_{axis}_{component}"
             for axis in ("origin", "u", "v", "w")
             for component in ("x", "y", "z")
-        }:
+        } - {"automatic_parameter_contract"}:
             raise CamValidationError("Z-Level parameter payload không đầy đủ")
         frame: ZLevelMachiningFrame | None = None
         frame_keys = {

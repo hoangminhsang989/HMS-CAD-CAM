@@ -349,7 +349,7 @@ class PostProcessorPanel(QWidget):
         profile_form.addRow("Profile", self.profile_combo)
         self.profile_info = QLabel(f"{profile.controller_family} {profile.controller_model} · {profile.machine_family} · MM / G54 / XYZ · {profile.allowed_extensions[0]} · CRLF")
         self.profile_info.setWordWrap(True)
-        profile_form.addRow("Contract", self.profile_info)
+        profile_form.addRow("Hợp đồng", self.profile_info)
         root.addWidget(profile_group)
 
         binding_group = QGroupBox("Controller Tool Binding")
@@ -784,7 +784,11 @@ class PostProcessorPanel(QWidget):
         result = self._last_export.result
         if result is None:
             self.message.emit("Xuất thất bại; kết quả được quản lý vẫn được giữ nếu có."); return
-        self.message.emit(f"Export {result.status.value}: {result.project_managed_relative_path} · {result.byte_length} bytes · SHA-256 {result.sha256}")
+        self.message.emit(
+            f"Xuất {translate_status(result.status)}: "
+            f"{result.project_managed_relative_path} · "
+            f"{result.byte_length} byte · SHA-256 {result.sha256}"
+        )
 
     def clear_post_result(self) -> None:
         if self._operation_id is None:

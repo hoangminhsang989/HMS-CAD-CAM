@@ -148,7 +148,7 @@ class OperationManagerDelegate(QStyledItemDelegate):
         node: OperationManagerNode,
     ) -> None:
         foreground, background = _STATUS_COLORS[node.status.semantic]
-        text = node.status.text
+        text = ui_text(node.status.text)
         font = QFont(option.font)
         font.setPointSizeF(max(7.0, option.font.pointSizeF() - 1.0))
         font.setWeight(QFont.Weight.DemiBold)
@@ -170,7 +170,7 @@ class OperationManagerDelegate(QStyledItemDelegate):
 
 
 def compact_operation_summary(node: OperationManagerNode) -> str:
-    """Return type and Tool only; the complete summary remains in the tooltip."""
+    """Return a concise, evidence-first operation summary for the second line."""
     if node.kind is not OperationManagerNodeKind.OPERATION:
         return ui_text(node.secondary_summary)
     parts = tuple(
@@ -178,7 +178,8 @@ def compact_operation_summary(node: OperationManagerNode) -> str:
         for part in node.secondary_summary.split("·")
         if part.strip()
     )
-    return " · ".join(parts[:2])
+    limit = 4 if parts and parts[0].startswith("Tool cầu") else 2
+    return " · ".join(parts[:limit])
 
 
 def _draw_status_mark(

@@ -100,6 +100,28 @@ class CAMIllustrationState:
 
     @property
     def caption(self) -> str:
+        if self.descriptor.visual_kind == "z_level":
+            captions = {
+                "inner_hole": "Đường đồng mức theo cao độ giữ nguyên lỗ trong và không cắt xuyên qua lỗ.",
+                "disconnected_regions": "Hai vùng rời được tạo đường đồng mức riêng và liên kết bằng chuyển động bảo thủ.",
+                "linking": "Liên kết trực tiếp chỉ được dùng khi an toàn đã xác minh; nếu không, Tool rút lên mặt phẳng an toàn.",
+                "safety_unknown": "Thiếu Holder hoặc hình học bảo vệ: trạng thái là CHƯA XÁC ĐỊNH, không phải AN TOÀN.",
+                "collision": "Vùng va chạm được đánh dấu KHÔNG AN TOÀN và không tạo kết quả SẴN SÀNG.",
+                "allowance": "Đường tâm Tool được dịch theo pháp tuyến để giữ lượng dư đã khai báo.",
+                "level_range": "Các lớp Z được lập từ cao độ trên xuống cao độ dưới theo bước xuống hiệu lực.",
+                "quality": {
+                    "fast": (
+                        "Hồ sơ Nhanh dùng ít lớp hơn nhưng không làm suy giảm "
+                        "hợp đồng an toàn."
+                    ),
+                    "balanced": "Hồ sơ Cân bằng dùng mật độ lớp Z mặc định.",
+                    "high": "Hồ sơ Chất lượng cao dùng nhiều lớp Z và rời rạc dày hơn.",
+                }.get(self.quality, "Hồ sơ Cân bằng dùng mật độ lớp Z mặc định."),
+            }
+            return captions.get(
+                self.semantic_focus,
+                "Tool cầu gia công các đường đồng mức từ cao độ trên xuống cao độ dưới.",
+            )
         if self.descriptor.visual_kind != "parallel":
             return self.descriptor.caption
         if self.semantic_focus == "linking":
@@ -116,6 +138,8 @@ class CAMIllustrationState:
 
     @property
     def accessible_description(self) -> str:
+        if self.descriptor.visual_kind == "z_level":
+            return f"{self.descriptor.accessible_description} {self.caption}"
         if self.descriptor.visual_kind != "parallel":
             return self.descriptor.accessible_description
         return (
@@ -126,6 +150,18 @@ class CAMIllustrationState:
     @property
     def render_state_ids(self) -> tuple[str, ...]:
         """Return deterministic visual IDs without invoking CAM calculation."""
+        if self.descriptor.visual_kind == "z_level":
+            focus = (
+                "overview"
+                if self.semantic_focus == "ordering"
+                else self.semantic_focus
+            )
+            return (
+                "z_level",
+                f"focus_{focus}",
+                f"quality_{self.quality}",
+                "direct_link" if self.linking == "direct" else "retract_link",
+            )
         if self.descriptor.visual_kind != "parallel":
             return (self.descriptor.visual_kind,)
         return (
@@ -145,6 +181,57 @@ class CAMIllustrationState:
     @property
     def semantic_metadata(self) -> tuple[str, ...]:
         """Expose distinct, testable visual meaning for each Parallel state."""
+        if self.descriptor.visual_kind == "z_level":
+            focus = (
+                "overview"
+                if self.semantic_focus == "ordering"
+                else self.semantic_focus
+            )
+            metadata = {
+                "overview": (
+                    "multiple_constant_z_contours",
+                    "ball_end_tool",
+                    "top_to_bottom_direction",
+                ),
+                "quality": (
+                    f"level_density_{self.quality}",
+                    "quality_changes_stepdown",
+                    "safety_contract_unchanged",
+                ),
+                "inner_hole": (
+                    "inner_loop_preserved",
+                    "no_hole_crossing",
+                ),
+                "disconnected_regions": (
+                    "two_disconnected_regions",
+                    "conservative_region_link",
+                ),
+                "linking": (
+                    "direct_link_safe"
+                    if self.linking == "direct"
+                    else "fallback_retract_rapid_approach",
+                ),
+                "safety_unknown": (
+                    "missing_holder_or_protected_geometry",
+                    "unknown_not_safe",
+                ),
+                "collision": (
+                    "collision_zone",
+                    "unsafe_not_machine_ready",
+                ),
+                "allowance": (
+                    "nominal_surface",
+                    "tool_center_offset",
+                    "surface_allowance",
+                ),
+                "level_range": (
+                    "top_level",
+                    "bottom_level",
+                    "stepdown",
+                    "estimated_level_count",
+                ),
+            }
+            return metadata.get(focus, metadata["overview"])
         common = (f"quality_density_{self.quality}",)
         if self.semantic_focus == "linking" and self.linking == "direct":
             return (
@@ -256,12 +343,32 @@ class CAMIllustrationRegistry:
                 "Minh họa Tool cầu chạy các đường song song trên bề mặt ba chiều.",
                 "parallel",
             ),
+            CAMIllustrationDescriptor(
+                "z_level_finishing_production_8a3_3",
+                "Gia công tinh theo cao độ Z",
+                "Tool cầu gia công các đường đồng mức từ cao độ trên xuống cao độ dưới.",
+                "Minh họa Tool cầu, trục W/Z, các đường đồng mức nhiều cao độ, bước xuống và đường tâm Tool.",
+                "z_level",
+                semantic_features=frozenset(
+                    {
+                        "tool",
+                        "motion_arrow",
+                        "machining_region",
+                        "ball_end_tool",
+                        "workpiece",
+                        "multiple_constant_z_contours",
+                        "top_to_bottom_arrow",
+                        "stepdown",
+                        "tool_center_offset",
+                    }
+                ),
+            ),
         )
         self._descriptors = {item.key: item for item in descriptors}
 
     @property
     def descriptors(self) -> tuple[CAMIllustrationDescriptor, ...]:
-        """Return all nine descriptors in deterministic registration order."""
+        """Return all production descriptors in deterministic registration order."""
         return tuple(self._descriptors.values())
 
     def resolve(self, editor_id: str) -> CAMIllustrationDescriptor:
@@ -289,6 +396,8 @@ def illustration_state(
         else "retract"
     )
     quality_value = str(data.get("quality_profile", "balanced")).casefold()
+    if "direct" in linking_value:
+        linking = "direct"
     quality = (
         "fast"
         if quality_value in {"fast", "quick", "nhanh"}
@@ -308,6 +417,12 @@ def illustration_state(
             "tolerance_override_enabled",
             "allowance_override_enabled",
             "ordering_override_enabled",
+            "top_override_enabled",
+            "bottom_override_enabled",
+            "stepdown_override_enabled",
+            "orientation_override_enabled",
+            "boundary_override_enabled",
+            "linking_override_enabled",
         )
     )
     focus = str(
@@ -315,7 +430,17 @@ def illustration_state(
         if semantic_focus is not None
         else data.get("illustration_focus", "ordering")
     ).casefold()
-    if focus not in {"ordering", "linking", "quality"}:
+    if focus not in {
+        "ordering",
+        "linking",
+        "quality",
+        "inner_hole",
+        "disconnected_regions",
+        "safety_unknown",
+        "collision",
+        "allowance",
+        "level_range",
+    }:
         focus = "ordering"
     return CAMIllustrationState(
         descriptor,
@@ -426,6 +551,8 @@ class IllustrationViewport(QWidget):
             self._draw_pocket(painter)
         elif kind == "parallel":
             self._draw_parallel(painter)
+        elif kind == "z_level":
+            self._draw_z_level(painter)
         else:
             self._draw_facing(painter, selected_only=kind == "planar_faces")
 
@@ -589,6 +716,143 @@ class IllustrationViewport(QWidget):
         else:
             self._draw_parallel_one_way(painter, rows)
         painter.restore()
+
+    def _draw_z_level(self, painter: QPainter) -> None:
+        """Render distinct constant-Z, quality, linking and safety states."""
+        focus = (
+            "overview"
+            if self._state.semantic_focus == "ordering"
+            else self._state.semantic_focus
+        )
+        painter.setPen(QPen(QColor("#71889a"), 2))
+        painter.setBrush(QColor("#dce7ee"))
+        profile = QPainterPath()
+        profile.moveTo(38, 126)
+        profile.lineTo(38, 104)
+        profile.cubicTo(65, 92, 72, 65, 102, 62)
+        profile.cubicTo(132, 59, 138, 105, 169, 103)
+        profile.cubicTo(205, 100, 205, 45, 242, 43)
+        profile.cubicTo(269, 42, 280, 75, 286, 126)
+        profile.closeSubpath()
+        painter.drawPath(profile)
+
+        if focus == "disconnected_regions":
+            painter.setPen(QPen(QColor("#178a75"), 3))
+            for y in (72, 86, 101):
+                painter.drawLine(54, y, 126, y)
+                painter.drawLine(190, y, 270, y)
+            self._draw_z_level_link(painter, QPointF(126, 86), QPointF(190, 86))
+        elif focus == "inner_hole":
+            painter.setPen(QPen(QColor("#178a75"), 3))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for inset in (0, 9, 18):
+                painter.drawRoundedRect(
+                    QRectF(75 + inset, 68 + inset / 2, 170 - inset * 2, 45 - inset),
+                    11,
+                    11,
+                )
+            painter.setPen(QPen(QColor("#f8fbfd"), 8))
+            painter.drawEllipse(QRectF(143, 78, 35, 23))
+            painter.setPen(QPen(QColor("#71889a"), 2))
+            painter.drawEllipse(QRectF(143, 78, 35, 23))
+        elif focus == "allowance":
+            painter.setPen(QPen(QColor("#657d8e"), 2, Qt.PenStyle.DashLine))
+            painter.drawPath(profile)
+            offset = QPainterPath()
+            offset.moveTo(45, 116)
+            offset.cubicTo(81, 96, 82, 72, 106, 70)
+            offset.cubicTo(136, 67, 143, 111, 171, 110)
+            offset.cubicTo(212, 106, 211, 53, 243, 51)
+            painter.setPen(QPen(QColor("#178a75"), 3))
+            painter.drawPath(offset)
+            painter.setPen(QColor("#334957"))
+            painter.drawText(QPointF(198, 32), "Lượng dư")
+            self._tool(painter, QPointF(242, 50), ball=True)
+        else:
+            level_count = {
+                "fast": 4,
+                "balanced": 6,
+                "high": 9,
+            }.get(self._state.quality, 6)
+            levels = tuple(
+                53.0 + index * (62.0 / max(1, level_count - 1))
+                for index in range(level_count)
+            )
+            painter.setPen(QPen(QColor("#178a75"), 3))
+            for index, y in enumerate(levels):
+                left = 49 + min(26, index * 3)
+                right = 278 - min(18, index * 2)
+                painter.drawLine(left, y, right, y)
+            if focus == "linking" and len(levels) >= 2:
+                self._draw_z_level_link(
+                    painter,
+                    QPointF(250, levels[0]),
+                    QPointF(250, levels[1]),
+                )
+            if focus == "safety_unknown":
+                painter.setPen(QPen(QColor("#7a8790"), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(QColor("#f1f3f4"))
+                painter.drawRoundedRect(QRectF(207, 51, 69, 47), 6, 6)
+                painter.setPen(QColor("#59666f"))
+                painter.drawText(QRectF(207, 51, 69, 47), Qt.AlignmentFlag.AlignCenter, "CHƯA RÕ")
+            elif focus == "collision":
+                painter.setPen(QPen(QColor("#b52e3e"), 3))
+                painter.setBrush(QColor(214, 67, 84, 65))
+                painter.drawEllipse(QRectF(205, 55, 55, 42))
+                painter.drawLine(211, 61, 253, 91)
+                painter.drawLine(253, 61, 211, 91)
+                painter.setPen(QColor("#a32031"))
+                painter.drawText(QPointF(205, 50), "KHÔNG AN TOÀN")
+            elif focus == "level_range":
+                painter.setPen(QPen(QColor("#356fbd"), 2))
+                painter.drawLine(300, levels[0], 300, levels[-1])
+                self._arrow(
+                    painter,
+                    QPointF(300, levels[0]),
+                    QPointF(300, levels[-1]),
+                    "#356fbd",
+                )
+                painter.setPen(QColor("#334957"))
+                painter.drawText(QPointF(254, levels[0] - 5), "Cao độ trên")
+                painter.drawText(QPointF(248, levels[-1] + 13), "Cao độ dưới")
+            self._tool(painter, QPointF(236, levels[0]), ball=True)
+
+        painter.setPen(QPen(QColor("#356fbd"), 2))
+        self._arrow(painter, QPointF(20, 35), QPointF(20, 111), "#356fbd")
+        painter.setPen(QColor("#244f89"))
+        painter.drawText(QPointF(6, 28), "W/Z")
+
+    def _draw_z_level_link(
+        self,
+        painter: QPainter,
+        start: QPointF,
+        end: QPointF,
+    ) -> None:
+        """Render either a checked direct link or retract/rapid/approach."""
+        if self._state.linking == "direct":
+            self._arrow(
+                painter,
+                start,
+                end,
+                "#178a75",
+                style=Qt.PenStyle.DashDotLine,
+                width=3.0,
+            )
+            painter.setPen(QColor("#176f60"))
+            painter.drawText(QPointF(start.x() - 12, start.y() - 7), "AN TOÀN")
+            return
+        retract = QPointF(start.x(), start.y() - 25)
+        rapid_end = QPointF(end.x(), start.y() - 25)
+        self._arrow(painter, start, retract, "#b45f2a", width=3.0)
+        self._arrow(
+            painter,
+            retract,
+            rapid_end,
+            "#b45f2a",
+            style=Qt.PenStyle.DashLine,
+            width=2.4,
+        )
+        self._arrow(painter, rapid_end, end, "#b45f2a", width=3.0)
 
     def _draw_parallel_one_way(
         self, painter: QPainter, rows: tuple[float, ...]
@@ -765,7 +1029,7 @@ class CAMIllustrationPanel(QWidget):
         self.expand_button = QToolButton()
         self.expand_button.setText("Mở rộng")
         self.expand_button.setAccessibleName("Mở rộng minh họa CAM")
-        self.expand_button.setToolTip("Mở rộng minh họa ngay trong popup CAM")
+        self.expand_button.setToolTip("Mở rộng minh họa ngay trong cửa sổ CAM.")
         self.expand_button.clicked.connect(
             lambda: self.set_expanded(not self._expanded)
         )

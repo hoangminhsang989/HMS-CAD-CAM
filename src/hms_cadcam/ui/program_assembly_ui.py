@@ -849,7 +849,9 @@ class ProgramAssemblyPanel(QWidget):
                     ),
                 )
             )
-            self.message.emit("Operation đã có trong Program Assembly; không thêm trùng.")
+            self.message.emit(
+                "Nguyên công đã có trong cụm chương trình; không thêm trùng."
+            )
             return False
         location = self._operation_location(operation_id)
         if location is None:
@@ -1205,7 +1207,9 @@ class ProgramAssemblyPanel(QWidget):
                 raise ValueError("Operation source is missing or stale")
             self._production_context(source, draft)
         except Exception as error:
-            self.message.emit(f"Invalid operation assembly draft: {error}")
+            self.message.emit(
+                f"Bản nháp cụm nguyên công không hợp lệ: {error}"
+            )
             self._operation_widget_dirty = True
             self._update_action_enabled()
             return False

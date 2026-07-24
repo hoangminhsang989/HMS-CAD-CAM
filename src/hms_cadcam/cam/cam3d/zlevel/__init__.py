@@ -1,5 +1,13 @@
 """Public Stage 8A.3.2 Z-Level hardening and safety API."""
 
+from .automatic import (
+    Z_LEVEL_AUTOMATIC_PARAMETER_KEYS,
+    Z_LEVEL_AUTOMATIC_POLICY_KEY,
+    Z_LEVEL_AUTOMATIC_POLICY_VERSION,
+    ZLevelAutomaticContext,
+    ZLevelGeometryEvidence,
+    resolve_z_level_automatic_contract,
+)
 from .geometry import (
     build_machining_frame,
     calculate_region_bounds,
@@ -61,6 +69,9 @@ from hms_cadcam.cam.cam3d.parallel.safety_models import (
 )
 
 __all__ = [
+    "Z_LEVEL_AUTOMATIC_PARAMETER_KEYS",
+    "Z_LEVEL_AUTOMATIC_POLICY_KEY",
+    "Z_LEVEL_AUTOMATIC_POLICY_VERSION",
     "Z_LEVEL_FINISHING_ALGORITHM_VERSION",
     "Z_LEVEL_FINISHING_STRATEGY_KEY",
     "Z_LEVEL_FINISHING_STRATEGY_VERSION",
@@ -89,6 +100,8 @@ __all__ = [
     "ZLevelRegionBounds",
     "ZLevelResolvedContact",
     "ZLevelGeometrySource",
+    "ZLevelAutomaticContext",
+    "ZLevelGeometryEvidence",
     "ZLevelSafetyDiagnostic",
     "ZLevelSafetyMotion",
     "ZLevelSafetyPolicy",
@@ -106,6 +119,7 @@ __all__ = [
     "calculate_and_publish_z_level_finishing",
     "calculate_region_bounds",
     "plan_level_schedule",
+    "resolve_z_level_automatic_contract",
     "trace_z_level",
     "validate_z_level_candidate_safety",
     "z_level_artifact_contract_hash",

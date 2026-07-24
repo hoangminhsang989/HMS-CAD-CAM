@@ -32,7 +32,10 @@ from hms_cadcam.cam.simulation import SimulationStatus  # noqa: E402
 from hms_cadcam.cam.simulation.runtime import SimulationRunState  # noqa: E402
 from hms_cadcam.project.service import ProjectService  # noqa: E402
 from hms_cadcam.ui.cam_ui import CamWorkspace  # noqa: E402
-from hms_cadcam.ui.operation_manager import OperationManagerPanel  # noqa: E402
+from hms_cadcam.ui.operation_manager import (  # noqa: E402
+    OperationManagerPanel,
+    operation_manager_context_summary,
+)
 from hms_cadcam.ui.operation_manager_delegate import (  # noqa: E402
     OperationManagerDelegate,
     compact_operation_summary,
@@ -49,12 +52,17 @@ from hms_cadcam.ui.operation_manager_status import (  # noqa: E402
 )
 from hms_cadcam.ui.operation_manager_types import (  # noqa: E402
     OperationManagerFilter,
+    OperationManagerHeader,
     OperationManagerNode,
     OperationManagerNodeKind,
     OperationManagerSemanticStatus,
     OperationManagerStatus,
     OperationManagerStatusCategory,
     count_operation_nodes,
+)
+from tools.audit_vietnamese_ui import (  # noqa: E402
+    duplicate_user_facing_phrase_matches,
+    raw_user_facing_internal_matches,
 )
 
 
@@ -133,6 +141,37 @@ def _clone_operations(service: ProjectService, count: int) -> None:
         return app.update_tree(job.job_id, setup.setup_id, mutate)
 
     service.execute_cam_command(command)
+
+
+@pytest.mark.parametrize(
+    ("job_name", "setup_name"),
+    (
+        ("Công việc 1", "Thiết lập 1"),
+        ("Công việc gia công cao độ Z", "Thiết lập cao độ Z"),
+        ("Khuôn lõi khách hàng", "Gá lần hai"),
+        ("Công việc đặc biệt", "Gá mặt sau"),
+        ("Lõi trên", "Thiết lập tinh"),
+        ("Lõi dưới", "Gá phụ"),
+    ),
+)
+def test_context_summary_preserves_job_and_setup_names_without_prefixes(
+    job_name: str,
+    setup_name: str,
+) -> None:
+    header = OperationManagerHeader(
+        "Mẫu gia công cao độ Z",
+        job_name,
+        setup_name,
+        "Chưa gán máy",
+        1,
+        0,
+        0,
+    )
+
+    summary = operation_manager_context_summary(header)
+
+    assert summary == f"{job_name} · {setup_name} · Chưa gán máy"
+    assert not duplicate_user_facing_phrase_matches(summary)
 
 
 def test_projection_has_complete_hierarchy_stable_ids_and_no_qt_state(tmp_path) -> None:
@@ -407,6 +446,80 @@ def test_operation_rows_use_localized_two_line_names_tooltips_badges_and_dpi(
         assert custom.label == "Tinh mặt khuôn rất dài theo yêu cầu khách hàng"
         assert "Phay mặt 2.5D" in custom.secondary_summary
         assert custom.label in custom_tooltip
+    finally:
+        _dispose(service, workspace, panel, application)
+
+
+def test_project_tree_model_tooltip_and_accessibility_hide_internal_tokens(
+    tmp_path,
+) -> None:
+    application, service, workspace, panel, _settings = _environment(tmp_path)
+    try:
+        project = _node(panel, OperationManagerNodeKind.PROJECT)
+        job = _node(panel, OperationManagerNodeKind.JOB)
+        setup = _node(panel, OperationManagerNodeKind.SETUP)
+        geometry = _node(panel, OperationManagerNodeKind.GEOMETRY)
+        stock = _node(panel, OperationManagerNodeKind.STOCK)
+        tools = _node(panel, OperationManagerNodeKind.TOOLS)
+        tool = _node(panel, OperationManagerNodeKind.TOOL)
+        operation = _node(panel, OperationManagerNodeKind.OPERATION)
+        toolpath = _node(panel, OperationManagerNodeKind.TOOLPATH)
+
+        assert job.secondary_summary == "1 thiết lập"
+        assert setup.label == "Thiết lập 1"
+        assert setup.secondary_summary.startswith("PHAY ·")
+        assert geometry.status.tooltip == "Đã liên kết hình học"
+        assert stock.label == "Phôi"
+        assert stock.secondary_summary.startswith("Khối hộp ·")
+        assert stock.status.tooltip == "Phôi hợp lệ"
+        assert tools.secondary_summary == "1 cụm Tool đang dùng"
+        assert tool.secondary_summary.startswith("Chiều nhô ")
+        assert toolpath.secondary_summary == "Thiếu kết quả tính toán"
+
+        model_texts: list[str] = []
+        for node in panel.model.projection.nodes:
+            index = panel.model.index_for_node_id(node.node_id)
+            if not index.isValid():
+                continue
+            for column in range(panel.model.columnCount(index.parent())):
+                current = index.siblingAtColumn(column)
+                for role in (
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.ToolTipRole,
+                    Qt.ItemDataRole.AccessibleTextRole,
+                    Qt.ItemDataRole.AccessibleDescriptionRole,
+                ):
+                    value = panel.model.data(current, role)
+                    if value:
+                        model_texts.append(str(value))
+
+        project_tooltip = str(
+            panel.model.data(
+                panel.model.index_for_node_id(project.node_id),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        )
+        setup_tooltip = str(
+            panel.model.data(
+                panel.model.index_for_node_id(setup.node_id),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        )
+        operation_tooltip = str(
+            panel.model.data(
+                panel.model.index_for_node_id(operation.node_id),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        )
+        assert "DỰ ÁN ·" in project_tooltip
+        assert "TRẠNG THÁI ·" in setup_tooltip
+        assert "TÍNH TOÁN ·" in operation_tooltip
+        assert "MÔ PHỎNG ·" in operation_tooltip
+        assert "XUẤT NC ·" in operation_tooltip
+        assert all(
+            not raw_user_facing_internal_matches(text)
+            for text in model_texts
+        )
     finally:
         _dispose(service, workspace, panel, application)
 

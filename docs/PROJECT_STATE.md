@@ -1,5 +1,23 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## Checkpoint Stage 8A.3.3 — Z-Level Production Function Editor
+
+- Stage 8A.3.3 đã **COMPLETED**; package GUI native Windows cuối đã được người
+  dùng duyệt và chưa bắt đầu stage tiếp theo.
+- Production editor đã tích hợp tham số tự động/tùy chỉnh thủ công, Operation
+  Manager, lifecycle worker, persistence, accessibility, minh họa và
+  responsive/DPI.
+- Z-Level giữ nguyên algorithm **v2**, payload **v1** và SQLite schema **v4**;
+  dependency và icon không đổi.
+- Simulation chỉ mở với artifact hiện hành **READY + SAFE v2**. Production Post
+  vẫn fail-closed; machine-ready clearance chưa được xác minh hoặc chứng nhận.
+- Review package có 27 ảnh kỹ thuật, 1 montage, 9 JSON và 1 Markdown; 28/28 PNG
+  có hash riêng. Localization audit 115.103 record và mọi leak/duplicate/acronym
+  count đều bằng 0.
+- QA khóa cuối đạt **302 passed** focused và **1559 passed, 2 deselected** toàn
+  repository; `pip check`, `compileall src tests tools` và `git diff --check`
+  đều đạt.
+
 ## Checkpoint Multi-operation Program Assembly
 
 - Baseline source 7D.3.2: `4d8deab` (`hoan thanh Multi operation assembly UI

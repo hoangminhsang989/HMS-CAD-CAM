@@ -30,7 +30,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerStatus,
     OperationManagerStatusCategory,
 )
-from hms_cadcam.ui.localization import translate_status
+from hms_cadcam.ui.localization import display_value, translate_status, ui_text
 
 
 def status(
@@ -53,7 +53,7 @@ def tool_status(value: ToolReferenceStatus) -> OperationManagerStatus:
         ToolReferenceStatus.VALID: (
             OperationManagerSemanticStatus.CURRENT,
             "HIỆN HÀNH",
-            "Cụm Tool khớp revision/dấu vân tay hiện hành.",
+            "Cụm Tool khớp phiên bản sửa đổi và dấu vân tay hiện hành.",
         ),
         ToolReferenceStatus.MISSING: (
             OperationManagerSemanticStatus.NEEDS_INPUT,
@@ -193,6 +193,85 @@ def parallel_safety_status(
     )
 
 
+def z_level_safety_status(
+    operation: Operation,
+    artifact: object | None,
+) -> OperationManagerStatus | None:
+    """Map the Z-Level v2 safety contract without implying machine readiness."""
+    if operation.strategy_key != "z_level_finishing_3d":
+        return None
+    if not operation.enabled:
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.DISABLED,
+            "ĐÃ TẮT",
+            "Nguyên công Gia công tinh theo cao độ Z đã bị tắt.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.COMPUTING:
+        return status(
+            OperationManagerStatusCategory.CALCULATION,
+            OperationManagerSemanticStatus.CALCULATING,
+            "ĐANG TÍNH",
+            "Đang tính ứng viên gia công theo cao độ Z và kiểm tra an toàn.",
+        )
+    if operation.artifact_state.status is ArtifactStatus.DIRTY:
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.STALE,
+            "SAFETY STALE",
+            ui_text("Bằng chứng safety không còn khớp dependency đã áp dụng."),
+        )
+    if operation.artifact_state.status is ArtifactStatus.FAILED:
+        evidence = {
+            key: value
+            for item in operation.artifact_state.diagnostics
+            for key, value in item.context
+        }
+        value = evidence.get("safety_status", "failed")
+        semantic = (
+            OperationManagerSemanticStatus.BLOCKED
+            if value in {"unsafe", "unknown"}
+            else OperationManagerSemanticStatus.FAILED
+        )
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            semantic,
+            translate_status(value),
+            (
+                "Kiểm tra an toàn gia công theo cao độ Z không tạo được "
+                "kết quả tính toán SẴN SÀNG."
+            ),
+        )
+    if operation.artifact_state.status is ArtifactStatus.VALID and artifact is not None:
+        from hms_cadcam.cam.cam3d.zlevel import z_level_artifact_has_safe_contract
+
+        if z_level_artifact_has_safe_contract(artifact):
+            return status(
+                OperationManagerStatusCategory.DOMAIN,
+                OperationManagerSemanticStatus.CURRENT,
+                "SAFE TRONG PHẠM VI",
+            ui_text(
+                "Đã xác minh safety trong phạm vi công bố; "
+                "khoảng hở machine-ready chưa được xác minh."
+            ),
+            )
+        return status(
+            OperationManagerStatusCategory.DOMAIN,
+            OperationManagerSemanticStatus.STALE,
+            ui_text("SAFETY KHÔNG HỢP LỆ"),
+            (
+                "Kết quả tính toán gia công theo cao độ Z thiếu dấu vân tay "
+                "hoặc phạm vi an toàn của thuật toán v2 hiện hành."
+            ),
+        )
+    return status(
+        OperationManagerStatusCategory.DOMAIN,
+        OperationManagerSemanticStatus.DRAFT,
+        "CHƯA KIỂM TRA",
+        ui_text("Chưa tính kiểm tra safety cho Gia công tinh theo cao độ Z."),
+    )
+
+
 def operation_status(
     operation: Operation,
     tool_reference_status: ToolReferenceStatus,
@@ -251,7 +330,8 @@ def simulation_status(
                 OperationManagerStatusCategory.SIMULATION,
                 OperationManagerSemanticStatus.CALCULATING,
                 "ĐANG CHẠY",
-                f"Trạng thái Mô phỏng trong phiên: {record.state.value}.",
+                f"Trạng thái Mô phỏng trong phiên: "
+                f"{translate_status(record.state)}.",
             )
         if record.state is SimulationRunState.STALE:
             return status(
@@ -331,7 +411,7 @@ def post_status(
         OperationManagerStatusCategory.POST,
         semantic,
         translate_status(result.status),
-        f"Kết quả Post hiện có trạng thái {result.status.value}.",
+        f"Kết quả Post hiện có trạng thái {translate_status(result.status)}.",
     )
 
 
@@ -387,8 +467,9 @@ def nc_status(
         export = status(
             OperationManagerStatusCategory.EXPORT,
             mapping[export_result.status],
-        translate_status(export_result.status),
-            f"Trạng thái Xuất NC trong phiên: {export_result.status.value}.",
+            translate_status(export_result.status),
+            f"Trạng thái Xuất NC trong phiên: "
+            f"{translate_status(export_result.status)}.",
         )
     return nc, export
 
@@ -396,9 +477,9 @@ def nc_status(
 def dirty_reason_summary(operation: Operation) -> str:
     reasons = operation.artifact_state.dirty_reasons
     return (
-        ", ".join(item.value.replace("_", " ") for item in reasons)
+        ", ".join(display_value(item, "dirty_reason") for item in reasons)
         if reasons
-        else "Artifact đã công bố"
+        else "Kết quả tính toán đã công bố"
     )
 
 
@@ -409,7 +490,7 @@ def stock_summary(stock: StockDefinition) -> str:
         if value is not None:
             values.append(f"{value.value:g}")
     suffix = f" · {' × '.join(values)}" if values else ""
-    return f"{stock.kind.value}{suffix}"
+    return f"{display_value(stock.kind, 'stock_kind')}{suffix}"
 
 
 def setup_machine_name(

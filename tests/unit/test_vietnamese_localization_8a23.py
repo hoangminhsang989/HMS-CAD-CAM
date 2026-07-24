@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
+import pytest
 from PySide6.QtGui import QRawFont
 from PySide6.QtWidgets import QApplication
 
 from hms_cadcam.cam.cam3d.parallel import ParallelProgress, ParallelProgressPhase
+from hms_cadcam.cam.domain import SetupKind, StockKind
 from hms_cadcam.ui.function_editor import (
     FunctionEditorAction,
     FunctionEditorDraftState,
@@ -33,8 +35,15 @@ from tests.unit.test_parallel_finishing_function_editor_8a23 import (
     _valid_values,
 )
 from tools.audit_vietnamese_ui import (
+    APPROVED_TECHNICAL_TERMS,
+    FORBIDDEN_UI_PHRASES,
+    INTERNAL_MODEL_VALUE_CATALOG,
+    _classify,
     audit_production_ui,
     audit_runtime_review_states,
+    duplicate_user_facing_phrase_matches,
+    raw_user_facing_internal_matches,
+    unapproved_user_facing_acronym_matches,
     write_reports,
 )
 
@@ -63,7 +72,201 @@ def test_central_catalog_contains_required_hms_terminology() -> None:
     )
 
 
-def test_nine_operation_display_names_are_localized_without_changing_ids() -> None:
+def test_final_gui_leak_terms_are_localized_at_ui_boundary() -> None:
+    cases = {
+        "Safety contract Stage 8A.3.2": "hợp đồng an toàn giai đoạn 8A.3.2",
+        "Hướng contour theo topology": (
+            "Hướng đường đồng mức theo cấu trúc liên kết hình học"
+        ),
+        "để HMS tính lại từ dependency hiện hành.": (
+            "để HMS tính lại từ dữ liệu phụ thuộc hiện hành."
+        ),
+        "Mở panel trợ giúp ngắn": "Mở bảng trợ giúp ngắn",
+        "Mở rộng minh họa ngay trong popup CAM": (
+            "Mở rộng minh họa ngay trong cửa sổ CAM"
+        ),
+        "Cao độ clearance": "Cao độ an toàn",
+        "Cao độ retract": "Cao độ rút dao",
+        "Tên trong Operation Manager": "Tên trong Trình quản lý nguyên công",
+        "Dải Top/Bottom/Stepdown": "Dải Trên/Dưới/Bước xuống",
+        "algorithm v2 · payload v1": "Thuật toán v2 · Phiên bản dữ liệu v1",
+        "Ball-end Tool · Tool Assembly": "Tool cầu · Cụm Tool",
+        "Tools · PRIMARY · override · guardrail": (
+            "Tool · Chính · tùy chỉnh thủ công · giới hạn bảo vệ"
+        ),
+        "artifact · safety · contour · machine-ready": (
+            "kết quả tính toán · an toàn · đường đồng mức · sẵn sàng chạy máy"
+        ),
+        "Production Post · fail-closed": "Post sản xuất · chặn an toàn",
+        "Rút dao bảo thủ · fallback fail-closed": (
+            "Rút dao bảo thủ · chuyển sang phương án chặn an toàn."
+        ),
+        "Ball - D10 mm": "Cầu · D10 mm",
+        "safety contract": "hợp đồng an toàn",
+        "projection hiện hành": "dữ liệu hiển thị hiện hành",
+        "Chọn lại bề mặt từ viewport": "Chọn lại bề mặt từ vùng hiển thị CAD",
+        "WCS của Thiết lập": "Hệ tọa độ Thiết lập",
+        "Biên mặt đã trim": "Biên mặt đã cắt xén",
+        "safety validator": "bộ kiểm tra an toàn",
+        "Machining zone": "vùng gia công",
+        "Parallel Setup": "Thiết lập cao độ Z",
+    }
+    assert {source: ui_text(source) for source in cases} == cases
+    assert ui_text("Tools") == "Tool"
+    assert ui_text("Tool Assembly") == "Cụm Tool"
+
+
+def test_forbidden_rendered_phrase_denylist_is_enforced() -> None:
+    assert {
+        "safety contract",
+        "projection",
+        "viewport",
+        "WCS",
+        "trim",
+        "trimmed",
+        "validator",
+        "Machining zone",
+        "Parallel Setup",
+        "contract",
+        "Stage",
+        "topology",
+        "dependency",
+        "panel",
+        "popup",
+        "fallback",
+        "clearance",
+        "retract",
+        "Manager",
+        "Top/Bottom/Stepdown",
+    }.issubset(FORBIDDEN_UI_PHRASES)
+    for phrase in FORBIDDEN_UI_PHRASES:
+        classification, matches = _classify(phrase, "literal")
+        assert classification == "untranslated"
+        assert phrase in matches
+    assert _classify("WCS của Thiết lập", "ui_text")[0] == "translated"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("Post sản xuất · bị chặn chặn an toàn", "chặn chặn"),
+        ("Công việc Công việc gia công cao độ Z", "Công việc Công việc"),
+        ("Thiết lập Thiết lập cao độ Z", "Thiết lập Thiết lập"),
+        ("Chọn lại Chọn lại", "Chọn lại Chọn lại"),
+        ("Loại Loại bề mặt", "Loại Loại"),
+        ("Xóa Xóa lựa chọn", "Xóa Xóa"),
+        ("Tự động · Tự động", "Tự động · Tự động"),
+    ),
+)
+def test_duplicate_user_facing_phrase_detector_finds_adjacent_repetition(
+    text: str,
+    expected: str,
+) -> None:
+    assert expected in duplicate_user_facing_phrase_matches(text)
+    assert _classify(text, "literal")[0] == "untranslated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Đường tâm Tool. Tool cầu tiếp tục theo biên.",
+        "Đường tâm Tool; Tool cầu tiếp tục theo biên.",
+        "Công việc gia công cao độ Z · Thiết lập cao độ Z",
+    ),
+)
+def test_duplicate_detector_stops_at_sentence_boundaries(text: str) -> None:
+    assert not duplicate_user_facing_phrase_matches(text)
+
+
+@pytest.mark.parametrize("acronym", ("CW", "CCW", "CW/CCW"))
+def test_unapproved_orientation_acronyms_fail_audit(acronym: str) -> None:
+    assert unapproved_user_facing_acronym_matches(acronym) == (acronym,)
+    assert _classify(acronym, "literal")[0] == "untranslated"
+
+
+def test_approved_technical_terms_are_not_unapproved_acronyms() -> None:
+    assert all(
+        not unapproved_user_facing_acronym_matches(term)
+        for term in APPROVED_TECHNICAL_TERMS
+    )
+
+
+@pytest.mark.parametrize(
+    "raw_text",
+    (
+        "DOMAIN · ĐÃ LƯU",
+        "CALCULATION · CẦN TÍNH",
+        "SIMULATION · CHƯA CHẠY",
+        "EXPORT · CHƯA XUẤT",
+        "1 Setup",
+        "MILL · Chính · Chưa gán máy",
+        "Setup đang hoạt động",
+        "Hình học đến từ nguyên công hoặc Setup/mô hình",
+        "Đã liên kết geometry",
+        "box · 20 × 20 × 10",
+        "Stock hợp lệ",
+        "1 assembly đang dùng",
+        "Stickout 30 mm",
+        "Danh sách theo thứ tự domain hiện có",
+        "Cụm Tool khớp revision/dấu vân tay hiện hành",
+        "kết quả tính toán missing",
+        "Nội dung tham số Function Editor",
+        "Không phải chứng nhận production-AN TOÀN hoặc sẵn sàng chạy máy",
+        "Post sản xuất cho Z-Level chưa được hỗ trợ",
+        "bộ tính Z-Level sản xuất công bố",
+        "Lượng dư bề mặt · minh họa offset",
+        "Bằng chứng cổng Mô phỏng · Z-Level",
+    ),
+)
+def test_raw_namespace_model_and_accessibility_regressions_fail_audit(
+    raw_text: str,
+) -> None:
+    assert raw_user_facing_internal_matches(raw_text)
+
+
+def test_internal_token_auditor_uses_production_enum_catalog_and_strict_allowlist() -> None:
+    assert INTERNAL_MODEL_VALUE_CATALOG["SetupKind"] == tuple(
+        item.value for item in SetupKind
+    )
+    assert INTERNAL_MODEL_VALUE_CATALOG["StockKind"] == tuple(
+        item.value for item in StockKind
+    )
+    assert set(APPROVED_TECHNICAL_TERMS) == {
+        "CAD",
+        "CAM",
+        "CNC",
+        "Tool",
+        "Holder",
+        "Post",
+        "G-code",
+        "Toolpath IR",
+        "SQLite",
+        "OCP",
+        "BRep",
+        "UUID/ID",
+        "version/hash",
+        "U/V/W",
+        "đơn vị kỹ thuật",
+    }
+    clean_values = (
+        "DỰ ÁN · ĐÃ LƯU",
+        "TRẠNG THÁI · ĐANG HOẠT ĐỘNG",
+        "TÍNH TOÁN · CẦN TÍNH",
+        "MÔ PHỎNG · CHƯA CHẠY",
+        "XUẤT NC · CHƯA XUẤT",
+        "PHAY · Chính · Chưa gán máy",
+        "Khối hộp · 20 × 20 × 10",
+        "1 cụm Tool đang dùng",
+        "Chiều nhô 30 mm",
+        "Post sản xuất cho gia công tinh theo cao độ Z chưa được hỗ trợ",
+    )
+    assert all(
+        not raw_user_facing_internal_matches(text)
+        for text in clean_values
+    )
+
+
+def test_ten_operation_display_names_are_localized_without_changing_ids() -> None:
     expected = {
         "Facing 2.5D": "Phay mặt 2.5D",
         "Planar Face Facing": "Phay các mặt phẳng",
@@ -74,6 +277,7 @@ def test_nine_operation_display_names_are_localized_without_changing_ids() -> No
         "Reaming": "Doa lỗ",
         "Boring": "Khoét lỗ",
         "Parallel Finishing": "Gia công tinh song song",
+        "Z-Level Finishing": "Gia công tinh theo cao độ Z",
     }
     assert dict(OPERATION_DISPLAY_NAMES) == expected
     assert {
@@ -90,6 +294,7 @@ def test_nine_operation_display_names_are_localized_without_changing_ids() -> No
         "contour_2d": "Phay biên dạng 2D",
         "pocket_2_5d": "Phay hốc 2.5D",
         "parallel_finishing_3d": "Gia công tinh song song",
+        "z_level_finishing_3d": "Gia công tinh theo cao độ Z",
         "drilling_v1": "Khoan",
         "tapping_v1": "Taro",
         "reaming_v1": "Doa lỗ",
@@ -104,6 +309,7 @@ def test_nine_operation_display_names_are_localized_without_changing_ids() -> No
         "contour_2d",
         "pocket_2_5d",
         "parallel_finishing_3d",
+        "z_level_finishing_3d",
         "drilling_v1",
         "tapping_v1",
         "reaming_v1",
@@ -170,6 +376,21 @@ def test_display_value_mapper_covers_required_dynamic_categories() -> None:
             "selected_face": "Bề mặt đã chọn",
             "protected_face": "Bề mặt được bảo vệ",
         },
+        "quality_profile": {
+            "fast": "Nhanh",
+            "balanced": "Cân bằng",
+            "high": "Chất lượng cao",
+        },
+        "automatic_mode": {
+            "auto": "Tự động",
+            "manual": "Thủ công",
+        },
+        "automatic_status": {
+            "resolved": "Đã xác định",
+            "needs_confirmation": "Cần xác nhận",
+            "unsupported": "Không được hỗ trợ",
+            "unresolved": "Chưa xác định",
+        },
     }
     for category, values in expected.items():
         assert all(
@@ -217,7 +438,7 @@ def test_runtime_rendered_audit_covers_dynamic_names_and_preserves_only_technica
         for item in result.entries
         if item.source == "operation_display_name"
     )
-    assert len(operation_entries) == 9
+    assert len(operation_entries) == 10
     assert {item.text for item in operation_entries} == set(
         OPERATION_DISPLAY_NAMES.values()
     )

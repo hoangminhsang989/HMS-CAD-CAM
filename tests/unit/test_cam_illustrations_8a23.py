@@ -45,10 +45,11 @@ def test_registry_has_one_vector_illustration_for_every_production_editor() -> N
         "reaming_production_9a6",
         "boring_production_9a6",
         "parallel_finishing_production_8a2_3",
+        "z_level_finishing_production_8a3_3",
     }
 
     assert {item.key for item in registry.descriptors} == expected
-    assert len(registry.descriptors) == 9
+    assert len(registry.descriptors) == 10
     assert tuple(item.title for item in registry.descriptors) == (
         "Phay mặt 2.5D",
         "Phay các mặt phẳng",
@@ -59,6 +60,7 @@ def test_registry_has_one_vector_illustration_for_every_production_editor() -> N
         "Doa lỗ",
         "Khoét lỗ",
         "Gia công tinh song song",
+        "Gia công tinh theo cao độ Z",
     )
     assert all(item.caption and item.accessible_description for item in registry.descriptors)
     assert all(item.operation_type for item in registry.descriptors)

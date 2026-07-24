@@ -40,6 +40,17 @@ _SOURCE_LABELS = {
     FunctionEditorValueSource.DERIVED: "Derived",
 }
 
+
+_ACTION_ACCESSIBLE_NAMES = {
+    "reselect_parallel_faces": "Chọn lại bề mặt gia công",
+    "remove_parallel_faces": "Loại bề mặt khỏi bản nháp",
+    "clear_parallel_faces": "Xóa toàn bộ lựa chọn bề mặt",
+    "reselect_z_level_faces": "Chọn lại bề mặt gia công",
+    "remove_z_level_faces": "Loại bề mặt khỏi bản nháp",
+    "clear_z_level_faces": "Xóa toàn bộ lựa chọn bề mặt",
+}
+
+
 class FunctionEditorFieldWidget(QWidget):
     """Accessible field renderer with unit, provenance and inline diagnostics."""
 
@@ -112,11 +123,14 @@ class FunctionEditorFieldWidget(QWidget):
         self.action_button.setText(action_label)
         self.action_button.setObjectName("FunctionEditorFieldAction")
         self.action_button.setAccessibleName(
-            f"{action_label} {ui_text(definition.label)}".strip()
+            _ACTION_ACCESSIBLE_NAMES.get(
+                action_id,
+                f"{action_label} {ui_text(definition.label)}".strip(),
+            )
         )
-        self.action_button.setToolTip(
-            ui_text(definition.tooltip or action_label)
-        )
+        action_tooltip = ui_text(definition.tooltip or action_label)
+        self.action_button.setToolTip(action_tooltip)
+        self.action_button.setAccessibleDescription(action_tooltip)
         self.action_button.setSizePolicy(
             QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed
         )

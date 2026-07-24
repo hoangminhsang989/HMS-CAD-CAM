@@ -95,8 +95,11 @@ def holder_collision_fixture() -> tuple[ParallelFixture, HolderDefinition]:
     return value, holder
 
 
-def safe_holder_fixture() -> tuple[ParallelFixture, HolderDefinition]:
-    base = planar_fixture(stepover=5.0)
+def safe_holder_fixture(
+    *,
+    project_id=None,
+) -> tuple[ParallelFixture, HolderDefinition]:
+    base = planar_fixture(stepover=5.0, project_id=project_id)
     unit = LengthUnit.MM
     holder = HolderDefinition(
         HolderDefinitionId.new(),

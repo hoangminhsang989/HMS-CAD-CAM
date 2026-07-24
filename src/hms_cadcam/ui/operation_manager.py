@@ -41,6 +41,7 @@ from hms_cadcam.ui.operation_manager_delegate import OperationManagerDelegate
 from hms_cadcam.ui.operation_manager_model import OperationManagerModel
 from hms_cadcam.ui.operation_manager_types import (
     OperationManagerFilter,
+    OperationManagerHeader,
     OperationManagerLegacySelection,
     OperationManagerNode,
     OperationManagerNodeId,
@@ -53,6 +54,11 @@ from hms_cadcam.ui.localization import localize_widget_tree
 logger = logging.getLogger(__name__)
 OPERATION_MANAGER_STATE_VERSION = 1
 _SETTINGS_GROUP = "operation_manager_9a3"
+
+
+def operation_manager_context_summary(header: OperationManagerHeader) -> str:
+    """Render the current object names without inventing label prefixes."""
+    return " · ".join((header.active_job, header.active_setup, header.machine))
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,6 +510,9 @@ class OperationManagerPanel(QWidget):
         action = self._source_actions.get("parallel_operation")
         if action is not None:
             menu.addAction(action)
+        action = self._source_actions.get("z_level_operation")
+        if action is not None:
+            menu.addAction(action)
         menu.addSection("Gia công lỗ")
         for key in (
             "drilling_operation",
@@ -587,9 +596,7 @@ class OperationManagerPanel(QWidget):
 
     def _update_header(self, header) -> None:
         self.project_label.setText(header.project_name)
-        self.context_label.setText(
-            f"Công việc {header.active_job} · Thiết lập {header.active_setup} · {header.machine}"
-        )
+        self.context_label.setText(operation_manager_context_summary(header))
         self.counts_label.setText(
             f"{header.operation_count} nguyên công · "
             f"{header.warning_count} cảnh báo · {header.error_count} lỗi"

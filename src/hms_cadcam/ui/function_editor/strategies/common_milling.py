@@ -521,7 +521,7 @@ def build_facing_sections(
             FunctionEditorField(
                 "operation_name", "Tên operation", FunctionEditorFieldKind.TEXT,
                 values["operation_name"], required=True,
-                tooltip="Tên hiển thị trong Operation Manager; identity vẫn là OperationId.",
+                tooltip="Tên hiển thị trong Trình quản lý nguyên công; identity vẫn là OperationId.",
                 help_key="facing.operation_name", order=10,
                 binding_key="node.name", conversion=FunctionEditorValueConversion.TEXT,
             ),
@@ -607,7 +607,7 @@ def build_facing_sections(
                 "direction", "Hướng cắt", FunctionEditorFieldKind.CHOICE,
                 values["direction"], required=True,
                 choices=tuple(item.value for item in FacingCutDirection),
-                tooltip="Climb, conventional hoặc bidirectional theo contract Facing v1.",
+                tooltip="Phay thuận, phay nghịch hoặc hai chiều theo hợp đồng Phay mặt v1.",
                 help_key="facing.direction", order=20,
                 binding_key="parameters.direction",
             ),
@@ -726,7 +726,10 @@ def build_facing_sections(
                 values["machine_id"], required=True,
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 choices=machine_choices, choice_labels=machine_labels,
-                tooltip="Machine requirement hiện có của operation; compatibility được domain kiểm tra.",
+                tooltip=(
+                    "Yêu cầu máy hiện có của nguyên công; tính tương thích "
+                    "được dữ liệu nghiệp vụ kiểm tra."
+                ),
                 help_key="facing.machine", order=40,
                 binding_key="operation.machine_requirement",
             ),
@@ -741,7 +744,7 @@ def build_facing_sections(
     )
     advanced = FunctionEditorSection(
         "advanced", "ADVANCED", tuple(advanced_fields),
-        "Override ít dùng thuộc contract Facing v1.",
+        "Tùy chỉnh ít dùng thuộc hợp đồng Phay mặt v1.",
         disclosure_level=ParameterDisclosureLevel.ADVANCED,
         default_expanded=False,
         order=70,

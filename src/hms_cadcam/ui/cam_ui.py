@@ -53,6 +53,7 @@ from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
     BoringGenerationError,
     BoringGenerator,
     ContourGenerationError,
@@ -132,6 +133,13 @@ from hms_cadcam.ui.function_editor.strategies import (
     parallel_draft_derived_values,
     parallel_validation_diagnostics,
     prepare_parallel_update,
+    ZLevelEditorContext,
+    ZLevelEditorDraftContext,
+    build_z_level_schema,
+    prepare_z_level_update,
+    z_level_applied_values,
+    z_level_draft_derived_values,
+    z_level_validation_diagnostics,
 )
 from hms_cadcam.cam.cam3d import (
     Cam3DCalculationRequest,
@@ -146,9 +154,19 @@ from hms_cadcam.cam.cam3d.parallel import (
     ParallelProgress,
     calculate_and_publish_parallel_finishing,
 )
+from hms_cadcam.cam.cam3d.zlevel import (
+    Z_LEVEL_FINISHING_ALGORITHM_VERSION,
+    ZLevelFinishingComputeResult,
+    ZLevelFinishingParameters,
+    ZLevelGeometryEvidence,
+    ZLevelProgress,
+    calculate_and_publish_z_level_finishing,
+)
 from hms_cadcam.cam.domain import MachiningZone3DId
 from hms_cadcam.ui.parallel_finishing_worker import ParallelFinishingTask
+from hms_cadcam.ui.zlevel_finishing_worker import ZLevelFinishingTask
 from hms_cadcam.ui.localization import (
+    display_value,
     localize_widget_tree,
     translate_status,
     ui_text,
@@ -222,6 +240,13 @@ class CamWorkspace(QWidget):
         self._parallel_reports: dict[OperationId, object] = {}
         self._parallel_task: ParallelFinishingTask | None = None
         self._parallel_task_generation: int | None = None
+        self._z_level_drafts: dict[OperationId, tuple[object, ...]] = {}
+        self._z_level_draft_evidence: dict[
+            OperationId, ZLevelGeometryEvidence
+        ] = {}
+        self._z_level_reports: dict[OperationId, object] = {}
+        self._z_level_task: ZLevelFinishingTask | None = None
+        self._z_level_task_generation: int | None = None
         self._simulation_policies: dict[
             OperationId, tuple[SimulationSamplingPolicy, SimulationDisplayPolicy]
         ] = {}
@@ -259,6 +284,7 @@ class CamWorkspace(QWidget):
         self._production_pocket_editor_enabled = True
         self._production_drilling_family_editors_enabled = True
         self._production_parallel_editor_enabled = True
+        self._production_z_level_editor_enabled = True
         self._child_dialog_opener: Callable[..., object] | None = None
         self._facing_preview: tuple[str, ...] = ()
         self._contour_preview: tuple[str, ...] = ()
@@ -310,7 +336,7 @@ class CamWorkspace(QWidget):
         )
         self.post_panel.message.connect(self.message.emit)
         self.program_assembly_panel.message.connect(self.message.emit)
-        for key in ("job", "setup", "resources", "parallel_resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "parallel_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
+        for key in ("job", "setup", "resources", "parallel_resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "parallel_operation", "z_level_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
                     "pick", "clear_pick", "up", "down", "delete"):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
@@ -341,6 +367,10 @@ class CamWorkspace(QWidget):
             "contour_operation": ("Thêm Phay biên dạng 2D", self.add_contour_operation),
             "pocket_operation": ("Thêm Phay hốc 2.5D", self.add_pocket_operation),
             "parallel_operation": ("Thêm Gia công tinh song song", self.add_parallel_operation),
+            "z_level_operation": (
+                "Thêm Gia công tinh theo cao độ Z",
+                self.add_z_level_operation,
+            ),
             "drilling_operation": ("Thêm Khoan", self.add_drilling_operation),
             "tapping_operation": ("Thêm Taro", self.add_tapping_operation),
             "reaming_operation": ("Thêm Doa lỗ", self.add_reaming_operation),
@@ -369,7 +399,16 @@ class CamWorkspace(QWidget):
             self.parallel_calculation_active.emit(False)
         self._parallel_task_generation = None
         self._parallel_drafts.clear()
+        self._parallel_draft_evidence.clear()
         self._parallel_reports.clear()
+        if self._z_level_task is not None:
+            self._z_level_task.abandon()
+            self._z_level_task = None
+            self.parallel_calculation_active.emit(False)
+        self._z_level_task_generation = None
+        self._z_level_drafts.clear()
+        self._z_level_draft_evidence.clear()
+        self._z_level_reports.clear()
         self._simulation_handle = None
         self._simulation_project_id = None
         self._simulation_policies.clear()
@@ -482,6 +521,12 @@ class CamWorkspace(QWidget):
             return self._parallel_production_session(
                 job.job_id, setup, node_id, node.name, operation
             )
+        if operation.strategy_key == "z_level_finishing_3d":
+            if not self._production_z_level_editor_enabled:
+                return None
+            return self._z_level_production_session(
+                job.job_id, setup, node_id, node.name, operation
+            )
         if operation.strategy_key == "contour_2d":
             if not self._production_contour_editor_enabled:
                 return None
@@ -568,6 +613,571 @@ class CamWorkspace(QWidget):
                 context, draft, variant, action_id, values
             ),
         )
+
+    def _z_level_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one native-free Z-Level session over applied project state."""
+        if self._generation is None:
+            return None
+        project = self._service.current_project
+        if project is None:
+            return None
+        parameters = ZLevelFinishingParameters.from_operation_parameters(
+            operation.parameters
+        )
+        zone = next(
+            (
+                item
+                for item in self._service.cam3d_config.zones
+                if item.zone_id == parameters.zone_id
+            ),
+            None,
+        )
+        surfaces = (
+            zone.part_surfaces.selection.surfaces if zone is not None else ()
+        )
+        draft_surfaces = self._z_level_drafts.get(
+            operation.operation_id, surfaces
+        )
+        snapshot = self._service.cam_snapshot
+        context = ZLevelEditorContext(
+            operation_name,
+            operation,
+            setup,
+            job_id,
+            project.manifest.project_id,
+            zone,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            snapshot.holder_definitions,
+            snapshot.machine_definitions,
+            self._service.load_toolpath_artifact(operation.operation_id),
+            self._z_level_reports.get(operation.operation_id),  # type: ignore[arg-type]
+            geometry_resolved=(
+                zone is not None
+                and bool(surfaces)
+                and {item.geometry.reference_id for item in surfaces}
+                == {
+                    item.reference.reference_id
+                    for item in operation.geometry_inputs
+                    if item.role is GeometryInputRole.DRIVE_GEOMETRY
+                }
+            ),
+            geometry_diagnostic=(
+                "Thiếu vùng gia công"
+                if zone is None
+                else "Tham chiếu bề mặt đã stale"
+                if not surfaces
+                else ""
+            ),
+            geometry_evidence=self._z_level_draft_evidence.get(
+                operation.operation_id
+            ),
+        )
+        draft = ZLevelEditorDraftContext(
+            tuple(draft_surfaces),  # type: ignore[arg-type]
+            geometry_evidence=self._z_level_draft_evidence.get(
+                operation.operation_id
+            ),
+        )
+        schema = build_z_level_schema(context)
+        applied = z_level_applied_values(context)
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_z_level_production(
+                job_id, setup.setup_id, node_id, context, draft, values
+            ),
+            validation_callback=lambda values: self._validate_z_level_production(
+                schema, context, draft, values
+            ),
+            preview_callback=lambda request: self._preview_z_level_production(
+                context, draft, request
+            ),
+            calculate_callback=lambda values: self._calculate_z_level_production(
+                context, draft, values
+            ),
+            draft_transform_callback=lambda values: z_level_draft_derived_values(
+                context, draft, values
+            ),
+            field_action_callback=lambda action_id, values: self._z_level_field_action(
+                context, draft, action_id, values
+            ),
+        )
+
+    def _z_level_context_is_current(
+        self, context: ZLevelEditorContext
+    ) -> bool:
+        current = self._current_facing_operation(context.operation.operation_id)
+        if current is None or self._generation != self._service.cam_generation:
+            return False
+        return (
+            current.revision == context.operation.revision
+            and current.parameters == context.operation.parameters
+            and current.geometry_inputs == context.operation.geometry_inputs
+            and current.tool_assembly == context.operation.tool_assembly
+            and current.machine_requirement == context.operation.machine_requirement
+            and current.enabled == context.operation.enabled
+        )
+
+    def _validate_z_level_production(
+        self,
+        schema,
+        context: ZLevelEditorContext,
+        draft: ZLevelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        if not self._z_level_context_is_current(context):
+            return (
+                FunctionEditorDiagnostic(
+                    "z_level.stale_editor",
+                    "Nguyên công gia công theo cao độ Z đã thay đổi; "
+                    "hãy mở lại trình chỉnh sửa.",
+                    FunctionEditorDiagnosticSeverity.ERROR,
+                    "operation_name",
+                    "operation",
+                ),
+            )
+        return z_level_validation_diagnostics(schema, context, draft, values)
+
+    def _z_level_field_action(
+        self,
+        context: ZLevelEditorContext,
+        draft: ZLevelEditorDraftContext,
+        action_id: str,
+        _values: Mapping[str, PresentationValue],
+    ) -> Mapping[str, PresentationValue] | None:
+        if action_id == "select_z_level_faces":
+            if self._parallel_surface_provider is None:
+                raise ValueError("Bộ chọn bề mặt CAM 3D chưa sẵn sàng.")
+            selected = self._parallel_surface_provider()
+            if not selected:
+                raise ValueError("Hãy chọn một hoặc nhiều mặt BRep trong viewport.")
+            merged = {_parallel_surface_key(item): item for item in draft.surfaces}
+            for item in selected:
+                if not hasattr(item, "geometry"):
+                    raise TypeError("Bộ chọn trả về tham chiếu mặt không hợp lệ.")
+                merged.setdefault(_parallel_surface_key(item), item)
+            draft.surfaces = tuple(
+                sorted(merged.values(), key=lambda item: item.fingerprint.digest)
+            )
+            if self._parallel_geometry_bounds_provider is not None:
+                bounds = self._parallel_geometry_bounds_provider()
+                if len(bounds) != len(selected):
+                    raise ValueError(
+                        "Hộp bao hình học đã stale; hãy chọn lại các mặt."
+                    )
+                evidence = self._z_level_evidence_from_bounds(context, bounds)
+                draft.geometry_evidence = self._union_z_level_evidence(
+                    draft.geometry_evidence, evidence
+                )
+                self._z_level_draft_evidence[
+                    context.operation.operation_id
+                ] = draft.geometry_evidence
+            self._z_level_drafts[context.operation.operation_id] = draft.surfaces
+            return self._z_level_geometry_presentation(context, draft.surfaces)
+        if action_id == "clear_z_level_faces":
+            draft.surfaces = ()
+            draft.geometry_evidence = None
+            self._z_level_draft_evidence.pop(
+                context.operation.operation_id, None
+            )
+            self._z_level_drafts[context.operation.operation_id] = ()
+            return self._z_level_geometry_presentation(context, ())
+        if action_id == "reselect_z_level_faces":
+            draft.surfaces = ()
+            draft.geometry_evidence = None
+            self._z_level_draft_evidence.pop(
+                context.operation.operation_id, None
+            )
+            return self._z_level_field_action(
+                context, draft, "select_z_level_faces", _values
+            )
+        if action_id == "remove_z_level_faces":
+            if self._parallel_surface_provider is None:
+                raise ValueError("Bộ chọn bề mặt CAM 3D chưa sẵn sàng.")
+            selected = self._parallel_surface_provider()
+            removed = {_parallel_surface_key(item) for item in selected}
+            draft.surfaces = tuple(
+                item
+                for item in draft.surfaces
+                if _parallel_surface_key(item) not in removed
+            )
+            draft.geometry_evidence = None
+            self._z_level_draft_evidence.pop(
+                context.operation.operation_id, None
+            )
+            self._z_level_drafts[context.operation.operation_id] = draft.surfaces
+            return self._z_level_geometry_presentation(context, draft.surfaces)
+        if action_id == "open_z_level_safety_details":
+            self._show_z_level_safety_details(context)
+            return None
+        if action_id == "open_z_level_simulation":
+            artifact = context.artifact
+            from hms_cadcam.cam.cam3d.zlevel import (
+                z_level_artifact_has_safe_contract,
+            )
+
+            if (
+                artifact is None
+                or context.operation.artifact_state.status is not ArtifactStatus.VALID
+                or artifact.operation_revision != context.operation.revision
+                or not z_level_artifact_has_safe_contract(artifact)
+            ):
+                raise ValueError(
+                    "Mô phỏng yêu cầu artifact READY + SAFE algorithm v2 hiện hành."
+                )
+            self._run_simulation()
+            return None
+        raise ValueError(
+            f"Thao tác gia công theo cao độ Z không được hỗ trợ: {action_id}"
+        )
+
+    @staticmethod
+    def _z_level_evidence_from_bounds(
+        context: ZLevelEditorContext,
+        bounds: tuple[object, ...],
+    ) -> ZLevelGeometryEvidence:
+        frame = context.setup.wcs
+        origin = frame.origin
+        projected: list[tuple[float, float, float]] = []
+        for value in bounds:
+            coordinates = (
+                getattr(value, "x_min"),
+                getattr(value, "y_min"),
+                getattr(value, "z_min"),
+                getattr(value, "x_max"),
+                getattr(value, "y_max"),
+                getattr(value, "z_max"),
+            )
+            if not all(isinstance(item, (int, float)) for item in coordinates):
+                raise TypeError(
+                    "Hộp bao hình học gia công theo cao độ Z không hợp lệ."
+                )
+            x_min, y_min, z_min, x_max, y_max, z_max = coordinates
+            for x in (x_min, x_max):
+                for y in (y_min, y_max):
+                    for z in (z_min, z_max):
+                        dx, dy, dz = x - origin.x, y - origin.y, z - origin.z
+                        projected.append(
+                            (
+                                dx * frame.x_axis.x
+                                + dy * frame.x_axis.y
+                                + dz * frame.x_axis.z,
+                                dx * frame.y_axis.x
+                                + dy * frame.y_axis.y
+                                + dz * frame.y_axis.z,
+                                dx * frame.z_axis.x
+                                + dy * frame.z_axis.y
+                                + dz * frame.z_axis.z,
+                            )
+                        )
+        if not projected:
+            raise ValueError("Hộp bao hình học gia công theo cao độ Z trống.")
+        return ZLevelGeometryEvidence(
+            float(min(item[0] for item in projected)),
+            float(max(item[0] for item in projected)),
+            float(min(item[1] for item in projected)),
+            float(max(item[1] for item in projected)),
+            float(min(item[2] for item in projected)),
+            float(max(item[2] for item in projected)),
+            "Hộp bao các bề mặt đã chọn trong viewport",
+        )
+
+    @staticmethod
+    def _union_z_level_evidence(
+        current: ZLevelGeometryEvidence | None,
+        added: ZLevelGeometryEvidence,
+    ) -> ZLevelGeometryEvidence:
+        if current is None:
+            return added
+        return ZLevelGeometryEvidence(
+            min(current.u_min, added.u_min),
+            max(current.u_max, added.u_max),
+            min(current.v_min, added.v_min),
+            max(current.v_max, added.v_max),
+            min(current.w_min, added.w_min),
+            max(current.w_max, added.w_max),
+            "Hộp bao hợp nhất của các bề mặt đã chọn",
+        )
+
+    @staticmethod
+    def _z_level_geometry_presentation(
+        context: ZLevelEditorContext,
+        surfaces: tuple[object, ...],
+    ) -> dict[str, PresentationValue]:
+        count = len(surfaces)
+        return {
+            "geometry_summary": (
+                f"{count} bề mặt gia công · "
+                f"{'BẢN NHÁP' if count else 'CHƯA CHỌN'}"
+            ),
+            "selected_face_count": str(count),
+            "geometry_reference_summary": (
+                ", ".join(
+                    str(item.geometry.reference_id)[:8] for item in surfaces
+                )
+                if surfaces
+                else "Không có"
+            ),
+            "selected_body_setup_summary": (
+                f"Thiết lập {context.setup.name} · "
+                f"{context.setup.work_offset.name}"
+            ),
+        }
+
+    def _preview_z_level_production(
+        self,
+        context: ZLevelEditorContext,
+        draft: ZLevelEditorDraftContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        if not self._z_level_context_is_current(context):
+            raise ValueError(
+                "Bản xem trước gia công theo cao độ Z đã lỗi thời."
+            )
+        update = prepare_z_level_update(context, draft, dict(request.values))
+        height = update.parameters.top_level - update.parameters.bottom_level
+        count = int(math.ceil(height / update.parameters.stepdown_mm)) + 1
+        return (
+            f"Ứng viên · {len(update.zone.part_surfaces.selection.surfaces)} mặt · "
+            f"{count} lớp Z · bước xuống {update.parameters.stepdown_mm:g} mm · "
+            "chưa tính và chưa SAFE"
+        )
+
+    def _apply_z_level_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: ZLevelEditorContext,
+        draft: ZLevelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> object:
+        if not self._z_level_context_is_current(context):
+            raise ValueError(
+                "Nguyên công gia công theo cao độ Z đã thay đổi; "
+                "hãy mở lại trình chỉnh sửa."
+            )
+        update = prepare_z_level_update(context, draft, values)
+        old_config = self._service.cam3d_config
+        zones = tuple(
+            item for item in old_config.zones if item.zone_id != update.zone.zone_id
+        ) + (update.zone,)
+        new_config = Cam3DProjectConfig(old_config.project_id, zones)
+        try:
+            self._service.stage_cam3d_config(new_config)
+            changed = self._service.execute_cam_command(
+                lambda app: app.update_tree(
+                    job_id,
+                    setup_id,
+                    lambda tree: tree.replace_operation(
+                        update.operation
+                    ).rename_node(node_id, update.operation_name),
+                ),
+                expected_generation=self._generation,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            self._service.stage_cam3d_config(old_config)
+            raise
+        self._z_level_drafts.pop(context.operation.operation_id, None)
+        self._z_level_draft_evidence.pop(context.operation.operation_id, None)
+        self._z_level_reports.pop(context.operation.operation_id, None)
+        self.refresh(("operation", str(node_id)))
+        self.projection_changed.emit()
+        self.message.emit(
+            ui_text(
+                "Đã áp dụng bản nháp Gia công tinh theo cao độ Z; chưa tính toolpath."
+            )
+        )
+        return changed
+
+    def _calculate_z_level_production(
+        self,
+        context: ZLevelEditorContext,
+        draft: ZLevelEditorDraftContext,
+        values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._z_level_task is not None or self._parallel_task is not None:
+            raise ValueError("Một tác vụ tính CAM 3D đang chạy.")
+        if not self._z_level_context_is_current(context):
+            raise ValueError(
+                "Trạng thái gia công theo cao độ Z đã áp dụng bị lỗi thời."
+            )
+        applied = z_level_applied_values(context)
+        if any(values.get(key) != value for key, value in applied.items()):
+            raise ValueError(
+                "Tính đường chạy dao chỉ dùng trạng thái đã áp dụng; hãy Áp dụng trước."
+            )
+        update = prepare_z_level_update(context, draft, applied)
+        if update.operation != context.operation or update.zone != context.zone:
+            raise ValueError(
+                "Tính đường chạy dao chỉ dùng trạng thái đã áp dụng; hãy Áp dụng trước."
+            )
+        if self._parallel_adapter_provider is None:
+            raise ValueError("Bộ điều hợp tính toán OCP CAM 3D chưa sẵn sàng.")
+        adapter = self._parallel_adapter_provider()
+        generation = self._generation
+        project = self._service.current_project
+        if generation is None or project is None:
+            raise ValueError(
+                "Ngữ cảnh dự án gia công theo cao độ Z không còn hiện hành."
+            )
+        request = Cam3DCalculationRequest.create(
+            project_id=project.manifest.project_id,
+            project_generation=generation,
+            job_id=context.job_id,
+            setup_id=context.operation.setup_id,
+            zone=update.zone,
+            tool_assembly_fingerprint=ContentFingerprint.from_payload(
+                update.assembly.to_dict()
+            ),
+            tool_definition_fingerprint=update.tool.content_fingerprint,
+            safe_motion_policy=update.safe_motion_policy,
+            algorithm="hms_z_level_implicit_ball_center",
+            algorithm_version=Z_LEVEL_FINISHING_ALGORITHM_VERSION,
+        )
+
+        def calculate(cancelled, progress):
+            contact_resolver = adapter.contact_resolver(
+                update.zone.part_surfaces.selection.surfaces
+            )
+            geometry = Cam3DGeometryService()
+            geometry.bind_project(project.manifest.project_id, generation)
+            execution = geometry.calculate(
+                request,
+                adapter,
+                cancellation=cancelled,
+            )
+            if not execution.published or execution.context is None:
+                message = (
+                    execution.diagnostics[0].message
+                    if execution.diagnostics
+                    else "Chuẩn bị hình học gia công theo cao độ Z thất bại."
+                )
+                raise RuntimeError(message)
+            return calculate_and_publish_z_level_finishing(
+                project.root_path,
+                context.operation,
+                execution.context,
+                assembly=update.assembly,
+                tool=update.tool,
+                holder=update.holder,
+                cancellation=cancelled,
+                progress=progress,
+                contact_resolver=contact_resolver,
+                computing_callback=lambda operation: self._service.begin_z_level_calculation(
+                    operation, expected_generation=generation
+                ),
+                current_operation=lambda: self._current_z_level_operation(
+                    context.operation.operation_id
+                ),
+            )
+
+        task = ZLevelFinishingTask(calculate)
+        self._z_level_task = task
+        self._z_level_task_generation = generation
+        task.signals.progress.connect(self._z_level_progress)
+        task.signals.completed.connect(self._z_level_completed)
+        task.signals.failed.connect(self._z_level_failed)
+        task.signals.finished.connect(self._z_level_finished)
+        self.parallel_calculation_active.emit(True)
+        QThreadPool.globalInstance().start(task)
+        return "Đã bắt đầu tính đường chạy dao theo cao độ Z"
+
+    def _current_z_level_operation(self, operation_id: OperationId) -> Operation:
+        current = self._current_facing_operation(operation_id)
+        if current is None:
+            raise RuntimeError(
+                "Nguyên công gia công theo cao độ Z không còn hiện hành."
+            )
+        return current
+
+    def _z_level_progress(self, progress: ZLevelProgress) -> None:
+        if self._z_level_task is not None:
+            self.parallel_progress_changed.emit(progress)
+
+    def _z_level_completed(self, result: object) -> None:
+        if not isinstance(result, ZLevelFinishingComputeResult):
+            self._error(
+                "Tác vụ gia công theo cao độ Z trả về kết quả không hợp lệ."
+            )
+            return
+        generation = self._z_level_task_generation
+        if generation is None:
+            return
+        try:
+            accepted = self._service.commit_z_level_calculation(
+                result, expected_generation=generation
+            )
+        except (ProjectError, RuntimeError, TypeError, ValueError) as error:
+            self._error(str(error))
+            return
+        if not accepted:
+            self._error(
+                "Kết quả gia công theo cao độ Z đã lỗi thời và bị loại bỏ."
+            )
+            return
+        if result.safety_report is not None:
+            self._z_level_reports[
+                result.operation.operation_id
+            ] = result.safety_report
+        self.refresh(self._selected_key)
+        self.projection_changed.emit()
+        if result.accepted:
+            self.message.emit(
+                "Gia công theo cao độ Z SẴN SÀNG · AN TOÀN trong phạm vi "
+                "đã khai báo; chưa xác minh khả năng sẵn sàng chạy máy."
+            )
+        else:
+            self._error(
+                result.diagnostics[0].message
+                if result.diagnostics
+                else (
+                    "Gia công theo cao độ Z không công bố kết quả tính toán "
+                    "SẴN SÀNG."
+                )
+            )
+
+    def _z_level_failed(self, error: object) -> None:
+        self._error(
+            str(error)
+            or "Tính toán gia công theo cao độ Z thất bại an toàn."
+        )
+
+    def _z_level_finished(self) -> None:
+        self._z_level_task = None
+        self._z_level_task_generation = None
+        self.parallel_calculation_active.emit(False)
+
+    def _show_z_level_safety_details(
+        self, context: ZLevelEditorContext
+    ) -> None:
+        from hms_cadcam.ui.function_editor.zlevel_widgets import (
+            ZLevelSafetyDiagnosticsDialog,
+        )
+
+        dialog = ZLevelSafetyDiagnosticsDialog(
+            context.safety_report,
+            context.operation.diagnostics,
+            self,
+        )
+        if self._child_dialog_opener is not None:
+            self._child_dialog_opener("z_level_diagnostics", dialog, None)
+        else:
+            dialog.open()
 
     def _parallel_production_session(
         self,
@@ -1061,10 +1671,15 @@ class CamWorkspace(QWidget):
         self.parallel_calculation_active.emit(False)
 
     def cancel_parallel_calculation(self) -> None:
-        """Request cooperative cancellation without publishing partial output."""
+        """Cancel the active CAM 3D finishing task without partial publication."""
         if self._parallel_task is not None:
             self._parallel_task.cancel()
             self.message.emit("Đang hủy tính toán Gia công tinh song song…")
+        if self._z_level_task is not None:
+            self._z_level_task.cancel()
+            self.message.emit(
+                "Đang hủy tính toán Gia công tinh theo cao độ Z…"
+            )
 
     def _show_parallel_safety_details(self, context: ParallelEditorContext) -> None:
         from hms_cadcam.ui.function_editor.parallel_widgets import (
@@ -4144,6 +4759,109 @@ class CamWorkspace(QWidget):
             self._present_created_operation(node_id)
             self.projection_changed.emit()
 
+    def add_z_level_operation(self) -> None:
+        """Add an unbound Z-Level operation; geometry is chosen in its editor."""
+        context = self._tree_context()
+        if context is None:
+            return
+        job_id, setup_id, _tree, parent_id = context
+        snapshot = self._service.cam_snapshot
+        setup = next(
+            value
+            for job in snapshot.jobs
+            for value in job.setups
+            if value.setup_id == setup_id
+        )
+        if setup.wcs.origin.unit is not LengthUnit.MM:
+            self._error(
+                "Gia công tinh theo cao độ Z v1 yêu cầu Thiết lập dùng đơn vị mm."
+            )
+            return
+        assembly = next(
+            (
+                item
+                for item in snapshot.tool_assemblies
+                if any(
+                    tool.tool_id == item.tool_id
+                    and tool.family is ToolFamily.BALL_END_MILL
+                    for tool in snapshot.tool_definitions
+                )
+            ),
+            None,
+        )
+        if assembly is None:
+            assembly = (
+                snapshot.tool_assemblies[0]
+                if snapshot.tool_assemblies
+                else None
+            )
+        tool_reference = (
+            ToolAssemblyReference.from_assembly(assembly)
+            if assembly is not None
+            else ToolAssemblyReference(
+                ToolAssemblyId.new(),
+                Revision(0),
+                ContentFingerprint.from_payload({"missing": True}),
+                LengthUnit.MM,
+            )
+        )
+        machine = next(
+            (
+                item
+                for item in snapshot.machine_definitions
+                if item.unit is LengthUnit.MM
+                and OperationCapability.MILLING in item.capabilities.operations
+            ),
+            None,
+        )
+        requirement = (
+            None
+            if machine is None
+            else MachineRequirement(
+                machine.machine_id,
+                machine.revision,
+                machine.content_fingerprint,
+                machine.unit,
+                (OperationCapability.MILLING,),
+            )
+        )
+        origin_z = setup.wcs.origin.z
+        parameters = ZLevelFinishingParameters(
+            MachiningZone3DId.new(),
+            origin_z + 1.0,
+            origin_z,
+            1.0,
+            clearance_z_mm=origin_z + 50.0,
+            retract_z_mm=origin_z + 40.0,
+            link_clearance_mm=1.0,
+            setup_reference=str(setup.setup_id),
+        )
+        node_id, operation_id = CamNodeId.new(), OperationId.new()
+        operation = Operation(
+            operation_id,
+            node_id,
+            OperationFamily.MILLING,
+            setup_id,
+            tool_reference,
+            (),
+            parameters.to_operation_parameters(),
+            requirement,
+        )
+        changed = self._execute(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda value: value.add_operation(
+                    parent_id,
+                    "Gia công tinh theo cao độ Z",
+                    operation,
+                ),
+            )
+        )
+        if changed is not None:
+            self._present_created_operation(node_id)
+            self.projection_changed.emit()
+
     def add_drilling_operation(self) -> None:
         """Add one explicitly bound Drilling operation without hole recognition."""
         context = self._tree_context()
@@ -4477,6 +5195,7 @@ class CamWorkspace(QWidget):
         if operation is None or operation.strategy_key not in {
             "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
             "tapping_v1", "reaming_v1", "boring_v1", "parallel_finishing_3d",
+            "z_level_finishing_3d",
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
             return
@@ -4484,6 +5203,18 @@ class CamWorkspace(QWidget):
             session = self.production_function_editor_session()
             if session is None:
                 self._error("Trình sửa Gia công tinh song song cho sản xuất không khả dụng.")
+                return
+            try:
+                session.calculate_callback(session.applied_mapping())
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self._error(str(error))
+            return
+        if operation.strategy_key == "z_level_finishing_3d":
+            session = self.production_function_editor_session()
+            if session is None:
+                self._error(
+                    "Trình chỉnh sửa Gia công tinh theo cao độ Z không khả dụng."
+                )
                 return
             try:
                 session.calculate_callback(session.applied_mapping())
@@ -4889,6 +5620,12 @@ class CamWorkspace(QWidget):
                                 operation.parameters
                             ).zone_id
                         )
+                    elif operation.strategy_key == "z_level_finishing_3d":
+                        removed_parallel_zone_id = (
+                            ZLevelFinishingParameters.from_operation_parameters(
+                                operation.parameters
+                            ).zone_id
+                        )
             changed = self._execute(lambda app: app.update_tree(job_id, setup_id, lambda tree: tree.remove_node(node_id)))
         if changed is not None:
             if removed_parallel_zone_id is not None:
@@ -4904,6 +5641,12 @@ class CamWorkspace(QWidget):
                     )
                 )
             if removed_operation_id is not None:
+                self._parallel_drafts.pop(removed_operation_id, None)
+                self._parallel_draft_evidence.pop(removed_operation_id, None)
+                self._parallel_reports.pop(removed_operation_id, None)
+                self._z_level_drafts.pop(removed_operation_id, None)
+                self._z_level_draft_evidence.pop(removed_operation_id, None)
+                self._z_level_reports.pop(removed_operation_id, None)
                 self._service.clear_simulation_result(
                     removed_operation_id,
                     delete_cache=True,
@@ -4949,6 +5692,48 @@ class CamWorkspace(QWidget):
             duplicate_parameters = replace(
                 parameters, zone_id=new_zone_id
             ).to_operation_parameters()
+            source_zone = next(
+                (
+                    value
+                    for value in self._service.cam3d_config.zones
+                    if value.zone_id == parameters.zone_id
+                ),
+                None,
+            )
+            if source_zone is not None:
+                duplicated_zone = replace(
+                    source_zone,
+                    zone_id=new_zone_id,
+                    part_surfaces=replace(
+                        source_zone.part_surfaces,
+                        selection=replace(
+                            source_zone.part_surfaces.selection,
+                            selection_id=CamSurfaceSelectionId.new(),
+                        ),
+                    ),
+                )
+        elif original.strategy_key == "z_level_finishing_3d":
+            parameters = ZLevelFinishingParameters.from_operation_parameters(
+                original.parameters
+            )
+            new_zone_id = MachiningZone3DId.new()
+            base = replace(
+                parameters, zone_id=new_zone_id
+            ).to_operation_parameters()
+            automatic = dict(original.parameters.values).get(
+                AUTOMATIC_PARAMETER_CONTRACT_KEY
+            )
+            duplicate_parameters = OperationParameterSet(
+                base.strategy_key,
+                base.strategy_version,
+                (
+                    base.values
+                    if automatic is None
+                    else base.values
+                    + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic),)
+                ),
+                base.schema_version,
+            )
             source_zone = next(
                 (
                     value
@@ -6003,7 +6788,7 @@ class _CamPropertiesEditor(QWidget):
             ("Drilling tolerance", "tolerance"),
         ):
             form.addRow(label, self._drilling_fields[key])
-        form.addRow("Peck retract", self.drilling_retract)
+        form.addRow("Rút dao khi khoan nhấp", self.drilling_retract)
         form.addRow("Tapping hand", self.tapping_hand)
         form.addRow("Tapping mode", self.tapping_mode)
         for label, key in (
@@ -6019,7 +6804,7 @@ class _CamPropertiesEditor(QWidget):
         ):
             form.addRow(label, self._tapping_fields[key])
         form.addRow("Reaming spindle direction", self.reaming_spindle_direction)
-        form.addRow("Reaming retract policy", self.reaming_retract_policy)
+        form.addRow("Chính sách rút dao khi doa", self.reaming_retract_policy)
         form.addRow("Reaming coolant", self.reaming_coolant)
         for label, key in (
             ("Reaming Top Z", "top"),
@@ -6036,7 +6821,7 @@ class _CamPropertiesEditor(QWidget):
             form.addRow(label, self._reaming_fields[key])
         form.addRow("Derived (read-only)", self.reaming_derived)
         form.addRow("Boring spindle direction", self.boring_spindle_direction)
-        form.addRow("Boring retract policy", self.boring_retract_policy)
+        form.addRow("Chính sách rút dao khi khoét lỗ", self.boring_retract_policy)
         form.addRow("Boring coolant", self.boring_coolant)
         for label, key in (
             ("Boring Top Z", "top"),
@@ -6123,7 +6908,10 @@ class _CamPropertiesEditor(QWidget):
         if setup.stock.kind in {StockKind.BOX, StockKind.CYLINDER}:
             self.status.setText("MISSING — chưa có artifact")
         else:
-            self.status.setText(f"UNSUPPORTED — stock {setup.stock.kind.value}")
+            self.status.setText(
+                f"KHÔNG ĐƯỢC HỖ TRỢ — Phôi "
+                f"{display_value(setup.stock.kind, 'stock_kind')}"
+            )
 
     def show_node(
         self,

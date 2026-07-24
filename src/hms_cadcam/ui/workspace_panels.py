@@ -83,7 +83,7 @@ class SecondaryPanelHost(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("SecondaryPanelHost")
-        self.setAccessibleName("Panel quy trình phụ")
+        self.setAccessibleName("Bảng quy trình phụ")
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)

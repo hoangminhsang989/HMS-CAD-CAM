@@ -5,13 +5,18 @@ from __future__ import annotations
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
 
 from hms_cadcam.ui.operation_manager_types import (
+    OperationManagerEntityKind,
     OperationManagerFilter,
     OperationManagerNode,
     OperationManagerNodeId,
     OperationManagerProjection,
     node_matches_filter,
 )
-from hms_cadcam.ui.localization import translate_status, ui_text
+from hms_cadcam.ui.localization import (
+    operation_manager_status_category_display_name,
+    translate_status,
+    ui_text,
+)
 
 
 NODE_ROLE = int(Qt.ItemDataRole.UserRole) + 101
@@ -128,19 +133,17 @@ class OperationManagerModel(QAbstractItemModel):
                 else translate_status(node.status.text)
             )
         if role == Qt.ItemDataRole.ToolTipRole:
-            statuses = "\n".join(
-                f"{ui_text(item.category.value.upper())} · "
-                f"{translate_status(item.text)}: {ui_text(item.tooltip)}"
-                for item in node.statuses
-            )
             return (
-                f"{ui_text(node.label)}\n{ui_text(node.secondary_summary)}\n{statuses}"
+                f"{ui_text(node.label)}\n{ui_text(node.secondary_summary)}\n"
+                f"{_status_details(node)}"
             )
         if role == Qt.ItemDataRole.AccessibleTextRole:
             return (
                 f"{ui_text(node.label)}. {ui_text(node.secondary_summary)}. "
                 f"Trạng thái {translate_status(node.status.text)}."
             )
+        if role == Qt.ItemDataRole.AccessibleDescriptionRole:
+            return _status_details(node)
         if role == NODE_ROLE:
             return node
         if role == NODE_ID_ROLE:
@@ -223,6 +226,23 @@ class OperationManagerModel(QAbstractItemModel):
             token in node.searchable_text for token in self._query.split()
         )
         return query_match and node_matches_filter(node, self._filter)
+
+
+def _status_details(node: OperationManagerNode) -> str:
+    """Return localized multi-line detail for tooltip and accessibility."""
+    project_context = (
+        node.domain_identity.kind is OperationManagerEntityKind.PROJECT
+    )
+    lines: list[str] = []
+    for item in node.statuses:
+        namespace = operation_manager_status_category_display_name(
+            item.category,
+            project_context=project_context,
+        )
+        lines.append(
+            f"{namespace} · {translate_status(item.text)}: {ui_text(item.tooltip)}"
+        )
+    return "\n".join(lines)
 
 
 class OperationManagerProjectionBuilderEmpty:

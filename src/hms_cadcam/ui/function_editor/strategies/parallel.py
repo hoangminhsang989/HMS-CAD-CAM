@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
 from typing import Mapping
 from uuid import UUID
@@ -429,19 +430,35 @@ def _automatic_summary(
     suffix: str = "",
 ) -> str:
     value = contract.value(key)
-    mode = "Thủ công" if value.mode is AutomaticParameterMode.MANUAL else "Tự động"
-    status = {
-        AutomaticParameterStatus.RESOLVED: "Đã xác định",
-        AutomaticParameterStatus.NEEDS_CONFIRMATION: "Cần xác nhận",
-        AutomaticParameterStatus.UNSUPPORTED: "Không được hỗ trợ",
-        AutomaticParameterStatus.UNRESOLVED: "Chưa xác định",
-    }[value.status]
+    mode = display_value(value.mode, "automatic_mode")
+    status = display_value(value.status, "automatic_status")
     display = _vn_number(value.effective_value, suffix)
     if key == "cut_direction":
         display = display_value(value.effective_value, "cut_direction")
     if key == "linking_mode":
         display = "Rút dao giữa các đoạn"
-    return f"{display} · {mode} · {status} · Nguồn: {value.source} · {value.reason}"
+    source = _localized_policy_text(value.source)
+    reason = _localized_policy_text(value.reason)
+    return (
+        f"{display} · {mode} · {status} · "
+        f"Nguồn: {source} · {reason}"
+    )
+
+
+def _localized_policy_text(value: object) -> str:
+    """Translate policy enum tokens while leaving user/domain text untouched."""
+    text = ui_text(value)
+    replacements = {
+        "balanced": "Cân bằng",
+        "fast": "Nhanh",
+        "high": "Chất lượng cao",
+        "standard": "Tiêu chuẩn",
+        "dense": "Dày",
+        "very_dense": "Rất dày",
+    }
+    for source, target in replacements.items():
+        text = re.sub(rf"(?<![\w.-]){re.escape(source)}(?![\w.-])", target, text, flags=re.IGNORECASE)
+    return text
 
 
 def _automatic_mode_counts(contract: AutomaticParameterContract) -> str:
@@ -944,7 +961,7 @@ def parallel_applied_values(
         "post_gate": safety.post_gate,
         "summary": (
             f"{len(surfaces)} bề mặt · {_tool_text(assembly, tool)} · "
-            f"hồ sơ {automatic.quality_profile.value} · "
+            f"hồ sơ {display_value(automatic.quality_profile, 'quality_profile')} · "
             f"góc {_vn_number(effective_direction, '°')} · "
             f"bước ngang {_vn_number(automatic.value('stepover_mm').effective_value, ' mm')} · "
             f"dung sai {_vn_number(automatic.value('tolerance_mm').effective_value, ' mm')} · "
@@ -1025,7 +1042,8 @@ def parallel_draft_derived_values(
         "direction_override_mode": direction_override_mode,
         "linking_mode": "Rút dao giữa các đoạn",
         "summary": (
-            f"{len(draft.surfaces)} bề mặt · hồ sơ {automatic.quality_profile.value} · "
+            f"{len(draft.surfaces)} bề mặt · hồ sơ "
+            f"{display_value(automatic.quality_profile, 'quality_profile')} · "
             f"góc {_vn_number(direction, '°')} · "
             f"bước ngang {_vn_number(stepover, ' mm')} · "
             f"dung sai {_vn_number(tolerance, ' mm')} · "
@@ -1353,7 +1371,7 @@ def parallel_validation_diagnostics(
         (
             FunctionEditorDiagnostic(
                 "parallel.machine_clearance_unverified",
-                "Machine-ready clearance is not verified.",
+                "Khoảng hở sẵn sàng cho máy chưa được xác minh.",
                 FunctionEditorDiagnosticSeverity.INFO,
                 "machine_ready_clearance",
                 "capability_safety",
@@ -1775,7 +1793,7 @@ def build_parallel_schema(context: ParallelEditorContext) -> FunctionEditorSchem
                 ),
                 _read_only("post_gate", "Post", values["post_gate"], order=150),
             ),
-            f"{values['safety_status']} · machine-ready clearance not verified.",
+            f"{values['safety_status']} · khoảng hở sẵn sàng cho máy chưa được xác minh.",
             disclosure_level=ParameterDisclosureLevel.ADVANCED,
             default_expanded=False,
             order=70,

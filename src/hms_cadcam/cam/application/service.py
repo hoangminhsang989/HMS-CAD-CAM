@@ -52,6 +52,7 @@ from hms_cadcam.cam.application.boring import (
 from hms_cadcam.cam.simulation.service import SimulationRuntimeService
 from hms_cadcam.cam.post.service import PostRuntimeService
 from hms_cadcam.cam.cam3d.parallel import ParallelFinishingComputeResult
+from hms_cadcam.cam.cam3d.zlevel import ZLevelFinishingComputeResult
 
 
 class CamApplicationService:
@@ -360,6 +361,55 @@ class CamApplicationService:
         """Commit only the result matching the currently staged worker token."""
         if not isinstance(result, ParallelFinishingComputeResult):
             raise TypeError("Parallel calculation result is invalid")
+        with self._lock:
+            current = _find_operation(self._snapshot, result.operation.operation_id)
+            current_state = current.artifact_state
+            result_state = result.operation.artifact_state
+            if (
+                current.revision != result.operation.revision
+                or current_state.status is not ArtifactStatus.COMPUTING
+                or current_state.generation != result_state.generation
+                or current_state.input_fingerprint != result_state.input_fingerprint
+            ):
+                return False
+            artifacts = self._snapshot.artifacts
+            if result.accepted and result.metadata is not None:
+                artifacts = tuple(
+                    item
+                    for item in artifacts
+                    if item.operation_id != result.operation.operation_id
+                ) + (result.metadata,)
+            staged = replace(self._snapshot, artifacts=artifacts)
+            self._snapshot = _replace_operation(staged, result.operation)
+            self._simulation.mark_stale(result.operation.operation_id)
+            self._post.mark_stale(result.operation.operation_id)
+            return True
+
+    def begin_z_level_calculation(self, computing: Operation) -> bool:
+        """Stage one Z-Level COMPUTING token if its source is still current."""
+        if not isinstance(computing, Operation):
+            raise TypeError("Z-Level computing operation is invalid")
+        with self._lock:
+            current = _find_operation(self._snapshot, computing.operation_id)
+            if (
+                current.revision != computing.revision
+                or current.parameters != computing.parameters
+                or current.geometry_inputs != computing.geometry_inputs
+                or current.tool_assembly != computing.tool_assembly
+                or current.machine_requirement != computing.machine_requirement
+                or current.enabled != computing.enabled
+            ):
+                return False
+            self._snapshot = _replace_operation(self._snapshot, computing)
+            self._post.mark_stale(computing.operation_id)
+            return True
+
+    def commit_z_level_calculation(
+        self, result: ZLevelFinishingComputeResult
+    ) -> bool:
+        """Commit only a Z-Level result matching the staged worker token."""
+        if not isinstance(result, ZLevelFinishingComputeResult):
+            raise TypeError("Z-Level calculation result is invalid")
         with self._lock:
             current = _find_operation(self._snapshot, result.operation.operation_id)
             current_state = current.artifact_state

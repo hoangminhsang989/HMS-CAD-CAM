@@ -85,14 +85,14 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
     tool = FunctionEditorSection(
         section_id="tool",
         title="Tool",
-        summary="T3 · Flat End Mill Ø10",
+        summary="T3 · Dao phay ngón đầu phẳng Ø10",
         order=2,
         fields=(
             FunctionEditorField(
                 field_id="tool_summary",
                 label="Tool Assembly",
                 kind=FunctionEditorFieldKind.READ_ONLY,
-                value="T3 · Flat End Mill Ø10 · Holder H1",
+                value="T3 · Dao phay ngón đầu phẳng Ø10 · Holder H1",
                 source=FunctionEditorValueSource.TOOL,
                 required=True,
                 tooltip="Tool Assembly đến từ Tool Library của project.",
@@ -326,8 +326,9 @@ def build_contour_reference_schema() -> FunctionEditorSchema:
             ),
         ),
         help_text=(
-            "Expert là prototype presentation-only. Thay đổi precision có thể "
-            "ảnh hưởng chất lượng và thời gian; Stage 9A.4 không gửi vào engine."
+            "Chuyên sâu là bản mẫu chỉ dành cho trình bày. Thay đổi độ chính xác "
+            "có thể ảnh hưởng chất lượng và thời gian; Giai đoạn 9A.4 không gửi "
+            "vào bộ xử lý."
         ),
     )
     return FunctionEditorSchema(

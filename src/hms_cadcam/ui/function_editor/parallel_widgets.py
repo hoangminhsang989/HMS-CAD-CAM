@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cam.cam3d.parallel import ParallelProgress, ParallelSafetyReport
+from hms_cadcam.cam.cam3d.zlevel import ZLevelProgress
 from hms_cadcam.cam.domain import ValidationDiagnostic
 from hms_cadcam.ui.localization import (
     display_value,
@@ -92,9 +93,9 @@ class ParallelCalculationProgressWidget(QWidget):
                 "Hạng mục: 0 / 0 · Đang chuẩn bị ảnh chụp trạng thái đã áp dụng bất biến"
             )
 
-    def update_progress(self, value: ParallelProgress) -> None:
+    def update_progress(self, value: ParallelProgress | ZLevelProgress) -> None:
         """Render one monotonic worker report with text, not color alone."""
-        if not isinstance(value, ParallelProgress):
+        if not isinstance(value, (ParallelProgress, ZLevelProgress)):
             return
         label = translate_progress_phase(value.phase)
         self.phase.setText(f"Giai đoạn: {label}")

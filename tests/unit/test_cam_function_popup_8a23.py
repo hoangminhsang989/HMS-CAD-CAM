@@ -66,6 +66,7 @@ EDITOR_IDS = (
     "reaming_production_9a6",
     "boring_production_9a6",
     "parallel_finishing_production_8a2_3",
+    "z_level_finishing_production_8a3_3",
 )
 
 EDITOR_SOURCE_TITLES = dict(
@@ -81,6 +82,7 @@ EDITOR_SOURCE_TITLES = dict(
             "Reaming",
             "Boring",
             "Parallel Finishing",
+            "Z-Level Finishing",
         ),
         strict=True,
     )
@@ -346,7 +348,7 @@ def test_illustration_child_wording_escape_singleton_focus_and_draft(tmp_path) -
         _dispose(parent, popup, application)
 
 
-def test_all_nine_production_editor_ids_open_through_same_content_host(tmp_path) -> None:
+def test_all_ten_production_editor_ids_open_through_same_content_host(tmp_path) -> None:
     application = _application()
     tree = QTreeWidget()
     applied = []

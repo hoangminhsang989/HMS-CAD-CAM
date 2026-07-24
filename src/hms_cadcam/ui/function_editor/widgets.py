@@ -108,7 +108,7 @@ class FunctionEditorSummaryWidget(QFrame):
         self.help_button = QToolButton()
         self.help_button.setText("?")
         self.help_button.setAccessibleName("Mở trợ giúp trình chỉnh sửa chức năng")
-        self.help_button.setToolTip("Mở panel trợ giúp ngắn")
+        self.help_button.setToolTip("Mở bảng trợ giúp ngắn.")
         self.help_button.clicked.connect(self.help_requested)
         top.addWidget(self.help_button)
         self._root.addLayout(top)
@@ -602,7 +602,9 @@ class FunctionEditorPage(QWidget):
             self._root.addWidget(self.parallel_direction_preview)
         self.scroll_area = QScrollArea()
         self.scroll_area.setObjectName("FunctionEditorContentScroll")
-        self.scroll_area.setAccessibleName("Nội dung tham số Function Editor")
+        self.scroll_area.setAccessibleName(
+            "Nội dung tham số Trình chỉnh sửa chức năng"
+        )
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -676,10 +678,11 @@ class FunctionEditorPage(QWidget):
             self.illustration_panel.set_expanded(False, automatic=True)
 
     def update_calculation_progress(self, value: object) -> None:
-        """Forward one typed Parallel progress event to the optional status row."""
+        """Forward one typed CAM 3D finishing progress event to the status row."""
         from hms_cadcam.cam.cam3d.parallel import ParallelProgress
+        from hms_cadcam.cam.cam3d.zlevel import ZLevelProgress
 
-        if isinstance(value, ParallelProgress):
+        if isinstance(value, (ParallelProgress, ZLevelProgress)):
             self.calculation_progress.update_progress(value)
 
     def _disclosure_bar(self) -> QFrame:
@@ -914,7 +917,10 @@ class FunctionEditorPage(QWidget):
             and (
                 two_column_basic
                 or self.schema.editor_id
-                == "parallel_finishing_production_8a2_3"
+                in {
+                    "parallel_finishing_production_8a2_3",
+                    "z_level_finishing_production_8a3_3",
+                }
             )
         )
         for section_id, widget in self._section_widgets.items():
@@ -942,9 +948,13 @@ class FunctionEditorPage(QWidget):
         placed: set[str] = set()
         if (
             columns == 2
-            and self.schema.editor_id == "parallel_finishing_production_8a2_3"
+            and self.schema.editor_id
+            in {
+                "parallel_finishing_production_8a2_3",
+                "z_level_finishing_production_8a3_3",
+            }
         ):
-            row = self._place_parallel_grid(section_order)
+            row = self._place_cam3d_finishing_grid(section_order)
             placed.update(
                 section_id
                 for section_id in (
@@ -982,8 +992,10 @@ class FunctionEditorPage(QWidget):
             self.content_layout.setColumnStretch(column, 1)
         QTimer.singleShot(0, self, self._sync_content_overflow)
 
-    def _place_parallel_grid(self, section_order: tuple[str, ...]) -> int:
-        """Place the Parallel Basic scan path in three compact rows."""
+    def _place_cam3d_finishing_grid(
+        self, section_order: tuple[str, ...]
+    ) -> int:
+        """Place the CAM 3D finishing Basic scan path in compact rows."""
         positions = {
             "geometry": (0, 0, 1, 1),
             "tool": (0, 1, 1, 1),
@@ -1043,28 +1055,32 @@ class FunctionEditorPage(QWidget):
 
     def _field_changed(self, field_id: str, value: object) -> None:
         self.state.edit(field_id, value)  # type: ignore[arg-type]
+        semantic_focus = "ordering"
+        if field_id in {
+            "linking_mode",
+            "clearance_z_mm",
+            "retract_z_mm",
+            "link_clearance_mm",
+        }:
+            semantic_focus = "linking"
+        elif field_id in {
+            "quality_profile",
+            "stepover_override_enabled",
+            "stepdown_override_enabled",
+            "tolerance_override_enabled",
+            "allowance_override_enabled",
+        }:
+            semantic_focus = "quality"
+        # A draft transform can update several read-only fields (stepdown,
+        # level count, tolerance, effective hash) from one combo edit.  Render
+        # the transformed state back into every materialized field widget so
+        # the visible summary cannot lag behind the model.
+        values = self.state.values
+        for materialized_id, widget in self._field_widgets.items():
+            widget.set_value(values[materialized_id])
         if self.illustration_panel is not None:
-            semantic_focus = (
-                "linking"
-                if field_id
-                in {
-                    "linking_mode",
-                    "clearance_z_mm",
-                    "retract_z_mm",
-                    "link_clearance_mm",
-                }
-                else "quality"
-                if field_id
-                in {
-                    "quality_profile",
-                    "stepover_override_enabled",
-                    "tolerance_override_enabled",
-                    "allowance_override_enabled",
-                }
-                else "ordering"
-            )
             self.illustration_panel.set_values(
-                self.state.values,
+                values,
                 semantic_focus=semantic_focus,
             )
         if (
