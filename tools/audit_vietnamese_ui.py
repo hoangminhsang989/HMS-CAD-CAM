@@ -55,6 +55,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerSemanticStatus,
     OperationManagerStatusCategory,
 )
+from hms_cadcam.ui.ui_tokens import MAIN_MENU_CAPTURE_EXCLUDED_LEFT
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -77,8 +78,10 @@ APPROVED_TECHNICAL_TERMS = (
     "BRep",
     "UUID/ID",
     "version/hash",
+    "STEP/STP",
+    "IGES/IGS",
+    "STL",
     "U/V/W",
-    "đơn vị kỹ thuật",
 )
 RAW_NAMESPACE_PREFIXES = (
     "DOMAIN",
@@ -249,28 +252,47 @@ _PRESENTATION_ARGUMENTS = {
 _ENGLISH_UI_WORDS = {
     "absent", "action", "active", "add", "advanced", "all", "allowance", "apply", "approach",
     "artifact", "assembly", "basic", "blocked", "boring", "bounds", "broad",
-    "browse", "calculate", "calculated", "calculating", "calculation", "cancel",
+    "backup", "browse", "calculate", "calculated", "calculating", "calculation", "cancel",
     "cancelled", "capability", "category", "checked", "checksum", "clear", "clearance",
     "close", "code", "collision", "component", "components", "contour", "copy", "cutter",
     "binding", "comment", "controller", "count", "current", "delete", "details", "diagnostic", "diagnostics", "directory", "display", "document",
     "declared", "direction", "disable", "disabled", "distance", "domain", "draft", "drilling",
-    "duplicate", "elapsed", "empty", "enable", "enabled", "error", "expert",
+    "discard", "duplicate", "elapsed", "empty", "enable", "enabled", "error", "expert",
     "export", "external", "face", "faces", "facing", "failed", "feed", "file", "filesystem", "filter",
-    "finalization", "finishing", "frame", "generate", "generation", "geometry",
-    "geometryreferenceid", "gouge", "group", "hook", "input", "intersection", "invalid", "island", "job", "key", "library", "linear", "linking", "local", "machine", "mapped",
+    "finalization", "fingerprint", "finishing", "frame", "generate", "generation", "geometry",
+    "geometryreferenceid", "gouge", "group", "hook", "input", "intersection", "invalid", "island", "job", "key", "levels", "library", "lineage", "linear", "linking", "local", "machine", "mapped",
     "machining", "manage", "managed", "manager", "marker", "message", "metadata", "missing", "mode", "motion", "name", "narrow",
     "new", "next", "no", "none", "normal", "not", "occurrence", "offset", "outer",
     "object", "one", "open", "operation", "operations", "optional", "ordering", "overall", "pass", "persistent",
-    "phase", "placeholder", "planning", "pocket", "precision", "preview", "profile", "project",
+    "phase", "planes", "placeholder", "planning", "pocket", "precision", "preview", "profile", "project",
     "present", "processor", "production", "program", "progress", "projection", "protected", "radius", "rapid", "raw", "ready", "reaming", "reference", "rename", "render", "revision",
-    "reference-only", "report", "required", "reset", "result", "retract", "review", "safe", "selection", "shank", "snapshot",
+    "reference-only", "report", "request", "required", "reset", "result", "retract", "review", "safe", "selection", "shank", "snapshot",
     "safety", "save", "scope", "section", "segment", "select", "selected",
     "setup", "severity", "simulation", "source", "stage", "stale", "status", "stepover", "stock", "summary", "topology",
-    "surface", "swept", "tapping", "time", "toolpath", "tolerance", "total",
+    "surface", "swept", "tapping", "time", "toolpath", "toolpaths", "tolerance", "total",
     "typed", "unavailable", "unknown", "unresolved", "unsafe", "unverified", "validate", "validation", "verified",
     "viewport", "warning", "workflow", "workspace", "way", "zigzag",
 }
 FORBIDDEN_UI_PHRASES = (
+    "Look in",
+    "My Computer",
+    "File name",
+    "Files of type",
+    "Date Modified",
+    "Document ID",
+    "Fingerprint",
+    "Save",
+    "Discard",
+    "Cancel",
+    "Levels",
+    "Toolpaths",
+    "Planes",
+    "Geometry asset",
+    "Calculate",
+    "Backup working",
+    "Lineage",
+    "Request",
+    "unknown",
     "safety contract",
     "projection",
     "viewport",
@@ -291,6 +313,17 @@ FORBIDDEN_UI_PHRASES = (
     "retract",
     "Manager",
     "Top/Bottom/Stepdown",
+    "ửa",
+    "Bounding X",
+    "Bounding Y",
+    "Bounding Z",
+    "Bounding box",
+)
+UNAPPROVED_PROPERTY_LABELS = (
+    "Bounding X",
+    "Bounding Y",
+    "Bounding Z",
+    "Bounding box",
 )
 _WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _CODE_OR_ID = re.compile(
@@ -343,6 +376,16 @@ class RuntimeAuditResult:
     allowlisted: int
     untranslated: int
     entries: tuple[RuntimeAuditEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MenuTextClippingIssue:
+    """One menu title whose text is outside its rendered/captured bounds."""
+
+    state: str
+    text: str
+    reason: str
+    covering_widget: str = ""
 
 
 def _call_name(node: ast.Call) -> str:
@@ -442,6 +485,19 @@ def _forbidden_phrase_matches(text: str) -> tuple[str, ...]:
     return tuple(
         phrase
         for phrase in FORBIDDEN_UI_PHRASES
+        if re.search(
+            rf"(?<![\w.-]){re.escape(phrase)}(?![\w.-])",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def unapproved_property_label_matches(text: str) -> tuple[str, ...]:
+    """Return English property labels that must never reach a rendered model."""
+    return tuple(
+        phrase
+        for phrase in UNAPPROVED_PROPERTY_LABELS
         if re.search(
             rf"(?<![\w.-]){re.escape(phrase)}(?![\w.-])",
             text,
@@ -622,7 +678,10 @@ def audit_production_ui() -> AuditResult:
         visitor = _UiLiteralVisitor(relative)
         visitor.visit(ast.parse(path.read_text(encoding="utf-8"), filename=relative))
         for value, line, context in visitor.candidates.values():
-            classification, matches = _classify(value, context)
+            effective_context = (
+                "ui_text" if value in UI_TRANSLATIONS else context
+            )
+            classification, matches = _classify(value, effective_context)
             records.append(
                 AuditEntry(relative, line, value, context, classification, matches)
             )
@@ -678,6 +737,7 @@ _RUNTIME_UUID = re.compile(
 )
 _RUNTIME_IDENTIFIER = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _RUNTIME_UPPER_ENUM = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
+_RUNTIME_WINDOWS_PATH = re.compile(r"[A-Za-z]:\\[^\r\n]*")
 
 
 def _runtime_categories(text: str) -> tuple[str, ...]:
@@ -719,7 +779,8 @@ def _classify_runtime(
         if raw_scope in DISPLAY_VALUE_MAPPINGS["safety_scope"]:
             return "allowlisted", (raw_scope,), categories
 
-    scrubbed = _RUNTIME_INTERNAL_CODE.sub(" ", stripped)
+    scrubbed = _RUNTIME_WINDOWS_PATH.sub(" ", stripped)
+    scrubbed = _RUNTIME_INTERNAL_CODE.sub(" ", scrubbed)
     scrubbed = _RUNTIME_UUID.sub(" ", scrubbed)
     scrubbed = re.sub(r"\b[0-9a-fA-F]{32,64}\b", " ", scrubbed)
     for term in sorted(TECHNICAL_TERMS, key=len, reverse=True):
@@ -758,7 +819,7 @@ def _classify_runtime(
 
 def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry, ...]:
     """Collect rendered Qt strings, including item-view DisplayRole values."""
-    from PySide6.QtCore import QModelIndex, Qt
+    from PySide6.QtCore import QModelIndex, QPoint, QRect, Qt
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (
         QAbstractButton,
@@ -772,9 +833,24 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
         QStatusBar,
         QTabWidget,
         QWidget,
+        QFileDialog,
     )
 
     candidates: dict[tuple[str, str, str, str], tuple[object, str, str]] = {}
+
+    def rendered(item: QWidget) -> bool:
+        if not isinstance(root, QWidget) or not item.isVisibleTo(root):
+            return False
+        visible = QRect(item.mapTo(root, QPoint(0, 0)), item.size())
+        ancestor = item.parentWidget()
+        while ancestor is not None:
+            visible = visible.intersected(
+                QRect(ancestor.mapTo(root, QPoint(0, 0)), ancestor.size())
+            )
+            if visible.isEmpty() or ancestor is root:
+                break
+            ancestor = ancestor.parentWidget()
+        return not visible.isEmpty()
 
     def add(item: object, source: str, value: object) -> None:
         text = str(value).strip()
@@ -790,7 +866,7 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
     if isinstance(root, QWidget):
         widgets = [root, *root.findChildren(QWidget)]
     for item in widgets:
-        if item is not root and not item.isVisibleTo(root):
+        if item is not root and not rendered(item):
             continue
         if isinstance(item, QLabel):
             add(item, "text", item.text())
@@ -839,17 +915,40 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
                         )
                         or "",
                     )
+                for row in range(model.rowCount(QModelIndex())):
+                    add(
+                        item,
+                        f"model_vertical_header[{row}]",
+                        model.headerData(
+                            row,
+                            Qt.Orientation.Vertical,
+                            Qt.ItemDataRole.DisplayRole,
+                        )
+                        or "",
+                    )
 
                 def visit(parent: QModelIndex = QModelIndex()) -> None:
                     for row in range(model.rowCount(parent)):
                         first = model.index(row, 0, parent)
                         for column in range(model.columnCount(parent)):
                             index = model.index(row, column, parent)
+                            display_value = model.data(
+                                index,
+                                Qt.ItemDataRole.DisplayRole,
+                            )
                             add(
                                 item,
                                 f"model_display[{row},{column}]",
-                                model.data(index, Qt.ItemDataRole.DisplayRole) or "",
+                                display_value or "",
                             )
+                            delegate = item.itemDelegateForIndex(index)
+                            display_text = getattr(delegate, "displayText", None)
+                            if callable(display_text):
+                                add(
+                                    item,
+                                    f"delegate_display[{row},{column}]",
+                                    display_text(display_value, item.locale()),
+                                )
                             add(
                                 item,
                                 f"model_tooltip[{row},{column}]",
@@ -881,7 +980,12 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
                             if child_count:
                                 visit(first)
 
-                if root_column_count:
+                # File/folder names are user data, not UI vocabulary. QFileDialog
+                # labels, actions and translated headers are audited above.
+                if root_column_count and (
+                    not isinstance(root, QFileDialog)
+                    or item.objectName() == "sidebar"
+                ):
                     visit()
         for getter_name, source in (
             ("windowTitle", "window_title"),
@@ -918,6 +1022,105 @@ def collect_runtime_strings(root: object, state: str) -> tuple[RuntimeAuditEntry
             )
         )
     return tuple(records)
+
+
+def menu_text_clipping_issues(
+    root: object,
+    state: str,
+) -> tuple[MenuTextClippingIssue, ...]:
+    """Audit menu/action text geometry, capture bounds, and widget coverage."""
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtWidgets import QMenuBar, QWidget
+
+    if not isinstance(root, QWidget):
+        return ()
+    menu_bars = (
+        [root]
+        if isinstance(root, QMenuBar)
+        else list(root.findChildren(QMenuBar))
+    )
+    issues: list[MenuTextClippingIssue] = []
+    for menu_bar in menu_bars:
+        if menu_bar is not root and not menu_bar.isVisibleTo(root):
+            continue
+        menu_rect = menu_bar.rect()
+        capture_rect = QRect(menu_rect)
+        if menu_bar.objectName() == "MainMenuBar":
+            capture_rect.setLeft(
+                min(
+                    capture_rect.right(),
+                    MAIN_MENU_CAPTURE_EXCLUDED_LEFT,
+                )
+            )
+        mapped_menu_rect = QRect(
+            menu_bar.mapTo(root, menu_rect.topLeft()),
+            menu_rect.size(),
+        )
+        if not root.rect().contains(mapped_menu_rect):
+            issues.append(
+                MenuTextClippingIssue(state, "", "menu_outside_viewport")
+            )
+        for action in menu_bar.actions():
+            if not action.isVisible():
+                continue
+            text = action.text().replace("&", "").split("\t", 1)[0].strip()
+            if not text:
+                continue
+            action_rect = menu_bar.actionGeometry(action)
+            metrics = menu_bar.fontMetrics()
+            text_rect = QRect(
+                0,
+                0,
+                metrics.horizontalAdvance(text),
+                metrics.height(),
+            )
+            text_rect.moveCenter(action_rect.center())
+            if action_rect.isEmpty() or not menu_rect.contains(action_rect):
+                issues.append(
+                    MenuTextClippingIssue(
+                        state,
+                        text,
+                        "action_outside_menu_viewport",
+                    )
+                )
+            if not action_rect.contains(text_rect):
+                issues.append(
+                    MenuTextClippingIssue(
+                        state,
+                        text,
+                        "text_outside_action_geometry",
+                    )
+                )
+            if not capture_rect.contains(text_rect):
+                issues.append(
+                    MenuTextClippingIssue(
+                        state,
+                        text,
+                        "text_outside_full_window_capture",
+                    )
+                )
+            sample_points = (
+                QPoint(text_rect.left(), text_rect.center().y()),
+                text_rect.center(),
+                QPoint(text_rect.right(), text_rect.center().y()),
+            )
+            for point in sample_points:
+                covering = root.childAt(menu_bar.mapTo(root, point))
+                if (
+                    covering is not None
+                    and covering is not menu_bar
+                    and not menu_bar.isAncestorOf(covering)
+                ):
+                    issues.append(
+                        MenuTextClippingIssue(
+                            state,
+                            text,
+                            "menu_text_covered",
+                            type(covering).__name__,
+                        )
+                    )
+                    break
+    return tuple(issues)
 
 
 def audit_runtime_review_states() -> RuntimeAuditResult:

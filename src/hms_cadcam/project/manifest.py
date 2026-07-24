@@ -7,7 +7,10 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from hms_cadcam.project.constants import MANIFEST_FILENAME
+from hms_cadcam.project.constants import (
+    CAM_WORKSPACE_MANIFEST_FILENAME,
+    MANIFEST_FILENAME,
+)
 from hms_cadcam.project.exceptions import (
     ManifestDecodeError,
     ManifestMissingError,
@@ -17,11 +20,22 @@ from hms_cadcam.project.models import ProjectManifest
 
 
 class ProjectManifestStore:
-    """Read and atomically write project.hms.json."""
+    """Read and atomically write legacy or folder-workspace manifests."""
+
+    @staticmethod
+    def filename_for(project_root: Path) -> str:
+        """Return the manifest contract already owned by a project root."""
+        legacy = project_root / MANIFEST_FILENAME
+        workspace = project_root / CAM_WORKSPACE_MANIFEST_FILENAME
+        if legacy.is_file():
+            return MANIFEST_FILENAME
+        if workspace.is_file():
+            return CAM_WORKSPACE_MANIFEST_FILENAME
+        return MANIFEST_FILENAME
 
     def load(self, project_root: Path) -> ProjectManifest:
         """Load a typed manifest or raise a controlled manifest failure."""
-        manifest_path = project_root / MANIFEST_FILENAME
+        manifest_path = project_root / self.filename_for(project_root)
         if not manifest_path.is_file():
             raise ManifestMissingError(f"Missing manifest: {manifest_path}")
         try:
@@ -34,10 +48,22 @@ class ProjectManifestStore:
         except PermissionError as error:
             raise ProjectPermissionError(str(error)) from error
 
-    def save(self, project_root: Path, manifest: ProjectManifest) -> Path:
+    def save(
+        self,
+        project_root: Path,
+        manifest: ProjectManifest,
+        *,
+        filename: str | None = None,
+    ) -> Path:
         """Write the manifest through a flushed sibling temporary file."""
-        manifest_path = project_root / MANIFEST_FILENAME
-        temporary = manifest_path.with_name(f".{MANIFEST_FILENAME}.{uuid4().hex}.tmp")
+        manifest_name = filename or self.filename_for(project_root)
+        if manifest_name not in {
+            MANIFEST_FILENAME,
+            CAM_WORKSPACE_MANIFEST_FILENAME,
+        }:
+            raise ValueError("Unsupported project manifest filename")
+        manifest_path = project_root / manifest_name
+        temporary = manifest_path.with_name(f".{manifest_name}.{uuid4().hex}.tmp")
         try:
             with temporary.open("w", encoding="utf-8", newline="\n") as stream:
                 json.dump(manifest.to_dict(), stream, ensure_ascii=False, indent=2)

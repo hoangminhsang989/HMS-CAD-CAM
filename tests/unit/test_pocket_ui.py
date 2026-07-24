@@ -335,7 +335,7 @@ def test_pocket_ui_persistence_save_as_autosave_recovery_and_stale_display(
     assert viewer.cleared > 0
     cad_only.close_project()
     workspace.bind_project(None)
-    assert workspace.tree.topLevelItem(0).text(0) == "Chưa mở dự án"
+    assert workspace.tree.topLevelItem(0).text(0) == "Chưa mở dự án CAM"
     workspace.deleteLater()
 
 

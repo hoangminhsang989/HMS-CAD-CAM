@@ -349,22 +349,22 @@ class CamWorkspace(QWidget):
 
     def _actions(self) -> dict[str, QAction]:
         definitions = {
-            "job": ("Tạo công việc", self.create_job), "setup": ("Tạo Setup", self.create_setup),
-            "resources": ("Tạo Tool/Machine cơ bản", self.create_basic_resources),
+            "job": ("Tạo công việc", self.create_job), "setup": ("Tạo thiết lập", self.create_setup),
+            "resources": ("Tạo Tool và máy cơ bản", self.create_basic_resources),
             "parallel_resources": (
                 "Tạo Tool cầu/Máy cho Gia công tinh song song",
                 self.create_basic_parallel_resources,
             ),
             "tapping_resources": (
-                "Tạo TAP Tool/Machine cơ bản",
+                "Tạo Tool taro và máy cơ bản",
                 self.create_basic_tapping_resources,
             ),
             "reaming_resources": (
-                "Tạo REAMER Tool/Machine cơ bản",
+                "Tạo Tool doa và máy cơ bản",
                 self.create_basic_reaming_resources,
             ),
             "boring_resources": (
-                "Tạo BORING BAR Tool/Machine cơ bản",
+                "Tạo Tool cán khoét và máy cơ bản",
                 self.create_basic_boring_resources,
             ),
             "group": ("Thêm nhóm", self.add_group),
@@ -3522,7 +3522,7 @@ class CamWorkspace(QWidget):
         self.tree.clear()
         matches: list[QTreeWidgetItem] = []
         if not self._service.has_project:
-            item = QTreeWidgetItem(["Chưa mở dự án", "—"])
+            item = QTreeWidgetItem(["Chưa mở dự án CAM", "—"])
             item.setDisabled(True)
             self.tree.addTopLevelItem(item)
         else:
@@ -6876,7 +6876,10 @@ class _CamPropertiesEditor(QWidget):
         self.boring_tool_details.setWordWrap(True)
         self.finishing_pass = QCheckBox("Finishing pass")
         self.multiple_depth_passes = QCheckBox("Nhiều lớp chiều sâu"); self.multiple_depth_passes.setChecked(True)
-        self.tool = QComboBox(); self.machine = QComboBox()
+        self.tool = QComboBox()
+        self.tool.setAccessibleName("Cụm Tool")
+        self.machine = QComboBox()
+        self.machine.setAccessibleName("Máy")
         self.setup_kind = _LocalizedValueComboBox(); self.setup_kind.addItems([item.value for item in SetupKind])
         self.stock_kind = _LocalizedValueComboBox(); self.stock_kind.addItems([item.value for item in StockKind])
         self.enabled = QCheckBox("Được bật")
@@ -6984,6 +6987,18 @@ class _CamPropertiesEditor(QWidget):
         self.apply_button.setAccessibleName("Áp dụng bản nháp CAM")
         self.apply_button.clicked.connect(self._submit)
         form.addRow(self.apply_button)
+        for row in range(form.rowCount()):
+            label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            label_widget = None if label_item is None else label_item.widget()
+            field_widget = None if field_item is None else field_item.widget()
+            if (
+                isinstance(label_widget, QLabel)
+                and isinstance(field_widget, (QLineEdit, QComboBox))
+                and label_widget.text().strip()
+                and not field_widget.accessibleName()
+            ):
+                field_widget.setAccessibleName(ui_text(label_widget.text()))
         for field in self._facing_fields.values():
             field.textChanged.connect(lambda _text: self.draft_changed.emit())
         for field in self._contour_fields.values():

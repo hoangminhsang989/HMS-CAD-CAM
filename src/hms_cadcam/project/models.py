@@ -50,6 +50,20 @@ class SourceFileRecord:
     size_bytes: int
     sha256: str
     imported_at: datetime
+    original_path: str | None = None
+    internal_filename: str | None = None
+    importer: str = "unknown"
+    units: str = "unknown"
+    geometry_type: str = "unknown"
+    read_only: bool = True
+    working_geometry_path: str | None = None
+    geometry_version: int = 1
+    source_document_id: UUID | None = None
+    source_container_id: UUID | None = None
+    source_geometry_fingerprint: str | None = None
+    source_container_fingerprint: str | None = None
+    transfer_request_id: UUID | None = None
+    geometry_representation: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the source record to JSON-compatible data."""
@@ -60,6 +74,32 @@ class SourceFileRecord:
             "size_bytes": self.size_bytes,
             "sha256": self.sha256,
             "imported_at": datetime_to_json(self.imported_at),
+            "original_path": self.original_path,
+            "internal_filename": self.internal_filename,
+            "importer": self.importer,
+            "units": self.units,
+            "geometry_type": self.geometry_type,
+            "read_only": self.read_only,
+            "working_geometry_path": self.working_geometry_path,
+            "geometry_version": self.geometry_version,
+            "source_document_id": (
+                None
+                if self.source_document_id is None
+                else str(self.source_document_id)
+            ),
+            "source_container_id": (
+                None
+                if self.source_container_id is None
+                else str(self.source_container_id)
+            ),
+            "source_geometry_fingerprint": self.source_geometry_fingerprint,
+            "source_container_fingerprint": self.source_container_fingerprint,
+            "transfer_request_id": (
+                None
+                if self.transfer_request_id is None
+                else str(self.transfer_request_id)
+            ),
+            "geometry_representation": self.geometry_representation,
         }
 
     @classmethod
@@ -74,6 +114,39 @@ class SourceFileRecord:
             raise TypeError("Source record text fields must be strings")
         if type(data["size_bytes"]) is not int:
             raise TypeError("size_bytes must be an integer")
+        original_path = data.get("original_path")
+        internal_filename = data.get("internal_filename")
+        working_geometry_path = data.get("working_geometry_path")
+        optional_fingerprints = (
+            data.get("source_geometry_fingerprint"),
+            data.get("source_container_fingerprint"),
+        )
+        optional_ids = (
+            data.get("source_document_id"),
+            data.get("source_container_id"),
+            data.get("transfer_request_id"),
+        )
+        geometry_representation = data.get("geometry_representation")
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in (
+                original_path,
+                internal_filename,
+                working_geometry_path,
+                *optional_fingerprints,
+                *optional_ids,
+                geometry_representation,
+            )
+        ):
+            raise TypeError("Optional source paths/names must be strings or null")
+        geometry_version = data.get("geometry_version", 1)
+        if type(geometry_version) is not int or geometry_version < 1:
+            raise TypeError("geometry_version must be a positive integer")
+        if "read_only" in data and not isinstance(data["read_only"], bool):
+            raise TypeError("read_only must be bool")
+        for key in ("importer", "units", "geometry_type"):
+            if key in data and not isinstance(data[key], str):
+                raise TypeError(f"{key} must be a string")
         return cls(
             source_id=UUID(data["source_id"]),
             original_name=data["original_name"],
@@ -81,6 +154,32 @@ class SourceFileRecord:
             size_bytes=data["size_bytes"],
             sha256=data["sha256"],
             imported_at=datetime_from_json(data["imported_at"]),
+            original_path=original_path,
+            internal_filename=internal_filename,
+            importer=data.get("importer", "unknown"),
+            units=data.get("units", "unknown"),
+            geometry_type=data.get("geometry_type", "unknown"),
+            read_only=bool(data.get("read_only", True)),
+            working_geometry_path=working_geometry_path,
+            geometry_version=geometry_version,
+            source_document_id=(
+                None
+                if optional_ids[0] is None
+                else UUID(optional_ids[0])
+            ),
+            source_container_id=(
+                None
+                if optional_ids[1] is None
+                else UUID(optional_ids[1])
+            ),
+            source_geometry_fingerprint=optional_fingerprints[0],
+            source_container_fingerprint=optional_fingerprints[1],
+            transfer_request_id=(
+                None
+                if optional_ids[2] is None
+                else UUID(optional_ids[2])
+            ),
+            geometry_representation=geometry_representation,
         )
 
 
@@ -178,3 +277,4 @@ class ProjectSession:
     persisted_cam_snapshot: CamProjectSnapshot = field(default_factory=CamProjectSnapshot)
     cam3d_config: Cam3DProjectConfig | None = None
     persisted_cam3d_config: Cam3DProjectConfig | None = None
+    replaced_directory_name: str | None = None

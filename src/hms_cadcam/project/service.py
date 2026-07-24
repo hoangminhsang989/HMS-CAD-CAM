@@ -3,18 +3,52 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from collections.abc import Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
 from hms_cadcam.project.cad_state import CadViewState, default_cad_view_state
 from hms_cadcam.project.cad_state_store import CadViewStateStore
-from hms_cadcam.project.constants import TEMP_DIRECTORY
+from hms_cadcam.project.constants import (
+    BACKUPS_DIRECTORY,
+    CAM_WORKSPACE_MANIFEST_FILENAME,
+    DATABASE_FILENAME,
+    INCOMING_GEOMETRY_DIRECTORY,
+    INCOMING_GEOMETRY_STAGING_DIRECTORY,
+    REPLACED_DIRECTORY,
+    TEMP_DIRECTORY,
+)
 from hms_cadcam.project.creator import ProjectCreator
 from hms_cadcam.project.database import ProjectDatabase
+from hms_cadcam.project.document_cad_state import (
+    cad_view_state_from_dict,
+    cad_view_state_to_dict,
+)
+from hms_cadcam.project.document_container import HmsDocumentContainer
+from hms_cadcam.project.geometry_transfer import (
+    APPLYING_SUFFIX,
+    REQUEST_DIRECTORY_PREFIX,
+    REQUEST_GEOMETRY_DIRECTORY,
+    CamProjectTargetInspection,
+    ClaimedGeometryRequest,
+    GeometryApplyChoice,
+    GeometryApplyPlan,
+    GeometryApplyPhase,
+    GeometryApplyResult,
+    GeometryTransferInbox,
+    GeometryTransferRequest,
+    IncomingGeometryPreview,
+)
 from hms_cadcam.project.exceptions import (
+    DocumentSavePathRequiredError,
+    GeometryTransferApplyError,
+    GeometryTransferIntegrityError,
+    GeometryTransferRecoveryError,
     ProjectError,
     RecoveryRequiredError,
     RecoverySnapshotInvalidError,
@@ -24,7 +58,13 @@ from hms_cadcam.project.exceptions import (
 from hms_cadcam.project.loader import ProjectLoader
 from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.filesystem import project_target_path
-from hms_cadcam.project.models import ProjectSession, UnitSystem
+from hms_cadcam.project.filesystem import copy_source_verified, sha256_file
+from hms_cadcam.project.models import (
+    ProjectSession,
+    UnitSystem,
+    datetime_to_json,
+    utc_now,
+)
 from hms_cadcam.project.owned_directories import cleanup_stale_owned_directories
 from hms_cadcam.project.recent_projects import RecentProjectEntry, RecentProjectsService
 from hms_cadcam.project.recovery import (
@@ -35,6 +75,12 @@ from hms_cadcam.project.recovery import (
 from hms_cadcam.project.saver import ProjectSaver
 from hms_cadcam.project.session_lock import SessionLockManager
 from hms_cadcam.project.validator import ProjectValidator
+from hms_cadcam.project.workspace import (
+    CadDocumentSession,
+    DocumentMode,
+    PreparedDocumentOpen,
+    WorkspaceState,
+)
 from hms_cadcam.cam.application import (
     CamApplicationService, DrillingComputeResult, FacingComputeResult, PocketComputeResult,
     BoringComputeResult, ReamingComputeResult, TappingComputeResult,
@@ -96,6 +142,8 @@ class ProjectService:
         cam_application: CamApplicationService | None = None,
         simulation_cache: SimulationCacheStore | None = None,
         nc_export_service: NCExportService | None = None,
+        document_container: HmsDocumentContainer | None = None,
+        geometry_inbox: GeometryTransferInbox | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -106,6 +154,7 @@ class ProjectService:
         self._session_locks = session_locks
         self._autosave = autosave
         self._recovery = recovery
+        self._manifest_store = ProjectManifestStore()
         self._cam_application = cam_application or CamApplicationService()
         self._simulation_runs = SimulationRunController(
             self._cam_application.simulation_service
@@ -113,6 +162,21 @@ class ProjectService:
         self._simulation_cache = simulation_cache or SimulationCacheStore()
         self._nc_export_service = nc_export_service or NCExportService()
         self._current_project: ProjectSession | None = None
+        default_document_directory = recent_projects.config_dir / "documents"
+        self._document_container = document_container or HmsDocumentContainer(
+            recent_projects.config_dir / "document-runtime",
+            default_document_directory,
+        )
+        self._current_document: CadDocumentSession | None = None
+        self._geometry_inbox = geometry_inbox or GeometryTransferInbox(
+            ProjectManifestStore(),
+            validator,
+            database,
+            session_locks,
+        )
+        self._lifecycle_generation = 0
+        self._project_opened_at = None
+        self._project_session_id: UUID | None = None
 
     @classmethod
     def create_default(cls, config_dir: Path) -> "ProjectService":
@@ -166,6 +230,16 @@ class ProjectService:
             ),
             cam_application=CamApplicationService(artifact_store),
             nc_export_service=NCExportService(nc_artifact_store),
+            document_container=HmsDocumentContainer(
+                config_dir / "document-runtime",
+                config_dir / "documents",
+            ),
+            geometry_inbox=GeometryTransferInbox(
+                manifest_store,
+                validator,
+                database,
+                session_locks,
+            ),
         )
 
     @property
@@ -179,14 +253,486 @@ class ProjectService:
         return self._current_project
 
     @property
+    def current_document(self) -> CadDocumentSession | None:
+        """Return the active standalone document without persistence adapters."""
+        return self._current_document
+
+    @property
+    def current_workspace(self) -> WorkspaceState | None:
+        """Return typed state for either CAD_DOCUMENT or CAM_PROJECT."""
+        if self._current_document is not None:
+            return self._current_document.state
+        session = self._current_project
+        if session is None:
+            return None
+        opened_at = self._project_opened_at or session.manifest.created_at
+        session_id = self._project_session_id or self._session_locks.session_id
+        return WorkspaceState(
+            mode=DocumentMode.CAM_PROJECT,
+            document_id=None,
+            project_id=session.manifest.project_id,
+            display_name=session.manifest.project_name,
+            physical_path=session.root_path,
+            source_path=(
+                None
+                if not session.manifest.source_files
+                else Path(session.manifest.source_files[0].original_path)
+                if session.manifest.source_files[0].original_path
+                else session.root_path
+                / Path(session.manifest.source_files[0].stored_path)
+            ),
+            suggested_save_directory=session.root_path.parent,
+            dirty=session.is_dirty,
+            read_only=False,
+            opened_at=opened_at,
+            session_id=session_id,
+            format_version=session.manifest.format_version,
+            lifecycle_generation=max(self._lifecycle_generation, 1),
+        )
+
+    @property
     def has_project(self) -> bool:
         """Return whether a project is currently open."""
         return self._current_project is not None
 
     @property
+    def has_workspace(self) -> bool:
+        """Return whether either supported workspace mode is active."""
+        return self._current_project is not None or self._current_document is not None
+
+    @property
     def is_dirty(self) -> bool:
         """Return whether the current manifest has unsaved changes."""
+        if self._current_document is not None:
+            return self._current_document.state.dirty
         return bool(self._current_project and self._current_project.is_dirty)
+
+    def prepare_document_open(self, path: Path) -> PreparedDocumentOpen:
+        """Validate a source/container without replacing the current workspace."""
+        suffix = path.suffix.casefold()
+        if suffix == ".hms" and path.is_file():
+            return self._document_container.prepare_container(path)
+        if suffix not in {
+            ".step",
+            ".stp",
+            ".brep",
+            ".brp",
+            ".iges",
+            ".igs",
+            ".stl",
+        }:
+            raise ProjectError(f"Định dạng file chưa được hỗ trợ: {suffix or path.name}")
+        return self._document_container.prepare_source(path)
+
+    def commit_document_open(
+        self,
+        prepared: PreparedDocumentOpen,
+    ) -> WorkspaceState:
+        """Atomically switch mode only after the existing importer has succeeded."""
+        if not isinstance(prepared, PreparedDocumentOpen):
+            raise TypeError("Prepared document request is invalid")
+        candidate = prepared.session
+        previous_document = self._current_document
+        previous_project = self._current_project
+        if previous_project is not None:
+            self._simulation_runs.bind_project(None, None)
+            self._session_locks.release(previous_project.root_path)
+            self._cam_application.clear()
+            self._nc_export_service.bind_project(None, None, None)
+        self._current_project = None
+        self._current_document = candidate
+        self._lifecycle_generation += 1
+        candidate.state = candidate.state.with_changes(
+            lifecycle_generation=self._lifecycle_generation
+        )
+        self._project_opened_at = None
+        self._project_session_id = None
+        if previous_document is not None and previous_document is not candidate:
+            self._document_container.close(previous_document)
+        logger.info("Tài liệu CAD hiện hành: %s", candidate.state.display_name)
+        return candidate.state
+
+    def discard_document_open(self, prepared: PreparedDocumentOpen) -> None:
+        """Release a prepared container that never reached mode commit."""
+        if (
+            not isinstance(prepared, PreparedDocumentOpen)
+            or self._current_document is prepared.session
+        ):
+            return
+        self._document_container.close(prepared.session)
+
+    def save_document(self, target: Path | None = None) -> WorkspaceState:
+        """Save or Save As the active CAD_DOCUMENT container."""
+        document = self._require_document()
+        if target is None and document.state.physical_path is None:
+            raise DocumentSavePathRequiredError(
+                "Lần lưu đầu tiên phải dùng Lưu thành tài liệu HMS."
+            )
+        self._document_container.save(document, target)
+        self._lifecycle_generation += 1
+        document.state = document.state.with_changes(
+            lifecycle_generation=self._lifecycle_generation
+        )
+        return document.state
+
+    def record_document_geometry_metadata(
+        self,
+        metadata: dict[str, object],
+    ) -> None:
+        """Retain importer evidence for transfer without dirtying the document."""
+        document = self._require_document()
+        if not isinstance(metadata, dict):
+            raise TypeError("Document geometry metadata must be a dictionary")
+        document.cad_metadata = dict(metadata)
+
+    def inspect_geometry_transfer_target(
+        self,
+        project_root: Path,
+    ) -> CamProjectTargetInspection:
+        """Return UI-safe validation for a selected CAM project root."""
+        required = 0
+        if self._current_document is not None:
+            try:
+                required = self._current_document.geometry_path.stat().st_size
+            except OSError:
+                required = 0
+        return self._geometry_inbox.inspect_target(
+            project_root,
+            required_payload_bytes=required,
+        )
+
+    def send_document_geometry(
+        self,
+        project_root: Path,
+    ) -> GeometryTransferRequest:
+        """Send exact current geometry while keeping the HMS document active."""
+        document = self._require_document()
+        request = self._geometry_inbox.send(document, project_root)
+        if self._current_document is not document:
+            raise ProjectError(
+                "Tài liệu HMS đã thay đổi trước khi hoàn tất nạp 3D."
+            )
+        return request
+
+    def scan_incoming_geometry(self) -> tuple[GeometryTransferRequest, ...]:
+        """Scan only complete requests after project activation/recovery."""
+        session = self._require_current()
+        return self._geometry_inbox.scan(
+            session.root_path,
+            session.manifest.project_id,
+        )
+
+    def incoming_geometry_preview(
+        self,
+        request_id: UUID,
+    ) -> IncomingGeometryPreview:
+        """Build a native-free preview without changing project state."""
+        session = self._require_current()
+        request = self._geometry_inbox.request(session.root_path, request_id)
+        if request.target_project_id != session.manifest.project_id:
+            raise ProjectError("Yêu cầu nạp 3D thuộc dự án khác.")
+        return self._geometry_inbox.preview(session, request)
+
+    def defer_incoming_geometry(
+        self,
+        request_id: UUID,
+    ) -> GeometryTransferRequest:
+        """Persist DEFERRED without deleting request data."""
+        session = self._require_current()
+        return self._geometry_inbox.defer(session.root_path, request_id)
+
+    def reject_incoming_geometry(
+        self,
+        request_id: UUID,
+    ) -> GeometryTransferRequest:
+        """Persist REJECTED and retain request data for audit."""
+        session = self._require_current()
+        return self._geometry_inbox.reject(session.root_path, request_id)
+
+    def apply_incoming_geometry(
+        self,
+        request_id: UUID,
+        choice: GeometryApplyChoice,
+        *,
+        target_source_id: UUID | None = None,
+    ) -> GeometryApplyResult:
+        """Apply one claimed request with project-local backup and rollback."""
+        session = self._require_current()
+        before_manifest = session.manifest
+        before_cad_states = dict(session.cad_view_states)
+        before_snapshot = self._cam_application.snapshot
+        try:
+            claim = self._geometry_inbox.claim(session.root_path, request_id)
+        except GeometryTransferIntegrityError as error:
+            raise GeometryTransferApplyError(
+                "Yêu cầu nạp 3D không còn nguyên vẹn hoặc không thể nhận xử lý."
+            ) from error
+        plan = None
+        backup_root = (
+            session.root_path
+            / BACKUPS_DIRECTORY
+            / f"geometry-transfer-{request_id}"
+        )
+        source_temp: Path | None = None
+        working_temp: Path | None = None
+        try:
+            self._validate_claim_geometry(claim)
+            plan = self._geometry_inbox.apply_plan(
+                session,
+                claim.request,
+                choice,
+                target_source_id,
+                payload_size=claim.payload_path.stat().st_size,
+            )
+            if plan.source_path.exists() or plan.working_path.exists():
+                raise GeometryTransferIntegrityError(
+                    "Đường dẫn geometry asset đích đã tồn tại."
+                )
+            backup_root.mkdir()
+            manifest_name = self._manifest_store.filename_for(
+                session.root_path
+            )
+            manifest_backup = backup_root / manifest_name
+            database_backup = backup_root / DATABASE_FILENAME
+            shutil.copy2(session.root_path / manifest_name, manifest_backup)
+            self._database.backup(
+                session.root_path / DATABASE_FILENAME,
+                database_backup,
+            )
+            if plan.previous_working_path is not None and (
+                plan.previous_working_path.is_file()
+            ):
+                old_backup = backup_root / "previous-working" / (
+                    plan.previous_working_path.name
+                )
+                copy_source_verified(
+                    plan.previous_working_path,
+                    old_backup,
+                )
+            else:
+                old_backup = None
+            evidence = self._geometry_apply_evidence(
+                claim,
+                plan,
+                backup_root,
+                manifest_backup,
+                database_backup,
+                old_backup,
+                GeometryApplyPhase.PREPARED,
+            )
+            self._geometry_inbox.write_apply_evidence(claim, evidence)
+            source_temp = plan.source_path.with_name(
+                f".{plan.source_path.name}.{request_id.hex}.applying"
+            )
+            working_temp = plan.working_path.with_name(
+                f".{plan.working_path.name}.{request_id.hex}.applying"
+            )
+            source_size, source_digest = copy_source_verified(
+                claim.payload_path,
+                source_temp,
+            )
+            working_size, working_digest = copy_source_verified(
+                claim.payload_path,
+                working_temp,
+            )
+            if (
+                source_size != working_size
+                or source_digest != working_digest
+                or source_digest != claim.request.payload_checksum
+            ):
+                raise GeometryTransferIntegrityError(
+                    "Bản sao source/working geometry không khớp request."
+                )
+            os.replace(source_temp, plan.source_path)
+            os.replace(working_temp, plan.working_path)
+            source_temp = None
+            working_temp = None
+            if (
+                sha256_file(plan.source_path)
+                != claim.request.payload_checksum
+                or sha256_file(plan.working_path)
+                != claim.request.payload_checksum
+            ):
+                raise GeometryTransferIntegrityError(
+                    "Geometry asset sau atomic commit không khớp checksum."
+                )
+            evidence = dict(evidence)
+            evidence["phase"] = GeometryApplyPhase.FILES_COMMITTED.value
+            self._geometry_inbox.write_apply_evidence(claim, evidence)
+            changed_sources = (
+                frozenset()
+                if choice is GeometryApplyChoice.ADD_NEW
+                else frozenset({plan.source_id})
+            )
+            candidate_snapshot, affected = (
+                self._cam_application.preview_geometry_sources_changed(
+                    changed_sources
+                )
+            )
+            candidate_cad_states = dict(session.cad_view_states)
+            if changed_sources:
+                candidate_cad_states.pop(plan.source_id, None)
+            candidate = ProjectSession(
+                root_path=session.root_path,
+                manifest=plan.manifest,
+                is_dirty=True,
+                cad_view_states=candidate_cad_states,
+                persisted_cad_view_states=dict(
+                    session.persisted_cad_view_states
+                ),
+                cam_snapshot=candidate_snapshot,
+                persisted_cam_snapshot=session.persisted_cam_snapshot,
+                cam3d_config=session.cam3d_config,
+                persisted_cam3d_config=session.persisted_cam3d_config,
+                replaced_directory_name=session.replaced_directory_name,
+            )
+            self._validator.validate_references(
+                session.root_path,
+                candidate.manifest,
+            )
+            persisted = self._saver.save(candidate)
+            evidence["phase"] = GeometryApplyPhase.PERSISTED.value
+            self._geometry_inbox.write_apply_evidence(claim, evidence)
+            applied = self._geometry_inbox.finish_applied(
+                session.root_path,
+                claim,
+            )
+            session.manifest = persisted.manifest
+            session.cad_view_states = dict(persisted.cad_view_states)
+            session.persisted_cad_view_states = dict(
+                persisted.persisted_cad_view_states
+            )
+            session.cam_snapshot = persisted.cam_snapshot
+            session.persisted_cam_snapshot = persisted.persisted_cam_snapshot
+            session.cam3d_config = persisted.cam3d_config
+            session.persisted_cam3d_config = persisted.persisted_cam3d_config
+            session.is_dirty = False
+            self._cam_application.commit_persisted_geometry_change(
+                persisted.cam_snapshot,
+                affected,
+            )
+            for operation_id in affected:
+                self._simulation_runs.mark_stale(
+                    operation_id,
+                    "Hình học nguồn đã được cập nhật.",
+                )
+                self._nc_export_service.mark_operation_stale(operation_id)
+            self._reconcile_nc_artifacts(session, persisted.cam_snapshot)
+            self._archive_previous_working_geometry(
+                session.root_path,
+                plan,
+            )
+            return GeometryApplyResult(
+                request=applied,
+                choice=choice,
+                source_id=plan.source_id,
+                affected_operation_ids=tuple(
+                    str(item) for item in affected
+                ),
+                working_geometry_path=plan.working_path,
+                project_root=session.root_path,
+            )
+        except Exception as error:
+            if source_temp is not None:
+                source_temp.unlink(missing_ok=True)
+            if working_temp is not None:
+                working_temp.unlink(missing_ok=True)
+            rollback_error = self._rollback_geometry_apply(
+                session.root_path,
+                plan,
+                backup_root,
+            )
+            session.manifest = before_manifest
+            session.cad_view_states = before_cad_states
+            session.cam_snapshot = before_snapshot
+            if claim.request_path.is_dir():
+                try:
+                    self._geometry_inbox.fail_claim(
+                        session.root_path,
+                        claim,
+                        "Cập nhật thất bại, mô hình cũ được giữ nguyên.",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Không thể chuyển request apply lỗi sang failed"
+                    )
+            if rollback_error is not None:
+                raise GeometryTransferRecoveryError(
+                    "Cập nhật và rollback hình học đều thất bại; "
+                    f"backup được giữ tại {backup_root}"
+                ) from rollback_error
+            raise GeometryTransferApplyError(
+                "Cập nhật thất bại, mô hình cũ được giữ nguyên."
+            ) from error
+
+    def suggested_document_path(self) -> Path:
+        """Return the UI suggestion for first Save or later Save As."""
+        document = self._require_document()
+        directory = self._document_container.suggested_save_directory(
+            physical_path=document.state.physical_path,
+            source_path=document.state.source_path,
+            last_valid_directory=document.state.suggested_save_directory,
+        )
+        stem = (
+            document.state.physical_path.stem
+            if document.state.physical_path is not None
+            else Path(document.provenance.original_filename).stem
+        )
+        return directory / f"{stem}.HMS"
+
+    def autosave_workspace(
+        self,
+        *,
+        expected_identity: UUID | None = None,
+    ) -> AutosaveSnapshot | Path | None:
+        """Route autosave to document recovery or project-root autosave."""
+        workspace = self.current_workspace
+        if workspace is None:
+            return None
+        if expected_identity is not None and workspace.identity != expected_identity:
+            return None
+        if workspace.mode is DocumentMode.CAD_DOCUMENT:
+            return self._document_container.autosave(self._require_document())
+        return self.autosave(expected_project_id=workspace.identity)
+
+    def create_cam_workspace(
+        self,
+        parent_dir: Path,
+        project_name: str,
+        units: UnitSystem = UnitSystem.MILLIMETER,
+    ) -> ProjectSession:
+        """Create and activate a non-overwriting folder-based CAM project."""
+        session = self._creator.create_cam_workspace(
+            parent_dir,
+            project_name,
+            units,
+        )
+        try:
+            return self._activate(session)
+        except Exception:
+            self._rollback_new_cam_workspace(session)
+            raise
+
+    def create_cam_workspace_from_document(
+        self,
+        parent_dir: Path,
+        project_name: str,
+        units: UnitSystem = UnitSystem.MILLIMETER,
+    ) -> ProjectSession:
+        """Convert the current document without changing mode until publish succeeds."""
+        document = self._require_document()
+        session = self._creator.create_cam_workspace(
+            parent_dir,
+            project_name,
+            units,
+            source_path=document.geometry_path,
+            source_provenance=document.provenance,
+        )
+        try:
+            return self._activate(session)
+        except Exception:
+            self._rollback_new_cam_workspace(session)
+            raise
 
     def new_project(
         self,
@@ -243,6 +789,7 @@ class ProjectService:
             self._current_project is not None
             and self._current_project.root_path.resolve() == resolved
         ):
+            self._recover_incomplete_geometry_transfers(project_root)
             session = self._loader.load(project_root)
             return self._complete_activation(session)
         manifest = self._loader.read_manifest(project_root)
@@ -260,6 +807,7 @@ class ProjectService:
             )
         self._session_locks.acquire(project_root, manifest.project_id)
         try:
+            self._recover_incomplete_geometry_transfers(project_root)
             session = self._loader.load(project_root)
             if session.manifest.project_id != manifest.project_id:
                 raise ProjectError("Project identity changed while opening")
@@ -311,6 +859,9 @@ class ProjectService:
                         "Không thể phục hồi NC artifact từ autosave",
                         exc_info=True,
                     )
+            self._recover_incomplete_geometry_transfers(
+                assessment.project_root
+            )
             session = self._loader.load(assessment.project_root)
             return self._complete_activation(session)
         except Exception:
@@ -1091,14 +1642,37 @@ class ProjectService:
 
     def cad_view_state(self, source_id: UUID) -> CadViewState:
         """Return effective pending-or-persisted state for one project source."""
+        if self._current_document is not None:
+            document = self._current_document
+            if source_id != document.state.identity:
+                raise ProjectError(
+                    f"CAD source is not the active standalone document: {source_id}"
+                )
+            if not document.display_state:
+                return default_cad_view_state(source_id)
+            return cad_view_state_from_dict(
+                document.display_state,
+                expected_source_id=source_id,
+            )
         session = self._require_current()
         self._require_source(session, source_id)
         return session.cad_view_states.get(source_id, default_cad_view_state(source_id))
 
-    def stage_cad_view_state(self, state: CadViewState) -> ProjectSession:
+    def stage_cad_view_state(
+        self, state: CadViewState
+    ) -> ProjectSession | CadDocumentSession:
         """Stage validated CAD state in memory without writing project.db."""
         if not isinstance(state, CadViewState):
             raise TypeError("CAD view state is invalid")
+        if self._current_document is not None:
+            document = self._current_document
+            if state.source_id != document.state.identity:
+                raise ProjectError(
+                    "CAD view state belongs to another standalone document"
+                )
+            document.display_state = cad_view_state_to_dict(state)
+            document.mark_dirty(True)
+            return document
         session = self._require_current()
         self._require_source(session, state.source_id)
         normalized = state.normalized()
@@ -1193,6 +1767,24 @@ class ProjectService:
         self._current_project = None
         self._cam_application.clear()
         self._nc_export_service.bind_project(None, None, None)
+        self._project_opened_at = None
+        self._project_session_id = None
+        self._lifecycle_generation += 1
+
+    def close_workspace(self, discard_changes: bool = False) -> None:
+        """Close either mode while preserving dirty state by default."""
+        if self._current_document is not None:
+            if self._current_document.state.dirty and not discard_changes:
+                raise UnsavedChangesError(
+                    "Current CAD document contains unsaved changes"
+                )
+            document = self._current_document
+            self._current_document = None
+            self._document_container.close(document)
+            self._lifecycle_generation += 1
+            logger.info("Đã đóng tài liệu CAD %s", document.state.display_name)
+            return
+        self.close_project(discard_changes=discard_changes)
 
     def recent_projects(self) -> tuple[RecentProjectEntry, ...]:
         """Return recently opened project paths."""
@@ -1211,17 +1803,408 @@ class ProjectService:
         """Check a validated normalized destination without exposing filesystem to UI."""
         return self.target_path(parent_dir, project_name).exists()
 
+    @staticmethod
+    def _validate_claim_geometry(claim: ClaimedGeometryRequest) -> None:
+        request = claim.request
+        if (
+            not request.geometry_representation.exact_for_cam
+            or not claim.payload_path.is_file()
+            or claim.payload_path.stat().st_size <= 0
+            or sha256_file(claim.payload_path) != request.payload_checksum
+        ):
+            raise GeometryTransferIntegrityError(
+                "Không đủ dữ liệu hình học chính xác và nguyên vẹn để cập nhật CAM."
+            )
+        suffix = claim.payload_path.suffix.casefold()
+        if suffix not in {".brep", ".brp", ".step", ".stp", ".iges", ".igs"}:
+            raise GeometryTransferIntegrityError(
+                "Representation hình học không phù hợp cho CAM chính xác."
+            )
+
+    @staticmethod
+    def _geometry_apply_evidence(
+        claim: ClaimedGeometryRequest,
+        plan: GeometryApplyPlan,
+        backup_root: Path,
+        manifest_backup: Path,
+        database_backup: Path,
+        old_working_backup: Path | None,
+        phase: GeometryApplyPhase,
+    ) -> dict[str, object]:
+        root = plan.source_path.parents[1]
+
+        def relative(path: Path | None) -> str | None:
+            if path is None:
+                return None
+            return path.relative_to(root).as_posix()
+
+        return {
+            "format": "HMS_GEOMETRY_APPLY_TRANSACTION",
+            "format_version": 1,
+            "request_id": str(claim.request.request_id),
+            "target_project_id": str(claim.request.target_project_id),
+            "phase": phase.value,
+            "choice": plan.choice.value,
+            "source_id": str(plan.source_id),
+            "payload_checksum": claim.request.payload_checksum,
+            "source_path": relative(plan.source_path),
+            "working_path": relative(plan.working_path),
+            "previous_working_path": relative(plan.previous_working_path),
+            "backup_root": relative(backup_root),
+            "manifest_backup": relative(manifest_backup),
+            "database_backup": relative(database_backup),
+            "old_working_backup": relative(old_working_backup),
+            "created_at": datetime_to_json(utc_now()),
+        }
+
+    def _rollback_geometry_apply(
+        self,
+        project_root: Path,
+        plan: GeometryApplyPlan | None,
+        backup_root: Path,
+    ) -> Exception | None:
+        """Restore manifest/database and remove only this request's new assets."""
+        try:
+            if plan is not None:
+                for candidate in (plan.source_path, plan.working_path):
+                    if candidate.is_file() and (
+                        sha256_file(candidate)
+                        == plan.request.payload_checksum
+                    ):
+                        candidate.unlink()
+            manifest_backup = backup_root / CAM_WORKSPACE_MANIFEST_FILENAME
+            database_backup = backup_root / DATABASE_FILENAME
+            if manifest_backup.is_file():
+                temporary = (
+                    project_root
+                    / f".{CAM_WORKSPACE_MANIFEST_FILENAME}."
+                    f"{uuid4().hex}.rollback"
+                )
+                try:
+                    shutil.copy2(manifest_backup, temporary)
+                    os.replace(
+                        temporary,
+                        project_root / CAM_WORKSPACE_MANIFEST_FILENAME,
+                    )
+                finally:
+                    temporary.unlink(missing_ok=True)
+            if database_backup.is_file():
+                self._database.backup(
+                    database_backup,
+                    project_root / DATABASE_FILENAME,
+                )
+            return None
+        except Exception as error:
+            logger.exception("Rollback geometry transfer thất bại")
+            return error
+
+    @staticmethod
+    def _archive_previous_working_geometry(
+        project_root: Path,
+        plan: GeometryApplyPlan,
+    ) -> None:
+        previous = plan.previous_working_path
+        if previous is None or not previous.is_file():
+            return
+        replaced_root = project_root / REPLACED_DIRECTORY
+        destination = replaced_root / (
+            f"{previous.stem}-before-{plan.request.request_id.hex[:12]}"
+            f"{previous.suffix}"
+        )
+        try:
+            if not destination.exists():
+                os.replace(previous, destination)
+        except OSError:
+            logger.warning(
+                "Không thể chuyển working geometry cũ vào replaced; "
+                "bản không còn tham chiếu được giữ nguyên.",
+                exc_info=True,
+            )
+
+    def _recover_incomplete_geometry_transfers(
+        self,
+        project_root: Path,
+    ) -> None:
+        """Recover APPLYING requests only after the normal project lock is owned."""
+        staging = (
+            project_root
+            / INCOMING_GEOMETRY_DIRECTORY
+            / INCOMING_GEOMETRY_STAGING_DIRECTORY
+        )
+        if not staging.is_dir():
+            return
+        for request_path in sorted(staging.iterdir(), key=lambda item: item.name):
+            if (
+                not request_path.is_dir()
+                or not request_path.name.endswith(APPLYING_SUFFIX)
+            ):
+                continue
+            try:
+                request = self._geometry_inbox.validate_request_directory(
+                    request_path
+                )
+                claim = ClaimedGeometryRequest(
+                    request=request,
+                    request_path=request_path,
+                    payload_path=(
+                        request_path
+                        / REQUEST_GEOMETRY_DIRECTORY
+                        / request.payload_filename
+                    ),
+                )
+                evidence = self._geometry_inbox.read_apply_evidence(
+                    request_path
+                )
+                if evidence is None:
+                    self._geometry_inbox.return_claim_to_pending(
+                        project_root,
+                        claim,
+                        "Yêu cầu đang cập nhật được phục hồi trước khi thay đổi dự án.",
+                    )
+                    continue
+                self._validate_geometry_apply_evidence(request, evidence)
+                if self._geometry_apply_was_persisted(
+                    project_root,
+                    request,
+                    evidence,
+                ):
+                    self._geometry_inbox.finish_applied(project_root, claim)
+                    continue
+                self._rollback_geometry_from_evidence(
+                    project_root,
+                    request,
+                    evidence,
+                )
+                self._geometry_inbox.return_claim_to_pending(
+                    project_root,
+                    claim,
+                    "Đã rollback lần cập nhật bị gián đoạn; có thể thử lại.",
+                )
+            except Exception as error:
+                raise GeometryTransferRecoveryError(
+                    f"Không thể phục hồi yêu cầu nạp 3D: {request_path.name}"
+                ) from error
+
+    @staticmethod
+    def _validate_geometry_apply_evidence(
+        request: GeometryTransferRequest,
+        evidence: dict[str, object],
+    ) -> None:
+        """Reject ambiguous or redirected recovery evidence before mutation."""
+        required = {
+            "format",
+            "format_version",
+            "request_id",
+            "target_project_id",
+            "phase",
+            "choice",
+            "source_id",
+            "payload_checksum",
+            "source_path",
+            "working_path",
+            "previous_working_path",
+            "backup_root",
+            "manifest_backup",
+            "database_backup",
+            "old_working_backup",
+            "created_at",
+        }
+        if set(evidence) != required:
+            raise GeometryTransferRecoveryError(
+                "Evidence cập nhật geometry thiếu hoặc thừa trường."
+            )
+        try:
+            request_id = UUID(str(evidence["request_id"]))
+            target_id = UUID(str(evidence["target_project_id"]))
+            UUID(str(evidence["source_id"]))
+            GeometryApplyPhase(str(evidence["phase"]))
+            GeometryApplyChoice(str(evidence["choice"]))
+        except (TypeError, ValueError) as error:
+            raise GeometryTransferRecoveryError(
+                "Identity hoặc trạng thái trong evidence không hợp lệ."
+            ) from error
+        if (
+            evidence["format"] != "HMS_GEOMETRY_APPLY_TRANSACTION"
+            or evidence["format_version"] != 1
+            or request_id != request.request_id
+            or target_id != request.target_project_id
+            or evidence["payload_checksum"] != request.payload_checksum
+            or not isinstance(evidence["created_at"], str)
+        ):
+            raise GeometryTransferRecoveryError(
+                "Evidence cập nhật geometry không khớp request."
+            )
+
+        token = request.request_id.hex[:12]
+
+        def relative_path(key: str, *, optional: bool = False) -> Path | None:
+            value = evidence[key]
+            if value is None and optional:
+                return None
+            if not isinstance(value, str):
+                raise GeometryTransferRecoveryError(
+                    f"Evidence path không hợp lệ: {key}"
+                )
+            path = Path(value)
+            if (
+                path.is_absolute()
+                or value != path.as_posix()
+                or ".." in path.parts
+            ):
+                raise GeometryTransferRecoveryError(
+                    f"Evidence path không an toàn: {key}"
+                )
+            return path
+
+        source = relative_path("source_path")
+        working = relative_path("working_path")
+        previous = relative_path("previous_working_path", optional=True)
+        backup = relative_path("backup_root")
+        manifest_backup = relative_path("manifest_backup")
+        database_backup = relative_path("database_backup")
+        old_backup = relative_path("old_working_backup", optional=True)
+        if (
+            source is None
+            or source.parent != Path("source")
+            or token not in source.name
+            or working is None
+            or working.parent != Path("working-geometry")
+            or working.name != source.name
+            or (
+                previous is not None
+                and previous.parent != Path("working-geometry")
+            )
+            or backup != Path("backups") / f"geometry-transfer-{request.request_id}"
+            or manifest_backup != backup / CAM_WORKSPACE_MANIFEST_FILENAME
+            or database_backup != backup / DATABASE_FILENAME
+            or (
+                old_backup is not None
+                and old_backup.parent != backup / "previous-working"
+            )
+        ):
+            raise GeometryTransferRecoveryError(
+                "Evidence path không khớp transaction geometry."
+            )
+
+    def _geometry_apply_was_persisted(
+        self,
+        project_root: Path,
+        request: GeometryTransferRequest,
+        evidence: dict[str, object],
+    ) -> bool:
+        if evidence.get("phase") != GeometryApplyPhase.PERSISTED.value:
+            return False
+        manifest = self._manifest_store.load(project_root)
+        matching = tuple(
+            record
+            for record in manifest.source_files
+            if record.transfer_request_id == request.request_id
+        )
+        if len(matching) != 1:
+            return False
+        record = matching[0]
+        source = project_root / Path(record.stored_path)
+        working = (
+            None
+            if record.working_geometry_path is None
+            else project_root / Path(record.working_geometry_path)
+        )
+        return (
+            source.is_file()
+            and working is not None
+            and working.is_file()
+            and sha256_file(source) == request.payload_checksum
+            and sha256_file(working) == request.payload_checksum
+        )
+
+    def _rollback_geometry_from_evidence(
+        self,
+        project_root: Path,
+        request: GeometryTransferRequest,
+        evidence: dict[str, object],
+    ) -> None:
+        def resolve_relative(key: str) -> Path | None:
+            value = evidence.get(key)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise GeometryTransferRecoveryError(
+                    f"Evidence path không hợp lệ: {key}"
+                )
+            candidate = project_root / Path(value)
+            resolved = candidate.resolve()
+            root = project_root.resolve()
+            if root not in resolved.parents:
+                raise GeometryTransferRecoveryError(
+                    f"Evidence path thoát project root: {key}"
+                )
+            return candidate
+
+        for key, parent_name in (
+            ("source_path", "source"),
+            ("working_path", "working-geometry"),
+        ):
+            candidate = resolve_relative(key)
+            if candidate is None or not candidate.exists():
+                continue
+            if (
+                candidate.parent.resolve()
+                != (project_root / parent_name).resolve()
+                or not candidate.is_file()
+                or sha256_file(candidate) != request.payload_checksum
+            ):
+                raise GeometryTransferRecoveryError(
+                    "Từ chối xóa geometry asset không khớp evidence."
+                )
+            candidate.unlink()
+        manifest_backup = resolve_relative("manifest_backup")
+        database_backup = resolve_relative("database_backup")
+        if manifest_backup is None or not manifest_backup.is_file():
+            raise GeometryTransferRecoveryError(
+                "Thiếu manifest backup cho rollback."
+            )
+        if database_backup is None or not database_backup.is_file():
+            raise GeometryTransferRecoveryError(
+                "Thiếu database backup cho rollback."
+            )
+        temporary = (
+            project_root
+            / f".{CAM_WORKSPACE_MANIFEST_FILENAME}.{uuid4().hex}.rollback"
+        )
+        try:
+            shutil.copy2(manifest_backup, temporary)
+            os.replace(
+                temporary,
+                project_root / CAM_WORKSPACE_MANIFEST_FILENAME,
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
+        self._database.backup(
+            database_backup,
+            project_root / DATABASE_FILENAME,
+        )
+
     def _activate(self, session: ProjectSession) -> ProjectSession:
+        previous_project = self._current_project
         self._session_locks.acquire(session.root_path, session.manifest.project_id)
         try:
             return self._complete_activation(session)
         except Exception:
             self._session_locks.release(session.root_path)
+            if self._current_project is session:
+                self._current_project = previous_project
             raise
 
     def _complete_activation(self, session: ProjectSession) -> ProjectSession:
         self._validator.validate_manifest(session.manifest)
         self._database.validate(session.root_path / session.manifest.database)
+        self._database.validate_project_identity(
+            session.root_path / session.manifest.database,
+            session.manifest.project_id,
+            require_bound=(
+                session.root_path / CAM_WORKSPACE_MANIFEST_FILENAME
+            ).is_file(),
+        )
         previous = self._current_project
         if previous is not None and previous.root_path.resolve() != session.root_path.resolve():
             try:
@@ -1252,6 +2235,13 @@ class ProjectService:
             logger.warning("Không thể cập nhật danh sách dự án gần đây", exc_info=True)
         logger.info("Dự án hiện hành: %s", session.root_path)
         self._cleanup_temp(session.root_path)
+        previous_document = self._current_document
+        self._current_document = None
+        if previous_document is not None:
+            self._document_container.close(previous_document)
+        self._lifecycle_generation += 1
+        self._project_opened_at = utc_now()
+        self._project_session_id = self._session_locks.session_id
         return session
 
     def _ensure_overwrite_target_available(
@@ -1287,6 +2277,38 @@ class ProjectService:
         if self._current_project is None:
             raise ProjectError("No HMS project is currently open")
         return self._current_project
+
+    def _require_document(self) -> CadDocumentSession:
+        if self._current_document is None:
+            raise ProjectError("No standalone HMS CAD document is currently open")
+        return self._current_document
+
+    def _rollback_new_cam_workspace(self, session: ProjectSession) -> None:
+        """Remove only the just-created, identity-matching CAM workspace."""
+        root = session.root_path
+        try:
+            manifest_path = root / CAM_WORKSPACE_MANIFEST_FILENAME
+            if (
+                not root.is_dir()
+                or not manifest_path.is_file()
+                or root.parent == root
+            ):
+                return
+            manifest = self._loader.read_manifest(root)
+            if manifest.project_id != session.manifest.project_id:
+                logger.error(
+                    "Từ chối rollback workspace do identity đã thay đổi: %s",
+                    root,
+                )
+                return
+            self._session_locks.release(root)
+            shutil.rmtree(root)
+            logger.info("Đã rollback workspace CAM chưa kích hoạt: %s", root)
+        except Exception:
+            logger.exception(
+                "Không thể rollback workspace CAM chưa kích hoạt: %s",
+                root,
+            )
 
     @staticmethod
     def _require_source(session: ProjectSession, source_id: UUID) -> None:

@@ -6,7 +6,12 @@ from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from hms_cadcam.project.constants import DATABASE_FILENAME, SOURCE_DIRECTORY
+from hms_cadcam.project.constants import (
+    CAM_WORKSPACE_MANIFEST_FILENAME,
+    DATABASE_FILENAME,
+    SOURCE_DIRECTORY,
+    WORKING_GEOMETRY_DIRECTORY,
+)
 from hms_cadcam.project.database import ProjectDatabase
 from hms_cadcam.project.cad_state_store import CadViewStateStore
 from hms_cadcam.project.filesystem import (
@@ -17,6 +22,7 @@ from hms_cadcam.project.filesystem import (
     remove_imported_source,
     staging_directory,
     unique_source_path,
+    unique_safe_source_path,
 )
 from hms_cadcam.project.manifest import ProjectManifestStore
 from hms_cadcam.project.models import ProjectSession, SourceFileRecord, utc_now
@@ -26,6 +32,7 @@ from hms_cadcam.cam.persistence import (
 )
 from hms_cadcam.cam.post.export_store import NCArtifactStore
 from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig, Cam3DProjectStore
+from hms_cadcam.project.path_policy import normalize_internal_source_filename
 import logging
 
 logger = logging.getLogger(__name__)
@@ -94,8 +101,31 @@ class ProjectSaver:
     def import_source(self, session: ProjectSession, source_path: Path) -> ProjectSession:
         """Copy a source into source/ and atomically append its manifest record."""
         source_dir = session.root_path / SOURCE_DIRECTORY
-        destination = unique_source_path(source_dir, source_path.name)
+        is_folder_workspace = (
+            session.root_path / CAM_WORKSPACE_MANIFEST_FILENAME
+        ).is_file()
+        if is_folder_workspace:
+            safe_name = normalize_internal_source_filename(source_path.name)
+            destination = unique_safe_source_path(source_dir, safe_name)
+        else:
+            destination = unique_source_path(source_dir, source_path.name)
         size, digest = copy_source_verified(source_path, destination)
+        working_destination: Path | None = None
+        if is_folder_workspace:
+            working_destination = (
+                session.root_path
+                / WORKING_GEOMETRY_DIRECTORY
+                / destination.name
+            )
+            working_size, working_digest = copy_source_verified(
+                source_path,
+                working_destination,
+            )
+            if (working_size, working_digest) != (size, digest):
+                working_destination.unlink(missing_ok=True)
+                destination.unlink(missing_ok=True)
+                raise ValueError("Working geometry fingerprint mismatch")
+        geometry_type = source_path.suffix.lower().lstrip(".") or "unknown"
         record = SourceFileRecord(
             source_id=uuid4(),
             original_name=source_path.name,
@@ -103,6 +133,20 @@ class ProjectSaver:
             size_bytes=size,
             sha256=digest,
             imported_at=utc_now(),
+            original_path=str(source_path) if is_folder_workspace else None,
+            internal_filename=destination.name if is_folder_workspace else None,
+            importer=geometry_type,
+            units=session.manifest.units.value,
+            geometry_type=geometry_type,
+            read_only=True,
+            working_geometry_path=(
+                None
+                if working_destination is None
+                else (
+                    f"{WORKING_GEOMETRY_DIRECTORY}/"
+                    f"{working_destination.name}"
+                )
+            ),
         )
         manifest = replace(
             session.manifest,
@@ -114,6 +158,8 @@ class ProjectSaver:
             self._manifest_store.save(session.root_path, manifest)
         except Exception:
             remove_imported_source(session.root_path, record.stored_path)
+            if working_destination is not None:
+                working_destination.unlink(missing_ok=True)
             raise
         session.manifest = manifest
         session.is_dirty = (
@@ -168,6 +214,10 @@ class ProjectSaver:
             self._database.backup(
                 session.root_path / DATABASE_FILENAME,
                 staging / DATABASE_FILENAME,
+            )
+            self._database.bind_project_identity(
+                staging / DATABASE_FILENAME,
+                manifest.project_id,
             )
             copied_artifacts = self._artifact_store.copy_referenced(
                 session.root_path,

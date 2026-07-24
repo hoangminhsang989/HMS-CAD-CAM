@@ -14,11 +14,19 @@ from hms_cadcam.project.constants import (
     AUTOSAVE_DIRECTORY,
     BACKUPS_DIRECTORY,
     CACHE_DIRECTORY,
+    INCOMING_GEOMETRY_APPLIED_DIRECTORY,
+    INCOMING_GEOMETRY_DIRECTORY,
+    INCOMING_GEOMETRY_FAILED_DIRECTORY,
+    INCOMING_GEOMETRY_PENDING_DIRECTORY,
+    INCOMING_GEOMETRY_REJECTED_DIRECTORY,
+    INCOMING_GEOMETRY_STAGING_DIRECTORY,
     OWNED_DIRECTORY_METADATA_FILENAME,
     PROJECT_SUFFIX,
     SOURCE_DIRECTORY,
+    REPLACED_DIRECTORY,
     TEMP_DIRECTORY,
     TOOLPATHS_DIRECTORY,
+    WORKING_GEOMETRY_DIRECTORY,
     SIMULATION_CACHE_SUBDIRECTORY,
 )
 from hms_cadcam.project.exceptions import (
@@ -62,6 +70,17 @@ def unique_source_path(source_dir: Path, file_name: str) -> Path:
     index = 2
     while candidate.exists():
         candidate = source_dir / f"{original.stem} ({index}){original.suffix}"
+        index += 1
+    return candidate
+
+
+def unique_safe_source_path(source_dir: Path, file_name: str) -> Path:
+    """Return a deterministic hyphen-suffixed safe internal source path."""
+    original = Path(file_name)
+    candidate = source_dir / original.name
+    index = 2
+    while candidate.exists():
+        candidate = source_dir / f"{original.stem}-{index}{original.suffix}"
         index += 1
     return candidate
 
@@ -160,3 +179,26 @@ def create_runtime_directories(project_root: Path) -> None:
     temp_root = project_root / TEMP_DIRECTORY
     temp_root.mkdir()
     write_owned_directory_metadata(temp_root, OwnedDirectoryPurpose.TEMP_ROOT)
+
+
+def create_cam_workspace_directories(project_root: Path) -> None:
+    """Create the Stage 8A.4.2 folder-workspace contract without dotted names."""
+    for name in (
+        SOURCE_DIRECTORY,
+        WORKING_GEOMETRY_DIRECTORY,
+        AUTOSAVE_DIRECTORY,
+        BACKUPS_DIRECTORY,
+        TEMP_DIRECTORY,
+        REPLACED_DIRECTORY,
+    ):
+        (project_root / name).mkdir()
+    incoming_root = project_root / INCOMING_GEOMETRY_DIRECTORY
+    incoming_root.mkdir()
+    for name in (
+        INCOMING_GEOMETRY_STAGING_DIRECTORY,
+        INCOMING_GEOMETRY_PENDING_DIRECTORY,
+        INCOMING_GEOMETRY_APPLIED_DIRECTORY,
+        INCOMING_GEOMETRY_REJECTED_DIRECTORY,
+        INCOMING_GEOMETRY_FAILED_DIRECTORY,
+    ):
+        (incoming_root / name).mkdir()

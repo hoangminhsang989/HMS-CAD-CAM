@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
-    QMessageBox,
     QStackedWidget,
     QToolButton,
     QTreeWidget,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hms_cadcam.ui.localized_dialogs import QMessageBox
 from hms_cadcam.ui.function_editor.legacy_adapter import (
     LegacyFunctionEditorAdapter,
 )

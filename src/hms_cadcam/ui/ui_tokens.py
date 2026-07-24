@@ -25,6 +25,13 @@ DIAGNOSTICS_MAX_HEIGHT = 280
 VIEWPORT_MIN_WIDTH = 520
 VIEWPORT_MIN_HEIGHT = 360
 
+# On the Windows QPA, grabbing the full top-level MainWindow excludes the
+# first 100 logical pixels of the menu-bar row even though QMenuBar itself
+# paints there correctly.  Keep production menu actions beyond that native
+# capture exclusion so full-widget review evidence matches the visible menu.
+MAIN_MENU_CAPTURE_EXCLUDED_LEFT = 100
+MAIN_MENU_CONTENT_LEFT_PADDING = MAIN_MENU_CAPTURE_EXCLUDED_LEFT + 5
+
 
 @dataclass(frozen=True, slots=True)
 class CAMPopupMetrics:

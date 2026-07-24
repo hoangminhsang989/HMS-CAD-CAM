@@ -972,7 +972,10 @@ def build_contour_sections(
                 source=FunctionEditorValueSource.DEFAULT,
                 disclosure_level=ParameterDisclosureLevel.EXPERT,
                 tooltip="Hợp đồng thuật toán v1: midpoint có (X, Y) nhỏ nhất; không có tùy chỉnh.",
-                help_text="Presentation chỉ đọc; policy này vẫn round-trip nguyên trong codec/fingerprint.",
+                help_text=(
+                    "Phần trình bày chỉ đọc; chính sách này vẫn được bảo toàn "
+                    "khi mã hóa và kiểm tra dấu nhận dạng."
+                ),
                 help_key="contour.start_policy",
                 order=10,
                 binding_key="parameters.start_policy",

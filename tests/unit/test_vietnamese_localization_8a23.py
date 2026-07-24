@@ -6,8 +6,16 @@ from pathlib import Path
 import re
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QRawFont
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from hms_cadcam.cam.cam3d.parallel import ParallelProgress, ParallelProgressPhase
 from hms_cadcam.cam.domain import SetupKind, StockKind
@@ -30,6 +38,7 @@ from hms_cadcam.ui.localization import (
     operation_type_display_name,
     ui_text,
 )
+from hms_cadcam.ui.localized_dialogs import QFileDialog, QMessageBox
 from tests.unit.test_parallel_finishing_function_editor_8a23 import (
     _context,
     _valid_values,
@@ -41,6 +50,7 @@ from tools.audit_vietnamese_ui import (
     _classify,
     audit_production_ui,
     audit_runtime_review_states,
+    collect_runtime_strings,
     duplicate_user_facing_phrase_matches,
     raw_user_facing_internal_matches,
     unapproved_user_facing_acronym_matches,
@@ -65,6 +75,11 @@ def test_central_catalog_contains_required_hms_terminology() -> None:
         "Operation Manager": "Quản lý nguyên công",
         "Calculate": "Tính toán",
         "Cancel Calculation": "Hủy tính toán",
+        "Document ID": "ID tài liệu",
+        "Fingerprint": "Dấu nhận dạng hình học",
+        "Levels": "Cao độ",
+        "Toolpaths": "Đường chạy dao",
+        "Planes": "Mặt phẳng",
     }
     assert all(UI_TRANSLATIONS.get(source) == target for source, target in required.items())
     assert {"CAD", "CAM", "Tool", "Holder", "Post", "G-code"}.issubset(
@@ -245,8 +260,10 @@ def test_internal_token_auditor_uses_production_enum_catalog_and_strict_allowlis
         "BRep",
         "UUID/ID",
         "version/hash",
+        "STEP/STP",
+        "IGES/IGS",
+        "STL",
         "U/V/W",
-        "đơn vị kỹ thuật",
     }
     clean_values = (
         "DỰ ÁN · ĐÃ LƯU",
@@ -314,6 +331,95 @@ def test_ten_operation_display_names_are_localized_without_changing_ids() -> Non
         "tapping_v1",
         "reaming_v1",
         "boring_v1",
+    )
+
+
+def test_localized_standard_dialogs_do_not_depend_on_os_button_text(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    file_dialog = QFileDialog(
+        None,
+        "Lưu thành tài liệu HMS",
+        str(tmp_path),
+        "Tài liệu HMS (*.HMS)",
+    )
+    qtbot.addWidget(file_dialog)
+    file_dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+    file_dialog.show()
+    _application().processEvents()
+
+    assert file_dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
+    assert (
+        file_dialog.labelText(QFileDialog.DialogLabel.LookIn),
+        file_dialog.labelText(QFileDialog.DialogLabel.FileName),
+        file_dialog.labelText(QFileDialog.DialogLabel.FileType),
+        file_dialog.labelText(QFileDialog.DialogLabel.Accept),
+        file_dialog.labelText(QFileDialog.DialogLabel.Reject),
+    ) == ("Thư mục:", "Tên tệp:", "Loại tệp:", "Lưu", "Hủy")
+    assert tuple(
+        file_dialog.proxyModel().headerData(
+            column,
+            Qt.Orientation.Horizontal,
+        )
+        for column in range(4)
+    ) == ("Tên", "Kích thước", "Loại", "Ngày sửa đổi")
+
+    box = QMessageBox()
+    qtbot.addWidget(box)
+    box.setStandardButtons(
+        QMessageBox.StandardButton.Save
+        | QMessageBox.StandardButton.Discard
+        | QMessageBox.StandardButton.Cancel
+    )
+    assert tuple(
+        box.button(button).text()
+        for button in (
+            QMessageBox.StandardButton.Save,
+            QMessageBox.StandardButton.Discard,
+            QMessageBox.StandardButton.Cancel,
+        )
+    ) == ("Lưu", "Không lưu", "Hủy")
+
+
+def test_project_tree_titles_keep_internal_keys_but_render_vietnamese() -> None:
+    assert ui_text("Levels") == "Cao độ"
+    assert ui_text("Toolpaths") == "Đường chạy dao"
+    assert ui_text("Planes") == "Mặt phẳng"
+
+
+@pytest.mark.parametrize(
+    "bad_text",
+    (
+        "Document ID",
+        "Fingerprint",
+        "Levels",
+        "Geometry asset ID",
+        "Tự Calculate",
+        "Backup working cũ",
+        "Request trùng bị chặn",
+        "unknown",
+    ),
+)
+def test_rendered_audit_rejects_named_localization_regressions(
+    qtbot,
+    bad_text: str,
+) -> None:
+    root = QWidget()
+    qtbot.addWidget(root)
+    layout = QVBoxLayout(root)
+    layout.addWidget(QLabel(bad_text))
+    layout.addWidget(QPushButton("Đóng"))
+    tabs = QTabWidget()
+    tabs.addTab(QWidget(), "Cao độ")
+    layout.addWidget(tabs)
+    root.show()
+    _application().processEvents()
+
+    entries = collect_runtime_strings(root, "named_regression")
+    assert any(
+        entry.text == bad_text and entry.classification == "untranslated"
+        for entry in entries
     )
 
 

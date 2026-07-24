@@ -238,7 +238,7 @@ def test_no_project_and_cad_only_have_honest_empty_states(tmp_path) -> None:
     try:
         assert panel.model.projection.project_id is None
         assert panel.current_node().kind is OperationManagerNodeKind.EMPTY_STATE
-        assert panel.state_title.text() == "Chưa mở dự án"
+        assert panel.state_title.text() == "Chưa mở dự án CAM"
 
         session = service.new_project(tmp_path, "CAD Only")
         workspace.bind_project(session)

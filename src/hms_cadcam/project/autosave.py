@@ -23,6 +23,7 @@ from hms_cadcam.project.constants import (
     AUTOSAVE_LATEST_VERSION,
     AUTOSAVE_METADATA_FILENAME,
     CACHE_DIRECTORY,
+    CAM_WORKSPACE_MANIFEST_FILENAME,
     DATABASE_FILENAME,
     MANIFEST_FILENAME,
     OWNED_DIRECTORY_METADATA_FILENAME,
@@ -283,7 +284,12 @@ class AutosaveManager:
             snapshot_id = uuid4()
             final_path = autosave_root / self._snapshot_directory_name(snapshot_id)
             with staging_directory(autosave_root, "autosave") as staging:
-                self._manifest_store.save(staging, session.manifest)
+                manifest_name = self._manifest_store.filename_for(session.root_path)
+                self._manifest_store.save(
+                    staging,
+                    session.manifest,
+                    filename=manifest_name,
+                )
                 self._database.backup(
                     session.root_path / DATABASE_FILENAME,
                     staging / DATABASE_FILENAME,
@@ -321,7 +327,7 @@ class AutosaveManager:
                     session_id=session_id,
                     created_at=utc_now(),
                     application_version=APPLICATION_VERSION,
-                    manifest=self._file_metadata(staging / MANIFEST_FILENAME),
+                    manifest=self._file_metadata(staging / manifest_name),
                     database=self._file_metadata(staging / DATABASE_FILENAME),
                     cam3d=cam3d_metadata,
                 )
@@ -369,7 +375,7 @@ class AutosaveManager:
         *,
         allow_owner_metadata: bool,
     ) -> AutosaveMetadata:
-        expected_names = {MANIFEST_FILENAME, DATABASE_FILENAME, AUTOSAVE_METADATA_FILENAME}
+        expected_names = {DATABASE_FILENAME, AUTOSAVE_METADATA_FILENAME}
         if allow_owner_metadata:
             expected_names.add(OWNED_DIRECTORY_METADATA_FILENAME)
         if self._is_link_or_junction(snapshot_path) or not snapshot_path.is_dir():
@@ -377,6 +383,8 @@ class AutosaveManager:
         entries = tuple(snapshot_path.iterdir())
         names = {path.name for path in entries}
         optional_names = {
+            MANIFEST_FILENAME,
+            CAM_WORKSPACE_MANIFEST_FILENAME,
             CACHE_DIRECTORY,
             POST_DIRECTORY,
             NC_DIRECTORY,
@@ -408,8 +416,13 @@ class AutosaveManager:
             (snapshot_path / AUTOSAVE_METADATA_FILENAME).read_text(encoding="utf-8")
         )
         metadata = AutosaveMetadata.from_dict(data)
-        if metadata.manifest.filename != MANIFEST_FILENAME:
+        if metadata.manifest.filename not in {
+            MANIFEST_FILENAME,
+            CAM_WORKSPACE_MANIFEST_FILENAME,
+        }:
             raise AutosaveSnapshotError("Autosave manifest filename is invalid")
+        if metadata.manifest.filename not in names:
+            raise AutosaveSnapshotError("Autosave manifest file is missing")
         if metadata.database.filename != DATABASE_FILENAME:
             raise AutosaveSnapshotError("Autosave database filename is invalid")
         has_cam3d = CAM3D_CONFIG_DIRECTORY in names

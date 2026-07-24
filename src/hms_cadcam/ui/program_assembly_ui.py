@@ -20,13 +20,11 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -37,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cam.domain import ArtifactStatus, LengthUnit, OperationId
+from hms_cadcam.ui.localized_dialogs import QFileDialog, QMessageBox
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.post import (
     ControllerToolBinding,

@@ -9,6 +9,30 @@ class InvalidProjectNameError(ProjectError):
     """The requested Windows project name is invalid."""
 
 
+class InvalidHmsFilenameError(ProjectError):
+    """A standalone HMS document filename violates Windows rules."""
+
+
+class UnsafeWorkspacePathError(ProjectError):
+    """A CAM workspace parent or physical name violates the path policy."""
+
+
+class HmsContainerError(ProjectError):
+    """A standalone HMS document container cannot be read or written safely."""
+
+
+class HmsContainerDamagedError(HmsContainerError):
+    """A standalone HMS document container is malformed or fails checksum."""
+
+
+class HmsContainerSecurityError(HmsContainerError):
+    """A standalone HMS container entry violates extraction/resource policy."""
+
+
+class DocumentSavePathRequiredError(ProjectError):
+    """The first save of a standalone document requires an explicit path."""
+
+
 class SourceFileNotFoundError(ProjectError):
     """A requested source file is missing or is not a regular file."""
 
@@ -47,6 +71,36 @@ class ProjectDatabaseError(ProjectError):
 
 class ProjectTransactionError(ProjectError):
     """A transactional filesystem operation failed."""
+
+
+class GeometryTransferError(ProjectError):
+    """A standalone HMS document cannot transfer geometry safely."""
+
+
+class GeometryTransferTargetError(GeometryTransferError):
+    """The selected CAM project root is invalid or not transfer-ready."""
+
+
+class GeometryTransferDuplicateError(GeometryTransferError):
+    """Equivalent geometry is already pending for the selected project."""
+
+    def __init__(self, request: object) -> None:
+        super().__init__(
+            "Dữ liệu 3D này đã được gửi tới dự án và đang chờ xử lý."
+        )
+        self.request = request
+
+
+class GeometryTransferIntegrityError(GeometryTransferError):
+    """Request metadata, payload, identity, or checksum is invalid."""
+
+
+class GeometryTransferApplyError(GeometryTransferError):
+    """An incoming request cannot be applied without risking project state."""
+
+
+class GeometryTransferRecoveryError(GeometryTransferError):
+    """An interrupted geometry apply cannot be recovered automatically."""
 
 
 class UnsavedChangesError(ProjectError):

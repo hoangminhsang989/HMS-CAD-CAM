@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from hms_cadcam.cam.application import CamApplicationService
 from hms_cadcam.cam.domain import (
     ArtifactState,
     ArtifactStatus,
@@ -60,6 +61,7 @@ from hms_cadcam.cam.domain import (
     WorkOffset,
     validate_operation,
 )
+from hms_cadcam.cam.persistence import CamProjectSnapshot
 
 
 def _reference(source_id=None, *, occurrence="assembly:1/part:1", selector="face:1"):
@@ -302,6 +304,64 @@ def test_dirty_reasons_and_input_snapshot_fingerprint_are_canonical():
     first = OperationInputSnapshot("mill.contour", 1, parameter, (("b", b), ("a", a)))
     second = OperationInputSnapshot("mill.contour", 1, parameter, (("a", a), ("b", b)))
     assert first.fingerprint == second.fingerprint
+
+
+def test_geometry_change_preview_and_commit_stale_only_referenced_source():
+    setup = _setup()
+    target_source = uuid4()
+    unrelated_source = uuid4()
+    target = _operation(
+        setup.setup_id,
+        reference=_reference(target_source),
+    )
+    unrelated = _operation(
+        setup.setup_id,
+        reference=_reference(unrelated_source),
+    )
+    tree = OperationTree.empty(setup.setup_id)
+    group = CamNodeId.new()
+    tree = tree.add_group(tree.root_id, group, "Geometry scope")
+    tree = tree.add_operation(group, "Target", target)
+    tree = tree.add_operation(group, "Unrelated", unrelated)
+    setup = dataclasses.replace(setup, operation_tree=tree)
+    job = CamJob(
+        CamJobId.new(),
+        "Job",
+        setups=(setup,),
+        active_setup_id=setup.setup_id,
+    )
+    snapshot = CamProjectSnapshot((job,), job.job_id)
+    service = CamApplicationService()
+    service.load(snapshot)
+
+    candidate, affected = service.preview_geometry_sources_changed(
+        frozenset({target_source})
+    )
+
+    assert affected == (target.operation_id,)
+    assert (
+        service.snapshot.jobs[0]
+        .setups[0]
+        .operation_tree.get_operation(target.operation_id)
+        .artifact_state.status
+        is ArtifactStatus.MISSING
+    )
+    candidate_tree = candidate.jobs[0].setups[0].operation_tree
+    changed = candidate_tree.get_operation(target.operation_id)
+    stable = candidate_tree.get_operation(unrelated.operation_id)
+    assert changed.artifact_state.status is ArtifactStatus.DIRTY
+    assert DirtyReason.GEOMETRY_CHANGED in changed.artifact_state.dirty_reasons
+    assert stable == unrelated
+
+    service.commit_persisted_geometry_change(candidate, affected)
+
+    committed_tree = service.snapshot.jobs[0].setups[0].operation_tree
+    assert (
+        committed_tree.get_operation(target.operation_id).artifact_state.status
+        is ArtifactStatus.DIRTY
+    )
+    assert committed_tree.get_operation(unrelated.operation_id) == unrelated
+    assert not service.is_dirty
 
 
 def test_tree_codec_round_trip_and_future_nested_version_rejected():

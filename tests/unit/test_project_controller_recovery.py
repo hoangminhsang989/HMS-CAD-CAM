@@ -27,8 +27,7 @@ def test_recovery_prompt_can_select_autosave(tmp_path, monkeypatch) -> None:
     controller, service = _controller(tmp_path)
     assessment = SimpleNamespace(project_root=tmp_path / "Part.HMS")
     monkeypatch.setattr(
-        QMessageBox,
-        "warning",
+        "hms_cadcam.ui.project_controller.QMessageBox.warning",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
     monkeypatch.setattr(service, "recover_project", lambda selected: selected)
@@ -44,8 +43,7 @@ def test_recovery_prompt_can_open_main_data_without_recovery(tmp_path, monkeypat
     assessment = SimpleNamespace(project_root=tmp_path / "Part.HMS")
     calls = []
     monkeypatch.setattr(
-        QMessageBox,
-        "warning",
+        "hms_cadcam.ui.project_controller.QMessageBox.warning",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
     )
     monkeypatch.setattr(
@@ -65,8 +63,7 @@ def test_replaced_prompt_requires_explicit_approval(tmp_path, monkeypatch) -> No
     controller, service = _controller(tmp_path)
     assessment = SimpleNamespace(target_path=tmp_path / "Part.HMS")
     monkeypatch.setattr(
-        QMessageBox,
-        "warning",
+        "hms_cadcam.ui.project_controller.QMessageBox.warning",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
     monkeypatch.setattr(service, "restore_replaced_and_open", lambda selected: selected)

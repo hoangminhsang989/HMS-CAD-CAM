@@ -145,6 +145,37 @@ class CamApplicationService:
                 self._snapshot = _clone_snapshot(snapshot)
             self._persisted = _clone_snapshot(self._snapshot)
 
+    def preview_geometry_sources_changed(
+        self,
+        source_ids: frozenset[object],
+    ) -> tuple[CamProjectSnapshot, tuple[OperationId, ...]]:
+        """Build a scoped stale snapshot without mutating runtime state."""
+        with self._lock:
+            return _stale_geometry_source_operations(
+                _clone_snapshot(self._snapshot),
+                source_ids,
+            )
+
+    def commit_persisted_geometry_change(
+        self,
+        snapshot: CamProjectSnapshot,
+        affected_operation_ids: tuple[OperationId, ...],
+    ) -> None:
+        """Publish a persisted geometry change and stale only its dependants."""
+        if not isinstance(snapshot, CamProjectSnapshot):
+            raise TypeError("CAM project snapshot is invalid")
+        if not isinstance(affected_operation_ids, tuple) or any(
+            not isinstance(item, OperationId)
+            for item in affected_operation_ids
+        ):
+            raise TypeError("Affected operation identities are invalid")
+        with self._lock:
+            self._snapshot = _clone_snapshot(snapshot)
+            self._persisted = _clone_snapshot(snapshot)
+            for operation_id in affected_operation_ids:
+                self._simulation.mark_stale(operation_id)
+                self._post.mark_stale(operation_id)
+
     def clear(self) -> None:
         with self._lock:
             empty = CamProjectSnapshot()
@@ -1663,6 +1694,34 @@ def _stale_tool_strategy_operations(
                 affected.append(operation.operation_id)
                 result = _replace_operation(
                     result, replace(operation, artifact_state=state)
+                )
+    return result, tuple(sorted(affected, key=str))
+
+
+def _stale_geometry_source_operations(
+    snapshot: CamProjectSnapshot,
+    source_ids: frozenset[object],
+) -> tuple[CamProjectSnapshot, tuple[OperationId, ...]]:
+    """Dirty only operations carrying an explicit reference to changed sources."""
+    result = snapshot
+    affected: list[OperationId] = []
+    for job in snapshot.jobs:
+        for setup in job.setups:
+            for operation in setup.operation_tree.operations:
+                if not any(
+                    item.reference.source_id in source_ids
+                    for item in operation.geometry_inputs
+                ):
+                    continue
+                changed_state = operation.artifact_state.mark_dirty(
+                    DirtyReason.GEOMETRY_CHANGED
+                )
+                if changed_state == operation.artifact_state:
+                    continue
+                affected.append(operation.operation_id)
+                result = _replace_operation(
+                    result,
+                    replace(operation, artifact_state=changed_state),
                 )
     return result, tuple(sorted(affected, key=str))
 

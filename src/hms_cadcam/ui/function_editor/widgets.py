@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLayout,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hms_cadcam.ui.localized_dialogs import QMessageBox
 from hms_cadcam.ui.function_editor.fields import FunctionEditorFieldWidget
 from hms_cadcam.ui.function_editor.model import (
     FunctionEditorAction,

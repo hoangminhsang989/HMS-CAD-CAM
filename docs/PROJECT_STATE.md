@@ -1,5 +1,44 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu
+
+- Stage 8A.4.2 đã **COMPLETED** trên baseline `88aff78`; không stage kế tiếp
+  hoặc stage đa ngôn ngữ nào được bắt đầu.
+- `ProjectService` định tuyến typed state cho `CAD_DOCUMENT` và `CAM_PROJECT`.
+- CAD đơn lẻ dùng một file container `.HMS` deterministic/checksummed; tên file
+  giữ Unicode và dấu cách hợp lệ trên Windows.
+- Dự án CAM mới dùng thư mục vật lý ASCII/hyphen, `manifest.json`, SQLite v4,
+  `source/`, `working-geometry/`, `autosave/`, `backups/`, `temp/` và
+  `replaced/`, cùng inbox atomic `incoming-geometry/{staging,pending,applied,
+  rejected,failed}`.
+- Loader tiếp tục nhận dự án thư mục `.HMS` cũ, `project.hms.json` và
+  `.replaced`; không migrate phá dữ liệu.
+- Open dialog và kéo-thả dùng chung application command/importer nền; mode chỉ
+  chuyển sau khi import/validation thành công.
+- Tạo dự án từ tài liệu hiện tại dùng staging/publish/rollback; file `.HMS` hoặc
+  source ban đầu không bị xóa.
+- Lệnh `Nạp 3D mới cho dự án CAM` xác minh root/Project ID/SQLite/lock/quyền
+  ghi, không sửa project.db ở bước gửi và giữ `.HMS` độc lập.
+- Scanner chạy sau recovery/open bằng worker, kết hợp watcher + polling; UI có
+  notification không modal, notification center và preview Add/Replace/Update
+  không có mặc định nguy hiểm.
+- Apply dùng claim/checksum/backup/evidence/rollback; chỉ source dependency liên
+  quan stale, không copy READY/SAFE và không tự Calculate/Simulation/Post.
+- Review package Git-ignored đã được người dùng duyệt, có đúng 43 file (30 PNG
+  hash riêng, 12 JSON và 1 Markdown).
+- QA khóa cuối: **136 passed** focused Stage, **113 passed** regression liên
+  quan và **1690 passed, 2 deselected** toàn repository; `pip check`,
+  `compileall`, audit GUI tiếng Việt với toàn bộ nhóm lỗi bằng 0 và
+  `git diff --check` đạt.
+- SQLite giữ schema **v4** và loader tương thích ngược project thư mục `.HMS`
+  legacy. File `.HMS` đơn lẻ không phải container dự án CAM.
+- Geometry transfer chỉ quản lý exact geometry/provenance/stale dependency;
+  không phải chứng nhận an toàn, không tự Calculate/Simulation/Post và không
+  xác nhận machine-ready clearance.
+- Ngoài phạm vi: hệ thống đa ngôn ngữ, ProgramData/install layout, importer đa
+  định dạng đầy đủ, Export 3D/version settings, three-step CAM workflow, Tool
+  đa họ, màu toolpath, Program Templates và Production Post mới.
+
 ## Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình
 
 - Stage 8A.4.1 đã **COMPLETED** trên baseline `af3bbf3`; package GUI đã được
@@ -64,8 +103,9 @@
 
 ## Nền tảng ứng dụng, dự án, CAD và XCAF
 
-- Giai đoạn 1–4: khung PySide6, dự án thư mục `.HMS`, Session Lock, Autosave,
-  Recovery, CAD Kernel và CAD Viewer đã hoàn thành.
+- Giai đoạn 1–4: khung PySide6, dự án thư mục `.HMS` legacy, Session Lock,
+  Autosave, Recovery, CAD Kernel và CAD Viewer đã hoàn thành; Stage 8A.4.2 giữ
+  loader tương thích và bổ sung workspace CAM dạng thư mục không hậu tố.
 - Giai đoạn 5A–5D: import CAD, Measurement BREP, topology tree và CAD view state
   đã hoàn thành.
 - Giai đoạn 6A.1–6A.4: XCAF technical spike, domain model, viewer/tree và

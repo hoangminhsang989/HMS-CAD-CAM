@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from hms_cadcam.project.constants import (
     DATABASE_FILENAME,
+    CAM_WORKSPACE_MANIFEST_FILENAME,
     PROJECT_FORMAT,
     PROJECT_FORMAT_VERSION,
     PROJECT_SUFFIX,
@@ -19,6 +20,7 @@ from hms_cadcam.project.exceptions import (
 )
 from hms_cadcam.project.filesystem import normalized_project_stem
 from hms_cadcam.project.models import ProjectManifest
+from hms_cadcam.project.path_policy import normalize_cam_project_name
 
 _INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_WINDOWS_NAMES = {
@@ -46,10 +48,18 @@ class ProjectValidator:
         return stem
 
     def validate_project_directory_name(self, project_root: Path) -> None:
-        """Require a real directory name ending in .HMS."""
-        if project_root.suffix.casefold() != PROJECT_SUFFIX.casefold():
-            raise InvalidProjectNameError(f"Project directory must end with .HMS: {project_root}")
-        self.validate_project_name(project_root.name)
+        """Accept legacy .HMS directories and safe CAM workspace directories."""
+        if project_root.suffix.casefold() == PROJECT_SUFFIX.casefold():
+            self.validate_project_name(project_root.name)
+            return
+        if not (project_root / CAM_WORKSPACE_MANIFEST_FILENAME).is_file():
+            raise InvalidProjectNameError(
+                f"Project directory is neither legacy .HMS nor CAM workspace: {project_root}"
+            )
+        if normalize_cam_project_name(project_root.name) != project_root.name:
+            raise InvalidProjectNameError(
+                f"CAM workspace directory name is unsafe: {project_root.name}"
+            )
 
     def validate_manifest(self, manifest: ProjectManifest) -> None:
         """Validate semantic rules for manifest format version 1."""
@@ -57,7 +67,12 @@ class ProjectValidator:
             raise UnsupportedProjectFormatError(manifest.format)
         if manifest.format_version != PROJECT_FORMAT_VERSION:
             raise UnsupportedFormatVersionError(str(manifest.format_version))
-        self.validate_project_name(manifest.project_name)
+        if (
+            not isinstance(manifest.project_name, str)
+            or not manifest.project_name.strip()
+            or manifest.project_name != manifest.project_name.strip()
+        ):
+            raise InvalidProjectNameError("Project display name is empty or padded")
         if manifest.modified_at < manifest.created_at:
             raise ValueError("modified_at cannot precede created_at")
         if manifest.active_document is not None:
@@ -72,6 +87,15 @@ class ProjectValidator:
                 raise ValueError("Source path must be a direct child of source/")
             if source.size_bytes < 0 or not re.fullmatch(r"[0-9a-f]{64}", source.sha256):
                 raise ValueError("Invalid source size or SHA-256")
+            if source.working_geometry_path is not None:
+                working = PurePosixPath(source.working_geometry_path)
+                if (
+                    working.is_absolute()
+                    or ".." in working.parts
+                    or not working.parts
+                    or working.parts[0] != "working-geometry"
+                ):
+                    raise ValueError("Working geometry path must remain in project root")
 
     def validate_references(self, project_root: Path, manifest: ProjectManifest) -> None:
         """Require all manifest source references to exist within source/."""
@@ -80,3 +104,9 @@ class ProjectValidator:
             path = project_root / Path(source.stored_path)
             if not path.is_file():
                 raise ValueError(f"Missing project source copy: {path}")
+            if source.working_geometry_path is not None:
+                working_path = project_root / Path(source.working_geometry_path)
+                if not working_path.is_file():
+                    raise ValueError(
+                        f"Missing unpacked working geometry: {working_path}"
+                    )

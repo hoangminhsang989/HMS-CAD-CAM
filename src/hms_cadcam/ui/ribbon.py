@@ -46,6 +46,10 @@ class RibbonWidget(QTabWidget):
                             self._project_actions.get("new", "Mới"),
                             self._project_actions.get("open", "Mở"),
                             self._project_actions.get("save", "Lưu"),
+                            self._project_actions.get(
+                                "send_geometry",
+                                "Nạp 3D vào CAM",
+                            ),
                         ),
                     ),
                     ("Bảng tạm", ("Cắt", "Sao chép", "Dán")),

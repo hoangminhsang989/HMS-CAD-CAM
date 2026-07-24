@@ -1,15 +1,19 @@
 # HMS CAD/CAM
 
 HMS CAD/CAM là ứng dụng desktop CAD/CAM cho Windows 10/11 64-bit, dùng
-PySide6 và Python 3.14.6. Repository hiện đã có hệ thống dự án `.HMS`, CAD
+PySide6 và Python 3.14.6. Repository hiện có hai chế độ tài liệu, CAD
 Viewer dựa trên Open CASCADE/OCP, nền tảng CAM 2.5D, Simulation/Collision và
 workflow Post Processor FANUC ROBODRILL 21i.
+
+Stage 8A.4.2 về kiến trúc hai chế độ tài liệu đã hoàn thành; chưa bắt đầu stage
+kế tiếp hoặc stage đa ngôn ngữ.
 
 ## Phạm vi hiện tại
 
 - Giao diện chính gồm ribbon/menu/toolbar, Project Manager, CAD Viewport,
   Properties, Output/Log và status bar.
-- Tạo, mở, lưu, Save As, Autosave/Recovery và đóng dự án dạng thư mục `.HMS`.
+- Mở CAD đơn lẻ và lưu thành một file container `.HMS`; dự án CAM mới làm việc
+  trực tiếp trong một thư mục workspace riêng.
 - Giữ nguyên file CAD nguồn trong `source/`; dữ liệu dự án và CAD/CAM được quản
   lý qua service, manifest JSON UTF-8 và SQLite schema v4.
 - Import, hiển thị và lưu trạng thái CAD/XCAF; Open CASCADE được cô lập sau
@@ -28,15 +32,34 @@ Generate/Export, và không gửi chương trình trực tiếp tới CNC. Outpu
 21i chưa được machine-certified; phải review, dry-run và single-block theo quy
 trình tại máy trước khi sản xuất.
 
-## Dự án `.HMS`
+## Hai chế độ tài liệu
 
-`.HMS` là thư mục Windows thật, không phải file nén. Một dự án hợp lệ có tên
-kết thúc bằng `.HMS`, chứa `project.hms.json` với `format` bằng `HMS_PROJECT`
-và `project.db` đúng version. File CAD nguồn chỉ được đọc và sao chép; ứng dụng
-không sửa trực tiếp file gốc của người dùng.
+`CAD_DOCUMENT` là tài liệu CAD/3D đơn lẻ. Người dùng lưu một file `.HMS`;
+container có manifest, metadata, hình học, trạng thái hiển thị và checksum.
+Tên file được giữ Unicode/dấu cách nếu hợp lệ trên Windows. File này không phải
+container dự án CAM.
+
+`CAM_PROJECT` là thư mục workspace không có hậu tố `.HMS`. Dự án mới có
+`manifest.json`, `project.db`, `source/`, `working-geometry/`, `autosave/`,
+`backups/`, `temp/`, `replaced/` và inbox `incoming-geometry/`. Tên hiển thị
+tiếng Việt được giữ trong manifest; tên thư mục vật lý chỉ dùng ASCII
+chữ/số/dấu `-`.
+
+Loader vẫn tương thích các dự án thư mục `.HMS` cũ có `project.hms.json`.
+Không tự đóng gói dự án CAM thành file `.HMS`. File CAD nguồn bên ngoài chỉ
+được đọc và sao chép; ứng dụng không sửa trực tiếp dữ liệu gốc của người dùng.
 
 Các thư mục như `cache/` và `temp/` chỉ chứa dữ liệu có thể tái tạo hoặc dữ
-liệu tạm. NC managed được lưu trong `nc/` cùng manifest/sidecar dưới `post/`.
+liệu tạm. Hình học làm việc CAM không nén nằm trong `working-geometry/`; mesh
+hiển thị không thay thế exact geometry. NC managed được lưu trong `nc/` cùng
+manifest/sidecar dưới `post/`.
+
+Từ một tài liệu `.HMS` đã lưu, lệnh `Nạp 3D mới cho dự án CAM` sao chép exact
+geometry vào inbox atomic của project được chọn. Project đang mở phát hiện bằng
+watcher + polling; project đóng phát hiện khi mở lại. Người dùng xem preview và
+chọn rõ Add/Replace/Update. Không có auto-apply, auto-Calculate, auto-Simulation
+hoặc auto-Post; lỗi apply rollback và giữ mô hình cũ. Geometry transfer không
+phải chứng nhận an toàn hoặc machine-ready và không sao chép claim READY/SAFE.
 
 ## Môi trường phát triển
 

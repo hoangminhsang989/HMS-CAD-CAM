@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 from contextlib import closing
 from pathlib import Path
+from uuid import UUID
 
 from hms_cadcam.project.constants import DATABASE_SCHEMA_VERSION
 from hms_cadcam.project.exceptions import (
@@ -74,6 +76,64 @@ class ProjectDatabase:
                 return self._schema_version(connection)
         except sqlite3.Error as error:
             raise ProjectDatabaseError(str(error)) from error
+
+    def bind_project_identity(
+        self,
+        database_path: Path,
+        project_id: UUID,
+    ) -> int:
+        """Bind a v4 database to one Project ID without changing its schema."""
+        if not isinstance(project_id, UUID) or project_id.int == 0:
+            raise ProjectDatabaseError("Project identity is invalid")
+        tag = self.identity_tag(project_id)
+        try:
+            with closing(self._connect(database_path)) as connection:
+                connection.execute(f"PRAGMA application_id = {tag}")
+                connection.commit()
+                stored = int(
+                    connection.execute("PRAGMA application_id").fetchone()[0]
+                )
+                if stored != tag:
+                    raise ProjectDatabaseError(
+                        "Database project identity could not be persisted"
+                    )
+        except sqlite3.Error as error:
+            raise ProjectDatabaseError(str(error)) from error
+        return tag
+
+    def validate_project_identity(
+        self,
+        database_path: Path,
+        project_id: UUID,
+        *,
+        require_bound: bool = True,
+    ) -> None:
+        """Verify the SQLite header identity tag against the manifest UUID."""
+        expected = self.identity_tag(project_id)
+        try:
+            with closing(self._connect(database_path)) as connection:
+                actual = int(
+                    connection.execute("PRAGMA application_id").fetchone()[0]
+                )
+        except sqlite3.Error as error:
+            raise ProjectDatabaseError(str(error)) from error
+        if actual == 0 and not require_bound:
+            return
+        if actual != expected:
+            raise ProjectDatabaseError(
+                "Database project identity does not match the manifest"
+            )
+
+    @staticmethod
+    def identity_tag(project_id: UUID) -> int:
+        """Return a stable non-zero signed-safe SQLite application ID."""
+        if not isinstance(project_id, UUID) or project_id.int == 0:
+            raise ProjectDatabaseError("Project identity is invalid")
+        value = int.from_bytes(
+            hashlib.sha256(project_id.bytes).digest()[:4],
+            "big",
+        ) & 0x7FFFFFFF
+        return value or 1
 
     @staticmethod
     def _connect(database_path: Path) -> sqlite3.Connection:

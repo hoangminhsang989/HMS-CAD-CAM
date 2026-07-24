@@ -865,8 +865,8 @@ def _no_project() -> OperationManagerProjection:
         domain_identity=DomainIdentity(EntityKind.PROJECT, "no-project"),
         parent_id=None,
         kind=NodeKind.EMPTY_STATE,
-        label="Chưa mở dự án",
-        secondary_summary="Mở hoặc tạo dự án .HMS để bắt đầu.",
+        label="Chưa mở dự án CAM",
+        secondary_summary="Tạo hoặc mở thư mục dự án CAM để bắt đầu.",
         statuses=(
             status(
                 StatusCategory.DOMAIN,
@@ -883,7 +883,7 @@ def _no_project() -> OperationManagerProjection:
         (node_id,),
         (node,),
         OperationManagerHeader(
-            "Chưa mở dự án",
+            "Chưa mở dự án CAM",
             "Chưa có công việc",
             "Chưa có thiết lập",
             "Chưa gán máy",

@@ -15,11 +15,13 @@ from uuid import UUID, uuid4
 from hms_cadcam.project.autosave import (
     AutosaveFileMetadata,
     AutosaveManager,
+    AutosaveMetadata,
     AutosaveSnapshot,
 )
 from hms_cadcam.project.constants import (
     AUTOSAVE_METADATA_FILENAME,
     BACKUPS_DIRECTORY,
+    CAM_WORKSPACE_MANIFEST_FILENAME,
     DATABASE_FILENAME,
     MANIFEST_FILENAME,
     OWNED_DIRECTORY_METADATA_FILENAME,
@@ -301,9 +303,12 @@ class RecoveryManager:
         recovery_id = uuid4()
         target = backups_root / f"recovery-{recovery_id}"
         with staging_directory(backups_root, "recovery-backup") as staging:
+            manifest_name = self._manifest_store.filename_for(
+                assessment.project_root
+            )
             self._copy_fsynced(
-                assessment.project_root / MANIFEST_FILENAME,
-                staging / MANIFEST_FILENAME,
+                assessment.project_root / manifest_name,
+                staging / manifest_name,
             )
             self._copy_fsynced(
                 assessment.project_root / DATABASE_FILENAME,
@@ -339,7 +344,7 @@ class RecoveryManager:
                 project_id=assessment.project_id,
                 snapshot_id=snapshot.metadata.snapshot_id,
                 created_at=utc_now(),
-                manifest=self._file_metadata(staging / MANIFEST_FILENAME),
+                manifest=self._file_metadata(staging / manifest_name),
                 database=self._file_metadata(staging / DATABASE_FILENAME),
                 cam3d=cam3d_metadata,
             )
@@ -363,11 +368,15 @@ class RecoveryManager:
             raise RecoveryTransactionError("Recovery backup cannot contain links or junctions")
         names = {path.name for path in entries}
         allowed = {
-            MANIFEST_FILENAME,
             DATABASE_FILENAME,
             RECOVERY_BACKUP_METADATA_FILENAME,
         }
-        optional = {OWNED_DIRECTORY_METADATA_FILENAME, CAM3D_CONFIG_DIRECTORY}
+        optional = {
+            OWNED_DIRECTORY_METADATA_FILENAME,
+            CAM3D_CONFIG_DIRECTORY,
+            MANIFEST_FILENAME,
+            CAM_WORKSPACE_MANIFEST_FILENAME,
+        }
         if not allowed.issubset(names) or names - allowed - optional:
             raise RecoveryTransactionError("Recovery backup file set is invalid")
         if expected is None:
@@ -375,6 +384,14 @@ class RecoveryManager:
                 (backup_path / RECOVERY_BACKUP_METADATA_FILENAME).read_text(encoding="utf-8")
             )
             expected = RecoveryBackupMetadata.from_dict(data)
+        if (
+            expected.manifest.filename
+            not in {MANIFEST_FILENAME, CAM_WORKSPACE_MANIFEST_FILENAME}
+            or expected.manifest.filename not in names
+        ):
+            raise RecoveryTransactionError(
+                "Recovery backup manifest filename is invalid"
+            )
         has_cam3d = CAM3D_CONFIG_DIRECTORY in names
         if has_cam3d != (expected.cam3d is not None):
             raise RecoveryTransactionError("Recovery backup CAM 3D layout is invalid")
@@ -396,9 +413,15 @@ class RecoveryManager:
         return expected
 
     def _replace_main_files(self, project_root: Path, source_root: Path) -> None:
-        self._validate_replacement_source(source_root)
+        source_metadata = self._validate_replacement_source(source_root)
+        manifest_name = source_metadata.manifest.filename
+        target_manifest_name = self._manifest_store.filename_for(project_root)
+        if target_manifest_name != manifest_name:
+            raise RecoveryTransactionError(
+                "Recovery manifest contract differs from project workspace"
+            )
         transaction_id = uuid4().hex
-        manifest_temp = project_root / f".{MANIFEST_FILENAME}.{transaction_id}.recovering"
+        manifest_temp = project_root / f".{manifest_name}.{transaction_id}.recovering"
         database_temp = project_root / f".{DATABASE_FILENAME}.{transaction_id}.recovering"
         cam3d_temp = project_root / f".{CAM3D_CONFIG_FILENAME}.{transaction_id}.recovering"
         source_cam3d = source_root / CAM3D_CONFIG_DIRECTORY / CAM3D_CONFIG_FILENAME
@@ -410,7 +433,7 @@ class RecoveryManager:
                 raise RecoveryTransactionError(
                     "Project CAM 3D config directory must not be a link"
                 )
-            self._copy_fsynced(source_root / MANIFEST_FILENAME, manifest_temp)
+            self._copy_fsynced(source_root / manifest_name, manifest_temp)
             self._copy_fsynced(source_root / DATABASE_FILENAME, database_temp)
             if source_cam3d.is_file():
                 self._copy_fsynced(source_cam3d, cam3d_temp)
@@ -420,17 +443,18 @@ class RecoveryManager:
                 cam3d_temp.replace(target_cam3d)
             else:
                 target_cam3d.unlink(missing_ok=True)
-            manifest_temp.replace(project_root / MANIFEST_FILENAME)
+            manifest_temp.replace(project_root / manifest_name)
         finally:
             manifest_temp.unlink(missing_ok=True)
             database_temp.unlink(missing_ok=True)
             cam3d_temp.unlink(missing_ok=True)
 
-    def _validate_replacement_source(self, source_root: Path) -> None:
+    def _validate_replacement_source(
+        self, source_root: Path
+    ) -> AutosaveMetadata | RecoveryBackupMetadata:
         if (source_root / AUTOSAVE_METADATA_FILENAME).is_file():
-            self._autosave.load_snapshot(source_root)
-            return
-        self._validate_backup(source_root)
+            return self._autosave.load_snapshot(source_root).metadata
+        return self._validate_backup(source_root)
 
     @staticmethod
     def _copy_fsynced(source: Path, destination: Path) -> None:

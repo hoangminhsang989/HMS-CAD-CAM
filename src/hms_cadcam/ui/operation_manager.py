@@ -412,7 +412,7 @@ class OperationManagerPanel(QWidget):
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(8, 5, 8, 5)
         layout.setSpacing(1)
-        self.project_label = QLabel("Chưa mở dự án")
+        self.project_label = QLabel("Chưa mở dự án CAM")
         self.project_label.setObjectName("OperationManagerProject")
         self.project_label.setWordWrap(True)
         self.project_label.setAccessibleName("Dự án hiện hành")
@@ -738,10 +738,12 @@ class OperationManagerPanel(QWidget):
         self._clear_state_actions()
         projection = self.model.projection
         if projection.project_id is None:
-            self.state_title.setText("Chưa mở dự án")
-            self.state_message.setText("Mở hoặc tạo dự án .HMS để bắt đầu.")
-            self._add_project_action("new", "Tạo dự án")
-            self._add_project_action("open", "Mở dự án")
+            self.state_title.setText("Chưa mở dự án CAM")
+            self.state_message.setText(
+                "Tạo hoặc mở thư mục dự án CAM để bắt đầu."
+            )
+            self._add_project_action("new", "Tạo dự án CAM")
+            self._add_project_action("open_project", "Mở dự án CAM")
             self.state_frame.show()
             return
         if self.model.rowCount() == 0:
@@ -763,7 +765,7 @@ class OperationManagerPanel(QWidget):
             self.state_title.setText("Dự án hiện chỉ có CAD")
             self.state_message.setText("Tạo công việc CAM khi sẵn sàng lập trình gia công.")
             action = self._source_actions.get("job")
-            self._add_action_button(action, "Tạo CAM Job")
+            self._add_action_button(action, "Tạo công việc CAM")
             self.state_frame.show()
         elif has_setups and operation_count == 0:
             self.state_title.setText("Thiết lập chưa có nguyên công")

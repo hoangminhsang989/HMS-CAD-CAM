@@ -6,7 +6,15 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QResizeEvent
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QDockWidget,
     QColorDialog,
@@ -16,6 +24,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPlainTextEdit,
+    QPushButton,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -65,12 +74,17 @@ from hms_cadcam.cad.models import (
 )
 from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
 from hms_cadcam.ui.project_controller import ProjectUiController
+from hms_cadcam.ui.geometry_transfer_ui import (
+    IncomingGeometryNotificationBar,
+    IncomingGeometryPanel,
+)
 from hms_cadcam.ui.cam_function_popup import CAMFunctionPopupHost
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
@@ -79,6 +93,7 @@ from hms_cadcam.ui.ui_tokens import (
     DIAGNOSTICS_MAX_HEIGHT,
     FUNCTION_EDITOR_MAX_WIDTH,
     FUNCTION_EDITOR_MIN_WIDTH,
+    MAIN_MENU_CONTENT_LEFT_PADDING,
     OPERATION_MANAGER_DEFAULT_WIDTH,
     OPERATION_MANAGER_MAX_WIDTH,
     OPERATION_MANAGER_MIN_WIDTH,
@@ -100,6 +115,7 @@ from hms_cadcam.ui.workspace_shell import (
     WorkspaceBar,
     WorkspaceId,
 )
+from hms_cadcam.ui.workspace_dialog import DropOpenOverlay
 from hms_cadcam.ui.simulation_geometry_adapter import ActiveOcpFixtureResolver
 from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 from hms_cadcam.viewer.backend import CadViewportBackend
@@ -146,12 +162,23 @@ class MainWindow(QMainWindow):
         self._responsive_collapsed_operation_manager = False
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
+        self.setAcceptDrops(True)
+        self._drop_overlay = DropOpenOverlay(self.viewport)
         self.project_controller = ProjectUiController(self, project_service)
         self.cad_controller = CadUiController(
             self,
             cad_kernel,
             self.viewport,
             project_service=project_service,
+        )
+        self.cad_controller.set_open_command(
+            self.project_controller.request_open_path
+        )
+        self.project_controller.document_open_requested.connect(
+            self.cad_controller.open_prepared_document
+        )
+        self.cad_controller.workspace_changed.connect(
+            self.project_controller.document_open_succeeded
         )
         self._active_document_metadata: CadDocumentMetadata | None = None
         self._active_document_tree: CadDocumentTree | None = None
@@ -296,6 +323,50 @@ class MainWindow(QMainWindow):
         self.secondary_dock.setMaximumWidth(SECONDARY_PANEL_MAX_WIDTH)
         self.secondary_dock.setWidget(self.secondary_panel_host)
 
+        self.incoming_geometry_bar = IncomingGeometryNotificationBar(self)
+        self.incoming_geometry_dock = QDockWidget(
+            "Thông báo dữ liệu 3D",
+            self,
+        )
+        self.incoming_geometry_dock.setObjectName(
+            "IncomingGeometryNotificationDock"
+        )
+        self.incoming_geometry_dock.setAccessibleName(
+            "Thông báo dữ liệu 3D mới"
+        )
+        self.incoming_geometry_dock.setAllowedAreas(
+            Qt.DockWidgetArea.TopDockWidgetArea
+        )
+        self.incoming_geometry_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
+        )
+        notification_title = QWidget()
+        notification_title.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.incoming_geometry_dock.setTitleBarWidget(notification_title)
+        self.incoming_geometry_dock.setWidget(self.incoming_geometry_bar)
+        self.incoming_geometry_dock.setMaximumHeight(72)
+
+        self.incoming_geometry_panel = IncomingGeometryPanel(self)
+        self.incoming_geometry_panel_dock = QDockWidget(
+            "Xem thay đổi dữ liệu 3D",
+            self,
+        )
+        self.incoming_geometry_panel_dock.setObjectName(
+            "IncomingGeometryChangeDock"
+        )
+        self.incoming_geometry_panel_dock.setAccessibleName(
+            "Xem thay đổi dữ liệu 3D"
+        )
+        self.incoming_geometry_panel_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.incoming_geometry_panel_dock.setMinimumWidth(380)
+        self.incoming_geometry_panel_dock.setMaximumWidth(560)
+        self.incoming_geometry_panel_dock.setWidget(
+            self.incoming_geometry_panel
+        )
+
         # Compatibility alias for existing callers; the CAM coordinator remains
         # available as ``cam_workspace`` while its tree is hosted in this dock.
         self.cam_dock = self.operation_manager_dock
@@ -308,14 +379,28 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea, self.function_editor_dock
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.incoming_geometry_panel_dock,
+        )
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
+        self.addDockWidget(
+            Qt.DockWidgetArea.TopDockWidgetArea,
+            self.incoming_geometry_dock,
+        )
         self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
         self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
+        self.tabifyDockWidget(
+            self.properties_dock,
+            self.incoming_geometry_panel_dock,
+        )
         self.operation_manager_dock.raise_()
         self.project_dock.hide()
         self.properties_dock.hide()
         self.secondary_dock.hide()
         self.function_editor_dock.hide()
+        self.incoming_geometry_panel_dock.hide()
+        self.incoming_geometry_dock.hide()
         self.resizeDocks(
             [self.operation_manager_dock],
             [OPERATION_MANAGER_DEFAULT_WIDTH],
@@ -342,6 +427,33 @@ class MainWindow(QMainWindow):
         self._build_panel_visibility_actions()
         self._build_status_bar()
         self.project_controller.project_changed.connect(self._handle_project_change)
+        self.project_controller.incoming_geometry_changed.connect(
+            self._incoming_geometry_changed
+        )
+        self.project_controller.incoming_geometry_preview_ready.connect(
+            self._incoming_geometry_preview_ready
+        )
+        self.project_controller.geometry_apply_completed.connect(
+            self._incoming_geometry_apply_completed
+        )
+        self.incoming_geometry_bar.view_requested.connect(
+            self.project_controller.request_incoming_preview
+        )
+        self.incoming_geometry_bar.apply_requested.connect(
+            self.project_controller.request_incoming_preview
+        )
+        self.incoming_geometry_bar.defer_requested.connect(
+            self.project_controller.defer_incoming_geometry
+        )
+        self.incoming_geometry_bar.reject_requested.connect(
+            self.project_controller.reject_incoming_geometry
+        )
+        self.incoming_geometry_panel.apply_requested.connect(
+            self.project_controller.apply_incoming_geometry
+        )
+        self.incoming_geometry_panel.cancel_requested.connect(
+            self.incoming_geometry_panel_dock.hide
+        )
         self.project_controller.message.connect(self._append_output)
         self.cad_controller.message.connect(self._append_output)
         self.cad_controller.progress_changed.connect(self._update_import_status)
@@ -359,13 +471,13 @@ class MainWindow(QMainWindow):
         )
         self.cad_controller.project_state_changed.connect(
             lambda: self._update_project_display(
-                self.project_controller.service.current_project
+                self._current_display_state()
             )
         )
         self.cad_controller.measurement_context_changed.connect(
             self._update_measurements
         )
-        self._handle_project_change(self.project_controller.service.current_project)
+        self._handle_project_change(self._current_display_state())
         self._restore_workspace_layout()
         localize_widget_tree(self)
         viewport_status = self.viewport.viewport_status
@@ -375,14 +487,19 @@ class MainWindow(QMainWindow):
 
     def _build_menu_bar(self) -> None:
         menu_bar = self.menuBar()
+        menu_bar.setObjectName("MainMenuBar")
+        menu_bar.setStyleSheet(
+            f"QMenuBar {{ padding-left: {MAIN_MENU_CONTENT_LEFT_PADDING}px; }}"
+        )
         file_menu = menu_bar.addMenu("Tệp")
         file_menu.addAction(self.project_controller.actions["new"])
-        file_menu.addAction(self.project_controller.actions["import"])
-        file_menu.addAction(self.cad_controller.actions["open_step"])
-        file_menu.addAction(self.cad_controller.actions["open_brep"])
-        file_menu.addAction(self.cad_controller.actions["open_iges"])
-        file_menu.addAction(self.cad_controller.actions["open_stl"])
+        file_menu.addAction(self.project_controller.actions["new_from_document"])
+        file_menu.addSeparator()
         file_menu.addAction(self.project_controller.actions["open"])
+        file_menu.addAction(self.project_controller.actions["open_project"])
+        file_menu.addSeparator()
+        file_menu.addAction(self.project_controller.actions["import"])
+        file_menu.addAction(self.project_controller.actions["send_geometry"])
         self._recent_menu = file_menu.addMenu("Dự án gần đây")
         self._recent_menu.aboutToShow.connect(
             lambda: self.project_controller.populate_recent_menu(self._recent_menu)
@@ -392,13 +509,18 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.project_controller.actions["save_as"])
         file_menu.addAction(self.project_controller.actions["close"])
         file_menu.addSeparator()
-        menu_bar.addMenu("Chỉnh sửa")
+        menu_bar.addMenu("Sửa")
         self._view_menu = menu_bar.addMenu("Hiển thị")
         cad_viewer_menu = menu_bar.addMenu("CAD")
         cam_menu = menu_bar.addMenu("CAM")
         cam_workspace_action = QAction("Mở không gian làm việc CAM", self)
         cam_workspace_action.triggered.connect(self._show_cam_workspace)
         cam_menu.addAction(cam_workspace_action)
+        cam_menu.addAction(self.project_controller.actions["new"])
+        cam_menu.addAction(
+            self.project_controller.actions["new_from_document"]
+        )
+        cam_menu.addAction(self.project_controller.actions["send_geometry"])
         for title in ("Máy", "Toolpath", "Setup"):
             menu_bar.addMenu(title)
         help_menu = menu_bar.addMenu("Trợ giúp")
@@ -483,6 +605,12 @@ class MainWindow(QMainWindow):
                 "Thuộc tính CAD",
                 self.properties_dock,
                 "Bật hoặc tắt bảng thuộc tính CAD",
+            ),
+            (
+                "incoming_geometry",
+                "Xem thay đổi dữ liệu 3D",
+                self.incoming_geometry_panel_dock,
+                "Mở bảng xem trước dữ liệu 3D đang chờ",
             ),
         )
         for key, text, dock, tooltip in definitions:
@@ -896,8 +1024,15 @@ class MainWindow(QMainWindow):
         )
         tabs.addTab(self._project_tree, "Dự án")
 
-        for title in ("Levels", "Toolpaths", "Planes"):
+        manager_sections = (
+            ("levels", "Cao độ"),
+            ("toolpaths", "Đường chạy dao"),
+            ("planes", "Mặt phẳng"),
+        )
+        for internal_key, title in manager_sections:
             empty_tree = QTreeWidget()
+            empty_tree.setObjectName(f"ProjectManager_{internal_key}")
+            empty_tree.setProperty("managerSectionKey", internal_key)
             empty_tree.setHeaderHidden(True)
             placeholder = QTreeWidgetItem([f"{title} chưa khả dụng"])
             placeholder.setDisabled(True)
@@ -947,15 +1082,85 @@ class MainWindow(QMainWindow):
         self._import_status = QLabel("CAD: Sẵn sàng")
         self._import_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._import_status, 1)
+        self._notification_center_button = QPushButton("THÔNG BÁO: 0")
+        self._notification_center_button.setObjectName(
+            "IncomingGeometryNotificationCenterButton"
+        )
+        self._notification_center_button.setAccessibleName(
+            "Trung tâm thông báo dữ liệu 3D"
+        )
+        self._notification_center_button.setFocusPolicy(
+            Qt.FocusPolicy.NoFocus
+        )
+        self._notification_center_button.setEnabled(False)
+        self._notification_center_button.clicked.connect(
+            self._open_incoming_notification_center
+        )
+        status.addPermanentWidget(self._notification_center_button)
         for text in ("ĐỐI TƯỢNG: 0", "X: 0.000", "Y: 0.000", "Z: 0.000", "3D", "WCS: Top", "METRIC"):
             label = QLabel(text)
             label.setObjectName("StatusLabel")
             status.addPermanentWidget(label)
 
+    def _current_display_state(self) -> ProjectSession | WorkspaceState | None:
+        """Return rich project data or typed standalone-document state."""
+        return (
+            self.project_controller.service.current_project
+            or self.project_controller.service.current_workspace
+        )
+
     def _update_project_display(self, session: object) -> None:
         self._tree_sync_guard = True
         self._project_tree.clear()
         self._object_items = {}
+        if isinstance(session, WorkspaceState):
+            dirty_marker = " *" if session.dirty else ""
+            root = QTreeWidgetItem(
+                [
+                    session.display_name,
+                    "Đã sửa" if session.dirty else "Đã lưu",
+                ]
+            )
+            root.addChild(
+                QTreeWidgetItem(["Chế độ", session.mode.display_text])
+            )
+            root.addChild(
+                QTreeWidgetItem(
+                    [
+                        "Tệp nguồn",
+                        "—"
+                        if session.source_path is None
+                        else session.source_path.name,
+                    ]
+                )
+            )
+            root.addChild(
+                QTreeWidgetItem(
+                    [
+                        "Tài liệu HMS",
+                        "Chưa lưu"
+                        if session.physical_path is None
+                        else str(session.physical_path),
+                    ]
+                )
+            )
+            self._append_cad_document_node(root)
+            self._project_tree.addTopLevelItem(root)
+            root.setExpanded(True)
+            self.setWindowTitle(
+                f"HMS CAD/CAM — {session.mode.display_text} — "
+                f"{session.display_name}{dirty_marker}"
+            )
+            physical = (
+                "CHƯA LƯU .HMS"
+                if session.physical_path is None
+                else str(session.physical_path)
+            )
+            self._project_status.setText(
+                f"{session.mode.display_text.upper()}: {physical}"
+            )
+            self._tree_sync_guard = False
+            return
         if not isinstance(session, ProjectSession):
             root = QTreeWidgetItem(["Chưa mở dự án", "—"])
             self._append_cad_document_node(root)
@@ -970,21 +1175,45 @@ class MainWindow(QMainWindow):
         root.addChild(QTreeWidgetItem(["Đơn vị", session.manifest.units.value]))
         sources = QTreeWidgetItem(["Tệp nguồn", str(len(session.manifest.source_files))])
         for record in session.manifest.source_files:
-            sources.addChild(QTreeWidgetItem([record.original_name, record.sha256[:12]]))
+            source_item = QTreeWidgetItem(
+                [record.original_name, record.sha256[:12]]
+            )
+            if record.internal_filename:
+                source_item.addChild(
+                    QTreeWidgetItem(
+                        ["Bản sao nội bộ", record.internal_filename]
+                    )
+                )
+            if record.working_geometry_path:
+                source_item.addChild(
+                    QTreeWidgetItem(
+                        ["Hình học làm việc", record.working_geometry_path]
+                    )
+                )
+            sources.addChild(source_item)
+            source_item.setExpanded(True)
         root.addChild(sources)
         self._append_cad_document_node(root)
         self._project_tree.addTopLevelItem(root)
         root.setExpanded(True)
         sources.setExpanded(True)
-        self.setWindowTitle(f"HMS CAD/CAM — {session.manifest.project_name}{dirty_marker}")
-        self._project_status.setText(str(session.root_path))
+        self.setWindowTitle(
+            f"HMS CAD/CAM — Dự án CAM — "
+            f"{session.manifest.project_name}{dirty_marker}"
+        )
+        self._project_status.setText(f"DỰ ÁN CAM: {session.root_path}")
         self._tree_sync_guard = False
 
     def _handle_project_change(self, session: object) -> None:
         new_project_key = (
             str(session.manifest.project_id)
             if isinstance(session, ProjectSession)
-            else None
+            else (
+                str(session.project_id)
+                if isinstance(session, WorkspaceState)
+                and session.mode is DocumentMode.CAM_PROJECT
+                else None
+            )
         )
         previous_project_key = getattr(self, "_cam_popup_project_key", None)
         if (
@@ -996,7 +1225,11 @@ class MainWindow(QMainWindow):
         source_binding = None
         if isinstance(session, ProjectSession):
             source_binding = self._find_project_cad_source(session)
-        if source_binding is None:
+        if isinstance(session, WorkspaceState) and (
+            session.mode is DocumentMode.CAD_DOCUMENT
+        ):
+            pass
+        elif source_binding is None:
             self.cad_controller.bind_project(None)
         else:
             source_id, source_path = source_binding
@@ -1009,7 +1242,51 @@ class MainWindow(QMainWindow):
         else:
             self.viewport.bind_simulation_project(None, None)
         self._update_project_display(session)
-        self.cam_workspace.bind_project(session)
+        self.cam_workspace.bind_project(
+            session if isinstance(session, ProjectSession) else None
+        )
+
+    def _incoming_geometry_changed(self, requests: object) -> None:
+        if not isinstance(requests, tuple):
+            return
+        self.incoming_geometry_bar.set_requests(requests)
+        if requests:
+            self.incoming_geometry_dock.show()
+        else:
+            self.incoming_geometry_dock.hide()
+        total = len(self.project_controller.incoming_requests)
+        self._notification_center_button.setText(f"THÔNG BÁO: {total}")
+        self._notification_center_button.setEnabled(total > 0)
+
+    def _open_incoming_notification_center(self) -> None:
+        requests = self.project_controller.incoming_requests
+        if requests:
+            self.project_controller.request_incoming_preview(
+                requests[0].request_id
+            )
+
+    def _incoming_geometry_preview_ready(self, preview: object) -> None:
+        from hms_cadcam.project.geometry_transfer import IncomingGeometryPreview
+
+        if not isinstance(preview, IncomingGeometryPreview):
+            return
+        self.incoming_geometry_panel.set_preview(preview)
+        self.properties_dock.hide()
+        self.secondary_dock.hide()
+        self.incoming_geometry_panel_dock.show()
+        self.incoming_geometry_panel_dock.raise_()
+        self.resizeDocks(
+            [self.incoming_geometry_panel_dock],
+            [max(480, self.height() - 260)],
+            Qt.Orientation.Vertical,
+        )
+
+    def _incoming_geometry_apply_completed(self, _result: object) -> None:
+        self.incoming_geometry_panel_dock.hide()
+        self._append_output(
+            "Cập nhật dữ liệu 3D hoàn tất; HMS không tự Calculate, "
+            "Simulation hoặc Post."
+        )
 
     def _update_cad_document(self, metadata: object) -> None:
         previous_document_id = (
@@ -1022,7 +1299,7 @@ class MainWindow(QMainWindow):
         self._active_selection = ()
         self._selected_object_ids = ()
         self._active_measurements = ()
-        self._update_project_display(self.project_controller.service.current_project)
+        self._update_project_display(self._current_display_state())
         if hasattr(self, "cam_workspace"):
             current_document_id = (
                 self._active_document_metadata.document_id
@@ -1039,7 +1316,7 @@ class MainWindow(QMainWindow):
         self._active_document_tree = (
             tree if isinstance(tree, CadDocumentTree) else None
         )
-        self._update_project_display(self.project_controller.service.current_project)
+        self._update_project_display(self._current_display_state())
 
     def _update_object_selection(self, document_id: object, items: object) -> None:
         active_document_id = (
@@ -1176,7 +1453,7 @@ class MainWindow(QMainWindow):
             ("Loại cấu trúc hình học", item.topology.value.upper()),
             ("Selection ID", item.selection_id),
             ("Document ID", str(item.document_id)),
-            ("Bounding box", _format_bounds(item.bounding_box)),
+            ("Hộp bao", _format_bounds(item.bounding_box)),
             ("Số lượng chọn", str(len(self._active_selection))),
         ]
         rows.extend(_measurement_rows(self._active_measurements))
@@ -1196,7 +1473,7 @@ class MainWindow(QMainWindow):
             ("Hiển thị", "Có" if appearance.visible else "Không"),
             ("Effective color", appearance.color.to_hex()),
             ("Effective transparency", f"{appearance.transparency:.2f}"),
-            ("Bounding box", _format_bounds(node.bounding_box)),
+            ("Hộp bao", _format_bounds(node.bounding_box)),
         ]
         if node.occurrence_id is not None:
             assert node.absolute_transform is not None
@@ -1232,7 +1509,7 @@ class MainWindow(QMainWindow):
             counts = metadata.topology_counts
             rows.append(
                 (
-                    "Solid / Face / Edge",
+                    "Khối / Mặt / Cạnh",
                     f"{counts.solids} / {counts.faces} / {counts.edges}",
                 )
             )
@@ -1244,7 +1521,7 @@ class MainWindow(QMainWindow):
                     f"{statistics.vertices} / {statistics.triangles}",
                 )
             )
-        rows.append(("Bounding box", _format_bounds(metadata.bounding_box)))
+        rows.append(("Hộp bao", _format_bounds(metadata.bounding_box)))
         rows.extend(_measurement_rows(self._active_measurements))
         self._set_properties(tuple(rows))
 
@@ -1506,7 +1783,12 @@ class MainWindow(QMainWindow):
         session: ProjectSession,
     ) -> tuple[UUID, Path] | None:
         for record in reversed(session.manifest.source_files):
-            candidates: list[Path] = [session.root_path / Path(record.stored_path)]
+            candidates: list[Path] = []
+            if record.working_geometry_path:
+                candidates.append(
+                    session.root_path / Path(record.working_geometry_path)
+                )
+            candidates.append(session.root_path / Path(record.stored_path))
             relative_path = getattr(record, "relative_path", None)
             if relative_path:
                 candidates.append(session.root_path / str(relative_path))
@@ -1546,9 +1828,57 @@ class MainWindow(QMainWindow):
             elif "cảnh báo" in folded or "warning" in folded:
                 self.diagnostics_host.set_activity(text, severity="warning")
 
+    def set_drop_overlay_visible(self, visible: bool) -> None:
+        """Show/hide the real drop overlay without taking keyboard focus."""
+        self._drop_overlay.setGeometry(self.viewport.rect())
+        self._drop_overlay.setVisible(visible)
+        if visible:
+            self._drop_overlay.raise_()
+
+    def dragEnterEvent(  # noqa: N802 - Qt API name
+        self, event: QDragEnterEvent
+    ) -> None:
+        """Accept supported local files and reveal the Vietnamese overlay."""
+        paths = self._drop_paths(event)
+        if paths and all(_is_supported_open_path(path) for path in paths):
+            event.acceptProposedAction()
+            self.set_drop_overlay_visible(True)
+            return
+        self.set_drop_overlay_visible(False)
+        event.ignore()
+
+    def dragLeaveEvent(  # noqa: N802 - Qt API name
+        self, event: QDragLeaveEvent
+    ) -> None:
+        """Remove the overlay immediately when the drag leaves."""
+        self.set_drop_overlay_visible(False)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt API name
+        """Route one dropped file to exactly the same Open application command."""
+        paths = self._drop_paths(event)
+        self.set_drop_overlay_visible(False)
+        if paths and all(_is_supported_open_path(path) for path in paths):
+            if self.project_controller.request_open_paths(paths):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    @staticmethod
+    def _drop_paths(event: QDragEnterEvent | QDropEvent) -> tuple[Path, ...]:
+        urls = event.mimeData().urls()
+        paths = tuple(
+            Path(url.toLocalFile())
+            for url in urls
+            if url.isLocalFile() and url.toLocalFile()
+        )
+        return paths if len(paths) == len(urls) else ()
+
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API name
         """Keep the viewport usable at the compact 1024-1279 px breakpoint."""
         super().resizeEvent(event)
+        if hasattr(self, "_drop_overlay"):
+            self._drop_overlay.setGeometry(self.viewport.rect())
         if not hasattr(self, "operation_manager_dock"):
             return
         width = event.size().width()
@@ -1593,6 +1923,19 @@ def _format_bounds(bounds) -> str:
         bounds.z_max,
     )
     return ", ".join(f"{value:.3f}" for value in values)
+
+
+def _is_supported_open_path(path: Path) -> bool:
+    return path.is_file() and path.suffix.casefold() in {
+        ".hms",
+        ".step",
+        ".stp",
+        ".brep",
+        ".brp",
+        ".iges",
+        ".igs",
+        ".stl",
+    }
 
 
 def _format_translation(values: tuple[float, float, float]) -> str:
@@ -1652,9 +1995,9 @@ def _measurement_rows(
             elif isinstance(value, BoundingDimensions):
                 rows.extend(
                     (
-                        ("Bounding X", _format_measurement(value.x)),
-                        ("Bounding Y", _format_measurement(value.y)),
-                        ("Bounding Z", _format_measurement(value.z)),
+                        ("Kích thước X", _format_measurement(value.x)),
+                        ("Kích thước Y", _format_measurement(value.y)),
+                        ("Kích thước Z", _format_measurement(value.z)),
                     )
                 )
     return rows

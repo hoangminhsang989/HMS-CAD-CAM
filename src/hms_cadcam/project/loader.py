@@ -38,8 +38,8 @@ class ProjectLoader:
 
     def read_manifest(self, project_root: Path) -> ProjectManifest:
         """Validate project identity without opening or migrating SQLite."""
-        self._validator.validate_project_directory_name(project_root)
         manifest = self._manifest_store.load(project_root)
+        self._validator.validate_project_directory_name(project_root)
         self._validator.validate_references(project_root, manifest)
         return manifest
 
@@ -69,4 +69,11 @@ class ProjectLoader:
             persisted_cam_snapshot=cam_snapshot,
             cam3d_config=cam3d_config,
             persisted_cam3d_config=cam3d_config,
+            replaced_directory_name=(
+                "replaced"
+                if (project_root / "replaced").is_dir()
+                else ".replaced"
+                if (project_root / ".replaced").is_dir()
+                else None
+            ),
         )

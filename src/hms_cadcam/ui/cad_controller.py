@@ -9,9 +9,10 @@ from uuid import UUID
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
 from PySide6.QtGui import QAction, QActionGroup
-from PySide6.QtWidgets import QFileDialog, QMainWindow
+from PySide6.QtWidgets import QMainWindow
 
 from hms_cadcam.cad.exceptions import CadDocumentNotFoundError
+from hms_cadcam.ui.localized_dialogs import QFileDialog
 from hms_cadcam.cad.kernel import CadKernel
 from hms_cadcam.cad.measurement import MeasurementResult, MeasurementService
 from hms_cadcam.cad.measurement_factory import MeasurementServiceFactory
@@ -38,6 +39,7 @@ from hms_cadcam.project.cad_state import (
 )
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.project.workspace import PreparedDocumentOpen
 from hms_cadcam.ui.cad_worker import CadImportTask
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -68,6 +70,7 @@ class CadUiController(QObject):
     object_selection_context_changed = Signal(object, object)
     appearance_context_changed = Signal(object, object)
     project_state_changed = Signal()
+    workspace_changed = Signal(object)
 
     def __init__(
         self,
@@ -89,6 +92,8 @@ class CadUiController(QObject):
         self._thread_pool.setMaxThreadCount(1)
         self._active_task: CadImportTask | None = None
         self._active_task_source_id: UUID | None = None
+        self._active_task_prepared: PreparedDocumentOpen | None = None
+        self._open_command: Callable[[Path], bool] | None = None
         self._request_generation = 0
         self._active_document_id: CadDocumentId | None = None
         self._active_metadata: CadDocumentMetadata | None = None
@@ -231,7 +236,7 @@ class CadUiController(QObject):
             "STEP (*.step *.stp)",
         )
         if path:
-            self.start_import(Path(path), CadFormat.STEP)
+            self.open_path(Path(path))
 
     @Slot()
     def choose_brep(self) -> None:
@@ -242,7 +247,7 @@ class CadUiController(QObject):
             "BREP (*.brep *.brp)",
         )
         if path:
-            self.start_import(Path(path), CadFormat.BREP)
+            self.open_path(Path(path))
 
     @Slot()
     def choose_iges(self) -> None:
@@ -253,7 +258,7 @@ class CadUiController(QObject):
             "IGES (*.iges *.igs)",
         )
         if path:
-            self.start_import(Path(path), CadFormat.IGES)
+            self.open_path(Path(path))
 
     @Slot()
     def choose_stl(self) -> None:
@@ -264,7 +269,40 @@ class CadUiController(QObject):
             "STL (*.stl)",
         )
         if path:
-            self.start_import(Path(path), CadFormat.STL)
+            self.open_path(Path(path))
+
+    def set_open_command(
+        self,
+        command: Callable[[Path], bool] | None,
+    ) -> None:
+        """Use one application Open command for dialogs and drag/drop."""
+        self._open_command = command
+
+    def open_path(self, path: Path) -> bool:
+        """Route a selected path through the shared command when configured."""
+        if self._open_command is not None:
+            return bool(self._open_command(path))
+        cad_format = _format_for_path(path)
+        if cad_format is None:
+            return False
+        self.start_import(path, cad_format)
+        return True
+
+    @Slot(object)
+    def open_prepared_document(self, prepared: object) -> None:
+        """Start the existing importer for a validated standalone open request."""
+        if not isinstance(prepared, PreparedDocumentOpen):
+            return
+        cad_format = _format_for_path(prepared.session.geometry_path)
+        if cad_format is None:
+            self.message.emit("Định dạng hình học trong tài liệu HMS chưa được hỗ trợ.")
+            return
+        self.start_import(
+            prepared.session.geometry_path,
+            cad_format,
+            source_id=prepared.session.state.identity,
+            prepared=prepared,
+        )
 
     def start_import(
         self,
@@ -272,6 +310,7 @@ class CadUiController(QObject):
         cad_format: CadFormat,
         *,
         source_id: UUID | None = None,
+        prepared: PreparedDocumentOpen | None = None,
     ) -> None:
         """Start or supersede one background CAD import request."""
         if self._closing or not self._kernel.is_available():
@@ -290,6 +329,7 @@ class CadUiController(QObject):
         task.signals.failed.connect(self._import_failed)
         self._active_task = task
         self._active_task_source_id = source_id
+        self._active_task_prepared = prepared
         self.progress_changed.emit("Đang đọc")
         self.message.emit(f"Đang nhập CAD: {Path(source_path)}")
         self._update_action_states()
@@ -342,11 +382,14 @@ class CadUiController(QObject):
             self._release_result(result)
             return
         candidate_source_id = self._active_task_source_id
+        prepared = self._active_task_prepared
         self._active_task = None
         self._active_task_source_id = None
+        self._active_task_prepared = None
         self.busy_changed.emit(False)
         self._update_action_states()
         if not result.success or result.document_id is None or result.metadata is None:
+            self._discard_prepared(prepared)
             error = "; ".join(result.errors) or "Không thể đọc file CAD"
             self.progress_changed.emit("Lỗi")
             self.message.emit(f"Lỗi nhập CAD: {error}")
@@ -357,14 +400,44 @@ class CadUiController(QObject):
         except (ProjectError, TypeError, ValueError):
             logger.exception("Không thể tạo topology tree cho CAD document")
             self._release_result(result)
+            self._discard_prepared(prepared)
             self.progress_changed.emit("Lỗi")
             self.message.emit("Lỗi cây cấu trúc hình học; giữ nguyên tài liệu hiện tại.")
             return
         if not self._viewport.display_document(result.document_id):
             self._release_result(result)
+            self._discard_prepared(prepared)
             self.progress_changed.emit("Lỗi")
             self.message.emit("Lỗi hiển thị CAD; giữ nguyên tài liệu hiện tại.")
             return
+        committed_workspace = None
+        if prepared is not None:
+            if self._project_service is None:
+                self._release_result(result)
+                self._discard_prepared(prepared)
+                self.progress_changed.emit("Lỗi")
+                self.message.emit(
+                    "Không có application service để hoàn tất mở tài liệu."
+                )
+                return
+            try:
+                committed_workspace = self._project_service.commit_document_open(
+                    prepared
+                )
+                self._project_service.record_document_geometry_metadata(
+                    _transfer_metadata(result.metadata)
+                )
+            except ProjectError:
+                logger.exception("Không thể commit tài liệu HMS sau import")
+                self._release_result(result)
+                self._discard_prepared(prepared)
+                if old_document_id is not None:
+                    self._viewport.display_document(old_document_id)
+                self.progress_changed.emit("Lỗi")
+                self.message.emit(
+                    "Mở tài liệu thất bại; giữ nguyên tài liệu hiện tại."
+                )
+                return
         self._active_document_id = result.document_id
         self._active_metadata = result.metadata
         self._active_tree = tree
@@ -414,13 +487,18 @@ class CadUiController(QObject):
         self._emit_appearances()
         self._measure_active_document()
         self._update_action_states()
+        if committed_workspace is not None:
+            self.workspace_changed.emit(committed_workspace)
 
     @Slot(int, object)
     def _import_failed(self, request_id: int, error: object) -> None:
         if self._closing or request_id != self._request_generation:
             return
+        prepared = self._active_task_prepared
         self._active_task = None
         self._active_task_source_id = None
+        self._active_task_prepared = None
+        self._discard_prepared(prepared)
         self.busy_changed.emit(False)
         self._update_action_states()
         logger.error(
@@ -525,6 +603,7 @@ class CadUiController(QObject):
         task = self._active_task
         self._active_task = None
         self._active_task_source_id = None
+        self._active_task_prepared = None
         if task is None:
             return
         task.abandon()
@@ -567,6 +646,20 @@ class CadUiController(QObject):
     def _release_result(self, result: CadImportResult) -> None:
         if result.document_id is not None:
             self._release_document(result.document_id)
+
+    def _discard_prepared(
+        self,
+        prepared: PreparedDocumentOpen | None,
+    ) -> None:
+        if prepared is None or self._project_service is None:
+            return
+        try:
+            self._project_service.discard_document_open(prepared)
+        except ProjectError:
+            logger.warning(
+                "Không thể dọn vùng tạm của tài liệu mở thất bại",
+                exc_info=True,
+            )
 
     def _release_document(self, document_id: CadDocumentId) -> None:
         try:
@@ -1255,6 +1348,34 @@ class CadUiController(QObject):
             self._viewport.set_object_visibility(
                 document_id, object_id, appearance.visible
             )
+
+
+def _transfer_metadata(metadata: CadDocumentMetadata) -> dict[str, object]:
+    topology = metadata.topology_counts
+    mesh = metadata.mesh_statistics
+    return {
+        "cad_format": metadata.cad_format.value,
+        "geometry_kind": metadata.geometry_kind.value,
+        "document_kind": metadata.document_kind.value,
+        "units": metadata.units.value,
+        "topology_counts": (
+            {}
+            if topology is None
+            else {
+                "solids": topology.solids,
+                "faces": topology.faces,
+                "edges": topology.edges,
+            }
+        ),
+        "mesh_statistics": (
+            {}
+            if mesh is None
+            else {
+                "vertices": mesh.vertices,
+                "triangles": mesh.triangles,
+            }
+        ),
+    }
 
 
 def _format_for_path(path: Path) -> CadFormat | None:

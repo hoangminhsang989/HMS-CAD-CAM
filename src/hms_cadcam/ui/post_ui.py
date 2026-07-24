@@ -20,13 +20,11 @@ from typing import Callable
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -37,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cam.domain import ArtifactStatus, ContentFingerprint, Length, LengthUnit
+from hms_cadcam.ui.localized_dialogs import QFileDialog, QMessageBox
 from hms_cadcam.cam.domain.operation import DiagnosticSeverity
 from hms_cadcam.cam.post import (
     ControllerToolBinding,

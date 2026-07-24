@@ -1,35 +1,41 @@
-# Nhiệm vụ hiện tại — Stage 8A.4.1
+# Nhiệm vụ hiện tại — Stage 8A.4.2
 
 ## Trạng thái ưu tiên
 
+- **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
 - **Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình — COMPLETED.**
 - **Stage 8A.3.3 — Z-Level Finishing Production Function Editor — COMPLETED.**
-- **Stage 8A.3.2 — COMPLETED.**
-- **Stage 8A.3.1 — COMPLETED.**
-- **Stage 8A.2.3 — COMPLETED.**
-- **Stage 9A.6 — COMPLETED.**
 - **Stage 9A.I1 — DEFERRED.**
 
-Stage 8A.4.1 đã hoàn thành Tool common defaults typed, cấu hình Tool tùy chọn và
-thưa theo strategy, ba schema thật, resolver/provenance, preview xác nhận lưu từ
-nguyên công, persistence và tích hợp Function Editor có giới hạn. Tool payload
-v2 giữ tương thích Tool v1; SQLite tiếp tục schema v4.
+Stage hiện tại tách rõ tài liệu CAD đơn lẻ lưu trong một container `.HMS` và dự
+án CAM làm việc trực tiếp trong một thư mục workspace. `ProjectService` tiếp tục
+là ranh giới application/persistence; SQLite project schema giữ v4 và loader
+phải tương thích dự án thư mục `.HMS` cũ.
 
-Focused QA cuối của phần Stage 8A.4.1 đạt **41 passed**. Review harness
-chạy trong tiến trình QPA Windows sạch theo font mặc định production Segoe UI,
-kiểm tra coverage và chữ ký pixel từng glyph trước capture; 16/16 PNG có
-missing/replacement/tofu = 0. Package GUI 24 file đã được người dùng duyệt;
-Stage 8A.4.2 chưa được bắt đầu.
+Stage 8A.4.2 đã hoàn thành trên baseline
+`88aff7829244c610d68d099de3147c8bb17f2443`, với baseline QA **1601 passed,
+2 deselected**. Không stage kế tiếp hoặc stage đa ngôn ngữ nào được bắt đầu.
 
-Regression tập trung liên quan đạt **307 passed**. QA toàn repository đạt
-**1601 passed, 2 deselected**; `pip check` và `compileall src tests tools` sạch.
+Phần mở rộng hiện có production command `Nạp 3D mới cho dự án CAM`, inbox
+atomic, scan sau project-open/recovery, notification không modal, preview và ba
+lựa chọn Add/Replace/Update, scoped stale cùng rollback/crash recovery.
 
-Compatibility theo Tool family mới là kiến trúc fail-closed; chưa triển khai
-thuật toán CAM đa họ Tool. Cấu hình Tool không phải chứng nhận an toàn,
-Production Post không đổi và machine-ready chưa được chứng nhận. Quy trình ba
-bước hoàn chỉnh, chương trình mẫu và Import/Export profile vẫn ngoài phạm vi.
+Bộ review native Windows Git-ignored đã được người dùng duyệt, có đúng 43 file:
+30 PNG hash riêng, 12 JSON và 1 Markdown. QA khóa cuối đạt **136 passed** cho
+focused Stage, **113 passed** cho regression liên quan và **1690 passed,
+2 deselected** cho toàn repository. `pip check`, `compileall src tests tools`,
+audit GUI tiếng Việt với toàn bộ nhóm lỗi bằng 0 và `git diff --check` đều đạt.
 
-Tài liệu contract: `docs/CAM_TOOL_PROGRAM_PROFILES_8A4_1.md`.
+SQLite giữ schema **v4** và loader tiếp tục tương thích dự án thư mục `.HMS`
+legacy. File `.HMS` đơn lẻ không phải container dự án CAM; geometry transfer
+không phải chứng nhận an toàn và không tự Calculate, Simulation hoặc Post.
+Machine-ready clearance chưa được xác minh hay chứng nhận.
+
+Ngoài phạm vi: hệ thống đa ngôn ngữ, ProgramData/install layout, importer đa
+định dạng đầy đủ, Export 3D, cài đặt phiên bản xuất, three-step CAM workflow,
+thuật toán Tool đa họ, màu toolpath, Program Templates và Production Post mới.
+
+Tài liệu contract: `docs/HMS_DOCUMENT_AND_CAM_WORKSPACE_8A4_2.md`.
 
 ## Kết quả hoàn thành Stage 8A.3.3
 

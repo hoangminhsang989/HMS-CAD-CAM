@@ -2195,7 +2195,7 @@ def build_z_level_schema(context: ZLevelEditorContext) -> FunctionEditorSchema:
                     ),
                 ),
             ),
-            "UNKNOWN không bao giờ được đổi thành SAFE.",
+            "Trạng thái chưa xác định không bao giờ được đổi thành an toàn.",
             disclosure_level=ParameterDisclosureLevel.ADVANCED,
             default_expanded=False,
             order=70,
