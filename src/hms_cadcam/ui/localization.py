@@ -10,8 +10,12 @@ from collections.abc import Iterator
 from types import MappingProxyType
 import re
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import QComboBox
+
+from hms_cadcam.ui.i18n import UiLanguage, translation_service
+
+_LOCALIZATION_SOURCE_ROLE = int(Qt.ItemDataRole.UserRole) + 1000
 
 
 TECHNICAL_TERMS = (
@@ -92,9 +96,10 @@ def operation_type_display_name(value: object) -> str:
     """Return a localized operation type without changing its stable value."""
     raw = getattr(value, "value", value)
     text = str(raw).strip()
-    return OPERATION_DISPLAY_NAMES.get(
+    localized = OPERATION_DISPLAY_NAMES.get(
         text, _OPERATION_STRATEGY_DISPLAY_NAMES.get(text, text)
     )
+    return ui_text(localized)
 
 
 def operation_display_name(
@@ -106,7 +111,7 @@ def operation_display_name(
     text = str(name).strip()
     localized = OPERATION_DISPLAY_NAMES.get(text)
     if localized is not None:
-        return localized
+        return ui_text(localized)
     if text:
         return text
     return operation_type_display_name(strategy_key or "")
@@ -116,7 +121,14 @@ def setup_display_name(value: object) -> str:
     """Localize only the generated Setup name while preserving custom names."""
     text = str(value).strip()
     generated = re.fullmatch(r"Setup\s+(\d+)", text, re.IGNORECASE)
-    return f"Thiết lập {generated.group(1)}" if generated is not None else text
+    if generated is None:
+        return text
+    label = {
+        UiLanguage.VI_VN: "Thiết lập",
+        UiLanguage.EN_US: "Setup",
+        UiLanguage.KO_KR: "Setup",
+    }[translation_service().language]
+    return f"{label} {generated.group(1)}"
 
 
 DISPLAY_VALUE_MAPPINGS = MappingProxyType(
@@ -297,7 +309,7 @@ def display_value(value: object, category: str) -> str:
     raw = getattr(value, "value", value)
     text = str(raw)
     mapping = DISPLAY_VALUE_MAPPINGS.get(category)
-    return text if mapping is None else mapping.get(text, text)
+    return text if mapping is None else ui_text(mapping.get(text, text))
 
 
 def display_value_list(values: object, category: str) -> str:
@@ -328,10 +340,19 @@ def display_value_list(values: object, category: str) -> str:
         )
     rendered = tuple(display_value(item, category) for item in source)
     if not rendered:
-        return "Không có"
+        return {
+            UiLanguage.VI_VN: "Không có",
+            UiLanguage.EN_US: "None",
+            UiLanguage.KO_KR: "없음",
+        }[translation_service().language]
     if len(rendered) == 1:
         return rendered[0]
-    return ", ".join(rendered[:-1]) + f" và {rendered[-1]}"
+    conjunction = {
+        UiLanguage.VI_VN: " và ",
+        UiLanguage.EN_US: " and ",
+        UiLanguage.KO_KR: ", ",
+    }[translation_service().language]
+    return ", ".join(rendered[:-1]) + conjunction + rendered[-1]
 
 
 UI_TRANSLATIONS = MappingProxyType(
@@ -1215,10 +1236,10 @@ _USER_FACING_TERM_TRANSLATIONS = (
 
 
 def translate_progress_phase(value: object) -> str:
-    """Return a Vietnamese phase label without mutating its enum value."""
+    """Return a localized phase label without mutating its enum value."""
     raw = getattr(value, "value", value)
     text = str(raw).strip()
-    return PROGRESS_PHASE_TRANSLATIONS.get(text.casefold(), ui_text(text))
+    return ui_text(PROGRESS_PHASE_TRANSLATIONS.get(text.casefold(), text))
 
 
 def translate_status(value: object) -> str:
@@ -1227,9 +1248,14 @@ def translate_status(value: object) -> str:
     text = str(raw)
     direct = UI_TRANSLATIONS.get(text)
     if direct is not None:
-        return direct
+        return ui_text(direct)
     parts = re.split(r"(\s*[·/]\s*)", text)
-    return "".join(UI_TRANSLATIONS.get(part.strip(), part) if index % 2 == 0 else part for index, part in enumerate(parts))
+    return "".join(
+        ui_text(UI_TRANSLATIONS.get(part.strip(), part))
+        if index % 2 == 0
+        else part
+        for index, part in enumerate(parts)
+    )
 
 
 def operation_manager_status_category_display_name(
@@ -1241,17 +1267,18 @@ def operation_manager_status_category_display_name(
     raw = getattr(value, "value", value)
     text = str(raw).strip().casefold()
     if text == "domain":
-        return "DỰ ÁN" if project_context else "TRẠNG THÁI"
-    return {
+        return ui_text("Project" if project_context else "Status").upper()
+    localized = {
         "calculation": "TÍNH TOÁN",
         "simulation": "MÔ PHỎNG",
         "post": "Post",
         "nc": "NC",
         "export": "XUẤT NC",
     }.get(text, str(raw))
+    return ui_text(localized)
 
 
-def ui_text(value: object) -> str:
+def _vietnamese_text(value: object) -> str:
     """Translate one known system presentation string into Vietnamese.
 
     Unknown text is returned byte-for-byte so project names, operation names,
@@ -1268,7 +1295,7 @@ def ui_text(value: object) -> str:
         if prefix.startswith(
             ("parallel.", "z_level.", "field.", "simulation.", "post.")
         ):
-            return f"{prefix}: {ui_text(remainder.strip())}"
+            return f"{prefix}: {_vietnamese_text(remainder.strip())}"
     match = re.fullmatch(
         r"Unexpected cutter contact outside the declared contact zone on motion (\d+)\.",
         text,
@@ -1313,7 +1340,7 @@ def ui_text(value: object) -> str:
         )
     for source, target in _PREFIX_TRANSLATIONS:
         if text.startswith(source):
-            return target + ui_text(text[len(source) :])
+            return target + _vietnamese_text(text[len(source) :])
     phase_key = text.replace(" ", "_").casefold()
     if phase_key in PROGRESS_PHASE_TRANSLATIONS:
         return PROGRESS_PHASE_TRANSLATIONS[phase_key]
@@ -1352,13 +1379,52 @@ def ui_text(value: object) -> str:
     return translated
 
 
+def ui_text(value: object) -> str:
+    """Translate managed production text using the active typed locale.
+
+    Exact catalog entries use the central resolver.  The established
+    Vietnamese phrase adapter remains the default/fallback presentation
+    boundary for dynamic diagnostics, while unknown user/domain data is
+    preserved byte-for-byte.
+    """
+    text = str(value)
+    if not text:
+        return text
+    service = translation_service()
+    symbol_match = re.fullmatch(r"([●○■•]\n)(.+)", text, re.DOTALL)
+    if symbol_match is not None:
+        return symbol_match.group(1) + ui_text(symbol_match.group(2))
+    if text.startswith("CAD VIEWER KHÔNG KHẢ DỤNG\n"):
+        return (
+            service.translate_key("CAD VIEWER UNAVAILABLE")
+            + "\n"
+            + text.split("\n", 1)[1]
+        )
+    if text.startswith("CAD: "):
+        return "CAD: " + ui_text(text[5:])
+    canonical = service.canonical_key(text)
+    if canonical is not None:
+        return service.translate(text)
+    if service.language is UiLanguage.VI_VN:
+        return _vietnamese_text(text)
+    # Dynamic source diagnostics are generally English.  If the Vietnamese
+    # adapter produces an exact managed value, resolve that value into the
+    # active locale.  Otherwise preserve the source text rather than guessing
+    # at user-entered names, paths, IDs, or metadata.
+    vietnamese = _vietnamese_text(text)
+    vietnamese_key = service.canonical_key(vietnamese)
+    if vietnamese_key is not None:
+        return service.translate(vietnamese)
+    return text
+
+
 def iter_catalog_entries() -> Iterator[tuple[str, str]]:
     """Yield deterministic catalog entries for audit/report tooling."""
     yield from sorted(UI_TRANSLATIONS.items())
 
 
 class LocalizedComboBox(QComboBox):
-    """Show Vietnamese choices while preserving source values and aliases."""
+    """Show localized choices while preserving source values and aliases."""
 
     _SOURCE_TEXT_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
@@ -1387,23 +1453,134 @@ class LocalizedComboBox(QComboBox):
 
 
 def localize_widget_tree(root: object) -> None:
-    """Translate known texts on an already-built Qt widget subtree.
+    """Translate or retranslate known texts on a built Qt widget subtree.
 
     Imports are local so the pure catalog remains usable by static audit tools.
-    This helper is intentionally idempotent.
+    Canonical source keys are retained on objects/items so VI → EN → KO → VI
+    does not accumulate translations or alter user/domain values.
     """
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (
         QAbstractButton,
+        QAbstractItemView,
+        QComboBox,
         QGroupBox,
         QLabel,
         QLineEdit,
+        QMainWindow,
         QMenu,
+        QStatusBar,
         QTableWidget,
         QTabWidget,
+        QTabBar,
         QTreeWidget,
         QWidget,
     )
+
+    service = translation_service()
+    source_role = _LOCALIZATION_SOURCE_ROLE
+
+    def translated_source(text: object) -> tuple[str, str]:
+        current = str(text)
+        canonical = service.canonical_key(current)
+        if canonical is not None:
+            return canonical, service.translate(canonical)
+        localized = ui_text(current)
+        canonical = service.canonical_key(localized)
+        if canonical is not None:
+            return canonical, service.translate(canonical)
+        return current, localized
+
+    def is_rendering_of_source(source: object, current: object) -> bool:
+        source_text = str(source)
+        current_text = str(current)
+        if source_text == current_text:
+            return True
+        return any(
+            catalog.entries.get(source_text) == current_text
+            for catalog in service.catalogs.values()
+        )
+
+    def ensure_accessibility(item: object) -> None:
+        """Give visible interactive controls a translated accessible label."""
+        if not isinstance(item, QWidget):
+            return
+        if not isinstance(
+            item,
+            (QAbstractButton, QComboBox, QLineEdit, QAbstractItemView),
+        ):
+            return
+        accessible_name = item.accessibleName().strip()
+        if not accessible_name:
+            text_getter = (
+                item.currentText
+                if isinstance(item, QComboBox)
+                else getattr(item, "text", None)
+            )
+            text = str(text_getter() if callable(text_getter) else "").strip()
+            accessible_name = (
+                item.toolTip().strip()
+                or item.statusTip().strip()
+                or text
+                or (ui_text("View") if isinstance(item, QAbstractItemView) else "")
+            )
+            if accessible_name:
+                item.setAccessibleName(accessible_name)
+        if not item.accessibleDescription().strip():
+            description = item.toolTip().strip() or accessible_name
+            if description:
+                item.setAccessibleDescription(description)
+
+    def retranslate_property(
+        item: object,
+        getter_name: str,
+        setter_name: str,
+        property_suffix: str,
+    ) -> None:
+        getter = getattr(item, getter_name, None)
+        setter = getattr(item, setter_name, None)
+        property_getter = getattr(item, "property", None)
+        property_setter = getattr(item, "setProperty", None)
+        if not (
+            callable(getter)
+            and callable(setter)
+            and callable(property_getter)
+            and callable(property_setter)
+        ):
+            return
+        property_name = f"_hms_i18n_source_{property_suffix}"
+        source = property_getter(property_name)
+        current = getter()
+        if source is None or not is_rendering_of_source(source, current):
+            if not current:
+                return
+            source, _translated = translated_source(current)
+            property_setter(property_name, source)
+        setter(service.translate(source) if service.canonical_key(source) else ui_text(source))
+
+    def retranslate_item(item: object, column: int) -> None:
+        data = getattr(item, "data", None)
+        set_data = getattr(item, "setData", None)
+        text_getter = getattr(item, "text", None)
+        text_setter = getattr(item, "setText", None)
+        if not (
+            callable(data)
+            and callable(set_data)
+            and callable(text_getter)
+            and callable(text_setter)
+        ):
+            return
+        source = data(column, source_role)
+        current = text_getter(column)
+        if source is None or not is_rendering_of_source(source, current):
+            source, _translated = translated_source(current)
+            set_data(column, source_role, source)
+        text_setter(
+            column,
+            service.translate(source)
+            if service.canonical_key(source)
+            else ui_text(source),
+        )
 
     objects = [root]
     if isinstance(root, QWidget):
@@ -1411,67 +1588,166 @@ def localize_widget_tree(root: object) -> None:
         objects.extend(root.findChildren(QAction))
     for item in objects:
         if isinstance(item, QLabel):
-            item.setText(ui_text(item.text()))
+            retranslate_property(item, "text", "setText", "text")
         elif isinstance(item, QAbstractButton):
-            item.setText(ui_text(item.text()))
+            retranslate_property(item, "text", "setText", "text")
         if isinstance(item, QGroupBox):
-            item.setTitle(ui_text(item.title()))
+            retranslate_property(item, "title", "setTitle", "title")
         if isinstance(item, QMenu):
-            item.setTitle(ui_text(item.title()))
+            retranslate_property(item, "title", "setTitle", "title")
         if isinstance(item, QTabWidget):
             for index in range(item.count()):
-                item.setTabText(index, ui_text(item.tabText(index)))
+                page = item.widget(index)
+                property_name = "_hms_i18n_source_tab_text"
+                source = page.property(property_name) if page is not None else None
+                current = item.tabText(index)
+                if source is None or not is_rendering_of_source(source, current):
+                    source, _translated = translated_source(current)
+                    if page is not None:
+                        page.setProperty(property_name, source)
+                item.setTabText(
+                    index,
+                    service.translate(source)
+                    if service.canonical_key(source)
+                    else ui_text(source),
+                )
+        if isinstance(item, QTabBar):
+            if (
+                isinstance(item.parentWidget(), QMainWindow)
+                and any(
+                    isinstance(item.tabData(index), int)
+                    for index in range(item.count())
+                )
+            ):
+                # Native QMainWindow dock tabs store internal dock pointers in
+                # tabData. Overwriting them with translation source strings
+                # corrupts Qt's grouping and creates duplicate placeholder
+                # bars. MainWindow owns their compact localized presentation.
+                continue
+            for index in range(item.count()):
+                source = item.tabData(index)
+                current = item.tabText(index)
+                if source is None or not is_rendering_of_source(source, current):
+                    source, _translated = translated_source(current)
+                    item.setTabData(index, source)
+                item.setTabText(
+                    index,
+                    service.translate(source)
+                    if service.canonical_key(source)
+                    else ui_text(source),
+                )
         if isinstance(item, QWidget) and item.windowTitle():
-            item.setWindowTitle(ui_text(item.windowTitle()))
+            retranslate_property(
+                item,
+                "windowTitle",
+                "setWindowTitle",
+                "window_title",
+            )
         if isinstance(item, QLineEdit) and item.placeholderText():
-            item.setPlaceholderText(ui_text(item.placeholderText()))
-        if isinstance(item, QTreeWidget):
-            header = item.headerItem()
-            if header is not None:
-                for column in range(header.columnCount()):
-                    header.setText(column, ui_text(header.text(column)))
-            pending = [
-                item.topLevelItem(index) for index in range(item.topLevelItemCount())
-            ]
-            while pending:
-                tree_item = pending.pop()
-                if tree_item is None:
-                    continue
-                try:
-                    for column in range(tree_item.columnCount()):
-                        tree_item.setText(column, ui_text(tree_item.text(column)))
-                    pending.extend(
-                        tree_item.child(index)
-                        for index in range(tree_item.childCount())
+            retranslate_property(
+                item,
+                "placeholderText",
+                "setPlaceholderText",
+                "placeholder",
+            )
+        if isinstance(item, QComboBox):
+            for index in range(item.count()):
+                source = item.itemData(index, LocalizedComboBox._SOURCE_TEXT_ROLE)
+                current = item.itemText(index)
+                if source is None or not is_rendering_of_source(source, current):
+                    source, _translated = translated_source(current)
+                    item.setItemData(
+                        index,
+                        source,
+                        LocalizedComboBox._SOURCE_TEXT_ROLE,
                     )
-                except RuntimeError:
-                    # A refresh can invalidate a transient item before Qt has
-                    # dispatched its queued signal; it is no longer visible.
-                    continue
-        if isinstance(item, QTableWidget):
-            for column in range(item.columnCount()):
-                header = item.horizontalHeaderItem(column)
+                item.setItemText(
+                    index,
+                    service.translate(source)
+                    if service.canonical_key(source)
+                    else ui_text(source),
+                )
+        if isinstance(item, QTreeWidget):
+            blocker = QSignalBlocker(item)
+            try:
+                header = item.headerItem()
                 if header is not None:
-                    header.setText(ui_text(header.text()))
-            for row in range(item.rowCount()):
+                    for column in range(header.columnCount()):
+                        retranslate_item(header, column)
+                pending = [
+                    item.topLevelItem(index) for index in range(item.topLevelItemCount())
+                ]
+                while pending:
+                    tree_item = pending.pop()
+                    if tree_item is None:
+                        continue
+                    try:
+                        for column in range(tree_item.columnCount()):
+                            retranslate_item(tree_item, column)
+                        pending.extend(
+                            tree_item.child(index)
+                            for index in range(tree_item.childCount())
+                        )
+                    except RuntimeError:
+                        # A refresh can invalidate a transient item before Qt
+                        # has dispatched its queued signal; it is no longer visible.
+                        continue
+            finally:
+                del blocker
+        if isinstance(item, QTableWidget):
+            blocker = QSignalBlocker(item)
+            try:
                 for column in range(item.columnCount()):
-                    cell = item.item(row, column)
-                    if cell is not None:
-                        cell.setText(ui_text(cell.text()))
+                    header = item.horizontalHeaderItem(column)
+                    if header is not None:
+                        source = header.data(source_role)
+                        current = header.text()
+                        if source is None or not is_rendering_of_source(source, current):
+                            source, _translated = translated_source(current)
+                            header.setData(source_role, source)
+                        header.setText(
+                            service.translate(source)
+                            if service.canonical_key(source)
+                            else ui_text(source)
+                        )
+                for row in range(item.rowCount()):
+                    for column in range(item.columnCount()):
+                        cell = item.item(row, column)
+                        if cell is not None:
+                            source = cell.data(source_role)
+                            current = cell.text()
+                            if source is None or not is_rendering_of_source(source, current):
+                                source, _translated = translated_source(current)
+                                cell.setData(source_role, source)
+                            cell.setText(
+                                service.translate(source)
+                                if service.canonical_key(source)
+                                else ui_text(source)
+                            )
+            finally:
+                del blocker
         if isinstance(item, QAction):
-            item.setText(ui_text(item.text()))
+            retranslate_property(item, "text", "setText", "text")
+        if isinstance(item, QStatusBar) and item.currentMessage():
+            retranslate_property(
+                item,
+                "currentMessage",
+                "showMessage",
+                "status_message",
+            )
         for getter_name, setter_name in (
             ("toolTip", "setToolTip"),
             ("statusTip", "setStatusTip"),
             ("accessibleName", "setAccessibleName"),
             ("accessibleDescription", "setAccessibleDescription"),
         ):
-            getter = getattr(item, getter_name, None)
-            setter = getattr(item, setter_name, None)
-            if callable(getter) and callable(setter):
-                current = getter()
-                if current:
-                    setter(ui_text(current))
+            retranslate_property(
+                item,
+                getter_name,
+                setter_name,
+                getter_name,
+            )
+        ensure_accessibility(item)
 
 
 __all__ = [

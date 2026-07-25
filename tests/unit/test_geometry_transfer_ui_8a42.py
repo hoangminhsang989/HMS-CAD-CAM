@@ -187,8 +187,10 @@ def test_notification_bar_is_non_modal_non_focus_stealing_and_idempotent(
                 bar.reject_button,
             )
         )
-        assert bar.badge.text() == "1"
-        assert "Có dữ liệu 3D mới" in bar.message_label.text()
+        assert (
+            bar.message_label.text()
+            == "Có 1 bản cập nhật 3D mới từ “Chi tiết UI.HMS”."
+        )
         assert target.scan_incoming_geometry() == (request,)
     finally:
         shutil.rmtree(parent, ignore_errors=True)

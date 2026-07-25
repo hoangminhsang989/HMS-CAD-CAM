@@ -4,7 +4,6 @@ APP_STYLE = """
 QMainWindow, QWidget {
     background: #f4f5f7;
     color: #252b33;
-    font-family: "Segoe UI";
     font-size: 9pt;
 }
 QMenuBar {

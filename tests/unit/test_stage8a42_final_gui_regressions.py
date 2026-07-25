@@ -89,6 +89,7 @@ def test_production_main_menu_text_geometry_and_capture_are_complete(
         "Máy",
         "Đường chạy dao",
         "Thiết lập",
+        "Cài đặt",
         "Trợ giúp",
     )
     assert not menu_text_clipping_issues(window, "production_main_window")

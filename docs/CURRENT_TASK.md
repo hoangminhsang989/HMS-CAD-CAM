@@ -1,4 +1,44 @@
-# Nhiệm vụ hiện tại — Stage 8A.4.2
+# Nhiệm vụ hiện tại — Stage 8A.4.3
+
+## Trạng thái ưu tiên
+
+- **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
+- **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
+- **Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình — COMPLETED.**
+- **Stage 9A.I1 — DEFERRED.**
+
+Stage 8A.4.3 bổ sung ngôn ngữ giao diện typed `VI_VN`, `EN_US` và `KO_KR`.
+Tiếng Việt luôn là mặc định và fallback ưu tiên; locale là preference người dùng,
+không thuộc manifest, SQLite, Tool payload hoặc semantics dự án. Package GUI
+native Windows 28 file đã được người dùng duyệt; không có stage kế tiếp nào
+được bắt đầu.
+
+- Runtime switch VI→EN→KO→VI→EN→KO→VI hiện retranslate
+  property/model/delegate, viewport/status/diagnostic, notification và
+  accessibility từ source ngữ nghĩa; không giữ chuỗi locale trước và không tạo
+  lại dock/tab.
+- Model phát `dataChanged`/`headerDataChanged`, delegate resolve theo locale hiện
+  hành; file dialog, dirty lifecycle và message formatter 0/1/n dùng ngôn ngữ HMS.
+- Catalog UTF-8, QSettings persistence, fallback tiếng Việt và glossary kỹ thuật
+  được kiểm tra duplicate/missing/placeholder, raw key và fallback hit.
+- Rendered audit đọc QAction, widget, model/header/cell, delegate, log/status,
+  ribbon/sidebar/QTabBar/dock tab, font metrics, tooltip/accessibility và
+  notification formatter; regression cố tình đưa chuỗi nhiễm hoặc label elide
+  phải bị phát hiện.
+- QA cuối: **58 passed** focused Stage 8A.4.3 mới, **140 passed** regression
+  liên quan, **198 passed** nhóm Stage và **1748 passed, 2 deselected** toàn
+  repository; `pip check`, `compileall src tests tools` và `git diff --check`
+  đạt.
+- Package đã duyệt giữ đúng 18 PNG, 9 JSON và 1 Markdown; package Git-ignored
+  không thuộc source commit.
+
+Ngoài phạm vi và chưa triển khai: ProgramData/install layout, importer đa định
+dạng đầy đủ, Export 3D, cấu hình phiên bản Export, CAM workflow ba bước, Tool đa
+họ, màu đường chạy dao, Program Templates và Production Post mới.
+
+Tài liệu contract: `docs/HMS_MULTILINGUAL_UI_8A4_3.md`.
+
+# Lịch sử — Stage 8A.4.2
 
 ## Trạng thái ưu tiên
 

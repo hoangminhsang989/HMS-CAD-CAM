@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 from uuid import UUID
 
@@ -77,6 +78,7 @@ class CadViewportWidget(QWidget):
         self._initialized = False
         self._closed = False
         self._selection_document_id: CadDocumentId | None = None
+        self._status_text_resolver: Callable[[str], str] = str
         self._status_label = QLabel(self)
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -85,6 +87,20 @@ class CadViewportWidget(QWidget):
         )
         self._backend.set_selection_callback(self._receive_selection)
         self._refresh_status(self._status)
+
+    def set_status_text_resolver(
+        self,
+        resolver: Callable[[str], str],
+    ) -> None:
+        """Install the UI text resolver without changing viewport state."""
+        if not callable(resolver):
+            raise TypeError("Viewport status text resolver must be callable")
+        self._status_text_resolver = resolver
+        self.retranslate_status()
+
+    def retranslate_status(self) -> None:
+        """Refresh only the rendered fallback text for the current status."""
+        self._refresh_status(self._status, emit_status=False)
 
     @property
     def viewport_status(self) -> ViewportStatus:
@@ -535,19 +551,31 @@ class CadViewportWidget(QWidget):
             )
         )
 
-    def _refresh_status(self, status: ViewportStatus) -> None:
+    def _refresh_status(
+        self,
+        status: ViewportStatus,
+        *,
+        emit_status: bool = True,
+    ) -> None:
         self._status = status
         if status.available and status.error is None:
             self._status_label.hide()
         else:
-            message = status.error or "CAD Viewer không khả dụng"
-            title = (
-                "LỖI CAD VIEWER" if status.available else "CAD VIEWER KHÔNG KHẢ DỤNG"
+            message_source = status.error or "CAD rendering backend is unavailable."
+            message = self._status_text_resolver(message_source)
+            title_source = (
+                "CAD VIEWER ERROR"
+                if status.available
+                else "CAD VIEWER UNAVAILABLE"
             )
+            title = self._status_text_resolver(title_source)
             self._status_label.setText(f"{title}\n{message}")
+            self._status_label.setAccessibleName(title)
+            self._status_label.setAccessibleDescription(message)
             self._status_label.show()
             self._status_label.raise_()
-        self.status_changed.emit(status)
+        if emit_status:
+            self.status_changed.emit(status)
 
 
 def _mouse_button(button: Qt.MouseButton) -> MouseButton:

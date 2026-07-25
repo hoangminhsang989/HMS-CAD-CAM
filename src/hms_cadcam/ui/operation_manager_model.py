@@ -140,7 +140,7 @@ class OperationManagerModel(QAbstractItemModel):
         if role == Qt.ItemDataRole.AccessibleTextRole:
             return (
                 f"{ui_text(node.label)}. {ui_text(node.secondary_summary)}. "
-                f"Trạng thái {translate_status(node.status.text)}."
+                f"{ui_text('Status')} {translate_status(node.status.text)}."
             )
         if role == Qt.ItemDataRole.AccessibleDescriptionRole:
             return _status_details(node)
@@ -161,7 +161,7 @@ class OperationManagerModel(QAbstractItemModel):
         role: int = Qt.ItemDataRole.DisplayRole,
     ) -> object | None:
         if orientation is Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
-            return "Tên" if section == 0 else "Trạng thái"
+            return ui_text("Name") if section == 0 else ui_text("Status")
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlag:
@@ -193,6 +193,29 @@ class OperationManagerModel(QAbstractItemModel):
 
     def visible_node_count(self) -> int:
         return sum(len(values) for values in self._visible_children.values())
+
+    def _retranslate(self, _language: object = None) -> None:
+        """Notify views that presentation roles changed without resetting state."""
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 1)
+
+        def emit_parent(parent: QModelIndex = QModelIndex()) -> None:
+            rows = self.rowCount(parent)
+            if rows <= 0:
+                return
+            self.dataChanged.emit(
+                self.index(0, 0, parent),
+                self.index(rows - 1, 1, parent),
+                [
+                    int(Qt.ItemDataRole.DisplayRole),
+                    int(Qt.ItemDataRole.ToolTipRole),
+                    int(Qt.ItemDataRole.AccessibleTextRole),
+                    int(Qt.ItemDataRole.AccessibleDescriptionRole),
+                ],
+            )
+            for row in range(rows):
+                emit_parent(self.index(row, 0, parent))
+
+        emit_parent()
 
     def _node_id(self, index: QModelIndex) -> OperationManagerNodeId | None:
         node = self.node_for_index(index)

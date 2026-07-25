@@ -1,7 +1,8 @@
-"""Vietnamese Qt dialogs whose visible controls do not depend on OS locale."""
+"""HMS-localized Qt dialogs whose visible controls ignore the OS locale."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,15 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog as _QtFileDialog,
+    QLineEdit,
     QMessageBox as _QtMessageBox,
+    QSizePolicy,
     QTreeView,
     QWidget,
 )
+
+from hms_cadcam.ui.i18n import UiLanguage, translation_service
+from hms_cadcam.ui.localization import ui_text
 
 
 _DIALOG_TEXT = {
@@ -31,6 +37,17 @@ _DIALOG_TEXT = {
     "Yes": "Có",
     "No": "Không",
     "Discard": "Không lưu",
+    "Don’t save": "Không lưu",
+    "Save All": "Lưu tất cả",
+    "Yes to All": "Có cho tất cả",
+    "No to All": "Không cho tất cả",
+    "Abort": "Dừng",
+    "Retry": "Thử lại",
+    "Ignore": "Bỏ qua",
+    "Help": "Trợ giúp",
+    "Apply": "Áp dụng",
+    "Reset": "Đặt lại",
+    "Restore Defaults": "Khôi phục mặc định",
     "Look in:": "Thư mục:",
     "File name:": "Tên tệp:",
     "Files of type:": "Loại tệp:",
@@ -58,39 +75,109 @@ _DIALOG_TEXT = {
     "Change to detail view mode": "Chuyển sang dạng chi tiết",
     "Change to list view mode": "Chuyển sang dạng danh sách",
     "Go to the parent directory": "Đi đến thư mục cha",
+    "Go back": "Quay lại",
+    "Go forward": "Tiến",
+    "Files": "Tệp",
+    "Sidebar": "Thanh bên",
+    "List of places and bookmarks": "Danh sách vị trí và dấu trang",
+    "Show hidden files": "Hiện tệp ẩn",
+}
+
+_KOREAN_DIALOG_TEXT = {
+    "Open": "열기",
+    "Save": "저장",
+    "Cancel": "취소",
+    "Close": "닫기",
+    "OK": "확인",
+    "Yes": "예",
+    "No": "아니요",
+    "Discard": "저장 안 함",
+    "Don’t save": "저장 안 함",
+    "Save All": "모두 저장",
+    "Yes to All": "모두 예",
+    "No to All": "모두 아니요",
+    "Abort": "중단",
+    "Retry": "다시 시도",
+    "Ignore": "무시",
+    "Help": "도움말",
+    "Apply": "적용",
+    "Reset": "초기화",
+    "Restore Defaults": "기본값 복원",
+    "Look in:": "폴더:",
+    "File name:": "파일 이름:",
+    "Files of type:": "파일 형식:",
+    "My Computer": "내 컴퓨터",
+    "Computer": "컴퓨터",
+    "Recent": "최근 항목",
+    "Desktop": "바탕 화면",
+    "Documents": "문서",
+    "New Folder": "새 폴더",
+    "Create New Folder": "새 폴더 만들기",
+    "Create a New Folder": "새 폴더 만들기",
+    "Delete": "삭제",
+    "Rename": "이름 바꾸기",
+    "Show Name": "이름 표시",
+    "Show Size": "크기 표시",
+    "Show Type": "유형 표시",
+    "Show Date Modified": "수정한 날짜 표시",
+    "Back": "뒤로",
+    "Forward": "앞으로",
+    "Parent Directory": "상위 폴더",
+    "List View": "목록 보기",
+    "Detail View": "자세히 보기",
+    "Change to detail view mode": "자세히 보기로 전환",
+    "Change to list view mode": "목록 보기로 전환",
+    "Go to the parent directory": "상위 폴더로 이동",
+    "Go back": "뒤로",
+    "Go forward": "앞으로",
+    "Files": "파일",
+    "Sidebar": "사이드바",
+    "List of places and bookmarks": "위치 및 북마크 목록",
+    "Show hidden files": "숨김 파일 표시",
 }
 
 _MESSAGE_BUTTON_TEXT = {
-    _QtMessageBox.StandardButton.Ok: "Đóng",
-    _QtMessageBox.StandardButton.Save: "Lưu",
-    _QtMessageBox.StandardButton.SaveAll: "Lưu tất cả",
-    _QtMessageBox.StandardButton.Open: "Mở",
-    _QtMessageBox.StandardButton.Yes: "Có",
-    _QtMessageBox.StandardButton.YesToAll: "Có cho tất cả",
-    _QtMessageBox.StandardButton.No: "Không",
-    _QtMessageBox.StandardButton.NoToAll: "Không cho tất cả",
-    _QtMessageBox.StandardButton.Abort: "Dừng",
-    _QtMessageBox.StandardButton.Retry: "Thử lại",
-    _QtMessageBox.StandardButton.Ignore: "Bỏ qua",
-    _QtMessageBox.StandardButton.Close: "Đóng",
-    _QtMessageBox.StandardButton.Cancel: "Hủy",
-    _QtMessageBox.StandardButton.Discard: "Không lưu",
-    _QtMessageBox.StandardButton.Help: "Trợ giúp",
-    _QtMessageBox.StandardButton.Apply: "Áp dụng",
-    _QtMessageBox.StandardButton.Reset: "Đặt lại",
-    _QtMessageBox.StandardButton.RestoreDefaults: "Khôi phục mặc định",
+    _QtMessageBox.StandardButton.Ok: "OK",
+    _QtMessageBox.StandardButton.Save: "Save",
+    _QtMessageBox.StandardButton.SaveAll: "Save All",
+    _QtMessageBox.StandardButton.Open: "Open",
+    _QtMessageBox.StandardButton.Yes: "Yes",
+    _QtMessageBox.StandardButton.YesToAll: "Yes to All",
+    _QtMessageBox.StandardButton.No: "No",
+    _QtMessageBox.StandardButton.NoToAll: "No to All",
+    _QtMessageBox.StandardButton.Abort: "Abort",
+    _QtMessageBox.StandardButton.Retry: "Retry",
+    _QtMessageBox.StandardButton.Ignore: "Ignore",
+    _QtMessageBox.StandardButton.Close: "Close",
+    _QtMessageBox.StandardButton.Cancel: "Cancel",
+    _QtMessageBox.StandardButton.Discard: "Don’t save",
+    _QtMessageBox.StandardButton.Help: "Help",
+    _QtMessageBox.StandardButton.Apply: "Apply",
+    _QtMessageBox.StandardButton.Reset: "Reset",
+    _QtMessageBox.StandardButton.RestoreDefaults: "Restore Defaults",
 }
 
 
 def _localized_text(text: str) -> str:
     stripped = text.replace("&", "").strip()
-    return _DIALOG_TEXT.get(text, _DIALOG_TEXT.get(stripped, text))
+    reverse = {value: key.replace("&", "") for key, value in _DIALOG_TEXT.items()}
+    source = (
+        text.replace("&", "")
+        if text in _DIALOG_TEXT or stripped in _DIALOG_TEXT
+        else reverse.get(text, stripped)
+    )
+    language = translation_service().language
+    if language is UiLanguage.VI_VN:
+        return _DIALOG_TEXT.get(text, _DIALOG_TEXT.get(source, text))
+    if language is UiLanguage.KO_KR:
+        return _KOREAN_DIALOG_TEXT.get(source, ui_text(source))
+    return source
 
 
-class _VietnameseFileSystemProxy(QIdentityProxyModel):
+class _LocalizedFileSystemProxy(QIdentityProxyModel):
     """Replace only QFileDialog column headers; filesystem data stays intact."""
 
-    _HEADERS = ("Tên", "Kích thước", "Loại", "Ngày sửa đổi")
+    _HEADERS = ("Name", "Size", "Type", "Date modified")
 
     def headerData(  # noqa: N802
         self,
@@ -103,7 +190,7 @@ class _VietnameseFileSystemProxy(QIdentityProxyModel):
             and role == int(Qt.ItemDataRole.DisplayRole)
             and 0 <= section < len(self._HEADERS)
         ):
-            return self._HEADERS[section]
+            return ui_text(self._HEADERS[section])
         return super().headerData(section, orientation, role)
 
     def data(
@@ -120,11 +207,15 @@ class _VietnameseFileSystemProxy(QIdentityProxyModel):
             source_model = self.sourceModel()
             is_directory = getattr(source_model, "isDir", None)
             if callable(is_directory) and is_directory(source_index):
-                return "Thư mục"
+                return ui_text("Folder")
             file_info = getattr(source_model, "fileInfo", None)
             if callable(file_info):
                 suffix = file_info(source_index).suffix().upper()
-                return f"Tệp {suffix}" if suffix else "Tệp"
+                if translation_service().language is UiLanguage.VI_VN:
+                    return f"Tệp {suffix}" if suffix else "Tệp"
+                if translation_service().language is UiLanguage.KO_KR:
+                    return f"{suffix} 파일" if suffix else "파일"
+                return f"{suffix} file" if suffix else "File"
         if (
             index.isValid()
             and index.column() == 3
@@ -141,14 +232,14 @@ class _VietnameseFileSystemProxy(QIdentityProxyModel):
 
 
 class LocalizedFileDialog(_QtFileDialog):
-    """Non-native QFileDialog with stable Vietnamese presentation text."""
+    """Non-native QFileDialog with stable application-locale presentation."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.setOption(self.Option.DontUseNativeDialog, True)
         initial_directory = self.directory()
-        self._vietnamese_proxy = _VietnameseFileSystemProxy(self)
-        self.setProxyModel(self._vietnamese_proxy)
+        self._localized_proxy = _LocalizedFileSystemProxy(self)
+        self.setProxyModel(self._localized_proxy)
         self.setDirectory(initial_directory)
         self._localize_controls()
 
@@ -159,16 +250,17 @@ class LocalizedFileDialog(_QtFileDialog):
 
     def _localize_controls(self) -> None:
         accept_text = {
-            self.AcceptMode.AcceptOpen: "Mở",
-            self.AcceptMode.AcceptSave: "Lưu",
+            self.AcceptMode.AcceptOpen: ui_text("Open"),
+            self.AcceptMode.AcceptSave: ui_text("Save"),
         }[self.acceptMode()]
         if self.fileMode() is self.FileMode.Directory:
-            accept_text = "Chọn"
-        self.setLabelText(self.DialogLabel.LookIn, "Thư mục:")
-        self.setLabelText(self.DialogLabel.FileName, "Tên tệp:")
-        self.setLabelText(self.DialogLabel.FileType, "Loại tệp:")
+            accept_text = ui_text("Select")
+        self.setWindowTitle(ui_text(self.windowTitle()))
+        self.setLabelText(self.DialogLabel.LookIn, f"{ui_text('Folder')}:")
+        self.setLabelText(self.DialogLabel.FileName, f"{ui_text('File name')}:")
+        self.setLabelText(self.DialogLabel.FileType, f"{ui_text('File type')}:")
         self.setLabelText(self.DialogLabel.Accept, accept_text)
-        self.setLabelText(self.DialogLabel.Reject, "Hủy")
+        self.setLabelText(self.DialogLabel.Reject, ui_text("Cancel"))
         for button in self.findChildren(QAbstractButton):
             localized = _localized_text(button.text())
             if localized != button.text():
@@ -196,27 +288,102 @@ class LocalizedFileDialog(_QtFileDialog):
                 if localized != visible:
                     combo.setItemText(index, localized)
             if not combo.accessibleName():
-                combo.setAccessibleName("Vị trí thư mục")
+                combo.setAccessibleName(
+                    {
+                        UiLanguage.VI_VN: "Vị trí thư mục",
+                        UiLanguage.EN_US: "Folder location",
+                        UiLanguage.KO_KR: "폴더 위치",
+                    }[translation_service().language]
+                )
+        for line_edit in self.findChildren(QLineEdit):
+            if line_edit.objectName() == "fileNameEdit":
+                line_edit.setAccessibleName(ui_text("File name"))
+                line_edit.setAccessibleDescription(ui_text("File name"))
         for view in self.findChildren(QAbstractItemView):
+            if view.accessibleName():
+                view.setAccessibleName(
+                    _localized_text(view.accessibleName())
+                )
+            if view.accessibleDescription():
+                view.setAccessibleDescription(
+                    _localized_text(view.accessibleDescription())
+                )
+            if view.objectName() == "sidebar":
+                view.setHorizontalScrollBarPolicy(
+                    Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+                )
             if view.objectName() != "sidebar" or view.model() is None:
                 continue
             model = view.model()
+            sidebar_urls = self.sidebarUrls()
+            localized_labels: list[str] = []
             for row in range(model.rowCount()):
                 index = model.index(row, 0)
                 visible = str(model.data(index, Qt.ItemDataRole.DisplayRole) or "")
-                localized = _localized_text(visible)
-                if localized != visible:
-                    model.setData(
-                        index,
-                        localized,
-                        Qt.ItemDataRole.DisplayRole,
-                    )
+                source = self._sidebar_semantic_source(
+                    row,
+                    visible,
+                    sidebar_urls,
+                )
+                localized = (
+                    ui_text(source)
+                    if source in {"Computer", "User folder"}
+                    else _localized_text(source)
+                )
+                localized_labels.append(localized)
+                for role in (
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.ToolTipRole,
+                    Qt.ItemDataRole.AccessibleTextRole,
+                    Qt.ItemDataRole.AccessibleDescriptionRole,
+                ):
+                    model.setData(index, localized, role)
+            icon_width = max(24, view.iconSize().width())
+            text_width = max(
+                (
+                    view.fontMetrics().horizontalAdvance(label)
+                    for label in localized_labels
+                ),
+                default=0,
+            )
+            view.setMinimumWidth(text_width + icon_width + 34)
+            view.setSizePolicy(
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Expanding,
+            )
+            view.setAccessibleName(ui_text("Sidebar"))
+            view.setAccessibleDescription(
+                ui_text("List of places and bookmarks")
+            )
         tree = self.findChild(QTreeView, "treeView")
         if tree is not None:
             for column, width in enumerate((240, 105, 120, 155)):
                 tree.setColumnWidth(column, width)
         if not self.accessibleName():
-            self.setAccessibleName(self.windowTitle() or "Chọn tệp")
+            self.setAccessibleName(self.windowTitle() or ui_text("Select"))
+
+    @staticmethod
+    def _sidebar_semantic_source(
+        row: int,
+        visible: str,
+        sidebar_urls: Sequence[object],
+    ) -> str:
+        """Name built-in places by meaning while preserving their actual URLs."""
+        if row >= len(sidebar_urls):
+            return visible
+        url = sidebar_urls[row]
+        local_file_getter = getattr(url, "toLocalFile", None)
+        local_file = (
+            str(local_file_getter())
+            if callable(local_file_getter)
+            else ""
+        )
+        if not local_file:
+            return "Computer"
+        path = Path(local_file)
+        if path.parent.name.casefold() == "users":
+            return "User folder"
+        return visible
 
     @classmethod
     def getOpenFileName(  # noqa: N802
@@ -283,7 +450,7 @@ class LocalizedFileDialog(_QtFileDialog):
 
 
 class LocalizedMessageBox(_QtMessageBox):
-    """QMessageBox whose standard buttons are explicitly Vietnamese."""
+    """QMessageBox whose standard buttons follow the HMS locale."""
 
     def setStandardButtons(  # noqa: N802
         self,
@@ -299,10 +466,14 @@ class LocalizedMessageBox(_QtMessageBox):
 
     def localize_standard_buttons(self) -> None:
         """Translate every standard button currently owned by the box."""
-        for standard, text in _MESSAGE_BUTTON_TEXT.items():
+        self.setWindowTitle(ui_text(self.windowTitle()))
+        self.setText(ui_text(self.text()))
+        self.setInformativeText(ui_text(self.informativeText()))
+        for standard, source in _MESSAGE_BUTTON_TEXT.items():
             button = self.button(standard)
             if button is None:
                 continue
+            text = _localized_text(source)
             button.setText(text)
             button.setAccessibleName(text)
         if not self.accessibleName():
@@ -322,8 +493,8 @@ class LocalizedMessageBox(_QtMessageBox):
     ) -> _QtMessageBox.StandardButton:
         box = cls(parent)
         box.setIcon(icon)
-        box.setWindowTitle(title)
-        box.setText(text)
+        box.setWindowTitle(ui_text(title))
+        box.setText(ui_text(text))
         box.setStandardButtons(buttons)
         if default_button is not cls.StandardButton.NoButton:
             box.setDefaultButton(default_button)

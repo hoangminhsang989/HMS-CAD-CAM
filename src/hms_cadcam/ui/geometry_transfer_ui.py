@@ -29,6 +29,11 @@ from hms_cadcam.project.geometry_transfer import (
 )
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.localized_dialogs import QFileDialog
+from hms_cadcam.ui.i18n import (
+    format_geometry_update_message,
+    translation_service,
+)
+from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 
 
 def _short_identity(value: UUID | str) -> str:
@@ -199,8 +204,6 @@ class IncomingGeometryNotificationBar(QFrame):
             QSizePolicy.Policy.Fixed,
         )
         self._requests: tuple[GeometryTransferRequest, ...] = ()
-        self.badge = QLabel("0")
-        self.badge.setObjectName("IncomingGeometryBadge")
         self.message_label = QLabel("Không có dữ liệu 3D mới.")
         self.message_label.setObjectName("IncomingGeometryMessage")
         self.message_label.setTextInteractionFlags(
@@ -224,7 +227,6 @@ class IncomingGeometryNotificationBar(QFrame):
         )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
-        layout.addWidget(self.badge)
         layout.addWidget(self.message_label, 1)
         for button in (
             self.view_button,
@@ -234,6 +236,8 @@ class IncomingGeometryNotificationBar(QFrame):
         ):
             layout.addWidget(button)
         self.set_requests(())
+        localize_widget_tree(self)
+        translation_service().language_changed.connect(self.retranslate_ui)
 
     @property
     def current_request(self) -> GeometryTransferRequest | None:
@@ -245,14 +249,22 @@ class IncomingGeometryNotificationBar(QFrame):
     ) -> None:
         self._requests = requests
         count = len(requests)
-        self.badge.setText(str(count))
         if requests:
             request = requests[0]
             self.message_label.setText(
-                f'Có dữ liệu 3D mới từ “{request.source_display_name}.HMS”.'
+                format_geometry_update_message(
+                    count,
+                    request.source_display_name,
+                )
+            )
+            self.message_label.setProperty(
+                "localeMessageSource",
+                request.source_display_name,
             )
         else:
-            self.message_label.setText("Không có dữ liệu 3D mới.")
+            self.message_label.setText(format_geometry_update_message(0, ""))
+            self.message_label.setProperty("localeMessageSource", "")
+        self.message_label.setProperty("localeMessageCount", count)
         for button in (
             self.view_button,
             self.apply_button,
@@ -260,6 +272,12 @@ class IncomingGeometryNotificationBar(QFrame):
             self.reject_button,
         ):
             button.setEnabled(bool(requests))
+
+    def retranslate_ui(self, _language: object = None) -> None:
+        """Refresh presentation without changing or acknowledging requests."""
+        localize_widget_tree(self)
+        self.set_requests(self._requests)
+        localize_widget_tree(self)
 
     def _button(self, text: str, suffix: str) -> QPushButton:
         button = QPushButton(text)

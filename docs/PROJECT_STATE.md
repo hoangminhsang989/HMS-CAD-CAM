@@ -1,5 +1,30 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## Stage 8A.4.3 — Hệ thống đa ngôn ngữ
+
+- Stage 8A.4.3 đã **COMPLETED** trên baseline `4f7e8d7` sau khi người dùng duyệt
+  package GUI cuối; không có stage kế tiếp đang thực hiện.
+- Phạm vi là locale typed `VI_VN`, `EN_US`, `KO_KR`, catalog tập trung,
+  persistence preference người dùng, đổi ngôn ngữ runtime, accessibility,
+  glossary, audit và review native Windows.
+- Tiếng Việt là mặc định và fallback ưu tiên, độc lập locale Windows. Preference
+  không được ghi vào `.HMS`, manifest, `project.db` hoặc CAM payload.
+- Property/model/delegate, viewport/status/diagnostic, notification, dialog và
+  accessibility đã retranslate sạch qua chuỗi
+  VI→EN→KO→VI→EN→KO→VI; workspace, selection, dirty state, worker, geometry,
+  dock/tab identity và project state được giữ nguyên.
+- Rendered audit bao phủ QAction, menu/ribbon, widget, model/header/cell,
+  delegate, log/status/diagnostic, QFileDialog sidebar, QTabBar/dock tab,
+  font metrics, tooltip/accessibility và notification formatter; package local
+  đúng 28 file có source fingerprint và QA metadata, đã được người dùng duyệt.
+- QA cuối đạt **58 passed** focused Stage mới, **140 passed** regression liên
+  quan, **198 passed** nhóm Stage và **1748 passed, 2 deselected** toàn repository;
+  `pip check`, `compileall src tests tools` và `git diff --check` đạt.
+- SQLite giữ schema **v4**; Tool payload v2 và compatibility Tool v1 không đổi.
+- Chưa triển khai ProgramData/install layout, importer đa định dạng đầy đủ,
+  Export 3D/version settings, CAM workflow ba bước, Tool đa họ, màu đường chạy
+  dao, Program Templates hoặc Production Post mới.
+
 ## Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu
 
 - Stage 8A.4.2 đã **COMPLETED** trên baseline `88aff78`; không stage kế tiếp

@@ -39,6 +39,19 @@ _STATUS_COLORS = {
 class OperationManagerDelegate(QStyledItemDelegate):
     """Draw semantic shape + text without storing widgets per row."""
 
+    def audit_texts(self, index: QModelIndex) -> tuple[str, ...]:
+        """Expose the exact delegate-owned strings for rendered UI audits."""
+        node = index.data(NODE_ROLE)
+        if not isinstance(node, OperationManagerNode):
+            value = index.data(Qt.ItemDataRole.DisplayRole)
+            return () if value is None else (str(value),)
+        if index.column() == 0:
+            values = [ui_text(node.label)]
+            if node.kind is OperationManagerNodeKind.OPERATION:
+                values.append(compact_operation_summary(node))
+            return tuple(value for value in values if value)
+        return (ui_text(node.status.text),)
+
     def paint(
         self,
         painter: QPainter,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QAbstractItemModel, QTimer, Qt
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QTabBar,
     QTabWidget,
     QToolBar,
     QTreeWidget,
@@ -118,6 +119,14 @@ from hms_cadcam.ui.workspace_shell import (
 from hms_cadcam.ui.workspace_dialog import DropOpenOverlay
 from hms_cadcam.ui.simulation_geometry_adapter import ActiveOcpFixtureResolver
 from hms_cadcam.ui.localization import localize_widget_tree, ui_text
+from hms_cadcam.ui.i18n import (
+    LocaleSettingsService,
+    UiLanguage,
+    apply_application_font,
+    apply_widget_font_tree,
+    translation_service,
+)
+from hms_cadcam.ui.language_settings import LanguageSettingsDialog
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
@@ -159,9 +168,22 @@ class MainWindow(QMainWindow):
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
         )
+        self._translation_service = translation_service()
+        self._locale_settings = LocaleSettingsService(self._layout_store.settings)
+        self._translation_service.set_language(self._locale_settings.load())
+        apply_application_font(self._translation_service.language)
+        self._translation_service.language_changed.connect(
+            self._language_changed
+        )
+        self._language_dialog: LanguageSettingsDialog | None = None
         self._responsive_collapsed_operation_manager = False
+        self._managed_output_lines: dict[
+            str,
+            tuple[str, dict[str, object], frozenset[str]],
+        ] = {}
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
+        self.viewport.set_status_text_resolver(ui_text)
         self.setAcceptDrops(True)
         self._drop_overlay = DropOpenOverlay(self.viewport)
         self.project_controller = ProjectUiController(self, project_service)
@@ -241,9 +263,16 @@ class MainWindow(QMainWindow):
             self.cam_workspace.actions,
             self.project_controller.actions,
         )
-        self.operation_manager_dock = QDockWidget("Quản lý nguyên công", self)
+        self.operation_manager_dock = QDockWidget("Operations", self)
         self.operation_manager_dock.setObjectName("OperationManagerDock")
-        self.operation_manager_dock.setAccessibleName("Quản lý nguyên công")
+        self.operation_manager_dock.setProperty(
+            "compactTitleSource",
+            "Operations",
+        )
+        self.operation_manager_dock.setProperty(
+            "fullTitleSource",
+            "Operation Manager",
+        )
         self.operation_manager_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
             | Qt.DockWidgetArea.RightDockWidgetArea
@@ -312,8 +341,10 @@ class MainWindow(QMainWindow):
             self.cam_workspace.simulation_panel,
             self.cam_workspace.post_tabs,
         )
-        self.secondary_dock = QDockWidget("Mô phỏng / Post", self)
+        self.secondary_dock = QDockWidget("Post", self)
         self.secondary_dock.setObjectName("SecondaryWorkflowDock")
+        self.secondary_dock.setProperty("compactTitleSource", "Post")
+        self.secondary_dock.setProperty("fullTitleSource", "Simulation / Post")
         self.secondary_dock.setAccessibleName("Bảng Mô phỏng và Post")
         self.secondary_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -375,12 +406,28 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.LeftDockWidgetArea, self.operation_manager_dock
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
+        self.project_dock.show()
+        self.operation_manager_dock.show()
+        self.properties_dock.show()
+        self.secondary_dock.show()
+        self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
+        self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
         self.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea, self.function_editor_dock
         )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
         self.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
+            self.incoming_geometry_panel_dock,
+        )
+        self.function_editor_dock.show()
+        self.incoming_geometry_panel_dock.show()
+        self.tabifyDockWidget(
+            self.properties_dock,
+            self.function_editor_dock,
+        )
+        self.tabifyDockWidget(
+            self.properties_dock,
             self.incoming_geometry_panel_dock,
         )
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
@@ -388,12 +435,8 @@ class MainWindow(QMainWindow):
             Qt.DockWidgetArea.TopDockWidgetArea,
             self.incoming_geometry_dock,
         )
-        self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
-        self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
-        self.tabifyDockWidget(
-            self.properties_dock,
-            self.incoming_geometry_panel_dock,
-        )
+        # Dock groups are established once before unrelated right-side docks
+        # are inserted. Later locale passes update presentation only.
         self.operation_manager_dock.raise_()
         self.project_dock.hide()
         self.properties_dock.hide()
@@ -480,10 +523,18 @@ class MainWindow(QMainWindow):
         self._handle_project_change(self._current_display_state())
         self._restore_workspace_layout()
         localize_widget_tree(self)
+        self.refresh_localized_layout()
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
-            reason = viewport_status.error or "Không xác định"
-            self._append_output(f"CAD Viewer không khả dụng: {reason}")
+            reason = (
+                viewport_status.error
+                or "CAD rendering backend is unavailable."
+            )
+            self._append_localized_output(
+                "CAD Viewer unavailable: {reason}",
+                localized_arguments=frozenset({"reason"}),
+                reason=reason,
+            )
 
     def _build_menu_bar(self) -> None:
         menu_bar = self.menuBar()
@@ -523,6 +574,15 @@ class MainWindow(QMainWindow):
         cam_menu.addAction(self.project_controller.actions["send_geometry"])
         for title in ("Máy", "Toolpath", "Setup"):
             menu_bar.addMenu(title)
+        settings_menu = menu_bar.addMenu("Cài đặt")
+        interface_menu = settings_menu.addMenu("Giao diện")
+        self._language_action = QAction("Ngôn ngữ…", self)
+        self._language_action.setObjectName("InterfaceLanguageAction")
+        self._language_action.setToolTip(
+            "Đổi ngôn ngữ giao diện mà không thay đổi dữ liệu dự án"
+        )
+        self._language_action.triggered.connect(self._show_language_settings)
+        interface_menu.addAction(self._language_action)
         help_menu = menu_bar.addMenu("Trợ giúp")
 
         exit_action = QAction("Thoát", self)
@@ -648,6 +708,100 @@ class MainWindow(QMainWindow):
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
 
+    def _show_language_settings(self) -> None:
+        """Open one modeless user-preference dialog."""
+        if self._language_dialog is None:
+            self._language_dialog = LanguageSettingsDialog(
+                self._translation_service,
+                self._locale_settings,
+                self,
+            )
+            self._language_dialog.finished.connect(
+                lambda _result: self._language_dialog.deleteLater()
+                if self._language_dialog is not None
+                else None
+            )
+            self._language_dialog.destroyed.connect(
+                lambda _object=None: setattr(self, "_language_dialog", None)
+            )
+        self._language_dialog.show()
+        self._language_dialog.raise_()
+        self._language_dialog.activateWindow()
+
+    def _language_changed(self, language: object) -> None:
+        """Retranslate presentation only; project and worker state stay intact."""
+        selected = UiLanguage.coerce(language)
+        active_tab_indices = self._dock_tab_indices()
+        apply_widget_font_tree(self, selected)
+        localize_widget_tree(self)
+        self.refresh_localized_layout(active_tab_indices)
+        for model in self.findChildren(QAbstractItemModel):
+            retranslate = getattr(model, "_retranslate", None)
+            if callable(retranslate):
+                retranslate(selected)
+        self.viewport.retranslate_status()
+        self._update_notification_center_text(
+            len(self.project_controller.incoming_requests)
+        )
+        self._retranslate_output_log()
+        if self._language_dialog is not None:
+            self._language_dialog.retranslate_ui(selected)
+
+    def refresh_localized_layout(
+        self,
+        active_tab_indices: dict[int, int] | None = None,
+    ) -> None:
+        """Reapply locale-aware sizing after generic tree translation."""
+        preserved_active_tabs = (
+            self._dock_tab_indices()
+            if active_tab_indices is None
+            else active_tab_indices
+        )
+        self._ribbon.retranslate_ui()
+        self._refresh_compact_dock_titles(preserved_active_tabs)
+        # QMainWindow refreshes its private dock tab bars after window-title
+        # changes. Reapply presentation and the preserved active tab once that
+        # native update completes.
+        QTimer.singleShot(
+            0,
+            lambda: self._refresh_compact_dock_titles(
+                preserved_active_tabs
+            ),
+        )
+
+    def _retranslate_output_log(self) -> None:
+        """Translate managed log lines while preserving arbitrary diagnostics."""
+        if not hasattr(self, "_output"):
+            return
+        service = translation_service()
+        lines = self._output.toPlainText().splitlines()
+        translated: list[str] = []
+        managed: dict[
+            str,
+            tuple[str, dict[str, object], frozenset[str]],
+        ] = {}
+        for line in lines:
+            specification = self._managed_output_lines.get(line)
+            if specification is not None:
+                key, arguments, localized_arguments = specification
+                rendered = self._render_localized_output(
+                    key,
+                    arguments,
+                    localized_arguments,
+                )
+                translated.append(rendered)
+                managed[rendered] = specification
+                continue
+            canonical = service.canonical_key(line)
+            if canonical is not None:
+                translated.append(service.translate(canonical))
+                continue
+            translated.append(line)
+        self._managed_output_lines = managed
+        value = "\n".join(translated)
+        if value != self._output.toPlainText():
+            self._output.setPlainText(value)
+
     def _show_function_editor(self) -> None:
         """Open the selected operation in the one shared CAM popup."""
         self.cam_function_popup.open_current_operation()
@@ -685,7 +839,11 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         clamp_window_to_available_screens(self)
 
-    def _apply_default_workspace_layout(self) -> None:
+    def _apply_default_workspace_layout(
+        self,
+        *,
+        reposition: bool = True,
+    ) -> None:
         docks = (
             self.project_dock,
             self.operation_manager_dock,
@@ -697,18 +855,45 @@ class MainWindow(QMainWindow):
         for dock in docks:
             if dock.isFloating():
                 dock.setFloating(False)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.project_dock)
-        self.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.operation_manager_dock
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
-        self.addDockWidget(
-            Qt.DockWidgetArea.RightDockWidgetArea, self.function_editor_dock
-        )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.output_dock)
-        self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
-        self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
+        if reposition:
+            self.addDockWidget(
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                self.project_dock,
+            )
+            self.addDockWidget(
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                self.operation_manager_dock,
+            )
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                self.properties_dock,
+            )
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                self.function_editor_dock,
+            )
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea,
+                self.secondary_dock,
+            )
+            self.addDockWidget(
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+                self.output_dock,
+            )
+        # Qt requires visible docks for tabifyDockWidget(). Show each pair
+        # while establishing the group, then restore the default visibility.
+        self.project_dock.show()
+        self.operation_manager_dock.show()
+        self.properties_dock.show()
+        self.secondary_dock.show()
+        if self.operation_manager_dock not in self.tabifiedDockWidgets(
+            self.project_dock
+        ):
+            self.tabifyDockWidget(self.project_dock, self.operation_manager_dock)
+        if self.secondary_dock not in self.tabifiedDockWidgets(
+            self.properties_dock
+        ):
+            self.tabifyDockWidget(self.properties_dock, self.secondary_dock)
         self.project_dock.hide()
         self.properties_dock.hide()
         self.secondary_dock.hide()
@@ -732,7 +917,7 @@ class MainWindow(QMainWindow):
     def _restore_workspace_layout(self) -> None:
         snapshot = self._layout_store.restore(self)
         if snapshot is None:
-            self._apply_default_workspace_layout()
+            self._apply_default_workspace_layout(reposition=False)
         else:
             self.resizeDocks(
                 [self.operation_manager_dock],
@@ -1000,8 +1185,13 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _create_project_dock(self) -> QDockWidget:
-        dock = QDockWidget("Cấu trúc hình học / Quản lý dự án", self)
+        dock = QDockWidget("Geometry / Project", self)
         dock.setObjectName("ProjectManagerDock")
+        dock.setProperty("compactTitleSource", "Geometry / Project")
+        dock.setProperty(
+            "fullTitleSource",
+            "Geometry structure / Project Manager",
+        )
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
         tabs = QTabWidget()
         tabs.setObjectName("ManagerTabs")
@@ -1041,6 +1231,131 @@ class MainWindow(QMainWindow):
         dock.setWidget(tabs)
         return dock
 
+    def _dock_tab_indices(self) -> dict[int, int]:
+        """Capture native dock-group selection without changing layout."""
+        return {
+            id(tab_bar): tab_bar.currentIndex()
+            for tab_bar in self.findChildren(QTabBar)
+            if any(
+                isinstance(tab_bar.tabData(index), int)
+                for index in range(tab_bar.count())
+            )
+        }
+
+    def _refresh_compact_dock_titles(
+        self,
+        active_tab_indices: dict[int, int] | None = None,
+    ) -> None:
+        """Use compact tabs while exposing each full localized dock label.
+
+        Dock placement is deliberately absent here.  This method can run after
+        every locale switch and must only update presentation state.
+        """
+        service = translation_service()
+        definitions = (
+            (
+                self.project_dock,
+                "Geometry / Project",
+                "Geometry structure / Project Manager",
+            ),
+            (
+                self.operation_manager_dock,
+                "Operations",
+                "Operation Manager",
+            ),
+            (
+                self.secondary_dock,
+                "Post",
+                "Simulation / Post",
+            ),
+        )
+        preserved_active_tabs = (
+            self._dock_tab_indices()
+            if active_tab_indices is None
+            else active_tab_indices
+        )
+        localized: dict[str, tuple[str, str]] = {}
+        for dock, compact_source, full_source in definitions:
+            compact = service.translate_key(compact_source)
+            full = service.translate_key(full_source)
+            localized[compact_source] = (compact, full)
+            dock.setWindowTitle(compact)
+            dock.setToolTip(full)
+            dock.setAccessibleName(full)
+            dock.setAccessibleDescription(full)
+            dock.setProperty("fullText", full)
+            dock.setProperty("textAuditCategory", "dock_tab")
+
+        source_to_compact = {
+            source: compact_source
+            for _dock, compact_source, full_source in definitions
+            for source in (compact_source, full_source)
+        }
+        visible_group_bottoms = {
+            dock.geometry().bottom() + 1
+            for dock in (
+                self.project_dock,
+                self.operation_manager_dock,
+                self.properties_dock,
+                self.secondary_dock,
+            )
+            if dock.isVisible() and not dock.visibleRegion().isEmpty()
+        }
+        for tab_bar in self.findChildren(QTabBar):
+            # Qt leaves private placeholder tab bars behind for individual
+            # docks. Only a native dock-group bar carries the QDockWidget
+            # pointer payload (PySide exposes it as an integer). Tagging those
+            # bars prevents stale placeholders from being treated as a second
+            # semantic row by the localization audit.
+            if not any(
+                isinstance(tab_bar.tabData(index), int)
+                for index in range(tab_bar.count())
+            ) or not any(
+                abs(tab_bar.geometry().top() - bottom) <= 2
+                for bottom in visible_group_bottoms
+            ):
+                tab_bar.setProperty("hmsDockTabBar", False)
+                continue
+            full_labels: list[str] = []
+            semantic_ids: list[str] = []
+            compact_sources = [""] * tab_bar.count()
+            for index in range(tab_bar.count()):
+                canonical = service.canonical_key(tab_bar.tabText(index))
+                compact_source = source_to_compact.get(str(canonical))
+                if compact_source is None:
+                    continue
+                compact, full = localized[compact_source]
+                tab_bar.setTabText(index, compact)
+                tab_bar.setTabToolTip(index, full)
+                full_labels.append(full)
+                semantic_ids.append(str(tab_bar.tabData(index)))
+                compact_sources[index] = compact_source
+            if full_labels:
+                accessible = " · ".join(dict.fromkeys(full_labels))
+                tab_bar.setProperty("hmsDockTabBar", True)
+                tab_bar.setProperty("dockTabSemanticIds", tuple(semantic_ids))
+                tab_bar.setProperty(
+                    "dockTabCompactSources",
+                    tuple(compact_sources),
+                )
+                tab_bar.setAccessibleName(accessible)
+                tab_bar.setAccessibleDescription(accessible)
+                tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+                tab_bar.setUsesScrollButtons(False)
+                required_width = sum(
+                    max(64, tab_bar.fontMetrics().horizontalAdvance(
+                        tab_bar.tabText(index)
+                    ) + 24)
+                    for index in range(tab_bar.count())
+                )
+                tab_bar.setMinimumWidth(required_width)
+                preserved_index = preserved_active_tabs.get(id(tab_bar))
+                if (
+                    preserved_index is not None
+                    and 0 <= preserved_index < tab_bar.count()
+                ):
+                    tab_bar.setCurrentIndex(preserved_index)
+
     def _create_properties_dock(self) -> QDockWidget:
         dock = QDockWidget("Thuộc tính", self)
         dock.setObjectName("PropertiesDock")
@@ -1067,8 +1382,11 @@ class MainWindow(QMainWindow):
         self._output.setObjectName("OutputLog")
         self._output.setReadOnly(True)
         self._output.setPlainText(
-            "HMS CAD/CAM đã sẵn sàng.\n"
-            "CAD Viewer sản phẩm đã sẵn sàng; chưa tích hợp CAM."
+            ui_text("HMS CAD/CAM is ready.")
+            + "\n"
+            + ui_text(
+                "CAD production viewer is ready; CAM is not integrated."
+            )
         )
         dock.setWidget(self._output)
         return dock
@@ -1082,7 +1400,9 @@ class MainWindow(QMainWindow):
         self._import_status = QLabel("CAD: Sẵn sàng")
         self._import_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._import_status, 1)
-        self._notification_center_button = QPushButton("THÔNG BÁO: 0")
+        self._notification_center_button = QPushButton(
+            ui_text("NOTIFICATIONS: 0")
+        )
         self._notification_center_button.setObjectName(
             "IncomingGeometryNotificationCenterButton"
         )
@@ -1097,7 +1417,15 @@ class MainWindow(QMainWindow):
             self._open_incoming_notification_center
         )
         status.addPermanentWidget(self._notification_center_button)
-        for text in ("ĐỐI TƯỢNG: 0", "X: 0.000", "Y: 0.000", "Z: 0.000", "3D", "WCS: Top", "METRIC"):
+        for text in (
+            "ĐỐI TƯỢNG: 0",
+            "X: 0.000",
+            "Y: 0.000",
+            "Z: 0.000",
+            "3D",
+            "WCS: Top",
+            "METRIC",
+        ):
             label = QLabel(text)
             label.setObjectName("StatusLabel")
             status.addPermanentWidget(label)
@@ -1255,8 +1583,16 @@ class MainWindow(QMainWindow):
         else:
             self.incoming_geometry_dock.hide()
         total = len(self.project_controller.incoming_requests)
-        self._notification_center_button.setText(f"THÔNG BÁO: {total}")
+        self._update_notification_center_text(total)
         self._notification_center_button.setEnabled(total > 0)
+
+    def _update_notification_center_text(self, total: int) -> None:
+        self._notification_center_button.setText(
+            translation_service().format(
+                "NOTIFICATIONS: {count}",
+                count=total,
+            )
+        )
 
     def _open_incoming_notification_center(self) -> None:
         requests = self.project_controller.incoming_requests
@@ -1497,7 +1833,7 @@ class MainWindow(QMainWindow):
     def _show_document_properties(self) -> None:
         metadata = self._active_document_metadata
         if metadata is None:
-            self._set_properties((("CAD document", "Chưa có"),))
+            self._set_properties((("CAD document", "None"),))
             return
         rows = [
             ("Document ID", str(metadata.document_id)),
@@ -1828,6 +2164,35 @@ class MainWindow(QMainWindow):
             elif "cảnh báo" in folded or "warning" in folded:
                 self.diagnostics_host.set_activity(text, severity="warning")
 
+    def _append_localized_output(
+        self,
+        key: str,
+        *,
+        localized_arguments: frozenset[str] = frozenset(),
+        **arguments: object,
+    ) -> None:
+        specification = (key, dict(arguments), localized_arguments)
+        rendered = self._render_localized_output(*specification)
+        self._managed_output_lines[rendered] = specification
+        self._append_output(rendered)
+
+    @staticmethod
+    def _render_localized_output(
+        key: str,
+        arguments: dict[str, object],
+        localized_arguments: frozenset[str],
+    ) -> str:
+        service = translation_service()
+        rendered_arguments = {
+            name: (
+                service.translate(value)
+                if name in localized_arguments
+                else value
+            )
+            for name, value in arguments.items()
+        }
+        return service.format(key, **rendered_arguments)
+
     def set_drop_overlay_visible(self, visible: bool) -> None:
         """Show/hide the real drop overlay without taking keyboard focus."""
         self._drop_overlay.setGeometry(self.viewport.rect())
@@ -1892,6 +2257,7 @@ class MainWindow(QMainWindow):
             self.operation_manager_dock.show()
             self.operation_manager_dock.raise_()
             self._responsive_collapsed_operation_manager = False
+        self._refresh_compact_dock_titles()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Prevent closing during I/O and protect unsaved project state."""
