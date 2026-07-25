@@ -48,7 +48,7 @@ from hms_cadcam.ui.operation_manager_types import (
     OperationManagerNodeKind,
 )
 from hms_cadcam.ui.operation_manager_projection import OperationManagerProjectionBuilder
-from hms_cadcam.ui.localization import localize_widget_tree
+from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 
 
 logger = logging.getLogger(__name__)
@@ -330,6 +330,11 @@ class OperationManagerPanel(QWidget):
         self._update_empty_state()
         self.commands.update_state()
         self.last_refresh_ms = timer.elapsed()
+
+    def retranslate_ui(self, _language: object = None) -> None:
+        """Rebuild translated projection while preserving semantic selection."""
+        self.refresh()
+        localize_widget_tree(self)
 
     def _downstream_state_changed(self, source: str, state: object) -> None:
         """Coalesce real Post/NC lifecycle changes into one projection refresh."""
@@ -762,10 +767,12 @@ class OperationManagerPanel(QWidget):
             item.kind is OperationManagerNodeKind.SETUP for item in projection.nodes
         )
         if not has_jobs:
-            self.state_title.setText("Dự án hiện chỉ có CAD")
-            self.state_message.setText("Tạo công việc CAM khi sẵn sàng lập trình gia công.")
+            self.state_title.setText(ui_text("CAD-only project"))
+            self.state_message.setText(
+                ui_text("Create a CAM job when machining programming is ready.")
+            )
             action = self._source_actions.get("job")
-            self._add_action_button(action, "Tạo công việc CAM")
+            self._add_action_button(action, ui_text("Create a CAM job"))
             self.state_frame.show()
         elif has_setups and operation_count == 0:
             self.state_title.setText("Thiết lập chưa có nguyên công")

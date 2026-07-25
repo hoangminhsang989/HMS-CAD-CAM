@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hms_cadcam.core.paths import ApplicationPathsService
+
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from hms_cadcam.ui.localization import ui_text
 
@@ -437,7 +439,9 @@ class LocalizedFileDialog(_QtFileDialog):
         directory: str = "",
         options: _QtFileDialog.Option = _QtFileDialog.Option.ShowDirsOnly,
     ) -> str:
-        initial = directory or str(Path.cwd())
+        initial = directory or str(
+            ApplicationPathsService.production().documents_root
+        )
         dialog = cls(parent, caption, initial)
         dialog.setOptions(options | cls.Option.DontUseNativeDialog)
         dialog.setAcceptMode(cls.AcceptMode.AcceptOpen)

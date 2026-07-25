@@ -8,7 +8,10 @@ from collections.abc import Sequence
 
 from hms_cadcam.cad.factory import CadKernelFactory
 from hms_cadcam.core.logging_config import configure_logging
-from hms_cadcam.core.paths import AppPaths
+from hms_cadcam.core.paths import AppPathKind, ApplicationPathsService
+from hms_cadcam.core.hms_backup import HmsBackupService, HmsRestoreService
+from hms_cadcam.core.storage_layout import StorageBootstrapService
+from hms_cadcam.core.user_profiles import UserProfileService
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.viewer.factory import CadViewportBackendFactory
 
@@ -17,8 +20,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     """Start HMS CAD/CAM and return its process exit code."""
     logger = logging.getLogger(__name__)
     try:
-        paths = AppPaths.for_current_user()
-        configure_logging(paths.log_dir)
+        paths = ApplicationPathsService.production()
+        configure_logging(paths.path(AppPathKind.LOGS))
     except OSError:
         if not logging.getLogger().handlers:
             logging.basicConfig(level=logging.ERROR)
@@ -37,10 +40,33 @@ def run(argv: Sequence[str] | None = None) -> int:
         application.setApplicationDisplayName("HMS CAD/CAM")
         application.setOrganizationName("HMS")
 
-        project_service = ProjectService.create_default(paths.config_dir)
+        project_service = ProjectService.create_default(
+            paths.path(AppPathKind.USER_CONFIG),
+            document_runtime_root=(
+                paths.path(AppPathKind.TEMP) / "Document-Runtime"
+            ),
+            default_document_directory=paths.documents_root,
+        )
         cad_kernel = CadKernelFactory.create()
         viewport_backend = CadViewportBackendFactory.create(cad_kernel)
-        window = MainWindow(project_service, cad_kernel, viewport_backend)
+        storage_bootstrap = StorageBootstrapService(paths)
+        user_profiles = UserProfileService(paths)
+        backup_service = HmsBackupService(paths, profile_service=user_profiles)
+        restore_service = HmsRestoreService(
+            paths,
+            backup_service=backup_service,
+            profile_service=user_profiles,
+        )
+        window = MainWindow(
+            project_service,
+            cad_kernel,
+            viewport_backend,
+            application_paths=paths,
+            storage_bootstrap=storage_bootstrap,
+            user_profile_service=user_profiles,
+            hms_backup_service=backup_service,
+            hms_restore_service=restore_service,
+        )
         window.show()
         logger.info("Ứng dụng HMS CAD/CAM đã khởi động")
         exit_code = application.exec()

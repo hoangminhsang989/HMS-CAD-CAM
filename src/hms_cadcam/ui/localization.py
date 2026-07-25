@@ -1402,6 +1402,10 @@ def ui_text(value: object) -> str:
         )
     if text.startswith("CAD: "):
         return "CAD: " + ui_text(text[5:])
+    if any(text in catalog.entries for catalog in service.catalogs.values()):
+        # Exact semantic source keys outrank reverse-value aliases.  Without
+        # this, English "Back" can collide with Vietnamese "Sau" (After).
+        return service.translate_key(text)
     canonical = service.canonical_key(text)
     if canonical is not None:
         return service.translate(text)

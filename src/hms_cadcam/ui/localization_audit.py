@@ -22,6 +22,11 @@ from PySide6.QtWidgets import (
     QToolButton,
     QWidget,
 )
+
+
+# Item models can mark user/domain values that must stay byte-for-byte intact.
+# Headers, tooltips and the remaining presentation cells are still audited.
+LOCALIZATION_AUDIT_EXCLUDE_ROLE = int(Qt.ItemDataRole.UserRole) + 97
 from shiboken6 import getCppPointer
 
 from hms_cadcam.ui.i18n import (
@@ -81,10 +86,36 @@ APPROVED_LATIN_TOKENS = frozenset(
         "IGS",
         "RPM",
         "MM",
+        "APPDATA",
+        "PROGRAMDATA",
+        "WINDOWS",
+        "ROAMING",
+        "KB",
+        "MB",
+        "GB",
+        "CACHE",
+        "LOGS",
+        "TEMP",
+        "CRASH",
+        "JSON",
+        "EXE",
+        "UI",
+        "RUNTIME",
+        "PLUGIN",
+        "SANDBOX",
+        "FAIL-CLOSED",
+        "MACHINE-READY",
+        "PID",
     }
 )
 LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z-]+")
 HMS_USER_VALUE = re.compile(r"[\w.-]+\.HMS", re.IGNORECASE)
+PHYSICAL_WINDOWS_PATH = re.compile(r"(?:[A-Za-z]:[\\/][^\n]+)")
+PHYSICAL_FILENAME = re.compile(
+    r"\b[\w.-]+\.(?:json|ini|lock|backup|exe|hms)\b",
+    re.IGNORECASE,
+)
+HASH_VALUE = re.compile(r"\b[0-9a-f]{64}\b", re.IGNORECASE)
 FORMAT_FIELD = re.compile(r"\{[^{}]+\}")
 VIETNAMESE_FORBIDDEN_ENGLISH = re.compile(
     r"\b(?:"
@@ -92,6 +123,12 @@ VIETNAMESE_FORBIDDEN_ENGLISH = re.compile(
     r"ribbon|float|closes|undocks|top|rendering|backend|"
     r"run\s+simulation|new\s+3d\s+data"
     r")\b",
+    re.IGNORECASE,
+)
+VIETNAMESE_UNAPPROVED_ENGLISH = re.compile(
+    r"\b(?:root\s+production|executable|runtime|plugin|installer|"
+    r"contract\s+runtime|preference|program\s+templates|machine-ready|"
+    r"autosave|snapshot|command\s+id|profile)\b",
     re.IGNORECASE,
 )
 ENGLISH_SENTENCE_WORDS = frozenset(
@@ -161,6 +198,9 @@ class LocaleAuditReport:
     missing_glyph_count: int
     replacement_glyph_count: int
     tofu_count: int
+    unapproved_english_token_count: int
+    vietnamese_semantic_translation_error_count: int
+    physical_path_false_positive_count: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -191,6 +231,9 @@ class RuntimeAuditMetrics:
     missing_glyph_count: int = 0
     replacement_glyph_count: int = 0
     tofu_count: int = 0
+    unapproved_english_token_count: int = 0
+    vietnamese_semantic_translation_error_count: int = 0
+    physical_path_false_positive_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +338,20 @@ def audit_locale(
         missing_glyph_count=runtime.missing_glyph_count,
         replacement_glyph_count=runtime.replacement_glyph_count,
         tofu_count=runtime.tofu_count,
+        unapproved_english_token_count=(
+            _unapproved_vietnamese_count(rendered)
+            if language is UiLanguage.VI_VN
+            else 0
+        ),
+        vietnamese_semantic_translation_error_count=(
+            _vietnamese_semantic_errors(entries)
+            if language is UiLanguage.VI_VN
+            else 0
+        ),
+        physical_path_false_positive_count=_physical_path_false_positive_count(
+            rendered,
+            language,
+        ),
     )
 
 
@@ -377,6 +434,15 @@ def audit_widget(root: QWidget) -> RuntimeAuditMetrics:
         missing_glyph_count=missing_glyphs,
         replacement_glyph_count=replacements,
         tofu_count=tofu,
+        unapproved_english_token_count=(
+            _unapproved_vietnamese_count(texts)
+            if translation_service().language is UiLanguage.VI_VN
+            else 0
+        ),
+        physical_path_false_positive_count=_physical_path_false_positive_count(
+            texts,
+            translation_service().language,
+        ),
     )
 
 
@@ -389,6 +455,32 @@ def _collect_texts(root: QWidget):
             # QFileDialog place/history actions are filesystem data, while
             # the visible dialog labels and buttons remain audited.
             continue
+        if isinstance(item, QAction):
+            owner = item.parent()
+            while owner is not None and not isinstance(owner, QWidget):
+                owner = owner.parent() if hasattr(owner, "parent") else None
+            if isinstance(owner, QWidget) and not owner.isVisibleTo(root):
+                continue
+            if isinstance(owner, QWidget):
+                domain_owner = owner
+                while domain_owner is not None:
+                    if bool(
+                        domain_owner.property(
+                            "localizationAuditDomainText"
+                        )
+                    ):
+                        # Context/menu actions attached to a marked
+                        # production view carry dynamic project/model text.
+                        # The surrounding controls remain audited normally.
+                        break
+                    parent = domain_owner.parent()
+                    domain_owner = (
+                        parent if isinstance(parent, QWidget) else None
+                    )
+                else:
+                    domain_owner = None
+                if domain_owner is not None:
+                    continue
         if (
             isinstance(item, QWidget)
             and item is not root
@@ -399,6 +491,10 @@ def _collect_texts(root: QWidget):
             )
         ):
             continue
+        domain_text = (
+            isinstance(item, QWidget)
+            and bool(item.property("localizationAuditDomainText"))
+        )
         for getter_name in (
             "text",
             "title",
@@ -410,6 +506,13 @@ def _collect_texts(root: QWidget):
             "placeholderText",
             "toPlainText",
         ):
+            if domain_text and getter_name in {
+                "text",
+                "toPlainText",
+                "accessibleName",
+                "accessibleDescription",
+            }:
+                continue
             if getter_name == "text" and isinstance(item, QLineEdit):
                 # Editable content is user/domain data. Placeholder,
                 # tooltip and accessibility text remain audited below.
@@ -430,6 +533,13 @@ def _collect_texts(root: QWidget):
                 if value:
                     yield value
         if isinstance(item, QAbstractItemView):
+            if bool(item.property("localizationAuditDomainText")):
+                # Projection rows may contain user/domain names, stable IDs and
+                # dynamic lifecycle summaries.  A marked production view keeps
+                # those values visible while excluding them from the language
+                # token audit; headers, toolbars and surrounding UI remain
+                # audited normally.
+                continue
             if not _inside_file_dialog(item) or item.objectName() == "sidebar":
                 yield from _collect_model_texts(item)
 
@@ -490,13 +600,20 @@ def _collect_model_texts(view: QAbstractItemView):
                 index = model.index(row, column, parent)
                 if not index.isValid():
                     continue
+                if model.data(index, LOCALIZATION_AUDIT_EXCLUDE_ROLE):
+                    continue
                 for role in (
                     Qt.ItemDataRole.DisplayRole,
                     Qt.ItemDataRole.ToolTipRole,
                     Qt.ItemDataRole.AccessibleTextRole,
                     Qt.ItemDataRole.AccessibleDescriptionRole,
                 ):
-                    value = model.data(index, role)
+                    audit_value = getattr(model, "localization_audit_value", None)
+                    value = (
+                        audit_value(index, role)
+                        if callable(audit_value)
+                        else model.data(index, role)
+                    )
                     if isinstance(value, str) and value.strip():
                         yield value.strip()
                 delegate = view.itemDelegateForIndex(index)
@@ -891,12 +1008,14 @@ def _glyph_counts(root: QWidget, texts: tuple[str, ...]) -> tuple[int, int, int]
 def _is_mixed(text: str, language: UiLanguage) -> bool:
     if text.strip() in NATIVE_LANGUAGE_LABELS:
         return False
+    remainder = _strip_physical_data(text)
     if language is UiLanguage.VI_VN:
-        if HANGUL.search(text):
+        if HANGUL.search(remainder):
             return True
-        if VIETNAMESE_FORBIDDEN_ENGLISH.search(text):
+        if VIETNAMESE_FORBIDDEN_ENGLISH.search(remainder):
             return True
-        remainder = FORMAT_FIELD.sub("", HMS_USER_VALUE.sub("", text))
+        if VIETNAMESE_UNAPPROVED_ENGLISH.search(remainder):
+            return True
         words = {
             word.casefold()
             for word in LATIN_WORD.findall(remainder)
@@ -904,13 +1023,58 @@ def _is_mixed(text: str, language: UiLanguage) -> bool:
         }
         return len(words & ENGLISH_SENTENCE_WORDS) >= 2
     if language is UiLanguage.EN_US:
-        return bool(HANGUL.search(text) or VIETNAMESE_MARKS.search(text))
-    if VIETNAMESE_MARKS.search(text):
+        return bool(HANGUL.search(remainder) or VIETNAMESE_MARKS.search(remainder))
+    if VIETNAMESE_MARKS.search(remainder):
         return True
-    remainder = FORMAT_FIELD.sub("", HMS_USER_VALUE.sub("", text))
     return any(
         word.upper() not in APPROVED_LATIN_TOKENS
         for word in LATIN_WORD.findall(remainder)
+    )
+
+
+def _strip_physical_data(text: str) -> str:
+    return FORMAT_FIELD.sub(
+        "",
+        HASH_VALUE.sub(
+            "",
+            PHYSICAL_FILENAME.sub(
+                "",
+                PHYSICAL_WINDOWS_PATH.sub("", HMS_USER_VALUE.sub("", text)),
+            ),
+        ),
+    )
+
+
+def _unapproved_vietnamese_count(texts: tuple[str, ...]) -> int:
+    return sum(
+        len(VIETNAMESE_UNAPPROVED_ENGLISH.findall(_strip_physical_data(text)))
+        for text in texts
+    )
+
+
+def _vietnamese_semantic_errors(entries: dict[str, str]) -> int:
+    expected = {
+        "Back": "Quay lại",
+        "Next": "Tiếp tục",
+        "Close": "Đóng",
+    }
+    return sum(entries.get(key) != value for key, value in expected.items())
+
+
+def _physical_path_false_positive_count(
+    texts: tuple[str, ...],
+    language: UiLanguage,
+) -> int:
+    if language is not UiLanguage.VI_VN:
+        return 0
+    return sum(
+        bool(PHYSICAL_WINDOWS_PATH.search(text))
+        and bool(
+            VIETNAMESE_UNAPPROVED_ENGLISH.search(
+                _strip_physical_data(text)
+            )
+        )
+        for text in texts
     )
 
 

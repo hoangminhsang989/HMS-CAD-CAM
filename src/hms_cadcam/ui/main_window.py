@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QAbstractItemModel, QTimer, Qt
+from PySide6.QtCore import QAbstractItemModel, QByteArray, QTimer, Qt
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -14,6 +16,7 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDropEvent,
     QResizeEvent,
+    QKeySequence,
 )
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -37,6 +40,15 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cad.kernel import CadKernel
+from hms_cadcam.core.paths import ApplicationPathsService
+from hms_cadcam.core.hms_backup import HmsBackupService, HmsRestoreService
+from hms_cadcam.core.storage_layout import StorageBootstrapService
+from hms_cadcam.core.user_profiles import (
+    ProfileError,
+    ProfileSwitchReport,
+    UserProfile,
+    UserProfileService,
+)
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
 from hms_cadcam.cam.adapters import (
     OcpContourProfileResolver,
@@ -127,6 +139,15 @@ from hms_cadcam.ui.i18n import (
     translation_service,
 )
 from hms_cadcam.ui.language_settings import LanguageSettingsDialog
+from hms_cadcam.ui.data_locations import (
+    DataLocationsDialog,
+    StorageNotificationBar,
+)
+from hms_cadcam.ui.backup_profiles import (
+    BackupWizardDialog,
+    RestoreWizardDialog,
+    UserProfilesDialog,
+)
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
@@ -155,6 +176,11 @@ class MainWindow(QMainWindow):
         viewport_backend: CadViewportBackend,
         *,
         layout_store: WorkspaceLayoutStore | None = None,
+        application_paths: ApplicationPathsService | None = None,
+        storage_bootstrap: StorageBootstrapService | None = None,
+        user_profile_service: UserProfileService | None = None,
+        hms_backup_service: HmsBackupService | None = None,
+        hms_restore_service: HmsRestoreService | None = None,
     ) -> None:
         super().__init__()
         self.setObjectName("HmsMainWindow")
@@ -170,12 +196,42 @@ class MainWindow(QMainWindow):
         )
         self._translation_service = translation_service()
         self._locale_settings = LocaleSettingsService(self._layout_store.settings)
-        self._translation_service.set_language(self._locale_settings.load())
+        selected_locale = self._locale_settings.load()
+        self._user_profile_service = user_profile_service
+        active_profile: UserProfile | None = None
+        if self._user_profile_service is None and application_paths is not None:
+            self._user_profile_service = UserProfileService(application_paths)
+        if self._user_profile_service is not None:
+            active_profile = self._user_profile_service.bootstrap(
+                locale=selected_locale.value
+            )
+            selected_locale = UiLanguage.coerce(active_profile.locale)
+        self._translation_service.set_language(selected_locale)
         apply_application_font(self._translation_service.language)
         self._translation_service.language_changed.connect(
             self._language_changed
         )
         self._language_dialog: LanguageSettingsDialog | None = None
+        self._application_paths = application_paths
+        self._storage_bootstrap = storage_bootstrap
+        self._data_locations_dialog: DataLocationsDialog | None = None
+        self._storage_notification: StorageNotificationBar | None = None
+        self._hms_backup_service = hms_backup_service
+        if self._hms_backup_service is None and application_paths is not None:
+            self._hms_backup_service = HmsBackupService(
+                application_paths,
+                profile_service=self._user_profile_service,
+            )
+        self._hms_restore_service = hms_restore_service
+        if self._hms_restore_service is None and application_paths is not None:
+            self._hms_restore_service = HmsRestoreService(
+                application_paths,
+                backup_service=self._hms_backup_service,
+                profile_service=self._user_profile_service,
+            )
+        self._backup_dialog: BackupWizardDialog | None = None
+        self._restore_dialog: RestoreWizardDialog | None = None
+        self._profiles_dialog: UserProfilesDialog | None = None
         self._responsive_collapsed_operation_manager = False
         self._managed_output_lines: dict[
             str,
@@ -522,6 +578,18 @@ class MainWindow(QMainWindow):
         )
         self._handle_project_change(self._current_display_state())
         self._restore_workspace_layout()
+        if active_profile is not None:
+            try:
+                if active_profile.ui_state:
+                    self._apply_user_profile(active_profile)
+                else:
+                    # The first profile adopts the already-restored legacy HMS
+                    # presentation; project/document state is never captured.
+                    self._user_profile_service.save(
+                        self._capture_active_profile(active_profile)
+                    )
+            except (OSError, RuntimeError, ValueError, TypeError, ProfileError) as exc:
+                self._append_output(str(exc))
         localize_widget_tree(self)
         self.refresh_localized_layout()
         viewport_status = self.viewport.viewport_status
@@ -583,6 +651,45 @@ class MainWindow(QMainWindow):
         )
         self._language_action.triggered.connect(self._show_language_settings)
         interface_menu.addAction(self._language_action)
+        self._profiles_action = QAction("User profiles…", self)
+        self._profiles_action.setObjectName("UserProfilesAction")
+        self._profiles_action.setToolTip(
+            "Manage per-user interface profiles without changing project data"
+        )
+        self._profiles_action.setEnabled(self._user_profile_service is not None)
+        self._profiles_action.triggered.connect(self._show_user_profiles)
+        interface_menu.addAction(self._profiles_action)
+        backup_menu = settings_menu.addMenu("Backup and restore")
+        self._backup_action = QAction("Back up HMS…", self)
+        self._backup_action.setObjectName("HmsBackupAction")
+        self._backup_action.setToolTip(
+            "Back up HMS settings, profiles and library data"
+        )
+        self._backup_action.setEnabled(
+            self._hms_backup_service is not None
+            and self._user_profile_service is not None
+        )
+        self._backup_action.triggered.connect(self._show_hms_backup)
+        backup_menu.addAction(self._backup_action)
+        self._restore_action = QAction("Restore HMS…", self)
+        self._restore_action.setObjectName("HmsRestoreAction")
+        self._restore_action.setEnabled(self._hms_restore_service is not None)
+        self._restore_action.triggered.connect(self._show_hms_restore)
+        backup_menu.addAction(self._restore_action)
+        system_menu = settings_menu.addMenu("System")
+        self._data_locations_action = QAction("Data locations…", self)
+        self._data_locations_action.setObjectName("DataLocationsAction")
+        self._data_locations_action.setToolTip(
+            "Inspect storage locations and permissions without changing production roots"
+        )
+        self._data_locations_action.setEnabled(
+            self._application_paths is not None
+            and self._storage_bootstrap is not None
+        )
+        self._data_locations_action.triggered.connect(
+            self._show_data_locations
+        )
+        system_menu.addAction(self._data_locations_action)
         help_menu = menu_bar.addMenu("Trợ giúp")
 
         exit_action = QAction("Thoát", self)
@@ -622,7 +729,9 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         for key in ("new", "open", "save"):
-            toolbar.addAction(self.project_controller.actions[key])
+            action = self.project_controller.actions[key]
+            action.setProperty("profileCommandId", f"project.{key}")
+            toolbar.addAction(action)
         for standard_icon, tooltip in (
             (QStyle.StandardPixmap.SP_ArrowBack, "Hoàn tác"),
             (QStyle.StandardPixmap.SP_ArrowForward, "Làm lại"),
@@ -630,6 +739,7 @@ class MainWindow(QMainWindow):
             action = toolbar.addAction(self.style().standardIcon(standard_icon), "")
             action.setToolTip(f"{tooltip} — chưa khả dụng")
             action.setEnabled(False)
+        self._quick_access_toolbar = toolbar
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _build_panel_visibility_actions(self) -> None:
@@ -728,6 +838,228 @@ class MainWindow(QMainWindow):
         self._language_dialog.raise_()
         self._language_dialog.activateWindow()
 
+    def _show_data_locations(self) -> None:
+        """Open the modeless fixed-root storage diagnostics page."""
+        if self._application_paths is None or self._storage_bootstrap is None:
+            return
+        if self._data_locations_dialog is None:
+            self._data_locations_dialog = DataLocationsDialog(
+                self._application_paths,
+                self._storage_bootstrap,
+                parent=self,
+            )
+            self._data_locations_dialog.inspection_changed.connect(
+                self._update_storage_notification
+            )
+            self._data_locations_dialog.destroyed.connect(
+                lambda _object=None: setattr(
+                    self,
+                    "_data_locations_dialog",
+                    None,
+                )
+            )
+        self._data_locations_dialog.show()
+        self._data_locations_dialog.raise_()
+        self._data_locations_dialog.activateWindow()
+
+    def _show_hms_backup(self, profile_ids: tuple[str, ...] = ()) -> None:
+        if self._hms_backup_service is None or self._user_profile_service is None:
+            return
+        if self._backup_dialog is None:
+            self._backup_dialog = BackupWizardDialog(
+                self._hms_backup_service,
+                self._user_profile_service,
+                self,
+            )
+            if profile_ids:
+                for identifier, checkbox in self._backup_dialog._profile_checks.items():
+                    checkbox.setChecked(identifier in profile_ids)
+            self._backup_dialog.destroyed.connect(
+                lambda _object=None: setattr(self, "_backup_dialog", None)
+            )
+        self._backup_dialog.show()
+        self._backup_dialog.raise_()
+        self._backup_dialog.activateWindow()
+
+    def _show_hms_restore(self) -> None:
+        if self._hms_restore_service is None:
+            return
+        if self._restore_dialog is None:
+            self._restore_dialog = RestoreWizardDialog(
+                self._hms_restore_service,
+                self,
+            )
+            self._restore_dialog.destroyed.connect(
+                lambda _object=None: setattr(self, "_restore_dialog", None)
+            )
+        self._restore_dialog.show()
+        self._restore_dialog.raise_()
+        self._restore_dialog.activateWindow()
+
+    def _show_user_profiles(self) -> None:
+        if self._user_profile_service is None:
+            return
+        if self._profiles_dialog is None:
+            self._profiles_dialog = UserProfilesDialog(
+                self._user_profile_service,
+                switch_callback=self._switch_user_profile,
+                parent=self,
+            )
+            self._profiles_dialog.backup_requested.connect(self._show_hms_backup)
+            self._profiles_dialog.restore_requested.connect(self._show_hms_restore)
+            self._profiles_dialog.destroyed.connect(
+                lambda _object=None: setattr(self, "_profiles_dialog", None)
+            )
+        self._profiles_dialog.show()
+        self._profiles_dialog.raise_()
+        self._profiles_dialog.activateWindow()
+
+    def _switch_user_profile(self, profile_id: str) -> ProfileSwitchReport:
+        if self._user_profile_service is None:
+            raise ProfileError("User profile service is unavailable")
+        report = self._user_profile_service.switch(
+            profile_id,
+            capture_current=self._capture_active_profile,
+            apply_profile=self._apply_user_profile,
+            capture_invariants=self._profile_switch_invariants,
+        )
+        self.statusBar().showMessage(
+            ui_text("Profile switched without changing the workspace or project.")
+            if report.success
+            else ui_text("Profile switch failed; the previous profile was restored."),
+            8000,
+        )
+        self._update_active_profile_status()
+        return report
+
+    def _update_active_profile_status(self) -> None:
+        if not hasattr(self, "_profile_status"):
+            return
+        if self._user_profile_service is None:
+            self._profile_status.hide()
+            return
+        try:
+            index = self._user_profile_service.load_index()
+            profile = self._user_profile_service.load(index.active_profile_id)
+        except (OSError, RuntimeError, ValueError, TypeError, ProfileError):
+            self._profile_status.hide()
+            return
+        self._profile_status.setProperty("localizationAuditDomainText", True)
+        self._profile_status.setText(
+            ui_text("Active profile: {0} · {1}").format(
+                profile.display_name,
+                profile.locale,
+            )
+        )
+        self._profile_status.show()
+
+    def _capture_active_profile(self, profile: UserProfile) -> UserProfile:
+        commands = self._profile_command_registry()
+        shortcuts = {
+            command_id: action.shortcut().toString(QKeySequence.SequenceFormat.PortableText)
+            for command_id, action in commands.items()
+            if not action.shortcut().isEmpty()
+        }
+        quick_access = tuple(
+            str(action.property("profileCommandId"))
+            for action in self._quick_access_toolbar.actions()
+            if action.property("profileCommandId")
+        )
+        ui_state = {
+            "geometry_base64": bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            "dock_state_base64": bytes(self.saveState(1).toBase64()).decode("ascii"),
+            "ribbon_visible": self._ribbon.isVisible(),
+            "toolbar_visible": self._quick_access_toolbar.isVisible(),
+        }
+        return replace(
+            profile,
+            locale=self._translation_service.language.value,
+            ui_state=ui_state,
+            shortcuts=shortcuts,
+            quick_access=quick_access,
+            updated_at_utc=datetime.now(timezone.utc).isoformat(),
+            layout_description=profile.layout_description or "HMS",
+        )
+
+    def _apply_user_profile(self, profile: UserProfile) -> None:
+        commands = self._profile_command_registry()
+        shortcut_targets: dict[str, QAction] = {}
+        normalized_shortcuts: dict[str, QKeySequence] = {}
+        reserved = {"ALT+F4", "CTRL+ALT+DELETE", "CTRL+Q"}
+        used: set[str] = set()
+        for command_id, shortcut in profile.shortcuts.items():
+            action = commands.get(command_id)
+            if action is None:
+                raise ProfileError(f"Unknown shortcut command ID: {command_id}")
+            sequence = QKeySequence(shortcut)
+            portable = sequence.toString(QKeySequence.SequenceFormat.PortableText).upper()
+            if sequence.isEmpty() or portable in reserved or portable in used:
+                raise ProfileError("Shortcut is invalid, reserved or conflicting")
+            used.add(portable)
+            shortcut_targets[command_id] = action
+            normalized_shortcuts[command_id] = sequence
+        quick_actions = [commands[item] for item in profile.quick_access if item in commands]
+        for command_id, sequence in normalized_shortcuts.items():
+            shortcut_targets[command_id].setShortcut(sequence)
+        if quick_actions:
+            self._quick_access_toolbar.clear()
+            for action in quick_actions:
+                self._quick_access_toolbar.addAction(action)
+        state = profile.ui_state
+        geometry = str(state.get("geometry_base64", ""))
+        dock_state = str(state.get("dock_state_base64", ""))
+        if geometry:
+            self.restoreGeometry(QByteArray.fromBase64(geometry.encode("ascii")))
+        if dock_state and not self.restoreState(
+            QByteArray.fromBase64(dock_state.encode("ascii")), 1
+        ):
+            raise ProfileError("Profile dock state is incompatible")
+        self._quick_access_toolbar.setVisible(bool(state.get("toolbar_visible", True)))
+        self._ribbon.setVisible(bool(state.get("ribbon_visible", True)))
+        locale = UiLanguage.coerce(profile.locale)
+        self._translation_service.set_language(locale)
+        if not self._locale_settings.save(locale):
+            raise ProfileError("Profile locale could not be persisted")
+        clamp_window_to_available_screens(self)
+
+    def _profile_command_registry(self) -> dict[str, QAction]:
+        registry = {
+            f"project.{key}": action
+            for key, action in self.project_controller.actions.items()
+        }
+        registry.update(
+            {f"cad.{key}": action for key, action in self.cad_controller.actions.items()}
+        )
+        for command_id, action in registry.items():
+            action.setProperty("profileCommandId", command_id)
+        return registry
+
+    def _profile_switch_invariants(self) -> tuple[object, object]:
+        workspace = self.workspace_bar.active_workspace.value
+        project = (
+            id(self._project_service.current_project),
+            id(self._project_service.current_document),
+            self._project_service.is_dirty,
+            self.cad_controller.active_document_id,
+            self.cad_controller.active_source_id,
+            tuple(item.selection_id for item in self._active_selection),
+            self.cam_workspace.selected_identity,
+            self.cam_workspace._active_editor_operation_id,
+            id(self.cam_workspace._parallel_task),
+            id(self.cam_workspace._z_level_task),
+            id(self.cam_workspace._simulation_handle),
+            self.cam_workspace._simulation_project_id,
+            self.cam_workspace.post_tabs.currentIndex(),
+            getattr(self._project_service, "_project_session_id", None),
+        )
+        return workspace, project
+
+    def _update_storage_notification(self, inspection: object = None) -> None:
+        if self._storage_notification is None or self._storage_bootstrap is None:
+            return
+        current = inspection or self._storage_bootstrap.inspect()
+        self._storage_notification.update_inspection(current)
+
     def _language_changed(self, language: object) -> None:
         """Retranslate presentation only; project and worker state stay intact."""
         selected = UiLanguage.coerce(language)
@@ -740,12 +1072,25 @@ class MainWindow(QMainWindow):
             if callable(retranslate):
                 retranslate(selected)
         self.viewport.retranslate_status()
+        self.operation_manager_host.retranslate_ui(selected)
+        if self._project_service.current_project is not None:
+            self._update_project_display(self._project_service.current_project)
         self._update_notification_center_text(
             len(self.project_controller.incoming_requests)
         )
         self._retranslate_output_log()
         if self._language_dialog is not None:
             self._language_dialog.retranslate_ui(selected)
+        if self._data_locations_dialog is not None:
+            self._data_locations_dialog.retranslate_ui(selected)
+        if self._storage_notification is not None:
+            self._storage_notification.retranslate_ui(selected)
+        if self._backup_dialog is not None:
+            self._backup_dialog.retranslate_ui(selected)
+        if self._restore_dialog is not None:
+            self._restore_dialog.retranslate_ui(selected)
+        if self._profiles_dialog is not None:
+            self._profiles_dialog.retranslate_ui(selected)
 
     def refresh_localized_layout(
         self,
@@ -1394,9 +1739,23 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> None:
         status = self.statusBar()
         status.showMessage("Sẵn sàng")
+        if self._storage_bootstrap is not None:
+            self._storage_notification = StorageNotificationBar(self)
+            self._storage_notification.details_requested.connect(
+                self._show_data_locations
+            )
+            self._storage_notification.recheck_requested.connect(
+                self._update_storage_notification
+            )
+            status.addWidget(self._storage_notification, 2)
+            self._update_storage_notification()
         self._project_status = QLabel("KHÔNG CÓ DỰ ÁN")
         self._project_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._project_status, 1)
+        self._profile_status = QLabel()
+        self._profile_status.setObjectName("StatusLabel")
+        status.addPermanentWidget(self._profile_status)
+        self._update_active_profile_status()
         self._import_status = QLabel("CAD: Sẵn sàng")
         self._import_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._import_status, 1)
@@ -1494,14 +1853,21 @@ class MainWindow(QMainWindow):
             self._append_cad_document_node(root)
             root.setDisabled(self._active_document_metadata is None)
             self._project_tree.addTopLevelItem(root)
-            self.setWindowTitle("HMS CAD/CAM — Thiết kế")
-            self._project_status.setText("KHÔNG CÓ DỰ ÁN")
+            self.setWindowTitle(ui_text("HMS CAD/CAM — Design"))
+            self._project_status.setText(ui_text("NO PROJECT"))
             self._tree_sync_guard = False
             return
         dirty_marker = " *" if session.is_dirty else ""
-        root = QTreeWidgetItem([session.manifest.project_name, "Đã sửa" if session.is_dirty else "Đã lưu"])
-        root.addChild(QTreeWidgetItem(["Đơn vị", session.manifest.units.value]))
-        sources = QTreeWidgetItem(["Tệp nguồn", str(len(session.manifest.source_files))])
+        root = QTreeWidgetItem(
+            [
+                session.manifest.project_name,
+                ui_text("Edited") if session.is_dirty else ui_text("Saved"),
+            ]
+        )
+        root.addChild(QTreeWidgetItem([ui_text("Units"), session.manifest.units.value]))
+        sources = QTreeWidgetItem(
+            [ui_text("Source files"), str(len(session.manifest.source_files))]
+        )
         for record in session.manifest.source_files:
             source_item = QTreeWidgetItem(
                 [record.original_name, record.sha256[:12]]
@@ -1509,13 +1875,13 @@ class MainWindow(QMainWindow):
             if record.internal_filename:
                 source_item.addChild(
                     QTreeWidgetItem(
-                        ["Bản sao nội bộ", record.internal_filename]
+                        [ui_text("Internal copy"), record.internal_filename]
                     )
                 )
             if record.working_geometry_path:
                 source_item.addChild(
                     QTreeWidgetItem(
-                        ["Hình học làm việc", record.working_geometry_path]
+                        [ui_text("Working geometry"), record.working_geometry_path]
                     )
                 )
             sources.addChild(source_item)
@@ -1526,10 +1892,15 @@ class MainWindow(QMainWindow):
         root.setExpanded(True)
         sources.setExpanded(True)
         self.setWindowTitle(
-            f"HMS CAD/CAM — Dự án CAM — "
+            f"{ui_text('HMS CAD/CAM — CAM project')} — "
             f"{session.manifest.project_name}{dirty_marker}"
         )
-        self._project_status.setText(f"DỰ ÁN CAM: {session.root_path}")
+        self._project_status.setProperty("localizationAuditDomainText", True)
+        self._project_status.setText(
+            f"{ui_text('CAM PROJECT')}: "
+            f"{session.manifest.project_name}{dirty_marker}"
+        )
+        self._project_status.setToolTip(str(session.root_path))
         self._tree_sync_guard = False
 
     def _handle_project_change(self, session: object) -> None:
@@ -2272,6 +2643,20 @@ class MainWindow(QMainWindow):
                 function_editor=self.function_editor_dock,
                 diagnostics=self.output_dock,
             )
+            if self._user_profile_service is not None:
+                try:
+                    index = self._user_profile_service.load_index()
+                    active = self._user_profile_service.load(index.active_profile_id)
+                    self._user_profile_service.save(
+                        self._capture_active_profile(active)
+                    )
+                except (OSError, RuntimeError, ValueError, TypeError, ProfileError):
+                    # Project close remains authoritative; profile persistence
+                    # failure is reported without changing project semantics.
+                    self.statusBar().showMessage(
+                        ui_text("Profile switch failed; the previous profile was restored."),
+                        8000,
+                    )
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()

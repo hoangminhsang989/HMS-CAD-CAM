@@ -22,6 +22,8 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication, QWidget
 
+from hms_cadcam.ui.storage_translations import STORAGE_TRANSLATIONS
+
 LOGGER = logging.getLogger(__name__)
 
 TranslationKey = NewType("TranslationKey", str)
@@ -226,6 +228,7 @@ class TranslationService(QObject):
             *CORE_TRANSLATIONS,
             *RIBBON_TRANSLATIONS,
             *LEGACY_TRANSLATIONS,
+            *STORAGE_TRANSLATIONS,
         ):
             self._reverse[english] = english
             self._reverse[vietnamese] = english
@@ -279,6 +282,8 @@ class TranslationService(QObject):
         text = str(value)
         if not text:
             return text
+        if any(text in catalog.entries for catalog in self._catalogs.values()):
+            return self._resolve(text, typed=False)
         key = self.canonical_key(text)
         if key is None:
             return text
@@ -1268,6 +1273,10 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         vi_entries[english] = vietnamese
         en_entries[english] = english
         ko_entries[english] = korean
+    for english, vietnamese, korean in STORAGE_TRANSLATIONS:
+        vi_entries[english] = vietnamese
+        en_entries[english] = english
+        ko_entries[english] = korean
     for vietnamese, english, korean in VIETNAMESE_SOURCE_TRANSLATIONS:
         vi_entries.setdefault(vietnamese, vietnamese)
         en_entries[vietnamese] = english
@@ -1468,6 +1477,7 @@ __all__ = [
     "LANGUAGE_SETTINGS_KEY",
     "LocaleSettingsService",
     "SAFE_FALLBACK_TEXT",
+    "STORAGE_TRANSLATIONS",
     "TranslationCatalog",
     "TranslationDiagnostic",
     "TranslationKey",

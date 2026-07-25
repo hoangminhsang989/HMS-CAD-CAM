@@ -63,6 +63,7 @@ DEFAULT_OUTPUT = (
     REPOSITORY_ROOT / "reference_private" / "DERIVED" / "UI_VIETNAMESE_AUDIT"
 )
 PRODUCTION_UI_ROOT = REPOSITORY_ROOT / "src" / "hms_cadcam" / "ui"
+_FORMAT_FIELD = re.compile(r"\{[^{}]+\}")
 
 APPROVED_TECHNICAL_TERMS = (
     "CAD",
@@ -630,10 +631,14 @@ def _classify(text: str, context: str) -> tuple[str, tuple[str, ...]]:
     stripped = text.strip()
     localized = ui_text(stripped)
     rendered = localized if context == "ui_text" else stripped
-    forbidden = _forbidden_phrase_matches(rendered)
+    rendered_for_audit = _FORMAT_FIELD.sub(" ", rendered)
+    forbidden = _forbidden_phrase_matches(rendered_for_audit)
     if forbidden:
         return "untranslated", forbidden
-    presentation = localized if localized != stripped else rendered
+    presentation = _FORMAT_FIELD.sub(
+        " ",
+        localized if localized != stripped else rendered,
+    )
     duplicate_phrases = duplicate_user_facing_phrase_matches(presentation)
     if duplicate_phrases:
         return "untranslated", duplicate_phrases

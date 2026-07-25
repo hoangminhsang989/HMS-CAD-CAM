@@ -23,6 +23,7 @@ from hms_cadcam.ui.i18n import (
     RIBBON_TRANSLATIONS,
     TECHNICAL_GLOSSARY,
     VIETNAMESE_SOURCE_TRANSLATIONS,
+    STORAGE_TRANSLATIONS,
 )
 from hms_cadcam.ui.localization import UI_TRANSLATIONS
 
@@ -48,6 +49,9 @@ def _combined_source() -> tuple[dict[str, str], dict[str, str]]:
         vietnamese[unavailable_key] = f"{vi_text} — chưa khả dụng"
         english[unavailable_key] = unavailable_key
     for source, vi_text, _ko_text in LEGACY_TRANSLATIONS:
+        vietnamese[source] = vi_text
+        english[source] = source
+    for source, vi_text, _ko_text in STORAGE_TRANSLATIONS:
         vietnamese[source] = vi_text
         english[source] = source
     for vi_source, en_text, _ko_text in VIETNAMESE_SOURCE_TRANSLATIONS:
@@ -148,6 +152,9 @@ def _reviewed_korean_overrides(keys: set[str]) -> dict[str, str]:
         if unavailable_key in keys:
             overrides[unavailable_key] = f"{ko_text} — 사용할 수 없음"
     for source, _vi_text, ko_text in LEGACY_TRANSLATIONS:
+        if source in keys:
+            overrides[source] = ko_text
+    for source, _vi_text, ko_text in STORAGE_TRANSLATIONS:
         if source in keys:
             overrides[source] = ko_text
     for vi_source, _en_text, ko_text in VIETNAMESE_SOURCE_TRANSLATIONS:

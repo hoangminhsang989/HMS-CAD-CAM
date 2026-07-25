@@ -1,11 +1,53 @@
-# Nhiệm vụ hiện tại — Stage 8A.4.3
+# Nhiệm vụ hiện tại — Stage 8A.4.4
 
 ## Trạng thái ưu tiên
 
+- **Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu — COMPLETED.**
 - **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
 - **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
 - **Stage 8A.4.1 — Nền tảng cấu hình Tool theo chương trình — COMPLETED.**
 - **Stage 9A.I1 — DEFERRED.**
+
+Stage 8A.4.4 tách typed scope cho install read-only, dữ liệu machine-wide,
+preference/cache người dùng và document/CAM project do người dùng chọn. Root
+production đã chốt là `C:\HMS-CADCAM\`, `C:\ProgramData\HMS-CADCAM\`,
+`%APPDATA%\HMS-CADCAM\` và `%LOCALAPPDATA%\HMS-CADCAM\`; resolver không dùng
+CWD và test/review chỉ dùng injection sandbox rõ nguồn.
+
+- `ApplicationPathsService`, `StorageBootstrapService`, manifest layout v1,
+  path security fail-closed, atomic writer và resource lock là contract typed.
+- ProgramData có đúng 8 thư mục; AppData roaming/local phân trách nhiệm rõ,
+  thêm `Profiles` dưới Roaming và
+  không nhận dữ liệu project hoặc shared library sai scope.
+- Config precedence là user hợp lệ → machine-wide → built-in read-only → code
+  fallback; user không override policy machine bị khóa.
+- Backup machine-wide có checksum/retention; migration chỉ scan/preview/copy/
+  verify/atomic publish, giữ source cũ và loại trừ `.HMS`/project data.
+- `.BAKUPHMS` production hỗ trợ 14 category, user/machine scope, selective
+  backup/restore, strict validation, conflict action, backup-before-restore và
+  rollback; executable/project/secret/cache/log/temp luôn bị loại trừ.
+- Profile giao diện theo người dùng lưu atomic dưới Roaming bằng UUID, hỗ trợ
+  create/copy/rename/default/delete, backup/import-as-copy và chuyển runtime
+  locale/shortcut/Quick Access/layout mà giữ workspace/project/worker.
+- UI modeless `Cài đặt → Hệ thống → Vị trí dữ liệu` hỗ trợ VI/EN/KO, hiển thị
+  production target nhưng không cho đổi root; startup dùng cảnh báo không modal.
+- Review package R3 native Windows 40 PNG + 16 JSON + 1 Markdown đã được người
+  dùng duyệt; PNG/source mismatch và `visual_evidence_missing_count` đều bằng 0.
+- QA cuối đạt **122 passed** focused (baseline 116), **194 passed** regression
+  liên quan và **1870 passed, 2 deselected** toàn dự án; `pip check`,
+  `compileall src tests tools` và `git diff --check` đều PASS.
+
+Stage 8A.4.4 đã `COMPLETED`; chưa push và đang chờ chỉ định Stage tiếp theo.
+
+Không thay đổi SQLite schema v4, `.HMS`, CAM project-root, Tool payload,
+geometry transfer, CAM algorithms, Simulation/Post safety hoặc machine-ready.
+Chưa triển khai MSI/EXE installer, code signing, updater, UAC workflow, registry
+association, Program Templates behavior hay Production Post mới.
+
+Tài liệu contract: `docs/HMS_STORAGE_ARCHITECTURE_8A4_4.md`,
+`docs/HMS_BACKUP_RESTORE_8A4_4.md`, `docs/HMS_USER_PROFILES_8A4_4.md`.
+
+# Lịch sử — Stage 8A.4.3
 
 Stage 8A.4.3 bổ sung ngôn ngữ giao diện typed `VI_VN`, `EN_US` và `KO_KR`.
 Tiếng Việt luôn là mặc định và fallback ưu tiên; locale là preference người dùng,

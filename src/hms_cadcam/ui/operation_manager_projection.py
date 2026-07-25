@@ -14,6 +14,7 @@ from hms_cadcam.ui.localization import (
     operation_display_name,
     operation_type_display_name,
     setup_display_name,
+    ui_text,
 )
 from hms_cadcam.ui.operation_manager_status import (
     calculation_status,
@@ -160,10 +161,10 @@ class OperationManagerProjectionBuilder:
         project_status = status(
             StatusCategory.DOMAIN,
             SemanticStatus.DRAFT if session.is_dirty else SemanticStatus.CURRENT,
-            "CHƯA LƯU" if session.is_dirty else "ĐÃ LƯU",
-            "Dự án có thay đổi chưa lưu."
+            ui_text("Unsaved") if session.is_dirty else ui_text("Saved"),
+            ui_text("Project has unsaved changes.")
             if session.is_dirty
-            else "Dự án khớp trạng thái đã lưu.",
+            else ui_text("Project matches the saved state."),
         )
         project_node = collector.add(
             NodeKind.PROJECT,
@@ -171,7 +172,9 @@ class OperationManagerProjectionBuilder:
             project_id,
             None,
             session.manifest.project_name,
-            f"{len(snapshot.jobs)} công việc · {operation_count} nguyên công",
+            ui_text("{0} jobs · {1} operations").format(
+                len(snapshot.jobs), operation_count
+            ),
             (project_status,),
             counts=(("jobs", len(snapshot.jobs)), ("operations", operation_count)),
             default_expanded=True,
@@ -182,14 +185,14 @@ class OperationManagerProjectionBuilder:
                 EntityKind.PROJECT,
                 project_id,
                 project_node,
-                "Chưa có công việc CAM",
-                "Dự án CAD hiện chưa có dữ liệu CAM.",
+                ui_text("No CAM jobs"),
+                ui_text("The CAD project has no CAM data yet."),
                 (
                     status(
                         StatusCategory.DOMAIN,
                         SemanticStatus.DRAFT,
-                        "CHỈ CÓ CAD",
-                        "Tạo công việc CAM khi sẵn sàng lập trình gia công.",
+                        ui_text("CAD only"),
+                        ui_text("Create a CAM job when machining programming is ready."),
                     ),
                 ),
                 enabled=True,

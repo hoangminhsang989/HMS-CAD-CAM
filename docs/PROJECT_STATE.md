@@ -1,5 +1,38 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu
+
+- Stage 8A.4.4 đã **COMPLETED** trên baseline `3b70b5c`; package GUI R3 đã
+  được người dùng duyệt và chưa có stage kế tiếp được bắt đầu.
+- Install root production là `C:\HMS-CADCAM\` và read-only khi runtime chạy.
+  Machine shared root là `C:\ProgramData\HMS-CADCAM\` với đúng `Tool-Library`,
+  `Program-Templates`, `Posts`, `Machines`, `Materials`, `Config`, `Schemas`,
+  `Backups`.
+- Roaming AppData giữ Config/UI-State/Profiles; Local AppData giữ Cache/Logs/Temp/Crash.
+  `.HMS` và CAM project vẫn ở vị trí người dùng chọn, không tự chuyển scope.
+- Resolver dùng Windows Known Folders và typed injection cho test/review, không
+  dùng CWD hay environment override production. Bootstrap tạo phần được phép,
+  ghi `storage-layout.json` atomic và rollback chỉ thư mục mới/rỗng khi lỗi.
+- Security chặn traversal, root escape, UNC mặc định, reparse/symlink/junction,
+  reserved name, trailing dot/space, invalid character, case/file collision và
+  target không hỗ trợ atomic rename.
+- Config precedence, lock theo resource, checksum/read-after-write, backup
+  retention và migration non-destructive đã có nền tảng production/test.
+- `.BAKUPHMS` đã có typed manifest/checksum, 14 category, selective creation,
+  validation fail-closed, preview/conflict/permission, atomic restore/rollback
+  và tách scope USER_ROAMING/MACHINE_SHARED; không chứa project/executable/secret.
+- User profile UI đã có index/component checksum, UUID directory, CRUD/default,
+  backup/import-as-copy và runtime switch VI/EN/KO với invariant bảo vệ
+  workspace, project, selection, dirty state, CAM worker, Simulation/Post.
+- UI `Vị trí dữ liệu` và startup diagnostic không modal hỗ trợ VI/EN/KO,
+  accessibility và DPI 100/125/150; không có nút đổi root production.
+- QA cuối đạt **122 passed** focused, **194 passed** regression liên quan và
+  **1870 passed, 2 deselected** toàn dự án; package Git-ignored đúng 57 file
+  (40 PNG, 16 JSON, 1 Markdown), PNG/source mismatch và visual evidence missing
+  đều bằng 0.
+- SQLite vẫn schema v4; project/container, Tool v1/v2, CAM calculation và
+  Simulation/Post fail-closed không đổi.
+
 ## Stage 8A.4.3 — Hệ thống đa ngôn ngữ
 
 - Stage 8A.4.3 đã **COMPLETED** trên baseline `4f7e8d7` sau khi người dùng duyệt

@@ -3528,7 +3528,7 @@ class CamWorkspace(QWidget):
         else:
             snapshot = self._service.cam_snapshot
             if not snapshot.jobs:
-                item = QTreeWidgetItem(["Chưa có công việc CAM", "MISSING"])
+                item = QTreeWidgetItem([ui_text("No CAM jobs"), "MISSING"])
                 item.setDisabled(True)
                 self.tree.addTopLevelItem(item)
             for job in snapshot.jobs:

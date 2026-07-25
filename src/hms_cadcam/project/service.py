@@ -179,7 +179,13 @@ class ProjectService:
         self._project_session_id: UUID | None = None
 
     @classmethod
-    def create_default(cls, config_dir: Path) -> "ProjectService":
+    def create_default(
+        cls,
+        config_dir: Path,
+        *,
+        document_runtime_root: Path | None = None,
+        default_document_directory: Path | None = None,
+    ) -> "ProjectService":
         """Build the default project service graph for the application."""
         manifest_store = ProjectManifestStore()
         validator = ProjectValidator()
@@ -231,8 +237,8 @@ class ProjectService:
             cam_application=CamApplicationService(artifact_store),
             nc_export_service=NCExportService(nc_artifact_store),
             document_container=HmsDocumentContainer(
-                config_dir / "document-runtime",
-                config_dir / "documents",
+                document_runtime_root or config_dir / "document-runtime",
+                default_document_directory or config_dir / "documents",
             ),
             geometry_inbox=GeometryTransferInbox(
                 manifest_store,
