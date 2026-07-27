@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QMargins, QSize, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -18,6 +20,112 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localization import ui_text
+from hms_cadcam.ui.ui_tokens import MAIN_MENU_CONTENT_LEFT_PADDING
+
+if TYPE_CHECKING:
+    from hms_cadcam.ui.settings.ui_scale import UiScaleManager
+
+
+_BASE_ICON_SIZE = QSize(24, 24)
+_BASE_RIBBON_HEIGHT = 112
+_BASE_PAGE_MARGINS = QMargins(4, 3, 4, 1)
+_BASE_PAGE_SPACING = 1
+_BASE_GROUP_MARGINS = QMargins(4, 4, 4, 4)
+_BASE_GROUP_SPACING = 2
+_BASE_ACTION_BUTTON_MINIMUM_WIDTH = 48
+_BASE_ACTION_BUTTON_PADDING_HORIZONTAL = 16
+_BASE_ACTION_BUTTON_PADDING_VERTICAL = 4
+_BASE_SEPARATOR_WIDTH = 1
+_BASE_TAB_SPACING = 2
+
+
+@dataclass(frozen=True, slots=True)
+class RibbonMetrics:
+    """Ribbon/menu geometry derived from the immutable 100% baseline."""
+
+    percent: int
+    icon_size: QSize
+    ribbon_height: int
+    page_margins: QMargins
+    page_spacing: int
+    group_margins: QMargins
+    group_spacing: int
+    action_button_minimum_width: int
+    action_button_padding_horizontal: int
+    action_button_padding_vertical: int
+    separator_width: int
+    menu_padding_left: int
+    tab_spacing: int
+
+    @property
+    def group_margin_left(self) -> int:
+        return self.group_margins.left()
+
+    @property
+    def group_margin_right(self) -> int:
+        return self.group_margins.right()
+
+    @property
+    def group_margin_top(self) -> int:
+        return self.group_margins.top()
+
+    @property
+    def group_margin_bottom(self) -> int:
+        return self.group_margins.bottom()
+
+    @classmethod
+    def from_scale_manager(cls, manager: UiScaleManager) -> "RibbonMetrics":
+        """Build one non-cumulative metric snapshot from baseline values."""
+
+        return cls(
+            percent=manager.current_percent,
+            icon_size=manager.scaled_icon_size(_BASE_ICON_SIZE, minimum=16),
+            ribbon_height=manager.scaled_int(_BASE_RIBBON_HEIGHT, minimum=80),
+            page_margins=manager.scaled_margins(_BASE_PAGE_MARGINS, minimum=1),
+            page_spacing=manager.scaled_int(_BASE_PAGE_SPACING, minimum=1),
+            group_margins=manager.scaled_margins(
+                _BASE_GROUP_MARGINS, minimum=1
+            ),
+            group_spacing=manager.scaled_int(_BASE_GROUP_SPACING, minimum=1),
+            action_button_minimum_width=manager.scaled_int(
+                _BASE_ACTION_BUTTON_MINIMUM_WIDTH, minimum=24
+            ),
+            action_button_padding_horizontal=manager.scaled_int(
+                _BASE_ACTION_BUTTON_PADDING_HORIZONTAL, minimum=4
+            ),
+            action_button_padding_vertical=manager.scaled_int(
+                _BASE_ACTION_BUTTON_PADDING_VERTICAL, minimum=1
+            ),
+            separator_width=manager.scaled_int(
+                _BASE_SEPARATOR_WIDTH, minimum=1
+            ),
+            menu_padding_left=manager.scaled_int(
+                MAIN_MENU_CONTENT_LEFT_PADDING, minimum=1
+            ),
+            tab_spacing=manager.scaled_int(_BASE_TAB_SPACING, minimum=1),
+        )
+
+
+def ribbon_menu_style_sheet(metrics: RibbonMetrics) -> str:
+    """Return the scoped menu stylesheet for one metric snapshot."""
+
+    return (
+        "QMenuBar#MainMenuBar { "
+        f"padding-left: {metrics.menu_padding_left}px; "
+        "}"
+    )
+
+
+def _ribbon_style_sheet(metrics: RibbonMetrics) -> str:
+    return (
+        "QTabWidget#RibbonTabs QToolButton#RibbonButton { "
+        f"padding: {metrics.action_button_padding_vertical // 2}px "
+        f"{metrics.action_button_padding_horizontal // 2}px; "
+        "}\n"
+        "QTabWidget#RibbonTabs QTabBar::tab { "
+        f"margin-right: {metrics.tab_spacing}px; "
+        "}"
+    )
 
 
 class RibbonWidget(QTabWidget):
@@ -30,20 +138,57 @@ class RibbonWidget(QTabWidget):
         parent: QWidget | None = None,
         *,
         workspace_actions: Mapping[str, QAction] | None = None,
+        ui_scale_manager: UiScaleManager | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_actions = project_actions or {}
         self._cad_actions = cad_actions or {}
         self._workspace_actions = workspace_actions or {}
+        self._ui_scale_manager = ui_scale_manager
         self._action_buttons: list[tuple[QToolButton, QAction]] = []
         self._command_buttons: list[tuple[QToolButton, str, str]] = []
+        self._page_layouts: list[QHBoxLayout] = []
+        self._group_layouts: list[QHBoxLayout] = []
+        self._metrics: RibbonMetrics | None = None
         self.setObjectName("RibbonTabs")
         self.setDocumentMode(True)
-        self.setIconSize(QSize(24, 24))
-        self.setFixedHeight(112)
+        self.setIconSize(_BASE_ICON_SIZE)
+        self.setFixedHeight(_BASE_RIBBON_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._build_tabs()
         self.retranslate_ui()
+        if self._ui_scale_manager is not None:
+            self._ui_scale_manager.preview_changed.connect(self.apply_ui_scale)
+            self._ui_scale_manager.scale_changed.connect(self.apply_ui_scale)
+            self.apply_ui_scale()
+
+    @property
+    def metrics(self) -> RibbonMetrics | None:
+        """Return the last applied immutable metric snapshot."""
+
+        return self._metrics
+
+    def apply_ui_scale(self, _percent: int | None = None) -> None:
+        """Apply logical ribbon metrics from the injected baseline scale."""
+        manager = self._ui_scale_manager
+        if manager is None:
+            return
+        metrics = RibbonMetrics.from_scale_manager(manager)
+        self._metrics = metrics
+        self.setIconSize(metrics.icon_size)
+        self.tabBar().setIconSize(metrics.icon_size)
+        self.setFixedHeight(metrics.ribbon_height)
+        for layout in self._page_layouts:
+            layout.setContentsMargins(metrics.page_margins)
+            layout.setSpacing(metrics.page_spacing)
+        for layout in self._group_layouts:
+            layout.setContentsMargins(metrics.group_margins)
+            layout.setSpacing(metrics.group_spacing)
+        self.setStyleSheet(_ribbon_style_sheet(metrics))
+        for button, _action in self._action_buttons:
+            self._apply_button_metrics(button)
+        for button, _source, _glyph in self._command_buttons:
+            self._apply_button_metrics(button)
 
     def _build_tabs(self) -> None:
         self.addTab(
@@ -78,6 +223,14 @@ class RibbonWidget(QTabWidget):
                         tuple(
                             self._workspace_actions[key]
                             for key in ("post_assembly",)
+                            if key in self._workspace_actions
+                        ),
+                    ),
+                    (
+                        "Settings",
+                        tuple(
+                            self._workspace_actions[key]
+                            for key in ("general_settings",)
                             if key in self._workspace_actions
                         ),
                     ),
@@ -151,8 +304,9 @@ class RibbonWidget(QTabWidget):
         page = QFrame()
         page.setObjectName("RibbonPage")
         layout = QHBoxLayout(page)
-        layout.setContentsMargins(4, 3, 4, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(_BASE_PAGE_MARGINS)
+        layout.setSpacing(_BASE_PAGE_SPACING)
+        self._page_layouts.append(layout)
         for title, commands in groups:
             layout.addWidget(self._group(title, commands))
         layout.addStretch(1)
@@ -162,8 +316,9 @@ class RibbonWidget(QTabWidget):
         group = QGroupBox(title)
         group.setObjectName("RibbonGroup")
         layout = QHBoxLayout(group)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(_BASE_GROUP_MARGINS)
+        layout.setSpacing(_BASE_GROUP_SPACING)
+        self._group_layouts.append(layout)
         # Keep the compact ribbon markers in the core Windows fonts used by
         # all supported locales; the previous diamond/triangle glyphs are
         # absent from Segoe UI and produced false missing-glyph/tofu hits.
@@ -236,4 +391,38 @@ class RibbonWidget(QTabWidget):
             button.fontMetrics().horizontalAdvance(line)
             for line in displayed.splitlines()
         )
-        button.setMinimumWidth(max(48, widest_line + 16))
+        metrics = self._metrics
+        minimum_width = (
+            metrics.action_button_minimum_width
+            if metrics is not None
+            else _BASE_ACTION_BUTTON_MINIMUM_WIDTH
+        )
+        horizontal_padding = (
+            metrics.action_button_padding_horizontal
+            if metrics is not None
+            else _BASE_ACTION_BUTTON_PADDING_HORIZONTAL
+        )
+        button.setMinimumWidth(
+            max(minimum_width, widest_line + horizontal_padding)
+        )
+
+    def _apply_button_metrics(self, button: QToolButton) -> None:
+        """Recompute text-dependent width without scaling runtime geometry."""
+
+        displayed_lines = button.text().splitlines() or ("",)
+        widest_line = max(
+            button.fontMetrics().horizontalAdvance(line)
+            for line in displayed_lines
+        )
+        metrics = self._metrics
+        if metrics is None:
+            return
+        button.setMinimumWidth(
+            max(
+                metrics.action_button_minimum_width,
+                widest_line + metrics.action_button_padding_horizontal,
+            )
+        )
+
+
+__all__ = ["RibbonMetrics", "RibbonWidget", "ribbon_menu_style_sheet"]

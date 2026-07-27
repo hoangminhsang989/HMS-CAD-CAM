@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -18,13 +19,19 @@ from typing import Any, Protocol
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QItemSelectionModel,
     QModelIndex,
     QObject,
+    QPoint,
     QSignalBlocker,
+    QSize,
+    QTimer,
     Qt,
     Signal,
 )
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QGroupBox,
     QHBoxLayout,
@@ -45,6 +52,7 @@ from hms_cadcam.ui.localization import (
     translate_status,
     ui_text,
 )
+from hms_cadcam.ui.settings.ui_scale import UiScaleManager
 from hms_cadcam.ui.post_assembly_projection import (
     DiagnosticSeverity,
     OperationArtifactState,
@@ -514,6 +522,24 @@ class PostAssemblyPanelState:
     worker_identity: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PostAssemblyScrollSnapshot:
+    """Semantic table viewport anchor captured before presentation rescale."""
+
+    current_operation_id: str | None
+    current_row: int | None
+    selected_operation_ids: tuple[str, ...]
+    top_visible_operation_id: str | None
+    top_visible_row: int | None
+    top_visible_offset_px: int | None
+    current_row_offset_px: int | None
+    horizontal_value: int
+    horizontal_normalized_position: float
+    vertical_normalized_position: float
+    source_scale_percent: int
+    viewport_size: QSize
+
+
 class UnifiedPostAssemblyPanel(QWidget):
     """WP2 panel shell with explicit action/capability boundaries."""
 
@@ -538,6 +564,14 @@ class UnifiedPostAssemblyPanel(QWidget):
         self._selected_operation_id: str | None = None
         self._source_selected_operation_id: str | None = None
         self._state = PostAssemblyPanelState()
+        self._responsive_layout_guard = False
+        self._ui_scale_percent = 100
+        self._scroll_restore_generation = 0
+        self._scroll_restore_scheduled = False
+        self._pending_scroll_snapshot: PostAssemblyScrollSnapshot | None = None
+        self._scale_scroll_anchor: PostAssemblyScrollSnapshot | None = None
+        self._pending_scroll_clear_anchor = False
+        self._extreme_compact_controls = False
         self.model = PostAssemblyOperationTableModel(parent=self)
         self.operation_model = self.model
         self.table_model = self.model
@@ -758,6 +792,7 @@ class UnifiedPostAssemblyPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
         header = QHBoxLayout()
+        self._header_layout = header
         self.title_label = QLabel(ui_text("Post / Program Assembly"))
         self.title_label.setObjectName("PostAssemblyTitle")
         self.title_label.setAccessibleName(ui_text("Post / Program Assembly"))
@@ -780,6 +815,9 @@ class UnifiedPostAssemblyPanel(QWidget):
         )
         table_layout = QVBoxLayout(self.operation_table_group)
         self.operation_table = QTableView()
+        self.operation_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored
+        )
         self.operation_table.setObjectName("PostAssemblyOperationTable")
         self.operation_table.setAccessibleName(ui_text("Operation table"))
         self.operation_table.setModel(self.model)
@@ -798,6 +836,7 @@ class UnifiedPostAssemblyPanel(QWidget):
         root.addWidget(self.operation_table_group, 1)
 
         source_bar = QHBoxLayout()
+        self._source_bar_layout = source_bar
         self.source_operation_label = QLabel(ui_text("Operation"))
         self.source_operation_label.setObjectName("PostAssemblySourceOperationLabel")
         self.source_operation_picker = QComboBox()
@@ -812,6 +851,7 @@ class UnifiedPostAssemblyPanel(QWidget):
         root.insertLayout(2, source_bar)
 
         action_bar = QHBoxLayout()
+        self._action_bar_layout = action_bar
         self.add_button = self._button("Add", "PostAssemblyAddOperationButton")
         self.remove_button = self._button("Remove", "PostAssemblyRemoveOperationButton")
         self.move_up_button = self._button("Move Up", "PostAssemblyMoveUpButton")
@@ -870,6 +910,311 @@ class UnifiedPostAssemblyPanel(QWidget):
             footer.addWidget(button)
         footer.addStretch(1)
         root.addLayout(footer)
+
+    def capture_scroll_snapshot(self) -> PostAssemblyScrollSnapshot | None:
+        """Capture semantic table anchors while the table is visible."""
+
+        table = self.operation_table
+        viewport = table.viewport()
+        if not table.isVisible() or not viewport.isVisible():
+            return None
+        model = self.model
+        if model.rowCount() <= 0:
+            return None
+        selection_model = table.selectionModel()
+        selected_ids = tuple(
+            operation_id
+            for operation_id in (
+                model.operation_id_at(index.row())
+                for index in sorted(
+                    selection_model.selectedRows(), key=lambda item: item.row()
+                )
+            )
+            if operation_id is not None
+        )
+        current_index = table.currentIndex()
+        current_operation_id = model.operation_id_at(current_index.row())
+        if current_operation_id is None and selected_ids:
+            current_operation_id = selected_ids[0]
+        top_index = table.indexAt(QPoint(1, 1))
+        if not top_index.isValid():
+            top_row = table.verticalHeader().logicalIndexAt(0)
+            top_index = model.index(top_row, 0) if top_row >= 0 else QModelIndex()
+        top_visible_row = top_index.row() if top_index.isValid() else None
+        top_operation_id = model.operation_id_at(top_visible_row)
+        top_offset = (
+            table.visualRect(top_index).top() if top_index.isValid() else None
+        )
+        current_offset = (
+            table.visualRect(current_index).top()
+            if current_index.isValid()
+            else None
+        )
+        vertical = table.verticalScrollBar()
+        vertical_span = max(0, vertical.maximum() - vertical.minimum())
+        vertical_normalized = (
+            (vertical.value() - vertical.minimum()) / vertical_span
+            if vertical_span
+            else 0.0
+        )
+
+        horizontal = table.horizontalScrollBar()
+        horizontal_span = max(0, horizontal.maximum() - horizontal.minimum())
+        horizontal_normalized = (
+            (horizontal.value() - horizontal.minimum()) / horizontal_span
+            if horizontal_span
+            else 0.0
+        )
+        return PostAssemblyScrollSnapshot(
+            current_operation_id=current_operation_id,
+            current_row=current_index.row() if current_index.isValid() else None,
+            selected_operation_ids=selected_ids,
+            top_visible_operation_id=top_operation_id,
+            top_visible_row=top_visible_row,
+            top_visible_offset_px=top_offset,
+            current_row_offset_px=current_offset,
+            horizontal_value=horizontal.value(),
+            horizontal_normalized_position=horizontal_normalized,
+            vertical_normalized_position=vertical_normalized,
+            source_scale_percent=self._ui_scale_percent,
+            viewport_size=QSize(viewport.size()),
+        )
+
+    def restore_scroll_snapshot(
+        self, snapshot: PostAssemblyScrollSnapshot
+    ) -> None:
+        """Restore semantic selection and viewport anchors after layout settles."""
+
+        if not isinstance(snapshot, PostAssemblyScrollSnapshot):
+            raise TypeError("snapshot must be PostAssemblyScrollSnapshot")
+        table = self.operation_table
+        model = self.model
+        if not table.isVisible() or model.rowCount() <= 0:
+            return
+        operation_ids = tuple(
+            model.operation_id_at(row) for row in range(model.rowCount())
+        )
+        known_ids = {item for item in operation_ids if item is not None}
+        selected_target = next(
+            (item for item in snapshot.selected_operation_ids if item in known_ids),
+            None,
+        )
+        current_target = (
+            snapshot.current_operation_id
+            if snapshot.current_operation_id in known_ids
+            else selected_target
+        )
+        if current_target is None and snapshot.current_row is not None:
+            fallback_current_row = max(
+                0, min(snapshot.current_row, model.rowCount() - 1)
+            )
+            current_target = model.operation_id_at(fallback_current_row)
+        if selected_target is None and snapshot.selected_operation_ids:
+            selected_target = current_target
+        top_target = (
+            snapshot.top_visible_operation_id
+            if snapshot.top_visible_operation_id in known_ids
+            else current_target
+        )
+        if top_target is None and snapshot.top_visible_row is not None:
+            fallback_row = max(
+                0, min(snapshot.top_visible_row, model.rowCount() - 1)
+            )
+            top_target = model.operation_id_at(fallback_row)
+        selection_model = table.selectionModel()
+        with QSignalBlocker(model), QSignalBlocker(selection_model):
+            model.set_selected_operation(selected_target)
+            selection_model.clearSelection()
+            if selected_target is not None:
+                selected_index = model.index(
+                    model.row_for_operation_id(selected_target), 0
+                )
+                selection_model.select(
+                    selected_index,
+                    QItemSelectionModel.SelectionFlag.Select
+                    | QItemSelectionModel.SelectionFlag.Rows,
+                )
+            if current_target is not None:
+                current_index = model.index(
+                    model.row_for_operation_id(current_target), 0
+                )
+                selection_model.setCurrentIndex(
+                    current_index, QItemSelectionModel.SelectionFlag.Current
+                )
+        self._selected_operation_id = selected_target
+        self._state = replace(
+            self._state, selected_operation_id=selected_target
+        )
+        self._refresh_action_state()
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        table.viewport().update()
+        target_index = (
+            model.index(model.row_for_operation_id(top_target), 0)
+            if top_target is not None
+            else QModelIndex()
+        )
+        if target_index.isValid():
+            table.scrollTo(
+                target_index, QAbstractItemView.ScrollHint.PositionAtTop
+            )
+            target_offset = snapshot.top_visible_offset_px
+            if (
+                target_offset is not None
+                and table.verticalScrollMode()
+                == QAbstractItemView.ScrollMode.ScrollPerPixel
+            ):
+                actual_offset = table.visualRect(target_index).top()
+                vertical = table.verticalScrollBar()
+                vertical.setValue(
+                    vertical.value() + actual_offset - target_offset
+                )
+        else:
+            vertical = table.verticalScrollBar()
+            span = max(0, vertical.maximum() - vertical.minimum())
+            vertical.setValue(
+                vertical.minimum()
+                + round(snapshot.vertical_normalized_position * span)
+            )
+        if current_target is not None:
+            current_index = model.index(
+                model.row_for_operation_id(current_target), 0
+            )
+            current_rect = table.visualRect(current_index)
+            if (
+                current_index.isValid()
+                and not (
+                    current_rect.bottom() >= 0
+                    and current_rect.top() < table.viewport().height()
+                )
+            ):
+                table.scrollTo(
+                    current_index,
+                    QAbstractItemView.ScrollHint.EnsureVisible,
+                )
+        horizontal = table.horizontalScrollBar()
+        horizontal_span = max(0, horizontal.maximum() - horizontal.minimum())
+        horizontal.setValue(
+            horizontal.minimum()
+            + round(snapshot.horizontal_normalized_position * horizontal_span)
+        )
+
+    def _schedule_scroll_restore(
+        self,
+        snapshot: PostAssemblyScrollSnapshot | None,
+        *,
+        clear_anchor: bool,
+    ) -> None:
+        self._scroll_restore_generation += 1
+        self._pending_scroll_snapshot = snapshot
+        self._pending_scroll_clear_anchor = clear_anchor
+        if snapshot is None or self._scroll_restore_scheduled:
+            return
+        self._scroll_restore_scheduled = True
+        generation = self._scroll_restore_generation
+        panel_ref = weakref.ref(self)
+
+        def restore_deferred() -> None:
+            panel = panel_ref()
+            if panel is None:
+                return
+            panel._scroll_restore_scheduled = False
+            pending = panel._pending_scroll_snapshot
+            clear_after_restore = panel._pending_scroll_clear_anchor
+            panel._pending_scroll_snapshot = None
+            panel._pending_scroll_clear_anchor = False
+            # A stale generation consumes only the latest coalesced snapshot.
+            if generation > panel._scroll_restore_generation:
+                return
+            if pending is not None:
+                try:
+                    panel.restore_scroll_snapshot(pending)
+                except RuntimeError:
+                    # Qt may delete a host between scheduling and dispatch.
+                    return
+            if clear_after_restore:
+                panel._scale_scroll_anchor = None
+
+        QTimer.singleShot(0, restore_deferred)
+
+    def apply_ui_scale(self, manager: UiScaleManager) -> None:
+        """Apply table metrics and restore semantic viewport anchors."""
+        if not isinstance(manager, UiScaleManager):
+            raise TypeError("manager must be UiScaleManager")
+        snapshot = self._scale_scroll_anchor
+        if snapshot is None:
+            snapshot = self._pending_scroll_snapshot or self.capture_scroll_snapshot()
+            self._scale_scroll_anchor = snapshot
+        self._ui_scale_percent = manager.current_percent
+        manager.apply_widget_tree(self)
+        metrics = manager.metrics()
+        self.operation_table.horizontalHeader().setDefaultSectionSize(
+            metrics.header_height
+        )
+        self.operation_table.verticalHeader().setDefaultSectionSize(
+            metrics.row_height
+        )
+        self._apply_responsive_layout()
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        clear_anchor = (
+            snapshot is not None
+            and manager.current_percent == snapshot.source_scale_percent
+        )
+        self._schedule_scroll_restore(snapshot, clear_anchor=clear_anchor)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API name
+        """Collapse unavailable WP2 placeholders when vertical space is tight."""
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def _set_extreme_compact_controls(self, compact: bool) -> None:
+        """Collapse nonessential source chrome while preserving table/footer/actions."""
+
+        if compact == self._extreme_compact_controls:
+            return
+        self._extreme_compact_controls = compact
+        if compact:
+            self.title_label.hide()
+            self.readiness_label.hide()
+            self.source_operation_label.hide()
+            self.source_operation_picker.hide()
+            return
+        self.source_operation_label.show()
+        self.source_operation_picker.show()
+        self.title_label.show()
+        self.readiness_label.show()
+
+    def _apply_responsive_layout(self) -> None:
+        """Keep the table and footer visible without scrolling the whole shell."""
+        if self._responsive_layout_guard or not hasattr(self, "artifact_summary"):
+            return
+        scale_factor = max(0.5, self._ui_scale_percent / 100.0)
+        logical_height = self.height() / scale_factor
+        compact = logical_height < 460
+        self._set_extreme_compact_controls(logical_height < 200)
+        visible = not compact
+        groups = (
+            self.artifact_summary,
+            self.preview_placeholder,
+            self.diagnostics_placeholder,
+        )
+        if all((not group.isHidden()) == visible for group in groups):
+            return
+        self._responsive_layout_guard = True
+        try:
+            for group in groups:
+                group.setVisible(visible)
+            layout = self.layout()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+        finally:
+            self._responsive_layout_guard = False
 
     def _button(self, source: str, object_name: str) -> QPushButton:
         button = QPushButton(ui_text(source))
@@ -1078,6 +1423,7 @@ __all__ = [
     "PostAssemblyOperationTableModel",
     "PostAssemblyOperationController",
     "PostAssemblyPanelState",
+    "PostAssemblyScrollSnapshot",
     "UnifiedPostAssemblyPanel",
     "PostAssemblyPanel",
 ]

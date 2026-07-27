@@ -5,24 +5,27 @@
 - **Stage 9A.7 — Post/Program Assembly UI Cleanup — IN PROGRESS.**
 - Đặc tả Stage 9A.7 R4 đã được duyệt; baseline nguồn là branch `main`, HEAD
   `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`.
-- **WP1 Review R7 đã được duyệt** và là baseline của revision này. Extracted R7
-  review tree đã được xác minh đủ **19/19 manifest hashes**; không khẳng định ZIP
-  R7 hiện còn tồn tại.
-- **WP2 R4 production source đã được tách trên WP1** trong separation sequence.
-  Unified Post/Program Assembly panel, projection integration, responsive
-  pre-C3.1 foundation, I18N, geometry evidence và focused tests thuộc revision
-  WP2 này.
-- F2B package lifecycle implementation đã có mặt trong WP2 source, bao gồm
-  revision-range capture, candidate/final separation và kiểm tra R3 historical.
-- R3 là historical immutable artifact, SHA-256
+- **WP1 Review R7 đã được duyệt** và là baseline source. Extracted R7 review
+  tree đã được xác minh đủ **19/19 manifest hashes**; không khẳng định ZIP R7
+  hiện còn tồn tại.
+- **WP2 R4 production source đã được tách trên WP1**. Unified Post/Program
+  Assembly panel, projection integration, F2B package lifecycle, I18N và
+  responsive WP2 foundation có mặt trong source.
+- R3 là **historical immutable artifact**, SHA-256
   `6b24960f4ff61e60f0c74f7cb5dfc20c89492026e0e5f388a1168d4ee4b5f253`;
-  R3 không phải current source identity.
-- Package WP2 R4: **NOT CREATED**. Không claim R4 package ready, R4 review
-  approved, full suite đã chạy, hoặc main commit/push đã hoàn thành.
-- C3.1 chưa được áp dụng tại revision WP2; Settings package, `UiScaleManager`,
-  `RibbonMetrics`, Settings action, semantic scroll restoration và containment/
-  reflow C3.1 không thuộc revision này.
-- WP3–WP6 chưa bắt đầu; C3.2 và OS integration chưa bắt đầu.
+  R3 không phải current source identity. Package WP2 R4: **NOT CREATED**.
+- **C3.1 Global UI Settings đã triển khai source qua Step A, Step B, Step C,
+  Step D1, Step D2, Step E và Step F1**: Settings package, General Settings,
+  `UiScaleManager`, point/pixel font scaling, theme rebase, `RibbonMetrics`,
+  Ctrl+, Settings action, I18N VI/EN/KO, containment/reflow, semantic scroll
+  restoration và duplicate-retranslate fix đều có mặt.
+- Các blocker được nêu trong Review R1/R2 đã đóng trong source hiện tại.
+- F2A audit kết luận cần cả source separation và tool repair. F2B package
+  lifecycle đã triển khai và focused package QA PASS. F2C separation rehearsal
+  đạt **PASS_WITH_NOTES**.
+- Chưa claim C3.1 final approved, full regression/full suite đã chạy, main
+  commits/push đã hoàn thành, hoặc R4 candidate/final đã được tạo.
+- C3.2, OS integration và WP3–WP6 chưa bắt đầu.
 - **Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu — COMPLETED.**
 - **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
 - **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**

@@ -4,25 +4,28 @@
 
 - Stage 9A.7 đang **IN PROGRESS** trên baseline HEAD
   `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`; đặc tả R4 đã được duyệt.
-- **WP1 Review R7 đã được duyệt** và là baseline source. Extracted R7 review
-  tree đã được xác minh đủ **19/19 manifest hashes**; không khẳng định ZIP R7
+- **WP1 Review R7 đã được duyệt** và là baseline source; extracted R7 review
+  tree đã được xác minh đủ **19/19 manifest hashes**, không khẳng định ZIP R7
   hiện còn tồn tại.
-- **WP2 R4 production source đã được tách trên WP1** và source revision WP2 tồn
-  tại trong separation sequence. WP2 giữ total-state projection/feature flags
-  của WP1 và thêm unified Post/Program Assembly production panel, actions,
-  table rendering, responsive pre-C3.1 layout, I18N và geometry evidence.
-- F2B package lifecycle implementation đã có trong WP2 source: revision-range
-  capture, source identity, candidate/final separation và historical R3 audit.
+- **WP2 R4 production source đã được tách trên WP1**. WP2 source gồm total-state
+  projection/feature flags, unified Post/Program Assembly panel, actions, table
+  rendering, responsive foundation, I18N, geometry evidence và F2B lifecycle.
 - R3 là **historical immutable artifact**, SHA-256
   `6b24960f4ff61e60f0c74f7cb5dfc20c89492026e0e5f388a1168d4ee4b5f253`;
-  R3 không phải current source identity.
-- Package WP2 R4: **NOT CREATED**. Không claim package ready, review approved,
-  full suite đã chạy hoặc main commit/push đã hoàn thành.
-- C3.1 chưa được áp dụng tại revision WP2. Không có Settings package,
-  `UiScaleManager`, `RibbonMetrics`, Ctrl+, Settings action, semantic scroll
-  restoration hoặc containment/reflow C3.1.
+  R3 không phải current source identity. Package WP2 R4: **NOT CREATED**.
+- **C3.1 Global UI Settings đã triển khai source qua Step A, Step B, Step C,
+  Step D1, Step D2, Step E và Step F1**. Source hiện có Settings package,
+  General Settings responsive UI, `UiScaleManager`, point/pixel font và theme
+  scaling, `RibbonMetrics`, Ctrl+, Settings action, VI/EN/KO keys, Post Assembly
+  scale hook, semantic scroll restoration, containment/reflow và F1 duplicate
+  retranslate fix.
+- Các blocker Review R1/R2 đã đóng trong source hiện tại. F2A audit xác định cần
+  cả source separation và tool repair; F2B package lifecycle đã triển khai và
+  focused package QA PASS; F2C separation rehearsal đạt **PASS_WITH_NOTES**.
+- Không claim C3.1 final approved, full regression/full suite đã chạy, main
+  commits/push đã hoàn thành, hoặc R4 candidate/final đã được tạo.
 - SQLite schema v4, `.HMS`, CAM project data, toolpath/Post safety và machine
-  readiness không đổi. WP3–WP6, C3.2 và OS integration chưa bắt đầu.
+  readiness không đổi. C3.2, OS integration và WP3–WP6 chưa bắt đầu.
 ## Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu
 
 - Stage 8A.4.4 đã **COMPLETED** trên baseline `3b70b5c`; package GUI R3 đã

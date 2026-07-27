@@ -401,6 +401,38 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Artifact summary", "Tóm tắt sản phẩm", "산출물 요약"),
     ("WP4 artifact host is unavailable in WP2.", "Vùng sản phẩm WP4 chưa khả dụng trong WP2.", "산출물 영역은 2단계에서 사용할 수 없습니다."),
     ("Preview", "Xem trước", "미리 보기"),
+    # C3.1 General Settings user-facing contract.
+    ("Advanced", "Nâng cao", "고급"),
+    ("Applied: {percent}%", "Đang áp dụng: {percent}%", "적용 중: {percent}%"),
+    ("CAD/Viewer", "CAD/Viewer", "CAD/뷰어"),
+    ("CAM", "CAM", "CAM"),
+    ("Child", "Con", "자식"),
+    ("Configure interface and display preferences.", "Cấu hình tùy chọn giao diện và hiển thị.", "인터페이스 및 표시 설정을 구성합니다."),
+    ("Enter any whole-number percentage from 50% to 200%.", "Nhập tỷ lệ phần trăm nguyên từ 50% đến 200%.", "50%에서 200% 사이의 정수 백분율을 입력하세요."),
+    ("Features", "Tính năng", "기능"),
+    ("General settings", "Cài đặt tổng", "일반 설정"),
+    ("Keyboard shortcuts", "Phím tắt", "키보드 단축키"),
+    ("Open general settings...", "Mở Cài đặt tổng...", "일반 설정 열기..."),
+    ("Performance", "Hiệu năng", "성능"),
+    ("Preview: {percent}%", "Đang xem trước: {percent}%", "미리 보기: {percent}%"),
+    ("Quick presets", "Mức chọn nhanh", "빠른 사전 설정"),
+    ("Reset", "Đặt lại", "재설정"),
+    ("Reset to 100%", "Khôi phục 100%", "100%로 복원"),
+    ("Root", "Gốc", "루트"),
+    ("Sample button", "Nút mẫu", "샘플 버튼"),
+    ("Sample input", "Ô nhập mẫu", "샘플 입력"),
+    ("Sample option A", "Tùy chọn mẫu A", "샘플 옵션 A"),
+    ("Sample option B", "Tùy chọn mẫu B", "샘플 옵션 B"),
+    ("Sample option C", "Tùy chọn mẫu C", "샘플 옵션 C"),
+    ("Sample title", "Tiêu đề mẫu", "샘플 제목"),
+    ("Sample tree", "Cây mẫu", "샘플 트리"),
+    ("Scale and density", "Tỷ lệ và mật độ", "배율 및 밀도"),
+    ("Storage & projects", "Lưu và dự án", "저장 및 프로젝트"),
+    ("The UI scale could not be saved.", "Không thể lưu tỷ lệ giao diện.", "UI 배율을 저장할 수 없습니다."),
+    ("This scale may require a compact layout on the current screen.", "Tỷ lệ này có thể cần bố cục thu gọn trên màn hình hiện tại.", "이 배율은 현재 화면에서 압축 레이아웃이 필요할 수 있습니다."),
+    ("This settings category has no available options in the current version.", "Nhóm cài đặt này chưa có tùy chọn khả dụng trong phiên bản hiện tại.", "현재 버전에서는 이 설정 범주에 사용할 수 있는 옵션이 없습니다."),
+    ("UI scale", "Tỷ lệ giao diện", "UI 배율"),
+    ("UI scale changes the logical presentation metrics without changing Windows DPI.", "Tỷ lệ giao diện thay đổi các chỉ số hiển thị logic mà không thay đổi DPI Windows.", "UI 배율은 Windows DPI를 변경하지 않고 논리적 표시 지표를 조정합니다."),
     ("Preview is not available in WP2.", "Xem trước chưa khả dụng trong WP2.", "미리 보기는 2단계에서 사용할 수 없습니다."),
     ("Diagnostics", "Chẩn đoán", "진단"),
     ("Diagnostics drawer is not available in WP2.", "Ngăn chẩn đoán chưa khả dụng trong WP2.", "진단 창은 2단계에서 사용할 수 없습니다."),
@@ -1423,8 +1455,10 @@ def apply_application_font(
     )
     family = next((candidate for candidate in preferences if candidate in families), "")
     if app is not None and family:
-        current = app.font()
-        app.setFont(QFont(family, current.pointSize()))
+        # Keep the active point/pixel size mode and all style/fallback attributes.
+        current = QFont(app.font())
+        current.setFamily(family)
+        app.setFont(current)
     return family or (app.font().family() if app is not None else "")
 
 

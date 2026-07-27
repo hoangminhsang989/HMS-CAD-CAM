@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QAbstractItemModel, QByteArray, QTimer, Qt
+from PySide6.QtCore import QAbstractItemModel, QByteArray, QRect, QSize, QTimer, Qt
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -15,7 +15,9 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
+    QGuiApplication,
     QResizeEvent,
+    QShowEvent,
     QKeySequence,
 )
 from PySide6.QtWidgets import (
@@ -104,14 +106,17 @@ from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyProjectionAdapter,
     UnifiedPostAssemblyPanel,
 )
-from hms_cadcam.ui.ribbon import RibbonWidget
+from hms_cadcam.ui.ribbon import (
+    RibbonMetrics,
+    RibbonWidget,
+    ribbon_menu_style_sheet,
+)
 from hms_cadcam.ui.theme import APP_STYLE
 from hms_cadcam.ui.ui_tokens import (
     DIAGNOSTICS_DEFAULT_HEIGHT,
     DIAGNOSTICS_MAX_HEIGHT,
     FUNCTION_EDITOR_MAX_WIDTH,
     FUNCTION_EDITOR_MIN_WIDTH,
-    MAIN_MENU_CONTENT_LEFT_PADDING,
     OPERATION_MANAGER_DEFAULT_WIDTH,
     OPERATION_MANAGER_MAX_WIDTH,
     OPERATION_MANAGER_MIN_WIDTH,
@@ -144,6 +149,7 @@ from hms_cadcam.ui.i18n import (
     translation_service,
 )
 from hms_cadcam.ui.language_settings import LanguageSettingsDialog
+from hms_cadcam.ui.settings import GeneralSettingsDialog, UiScaleManager
 from hms_cadcam.ui.data_locations import (
     DataLocationsDialog,
     StorageNotificationBar,
@@ -162,6 +168,28 @@ _DOCUMENT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 _OBJECT_NODE_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 _PLACEHOLDER_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 _TOPOLOGY_GROUP_ROLE = int(Qt.ItemDataRole.UserRole) + 5
+_MAIN_WINDOW_BASE_MINIMUM = QSize(1024, 680)
+
+
+def responsive_minimum_size(
+    available_geometry: QRect,
+    requested_minimum: QSize = _MAIN_WINDOW_BASE_MINIMUM,
+    frame_delta: QSize = QSize(),
+) -> QSize:
+    """Fit a requested client minimum inside the available screen geometry."""
+
+    if not isinstance(available_geometry, QRect):
+        raise TypeError("available_geometry must be QRect")
+    if not isinstance(requested_minimum, QSize):
+        raise TypeError("requested_minimum must be QSize")
+    if not isinstance(frame_delta, QSize):
+        raise TypeError("frame_delta must be QSize")
+    width_budget = max(1, available_geometry.width() - max(0, frame_delta.width()))
+    height_budget = max(1, available_geometry.height() - max(0, frame_delta.height()))
+    return QSize(
+        min(requested_minimum.width(), width_budget),
+        min(requested_minimum.height(), height_budget),
+    )
 
 
 class _NoFixtureResolver:
@@ -192,9 +220,12 @@ class MainWindow(QMainWindow):
         self.setObjectName("HmsMainWindow")
         self.setWindowTitle("HMS CAD/CAM — Thiết kế")
         self.resize(1500, 900)
-        self.setMinimumSize(1024, 680)
+        self._requested_minimum_size = QSize(_MAIN_WINDOW_BASE_MINIMUM)
+        self._effective_minimum_size = QSize(_MAIN_WINDOW_BASE_MINIMUM)
+        self.setMinimumSize(self._effective_minimum_size)
         self.setDockNestingEnabled(True)
-        self.setStyleSheet(APP_STYLE + WORKSPACE_STYLE)
+        self._base_style_sheet = APP_STYLE + WORKSPACE_STYLE
+        self.setStyleSheet(self._base_style_sheet)
         self._cad_kernel = cad_kernel
         self._project_service = project_service
         self._ui_feature_flags = ui_feature_flags or UiFeatureFlags.for_production()
@@ -218,7 +249,14 @@ class MainWindow(QMainWindow):
         self._translation_service.language_changed.connect(
             self._language_changed
         )
+        self._ui_scale_manager = UiScaleManager(
+            self._layout_store.settings, parent=self
+        )
+        self._ui_scale_manager.preview_changed.connect(self._apply_ui_scale)
+        self._ui_scale_manager.scale_changed.connect(self._apply_ui_scale)
+        self._ui_scale_manager.apply_runtime()
         self._language_dialog: LanguageSettingsDialog | None = None
+        self._general_settings_dialog: GeneralSettingsDialog | None = None
         self._application_paths = application_paths
         self._storage_bootstrap = storage_bootstrap
         self._data_locations_dialog: DataLocationsDialog | None = None
@@ -240,12 +278,16 @@ class MainWindow(QMainWindow):
         self._restore_dialog: RestoreWizardDialog | None = None
         self._profiles_dialog: UserProfilesDialog | None = None
         self._responsive_collapsed_operation_manager = False
+        self._responsive_collapsed_output_dock = False
+        self._post_assembly_dock_containment_scheduled = False
+        self._post_assembly_compact_chrome_visibility: tuple[bool, ...] | None = None
         self._managed_output_lines: dict[
             str,
             tuple[str, dict[str, object], frozenset[str]],
         ] = {}
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
+        self._viewport_baseline_minimum = QSize(self.viewport.minimumSize())
         self.viewport.set_status_text_resolver(ui_text)
         self.setAcceptDrops(True)
         self._drop_overlay = DropOpenOverlay(self.viewport)
@@ -284,7 +326,11 @@ class MainWindow(QMainWindow):
             self.project_controller.actions,
             self.cad_controller.actions,
             self,
-            workspace_actions={"post_assembly": self.post_assembly_action},
+            workspace_actions={
+                "post_assembly": self.post_assembly_action,
+                "general_settings": self._general_settings_action,
+            },
+            ui_scale_manager=self._ui_scale_manager,
         )
         self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         ribbon_toolbar = QToolBar("Ribbon", self)
@@ -292,6 +338,7 @@ class MainWindow(QMainWindow):
         ribbon_toolbar.setMovable(False)
         ribbon_toolbar.setFloatable(False)
         ribbon_toolbar.addWidget(self._ribbon)
+        self._ribbon_toolbar = ribbon_toolbar
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, ribbon_toolbar)
 
         self.setCentralWidget(self.viewport)
@@ -329,6 +376,7 @@ class MainWindow(QMainWindow):
         self._post_assembly_review_host = self._ui_feature_flags.is_enabled(
             UiFeatureFlag.POST_ASSEMBLY_9A7
         )
+        self._update_responsive_minimum()
 
         self.operation_manager_host = OperationManagerHost(
             self.cam_workspace,
@@ -442,6 +490,9 @@ class MainWindow(QMainWindow):
             )
             self.post_assembly_dock.setWidget(
                 self.unified_post_assembly_panel
+            )
+            self.post_assembly_dock.visibilityChanged.connect(
+                lambda _visible: self._apply_post_assembly_compact_layout()
             )
         else:
             # Production/development keeps the legacy dock topology intact.
@@ -638,6 +689,7 @@ class MainWindow(QMainWindow):
                 self._append_output(str(exc))
         localize_widget_tree(self)
         self.refresh_localized_layout()
+        self._apply_ui_scale(self._ui_scale_manager.current_percent)
         viewport_status = self.viewport.viewport_status
         if not viewport_status.available:
             reason = (
@@ -654,7 +706,9 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
         menu_bar.setObjectName("MainMenuBar")
         menu_bar.setStyleSheet(
-            f"QMenuBar {{ padding-left: {MAIN_MENU_CONTENT_LEFT_PADDING}px; }}"
+            ribbon_menu_style_sheet(
+                RibbonMetrics.from_scale_manager(self._ui_scale_manager)
+            )
         )
         file_menu = menu_bar.addMenu("Tệp")
         file_menu.addAction(self.project_controller.actions["new"])
@@ -714,6 +768,23 @@ class MainWindow(QMainWindow):
         )
         self._language_action.triggered.connect(self._show_language_settings)
         interface_menu.addAction(self._language_action)
+        self._general_settings_action = QAction(
+            ui_text("General settings"), self
+        )
+        self._general_settings_action.setObjectName("GeneralSettingsAction")
+        self._general_settings_action.setShortcut(
+            QKeySequence.fromString(
+                "Ctrl+,",
+                QKeySequence.SequenceFormat.PortableText,
+            )
+        )
+        self._general_settings_action.setToolTip(
+            ui_text("Open general settings...")
+        )
+        self._general_settings_action.triggered.connect(
+            self._show_general_settings
+        )
+        interface_menu.addAction(self._general_settings_action)
         self._profiles_action = QAction("User profiles…", self)
         self._profiles_action.setObjectName("UserProfilesAction")
         self._profiles_action.setToolTip(
@@ -892,10 +963,13 @@ class MainWindow(QMainWindow):
         ):
             self._workspace_changed(WorkspaceId.POST.value)
             return
+        self._update_responsive_minimum()
         self._refresh_post_assembly_panel()
         self.post_assembly_dock.show()
+        self._apply_post_assembly_compact_layout()
         self.post_assembly_dock.raise_()
         self.post_assembly_dock.activateWindow()
+        self._schedule_post_assembly_dock_containment()
 
     def _refresh_post_assembly_panel(self) -> None:
         if not hasattr(self, "unified_post_assembly_panel"):
@@ -913,6 +987,148 @@ class MainWindow(QMainWindow):
         self.workspace_bar.set_active_workspace(WorkspaceId.MILL_2D)
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
+
+    def _show_general_settings(self) -> None:
+        """Open one modeless General Settings dialog instance."""
+        if self._general_settings_dialog is None:
+            self._general_settings_dialog = GeneralSettingsDialog(
+                self._ui_scale_manager,
+                service=self._translation_service,
+                parent=self,
+            )
+            self._general_settings_dialog.destroyed.connect(
+                lambda _object=None: setattr(
+                    self, "_general_settings_dialog", None
+                )
+            )
+        self._general_settings_dialog.show()
+        self._general_settings_dialog.raise_()
+        self._general_settings_dialog.activateWindow()
+
+    def _apply_ui_scale(self, _percent: int | None = None) -> None:
+        """Apply the shared logical scale without touching Windows/Qt DPI."""
+        manager = self._ui_scale_manager
+        manager.apply_runtime(self)
+        self.setStyleSheet(manager.scale_stylesheet(self._base_style_sheet))
+        self.menuBar().setStyleSheet(
+            ribbon_menu_style_sheet(RibbonMetrics.from_scale_manager(manager))
+        )
+        # Queue the native dock solve before the panel's deferred scroll restore
+        # so the latter observes the final viewport/range.
+        self._schedule_post_assembly_dock_containment()
+        if hasattr(self, "unified_post_assembly_panel"):
+            self.unified_post_assembly_panel.apply_ui_scale(manager)
+        self._apply_post_assembly_compact_layout()
+        if self.layout() is not None:
+            self.layout().activate()
+
+    def _schedule_post_assembly_dock_containment(self) -> None:
+        """Coalesce one native dock pass after layout-affecting UI work."""
+
+        if self._post_assembly_dock_containment_scheduled:
+            return
+        self._post_assembly_dock_containment_scheduled = True
+        QTimer.singleShot(0, self._ensure_post_assembly_dock_contained)
+
+    def _ensure_post_assembly_dock_contained(self) -> None:
+        """Re-solve a stale native dock split only when it exceeds the client."""
+
+        self._post_assembly_dock_containment_scheduled = False
+        dock = getattr(self, "post_assembly_dock", None)
+        if (
+            dock is None
+            or not dock.isVisible()
+            or dock.isFloating()
+            or self.dockWidgetArea(dock)
+            not in {
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            }
+        ):
+            return
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+
+        def dock_rect_in_client() -> QRect:
+            top_left = dock.mapTo(self, dock.rect().topLeft())
+            bottom_right = dock.mapTo(self, dock.rect().bottomRight())
+            return QRect(top_left, bottom_right).normalized()
+
+        client = self.rect()
+        mapped = dock_rect_in_client()
+        if (
+            mapped.left() >= client.left()
+            and mapped.top() >= client.top()
+            and mapped.right() <= client.right()
+            and mapped.bottom() <= client.bottom()
+        ):
+            return
+
+        available_width = max(
+            1,
+            min(mapped.right(), client.right())
+            - max(mapped.left(), client.left())
+            + 1,
+        )
+        width_floor = max(dock.minimumWidth(), dock.minimumSizeHint().width())
+        target_width = max(width_floor, min(dock.width(), available_width))
+        self.resizeDocks(
+            [dock],
+            [target_width],
+            Qt.Orientation.Horizontal,
+        )
+        if layout is not None:
+            layout.activate()
+
+        # QMainWindow can retain a stale splitter allocation when a locale
+        # lowers a dock size hint. If the exact client-span request was not
+        # honored, asking for Qt's own floor forces a fresh private layout
+        # solve while leaving the dock fully resizable.
+        mapped = dock_rect_in_client()
+        if mapped.left() < client.left() or mapped.right() > client.right():
+            horizontal_docks = [
+                candidate
+                for candidate in self.findChildren(QDockWidget)
+                if candidate.isVisible()
+                and not candidate.isFloating()
+                and self.dockWidgetArea(candidate)
+                in {
+                    Qt.DockWidgetArea.LeftDockWidgetArea,
+                    Qt.DockWidgetArea.RightDockWidgetArea,
+                }
+            ]
+            width_floors = [
+                max(candidate.minimumWidth(), candidate.minimumSizeHint().width())
+                for candidate in horizontal_docks
+            ]
+            if horizontal_docks:
+                self.resizeDocks(
+                    horizontal_docks,
+                    width_floors,
+                    Qt.Orientation.Horizontal,
+                )
+                if layout is not None:
+                    layout.activate()
+            mapped = dock_rect_in_client()
+            legacy_dock = getattr(self, "operation_manager_dock", None)
+            if (
+                (mapped.left() < client.left() or mapped.right() > client.right())
+                and legacy_dock is not None
+                and legacy_dock is not dock
+                and legacy_dock.isVisible()
+            ):
+                legacy_dock.hide()
+                self._responsive_collapsed_operation_manager = True
+                if layout is not None:
+                    layout.activate()
+            mapped = dock_rect_in_client()
+            if mapped.left() < client.left() or mapped.right() > client.right():
+                # Re-adding an already docked standalone host asks Qt to rebuild
+                # its private split from current style metrics and size hints.
+                self.addDockWidget(self.dockWidgetArea(dock), dock)
+                if layout is not None:
+                    layout.activate()
 
     def _show_language_settings(self) -> None:
         """Open one modeless user-preference dialog."""
@@ -1161,7 +1377,13 @@ class MainWindow(QMainWindow):
         selected = UiLanguage.coerce(language)
         active_tab_indices = self._dock_tab_indices()
         apply_widget_font_tree(self, selected)
+        # The helper changes the external font family while retaining the
+        # manager's scaled size; rebase that family without changing scale.
+        self._ui_scale_manager.notify_external_application_font_changed(
+            already_scaled=True
+        )
         localize_widget_tree(self)
+        self._apply_ui_scale(self._ui_scale_manager.current_percent)
         self.refresh_localized_layout(active_tab_indices)
         for model in self.findChildren(QAbstractItemModel):
             retranslate = getattr(model, "_retranslate", None)
@@ -1173,6 +1395,10 @@ class MainWindow(QMainWindow):
             self.post_assembly_action.setText(
                 ui_text("Post / Program Assembly")
             )
+        self._general_settings_action.setText(ui_text("General settings"))
+        self._general_settings_action.setToolTip(
+            ui_text("Open general settings...")
+        )
         if self._project_service.current_project is not None:
             self._update_project_display(self._project_service.current_project)
         self._update_notification_center_text(
@@ -1611,6 +1837,7 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("CAD Viewer", self)
         toolbar.setObjectName("CadViewToolbar")
         toolbar.setMovable(False)
+        self._cad_toolbar = toolbar
         for key in (
             "open_step",
             "open_brep",
@@ -2732,7 +2959,126 @@ class MainWindow(QMainWindow):
             self.operation_manager_dock.show()
             self.operation_manager_dock.raise_()
             self._responsive_collapsed_operation_manager = False
+        self._apply_post_assembly_compact_layout()
         self._refresh_compact_dock_titles()
+        self._schedule_post_assembly_dock_containment()
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt API name
+        """Apply screen-aware minimums after native frame metrics are known."""
+        super().showEvent(event)
+        self._update_responsive_minimum()
+        self._apply_post_assembly_compact_layout()
+
+    def _update_responsive_minimum(self) -> None:
+        """Keep the client minimum within the current screen work area."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QRect()
+        frame_delta = QSize(
+            max(0, self.frameGeometry().width() - self.geometry().width()),
+            max(0, self.frameGeometry().height() - self.geometry().height()),
+        )
+        effective = (
+            responsive_minimum_size(
+                available, self._requested_minimum_size, frame_delta
+            )
+            if not available.isNull()
+            else QSize(self._requested_minimum_size)
+        )
+        self._effective_minimum_size = effective
+        if effective != self.minimumSize():
+            self.setMinimumSize(effective)
+        if not available.isNull():
+            client_budget = QSize(
+                max(1, available.width() - max(0, frame_delta.width())),
+                max(1, available.height() - max(0, frame_delta.height())),
+            )
+            target = QSize(
+                min(self.width(), client_budget.width()),
+                min(self.height(), client_budget.height()),
+            )
+            if target != self.size():
+                self.resize(target)
+            frame = self.frameGeometry()
+            if (
+                frame.width() <= available.width()
+                and frame.height() <= available.height()
+            ):
+                frame_x = min(
+                    max(frame.x(), available.left()),
+                    available.right() - frame.width() + 1,
+                )
+                frame_y = min(
+                    max(frame.y(), available.top()),
+                    available.bottom() - frame.height() + 1,
+                )
+                if frame_x != frame.x() or frame_y != frame.y():
+                    self.move(frame_x, frame_y)
+
+    def _set_post_assembly_compact_chrome(self, compact: bool) -> None:
+        """Temporarily collapse auxiliary toolbars while preserving user state."""
+
+        widgets = (
+            self._quick_access_toolbar,
+            self._cad_toolbar,
+            self.workspace_bar,
+        )
+        if compact:
+            if self._post_assembly_compact_chrome_visibility is None:
+                self._post_assembly_compact_chrome_visibility = tuple(
+                    widget.isVisible() for widget in widgets
+                )
+            for widget in widgets:
+                widget.hide()
+            return
+        saved = self._post_assembly_compact_chrome_visibility
+        if saved is None:
+            return
+        self._post_assembly_compact_chrome_visibility = None
+        for widget, visible in zip(widgets, saved, strict=True):
+            widget.setVisible(visible)
+
+    def _apply_post_assembly_compact_layout(self) -> None:
+        """Keep unified table/footer usable within the scaled client budget."""
+        if not getattr(self, "_post_assembly_review_host", False):
+            return
+        dock = getattr(self, "operation_manager_dock", None)
+        post_dock = getattr(self, "post_assembly_dock", None)
+        output_dock = getattr(self, "output_dock", None)
+        scale_factor = max(0.5, self._ui_scale_manager.scale_factor)
+        logical_width = self.width() / scale_factor
+        logical_height = self.height() / scale_factor
+        post_visible = post_dock is not None and post_dock.isVisible()
+        compact_chrome = post_visible and logical_height < 620
+        self._set_post_assembly_compact_chrome(compact_chrome)
+        if hasattr(self, "viewport"):
+            self.viewport.setMinimumHeight(
+                0
+                if compact_chrome
+                else self._viewport_baseline_minimum.height()
+            )
+        if dock is None or not post_visible:
+            return
+        if logical_width < 1200 and dock.isVisible():
+            dock.hide()
+            self._responsive_collapsed_operation_manager = True
+        elif logical_width >= 1280 and self._responsive_collapsed_operation_manager:
+            dock.show()
+            dock.raise_()
+            self._responsive_collapsed_operation_manager = False
+        if (
+            logical_height < 620
+            and output_dock is not None
+            and output_dock.isVisible()
+        ):
+            output_dock.hide()
+            self._responsive_collapsed_output_dock = True
+        elif (
+            logical_height >= 680
+            and self._responsive_collapsed_output_dock
+            and output_dock is not None
+        ):
+            output_dock.show()
+            self._responsive_collapsed_output_dock = False
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
         """Prevent closing during I/O and protect unsaved project state."""
