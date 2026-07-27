@@ -99,6 +99,11 @@ from hms_cadcam.ui.geometry_transfer_ui import (
     IncomingGeometryPanel,
 )
 from hms_cadcam.ui.cam_function_popup import CAMFunctionPopupHost
+from hms_cadcam.ui.feature_flags import UiFeatureFlag, UiFeatureFlags
+from hms_cadcam.ui.post_assembly_panel import (
+    PostAssemblyProjectionAdapter,
+    UnifiedPostAssemblyPanel,
+)
 from hms_cadcam.ui.ribbon import RibbonWidget
 from hms_cadcam.ui.theme import APP_STYLE
 from hms_cadcam.ui.ui_tokens import (
@@ -181,6 +186,7 @@ class MainWindow(QMainWindow):
         user_profile_service: UserProfileService | None = None,
         hms_backup_service: HmsBackupService | None = None,
         hms_restore_service: HmsRestoreService | None = None,
+        ui_feature_flags: UiFeatureFlags | None = None,
     ) -> None:
         super().__init__()
         self.setObjectName("HmsMainWindow")
@@ -191,6 +197,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLE + WORKSPACE_STYLE)
         self._cad_kernel = cad_kernel
         self._project_service = project_service
+        self._ui_feature_flags = ui_feature_flags or UiFeatureFlags.for_production()
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
         )
@@ -277,6 +284,7 @@ class MainWindow(QMainWindow):
             self.project_controller.actions,
             self.cad_controller.actions,
             self,
+            workspace_actions={"post_assembly": self.post_assembly_action},
         )
         self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         ribbon_toolbar = QToolBar("Ribbon", self)
@@ -311,6 +319,16 @@ class MainWindow(QMainWindow):
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_workspace.toolbar.hide()
+
+        self._post_assembly_adapter = PostAssemblyProjectionAdapter(
+            project_service, project_service.current_project
+        )
+        self.unified_post_assembly_panel = UnifiedPostAssemblyPanel(
+            self._post_assembly_adapter, parent=self
+        )
+        self._post_assembly_review_host = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.POST_ASSEMBLY_9A7
+        )
 
         self.operation_manager_host = OperationManagerHost(
             self.cam_workspace,
@@ -410,6 +428,25 @@ class MainWindow(QMainWindow):
         self.secondary_dock.setMaximumWidth(SECONDARY_PANEL_MAX_WIDTH)
         self.secondary_dock.setWidget(self.secondary_panel_host)
 
+        if self._post_assembly_review_host:
+            self.post_assembly_dock = QDockWidget(
+                ui_text("Post / Program Assembly"), self
+            )
+            self.post_assembly_dock.setObjectName("PostAssemblyDock")
+            self.post_assembly_dock.setAccessibleName(
+                ui_text("Post / Program Assembly")
+            )
+            self.post_assembly_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.post_assembly_dock.setWidget(
+                self.unified_post_assembly_panel
+            )
+        else:
+            # Production/development keeps the legacy dock topology intact.
+            self.post_assembly_dock = self.secondary_dock
+
         self.incoming_geometry_bar = IncomingGeometryNotificationBar(self)
         self.incoming_geometry_dock = QDockWidget(
             "Thông báo dữ liệu 3D",
@@ -463,6 +500,10 @@ class MainWindow(QMainWindow):
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.secondary_dock)
+        if self._post_assembly_review_host:
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea, self.post_assembly_dock
+            )
         self.project_dock.show()
         self.operation_manager_dock.show()
         self.properties_dock.show()
@@ -497,6 +538,8 @@ class MainWindow(QMainWindow):
         self.project_dock.hide()
         self.properties_dock.hide()
         self.secondary_dock.hide()
+        if self._post_assembly_review_host:
+            self.post_assembly_dock.hide()
         self.function_editor_dock.hide()
         self.incoming_geometry_panel_dock.hide()
         self.incoming_geometry_dock.hide()
@@ -526,6 +569,9 @@ class MainWindow(QMainWindow):
         self._build_panel_visibility_actions()
         self._build_status_bar()
         self.project_controller.project_changed.connect(self._handle_project_change)
+        self.cam_workspace.projection_changed.connect(
+            self._refresh_post_assembly_panel
+        )
         self.project_controller.incoming_geometry_changed.connect(
             self._incoming_geometry_changed
         )
@@ -635,6 +681,23 @@ class MainWindow(QMainWindow):
         cam_workspace_action = QAction("Mở không gian làm việc CAM", self)
         cam_workspace_action.triggered.connect(self._show_cam_workspace)
         cam_menu.addAction(cam_workspace_action)
+        self.post_assembly_action = QAction(
+            ui_text("Post / Program Assembly"), self
+        )
+        self.post_assembly_action.setObjectName("PostAssemblyOpenAction")
+        self.post_assembly_action.setProperty(
+            "commandId", "cam.post_assembly.open"
+        )
+        self.post_assembly_action.setProperty(
+            "accessibleName", ui_text("Post / Program Assembly")
+        )
+        self.post_assembly_action.setToolTip(
+            ui_text("Open Post and Program Assembly")
+        )
+        self.post_assembly_action.triggered.connect(
+            self._open_post_assembly
+        )
+        cam_menu.addAction(self.post_assembly_action)
         cam_menu.addAction(self.project_controller.actions["new"])
         cam_menu.addAction(
             self.project_controller.actions["new_from_document"]
@@ -765,6 +828,12 @@ class MainWindow(QMainWindow):
                 "Bật hoặc tắt bảng quy trình phụ",
             ),
             (
+                "post_assembly",
+                ui_text("Post / Program Assembly"),
+                self.post_assembly_dock,
+                ui_text("Open Post and Program Assembly"),
+            ),
+            (
                 "project_topology",
                 "Dự án / Topology",
                 self.project_dock,
@@ -783,6 +852,10 @@ class MainWindow(QMainWindow):
                 "Mở bảng xem trước dữ liệu 3D đang chờ",
             ),
         )
+        if not self._post_assembly_review_host:
+            definitions = tuple(
+                item for item in definitions if item[0] != "post_assembly"
+            )
         for key, text, dock, tooltip in definitions:
             action = dock.toggleViewAction()
             action.setText(text)
@@ -811,6 +884,29 @@ class MainWindow(QMainWindow):
         )
         self.reset_workspace_action.triggered.connect(self.reset_workspace_layout)
         self._view_menu.addAction(self.reset_workspace_action)
+
+    def _open_post_assembly(self) -> None:
+        """Open one idempotent Post/Assembly presentation entry."""
+        if not self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.POST_ASSEMBLY_9A7
+        ):
+            self._workspace_changed(WorkspaceId.POST.value)
+            return
+        self._refresh_post_assembly_panel()
+        self.post_assembly_dock.show()
+        self.post_assembly_dock.raise_()
+        self.post_assembly_dock.activateWindow()
+
+    def _refresh_post_assembly_panel(self) -> None:
+        if not hasattr(self, "unified_post_assembly_panel"):
+            return
+        self._post_assembly_adapter.set_session(
+            self._project_service.current_project
+        )
+        try:
+            self.unified_post_assembly_panel.refresh_from_adapter()
+        except (RuntimeError, TypeError, ValueError):
+            self.unified_post_assembly_panel.set_available_operations(())
 
     def _show_cam_workspace(self) -> None:
         """Switch to MILL 2D without replacing the CAD/OCP viewport."""
@@ -1073,6 +1169,10 @@ class MainWindow(QMainWindow):
                 retranslate(selected)
         self.viewport.retranslate_status()
         self.operation_manager_host.retranslate_ui(selected)
+        if hasattr(self, "unified_post_assembly_panel"):
+            self.post_assembly_action.setText(
+                ui_text("Post / Program Assembly")
+            )
         if self._project_service.current_project is not None:
             self._update_project_display(self._project_service.current_project)
         self._update_notification_center_text(
@@ -1944,6 +2044,10 @@ class MainWindow(QMainWindow):
         self.cam_workspace.bind_project(
             session if isinstance(session, ProjectSession) else None
         )
+        self._post_assembly_adapter.set_session(
+            session if isinstance(session, ProjectSession) else None
+        )
+        self._refresh_post_assembly_panel()
 
     def _incoming_geometry_changed(self, requests: object) -> None:
         if not isinstance(requests, tuple):

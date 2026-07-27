@@ -2,10 +2,10 @@
 
 ## Baseline/lifecycle
 
-R4 đã được duyệt trước khi bắt đầu Stage; WP1 đang sửa **Review R7**. Baseline bắt buộc là `main` tại
-`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. Trong WP1 không stage, commit hoặc
-push; WP2–WP6 không được khởi động. Sau GUI approval mới được chuyển sang
-final QA/stage/commit theo lifecycle R4.
+Specification R4 and WP1 Review R7 are approved. WP2 Review R3 blocker remediation is
+**COMPLETED_WAITING_REVIEW** on `main` at
+`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. No stage/commit/push; WP3-WP6 are not started.
+Final QA/stage/commit may proceed only after GUI approval under the R4 lifecycle.
 
 ## Acceptance gates áp dụng cho WP1
 
@@ -78,7 +78,7 @@ Các lệnh QA bắt buộc cuối WP1:
 ```text
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m compileall src tests tools
-.\.venv\Scripts\python.exe -m pytest --basetemp=.pytest_tmp/current
+.\.venv\Scripts\python.exe -m pytest --basetemp=<pytest-basetemp>
 git diff --check
 git ls-files --deleted
 ```
@@ -108,3 +108,18 @@ Không thuộc acceptance WP1: unified production panel, operation table/action
 footer, Preview/diagnostics UI, localization catalog/DPI screenshots,
 compound external workflow, clone/duplicate, Post algorithm, installer,
 machine certification và việc mở lại Stage 9A.I1.
+
+## WP2 Unified panel (implementation boundary)
+
+WP2 adds one presentation entry, `cam.post_assembly.open`, hosted by a single
+`PostAssemblyDock`/`UnifiedPostAssemblyPanel`. `UiFeatureFlag.POST_ASSEMBLY_9A7`
+remains false for production/development and is true only for the review harness.
+The false path opens the existing legacy Post/Program Assembly host.
+
+The panel consumes `PostAssemblyProjectionAdapter` and a stable-ID
+`PostAssemblyOperationTableModel` with explicit order, selection preservation and
+VI/EN/KO headers. Add/Remove/Move Up/Move Down/Clear are presentation-scoped
+assembly-list actions; they do not delete source operations or toolpaths.
+Preview, Diagnostics, Generate, Save Managed and Export External are typed
+fail-closed placeholders and remain disabled in WP2. No SQLite/schema/project
+migration is introduced.

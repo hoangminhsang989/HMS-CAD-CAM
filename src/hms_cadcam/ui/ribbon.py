@@ -28,10 +28,13 @@ class RibbonWidget(QTabWidget):
         project_actions: Mapping[str, QAction] | None = None,
         cad_actions: Mapping[str, QAction] | None = None,
         parent: QWidget | None = None,
+        *,
+        workspace_actions: Mapping[str, QAction] | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_actions = project_actions or {}
         self._cad_actions = cad_actions or {}
+        self._workspace_actions = workspace_actions or {}
         self._action_buttons: list[tuple[QToolButton, QAction]] = []
         self._command_buttons: list[tuple[QToolButton, str, str]] = []
         self.setObjectName("RibbonTabs")
@@ -70,6 +73,14 @@ class RibbonWidget(QTabWidget):
                         ),
                     ),
                     ("Phân tích", ("Measure", "Properties", "Statistics")),
+                    (
+                        "Post",
+                        tuple(
+                            self._workspace_actions[key]
+                            for key in ("post_assembly",)
+                            if key in self._workspace_actions
+                        ),
+                    ),
                 )
             ),
             "Trang chủ",

@@ -55,6 +55,18 @@ from hms_cadcam.ui.post_assembly_projection import (
     is_current_generation_attempt,
     project_post_assembly,
 )
+from hms_cadcam.ui.post_assembly_panel import (
+    PostAssemblyColumn,
+    PostAssemblyOperationController,
+    PostAssemblyOperationRow,
+    PostAssemblyOperationTableModel,
+    PostAssemblyPanel,
+    PostAssemblyPanelState,
+    PostAssemblyProjectionAdapter,
+    PostAssemblyProjectionInputEvidence,
+    PostAssemblyTableRole,
+    UnifiedPostAssemblyPanel,
+)
 
 __all__ = [
     "ExternalExportUiStatus",
@@ -107,4 +119,14 @@ __all__ = [
     "generation_attempt_matches_current_source",
     "is_current_generation_attempt",
     "project_post_assembly",
+    "PostAssemblyColumn",
+    "PostAssemblyOperationController",
+    "PostAssemblyOperationRow",
+    "PostAssemblyOperationTableModel",
+    "PostAssemblyPanel",
+    "PostAssemblyPanelState",
+    "PostAssemblyProjectionAdapter",
+    "PostAssemblyProjectionInputEvidence",
+    "PostAssemblyTableRole",
+    "UnifiedPostAssemblyPanel",
 ]

@@ -2,9 +2,9 @@
 
 ## Trạng thái và ranh giới
 
-Stage 9A.7 đang **IN PROGRESS**, WP1 đang sửa **Review R7**, baseline `main` /
-`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. R4 là revision đặc tả đã được
-duyệt. WP1 là nền tảng trình bày và evidence; WP2–WP6 chưa bắt đầu.
+Stage 9A.7 WP2 Review R3 is **COMPLETED_WAITING_REVIEW** on `main` /
+`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. Specification R4 and WP1 Review R7 are approved.
+WP2 R3 blocker remediation is complete and waiting for review. WP3-WP6 are not started.
 
 WP1 không thay đổi Post, Program Assembly, Simulation, NC artifact, project,
 `.HMS` hay SQLite schema v4. UI/application boundary capture evidence rồi gọi
@@ -157,3 +157,18 @@ Ngoài phạm vi: unified production panel, operation table, action footer,
 preview/diagnostics drawer, localization/DPI package, compound external
 workflow, clone operation, Post/CAM algorithm, schema migration, installer và
 Stage 9A.I1.
+
+## WP2 Unified panel (implementation boundary)
+
+WP2 adds one presentation entry, `cam.post_assembly.open`, hosted by a single
+`PostAssemblyDock`/`UnifiedPostAssemblyPanel`. `UiFeatureFlag.POST_ASSEMBLY_9A7`
+remains false for production/development and is true only for the review harness.
+The false path opens the existing legacy Post/Program Assembly host.
+
+The panel consumes `PostAssemblyProjectionAdapter` and a stable-ID
+`PostAssemblyOperationTableModel` with explicit order, selection preservation and
+VI/EN/KO headers. Add/Remove/Move Up/Move Down/Clear are presentation-scoped
+assembly-list actions; they do not delete source operations or toolpaths.
+Preview, Diagnostics, Generate, Save Managed and Export External are typed
+fail-closed placeholders and remain disabled in WP2. No SQLite/schema/project
+migration is introduced.

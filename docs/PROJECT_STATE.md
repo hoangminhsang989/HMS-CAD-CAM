@@ -2,50 +2,27 @@
 
 ## Stage 9A.7 — Post/Program Assembly UI Cleanup
 
-- Stage 9A.7 đang **IN PROGRESS** trên branch `main`, baseline HEAD
+- Stage 9A.7 đang **IN PROGRESS** trên baseline HEAD
   `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`; đặc tả R4 đã được duyệt.
-- **WP1 Review R7 đã được duyệt** làm baseline source cho test isolation,
-  final full-QA gate và presentation-only total projection. Readiness source
-  identity tách khỏi generated payload; no-result workflow đạt
-  `READY_TO_GENERATE + IDLE`. Accepted result phải nhất quán với attempt
-  provenance, managed so với accepted payload hiện hành, và previous result vẫn
-  được giữ sau replacement cancel. WP2 chưa được áp dụng; C3.1 chưa tồn tại tại
-  revision này; WP3–WP6 chưa bắt đầu.
-- Managed/external `CURRENT` không nhận explicit shortcut; mọi byte length,
-  SHA-256, source/request/order/project/Post/machine/target-path identity bắt
-  buộc tồn tại và khớp. Missing identity fail-closed; headline managed MISSING
-  không còn tuyên bố `MANAGED_CURRENT`.
-- Feature flags chỉ nhận exact bool; external attempt core chỉ có canonical
-  dispatch ID; diagnostic/operation/counter/identity evidence được validate
-  sớm. Managed explicit negative state và external `explicit_stale` fail-closed;
-  output presentation không có `disabled` action authority.
-- Callback counter accounting bị khóa theo received/published/discarded/write/
-  mutation; external active/failed identity phải complete và
-  `ExternalDispatchSourceIdentity` khóa nội dung managed bằng SHA/checksum/
-  bytes/provenance. `dirty_state` và confirmation rejection là audit output;
-  dead core input field count = 0.
-- R6 coi `current_request_fingerprint` là authority duy nhất; generation attempt
-  phải exact-match project/request/order source hiện tại; stale active reject,
-  stale terminal ignore. Callback publish phải có accepted result cùng attempt và
-  provenance; generation artifact-write/selection-mutation = 0; automatic
-  downstream count derive từ evidence.
-- R7 thêm optional output root cho review worker và dùng `tmp_path` trong test
-  Stage 8A.4.1; production default/behavior, permission và WP1 semantics không
-  đổi. Extracted R7 review tree đã được xác minh đủ **19/19 manifest hashes**;
-  không khẳng định ZIP R7 hiện còn tồn tại. Exact test đạt 3/3, shared DERIVED
-  manifest bất biến. Legacy artifact cleanup thất bại do owner/ACL cũ; không
-  Administrator hoặc reset ACL rộng.
-- QA R7 đạt **280 passed** focused và **166 passed** regression. Full lặp lại
-  **2150 passed, 2 deselected**, failure/error = 0; `pip check`, `compileall src
-  tests tools` và `git diff --check` PASS.
-- Projector chỉ nhận immutable evidence và không đọc/ghi SQLite, không gọi
-  Calculate/Simulation/Generate/Save Managed/Export/project Save. External
-  publication trong source là synchronous; không có external worker/cancel API.
-- SQLite schema **v4**, `.HMS` contract, Post/Program Assembly schema,
-  artifact formats và CAM algorithms không đổi; không migration. Stage 9A.I1
-  icon pack vẫn **PAUSED/DEFERRED**, không được mở lại.
-- WP1 Review R7 là ranh giới source hiện hành; WP2 và C3.1 chưa được áp dụng.
-
+- **WP1 Review R7 đã được duyệt** và là baseline source. Extracted R7 review
+  tree đã được xác minh đủ **19/19 manifest hashes**; không khẳng định ZIP R7
+  hiện còn tồn tại.
+- **WP2 R4 production source đã được tách trên WP1** và source revision WP2 tồn
+  tại trong separation sequence. WP2 giữ total-state projection/feature flags
+  của WP1 và thêm unified Post/Program Assembly production panel, actions,
+  table rendering, responsive pre-C3.1 layout, I18N và geometry evidence.
+- F2B package lifecycle implementation đã có trong WP2 source: revision-range
+  capture, source identity, candidate/final separation và historical R3 audit.
+- R3 là **historical immutable artifact**, SHA-256
+  `6b24960f4ff61e60f0c74f7cb5dfc20c89492026e0e5f388a1168d4ee4b5f253`;
+  R3 không phải current source identity.
+- Package WP2 R4: **NOT CREATED**. Không claim package ready, review approved,
+  full suite đã chạy hoặc main commit/push đã hoàn thành.
+- C3.1 chưa được áp dụng tại revision WP2. Không có Settings package,
+  `UiScaleManager`, `RibbonMetrics`, Ctrl+, Settings action, semantic scroll
+  restoration hoặc containment/reflow C3.1.
+- SQLite schema v4, `.HMS`, CAM project data, toolpath/Post safety và machine
+  readiness không đổi. WP3–WP6, C3.2 và OS integration chưa bắt đầu.
 ## Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu
 
 - Stage 8A.4.4 đã **COMPLETED** trên baseline `3b70b5c`; package GUI R3 đã
