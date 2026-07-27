@@ -1261,7 +1261,11 @@ production `{font_probe['resolved_font_family']}`; probe glyph/pixel tiáº¿ng Viá
 """
 
 
-def _create_package_in_process() -> None:
+def _create_package_in_process(output_root: Path | None = None) -> None:
+    global OUTPUT
+
+    if output_root is not None:
+        OUTPUT = output_root
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("HMS CAD/CAM Stage 8A.4.1 Review")
     font_probe = _production_font_probe(app)
@@ -1461,7 +1465,7 @@ def _create_package_in_process() -> None:
     )
 
 
-def create_package() -> None:
+def create_package(output_root: Path | None = None) -> None:
     """Build evidence in a clean native-Windows Qt process.
 
     Pytest configures a shared offscreen QApplication for widget tests. Reusing
@@ -1473,12 +1477,15 @@ def create_package() -> None:
     environment = dict(os.environ)
     environment.pop("QT_QPA_PLATFORM", None)
     environment.pop("QT_SCALE_FACTOR", None)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--package-worker",
+    ]
+    if output_root is not None:
+        command.extend(("--output-root", str(output_root)))
     result = subprocess.run(
-        [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--package-worker",
-        ],
+        command,
         cwd=REPOSITORY_ROOT,
         env=environment,
         check=False,
@@ -1498,6 +1505,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dpi-worker", type=float)
     parser.add_argument("--package-worker", action="store_true")
+    parser.add_argument("--output-root", type=Path)
     parser.add_argument("output", nargs="?")
     arguments = parser.parse_args()
     if arguments.dpi_worker is not None:
@@ -1505,7 +1513,7 @@ def main() -> int:
             raise ValueError("DPI worker output is required")
         return _dpi_worker(arguments.dpi_worker, Path(arguments.output))
     if arguments.package_worker:
-        _create_package_in_process()
+        _create_package_in_process(arguments.output_root)
         return 0
     create_package()
     return 0

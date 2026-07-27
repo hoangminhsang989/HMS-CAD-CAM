@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QImage
@@ -12,7 +13,7 @@ from tools.create_tool_program_profiles_review_package import (
     FONT_POLICY,
     FONT_PROBE_PHRASES,
     JSON_NAMES,
-    OUTPUT,
+    OUTPUT as SHARED_OUTPUT,
     PNG_NAMES,
     REPOSITORY_ROOT,
     _detect_tofu_candidates,
@@ -21,19 +22,39 @@ from tools.create_tool_program_profiles_review_package import (
 )
 
 
-def _read_json(name: str) -> dict[str, object]:
-    return json.loads((OUTPUT / name).read_text(encoding="utf-8"))
+def _read_json(output: Path, name: str) -> dict[str, object]:
+    return json.loads((output / name).read_text(encoding="utf-8"))
 
 
-def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
-    create_package()
+def _file_manifest(root: Path) -> dict[str, tuple[int, int, str]]:
+    if not root.is_dir():
+        return {}
+    return {
+        path.name: (
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        for path in root.iterdir()
+        if path.is_file()
+    }
+
+
+def test_review_harness_builds_exact_unique_production_evidence(
+    qapp, tmp_path: Path
+) -> None:
+    output = tmp_path / "tool_program_profiles_review"
+    shared_before = _file_manifest(SHARED_OUTPUT)
+    create_package(output)
 
     expected = {*PNG_NAMES, *JSON_NAMES, "REVIEW_INDEX.md"}
-    actual = {path.name for path in OUTPUT.iterdir() if path.is_file()}
+    actual = {path.name for path in output.iterdir() if path.is_file()}
     assert actual == expected
     assert len(actual) == 24
+    assert output != SHARED_OUTPUT
+    assert _file_manifest(SHARED_OUTPUT) == shared_before
 
-    summary = _read_json("summary.json")
+    summary = _read_json(output, "summary.json")
     assert summary["stage"] == "8A.4.1"
     assert summary["status"] == "IN PROGRESS"
     assert summary["package_file_count"] == 24
@@ -65,13 +86,13 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
     recorded_hashes = summary["png_sha256"]
     assert isinstance(recorded_hashes, dict)
     actual_hashes = {
-        name: hashlib.sha256((OUTPUT / name).read_bytes()).hexdigest()
+        name: hashlib.sha256((output / name).read_bytes()).hexdigest()
         for name in PNG_NAMES
     }
     assert recorded_hashes == actual_hashes
     assert len(set(actual_hashes.values())) == 16
     for name in PNG_NAMES:
-        image = QImage(str(OUTPUT / name))
+        image = QImage(str(output / name))
         assert not image.isNull()
         assert image.width() > 0 and image.height() > 0
 
@@ -81,7 +102,7 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
         source = REPOSITORY_ROOT / relative
         assert hashlib.sha256(source.read_bytes()).hexdigest() == expected_hash
 
-    schemas = _read_json("profile_schema_report.json")
+    schemas = _read_json(output, "profile_schema_report.json")
     assert schemas["registry_size"] == 3
     assert schemas["strategy_specific"] is True
     schema_fields = {
@@ -94,7 +115,7 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
     assert "stepover_mm" in schema_fields["parallel_finishing_3d"]
     assert "peck_depth_mm" in schema_fields["drilling_v1"]
 
-    resolution = _read_json("resolution_precedence_report.json")
+    resolution = _read_json(output, "resolution_precedence_report.json")
     assert resolution["precedence"] == [
         "Nguyên công hiện tại",
         "Cấu hình Tool theo chương trình",
@@ -105,20 +126,20 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
     assert resolution["blocked"] is False
     assert all(item["dependency_contribution"] for item in resolution["values"])
 
-    persistence = _read_json("persistence_report.json")
+    persistence = _read_json(output, "persistence_report.json")
     assert persistence["sqlite_schema_version"] == 4
     assert persistence["sqlite_schema_bumped"] is False
     assert persistence["configured_tool_round_trip"] is True
     assert persistence["legacy_tool_round_trip"] is True
     assert persistence["deterministic_serialization"] is True
 
-    stale = _read_json("stale_dependency_report.json")
+    stale = _read_json(output, "stale_dependency_report.json")
     assert stale["calculation_value_changes_fingerprint"] is True
     assert stale["display_name_changes_fingerprint"] is False
     assert stale["updated_at_participates_in_fingerprint"] is False
     assert not any(stale["forbidden_safety_payload_tokens"].values())
 
-    accessibility = _read_json("localization_accessibility_audit.json")
+    accessibility = _read_json(output, "localization_accessibility_audit.json")
     assert accessibility["forbidden_leak_count"] == 0
     assert accessibility["missing_accessible_name_count"] == 0
     assert all(accessibility["required_phrases"].values())
@@ -132,7 +153,7 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
     assert accessibility["affected_widget_count"] == 0
     assert accessibility["affected_screenshot_count"] == 0
 
-    responsive = _read_json("responsive_bounds_report.json")
+    responsive = _read_json(output, "responsive_bounds_report.json")
     assert responsive["horizontal_scroll_count"] == 0
     assert responsive["clipping_count"] == 0
     assert responsive["overlap_count"] == 0
@@ -160,7 +181,7 @@ def test_review_harness_builds_exact_unique_production_evidence(qapp) -> None:
         item["device_pixel_ratio"] for item in responsive["measurements"]
     ] == [1.0, 1.25, 1.5]
 
-    review_index = (OUTPUT / "REVIEW_INDEX.md").read_text(encoding="utf-8")
+    review_index = (output / "REVIEW_INDEX.md").read_text(encoding="utf-8")
     assert all(f"`{name}`" in review_index for name in PNG_NAMES)
     assert all(f"`{name}`" in review_index for name in JSON_NAMES)
     assert review_index.count("font/glyph: PASS") == 16

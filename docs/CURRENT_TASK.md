@@ -1,7 +1,46 @@
-# Nhiệm vụ hiện tại — Stage 8A.4.4
+# Nhiệm vụ hiện tại — Stage 9A.7
 
 ## Trạng thái ưu tiên
 
+- **Stage 9A.7 — Post/Program Assembly UI Cleanup — IN PROGRESS.**
+- Đặc tả được duyệt: **R4** (`STAGE_9A7_SPECIFICATION_REVIEW_R4.zip`).
+- Baseline bắt buộc: branch `main`, HEAD
+  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`.
+- **WP1 Review R7 đã được duyệt** làm baseline source của Stage 9A.7, gồm test
+  isolation, final full-QA gate, total state projection, attempt identity và
+  feature flag foundation. WP2 chưa được áp dụng; C3.1 chưa tồn tại tại revision
+  này; WP3–WP6 chưa bắt đầu.
+- R4 tách accepted generation result khỏi incoming callback audit: callback
+  stale/incomplete/đến sau terminal không đổi state/headline/fingerprint/result,
+  còn cancel replacement attempt giữ previous result, managed artifact và
+  Preview evidence.
+- Readiness source identity không phụ thuộc generated payload byte/SHA; initial
+  no-result workflow phải đạt `READY_TO_GENERATE + IDLE`. Accepted result phải
+  nhất quán với attempt provenance; managed so với accepted payload hiện hành.
+- Callback counters phải cân bằng/không âm; external active/failed bắt buộc
+  identity complete và source identity khóa content SHA/checksum/bytes/provenance.
+- `dirty_state` và external confirmation rejection được project thành audit
+  output; dead core input field count = 0.
+- Feature flag chỉ nhận exact bool; external attempt chỉ có canonical dispatch
+  ID; nested evidence được validate sớm. Managed explicit negative state và
+  external `explicit_stale` fail-closed; core external không còn
+  `explicit_current`. `presentation_readiness_blocked` không phải WP2 action
+  authority.
+- R6 khóa `current_request_fingerprint` là source authority duy nhất; attempt
+  phải khớp project/request/order source hiện tại; stale active reject, stale
+  terminal ignore; callback publish bắt buộc accepted result exact identity và
+  provenance. Generation callback artifact-write/selection-mutation luôn bằng 0
+  và automatic downstream count được derive.
+- R7 cô lập review-package test Stage 8A.4.1 bằng optional output root và
+  `tmp_path`; production default/behavior, permission và WP1 semantics không đổi.
+  Extracted R7 review tree đã được xác minh đủ **19/19 manifest hashes**; tài
+  liệu không khẳng định ZIP R7 hiện còn tồn tại. Shared DERIVED manifest được
+  kiểm tra bất biến; exact test đạt 3/3. Legacy artifact owner
+  `BUILTIN\Administrators` không rename/xóa được và được ghi cleanup failed,
+  không dùng Administrator hoặc reset ACL.
+- QA R7: **280 passed** focused, **166 passed** regression; full lặp lại
+  **2150 passed, 2 deselected**, failure/error = 0. `pip check`, `compileall src
+  tests tools`, `git diff --check` PASS.
 - **Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu — COMPLETED.**
 - **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
 - **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
@@ -37,7 +76,8 @@ CWD và test/review chỉ dùng injection sandbox rõ nguồn.
   liên quan và **1870 passed, 2 deselected** toàn dự án; `pip check`,
   `compileall src tests tools` và `git diff --check` đều PASS.
 
-Stage 8A.4.4 đã `COMPLETED`; chưa push và đang chờ chỉ định Stage tiếp theo.
+Stage 8A.4.4 đã `COMPLETED`; Stage 9A.7 đang `IN PROGRESS` theo phê duyệt R4.
+WP1 Review R7 là ranh giới source hiện hành; WP2 và C3.1 chưa được áp dụng.
 
 Không thay đổi SQLite schema v4, `.HMS`, CAM project-root, Tool payload,
 geometry transfer, CAM algorithms, Simulation/Post safety hoặc machine-ready.
