@@ -400,6 +400,11 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Operation table", "Bảng nguyên công", "작업 테이블"),
     ("Artifact summary", "Tóm tắt sản phẩm", "산출물 요약"),
     ("WP4 artifact host is unavailable in WP2.", "Vùng sản phẩm WP4 chưa khả dụng trong WP2.", "산출물 영역은 2단계에서 사용할 수 없습니다."),
+    (
+        "This capability is not available in the current work package.",
+        "Chức năng này chưa khả dụng trong gói công việc hiện tại.",
+        "이 기능은 현재 작업 패키지에서 사용할 수 없습니다.",
+    ),
     ("Preview", "Xem trước", "미리 보기"),
     # C3.1 General Settings user-facing contract.
     ("Advanced", "Nâng cao", "고급"),
@@ -481,6 +486,8 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Don’t save", "Không lưu", "저장 안 함"),
     ("Cancel", "Hủy", "취소"),
     ("Close", "Đóng", "닫기"),
+    ("Scroll Left", "Cuộn sang trái", "왼쪽으로 스크롤"),
+    ("Scroll Right", "Cuộn sang phải", "오른쪽으로 스크롤"),
     ("Apply", "Áp dụng", "적용"),
     ("Create", "Tạo", "만들기"),
     ("Select", "Chọn", "선택"),

@@ -62,6 +62,9 @@ NATIVE_LANGUAGE_LABELS = {
     "한국어",
     "Tiếng Việt",
 }
+APPROVED_TECHNICAL_LABELS = {
+    "CAD/Viewer",
+}
 APPROVED_LATIN_TOKENS = frozenset(
     {
         "CAD",
@@ -100,6 +103,7 @@ APPROVED_LATIN_TOKENS = frozenset(
         "JSON",
         "EXE",
         "UI",
+        "DPI",
         "RUNTIME",
         "PLUGIN",
         "SANDBOX",
@@ -1006,7 +1010,7 @@ def _glyph_counts(root: QWidget, texts: tuple[str, ...]) -> tuple[int, int, int]
 
 
 def _is_mixed(text: str, language: UiLanguage) -> bool:
-    if text.strip() in NATIVE_LANGUAGE_LABELS:
+    if text.strip() in NATIVE_LANGUAGE_LABELS | APPROVED_TECHNICAL_LABELS:
         return False
     remainder = _strip_physical_data(text)
     if language is UiLanguage.VI_VN:

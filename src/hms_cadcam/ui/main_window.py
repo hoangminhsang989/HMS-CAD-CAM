@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QDockWidget,
     QColorDialog,
     QHeaderView,
@@ -280,6 +281,8 @@ class MainWindow(QMainWindow):
         self._responsive_collapsed_operation_manager = False
         self._responsive_collapsed_output_dock = False
         self._post_assembly_dock_containment_scheduled = False
+        self._offscreen_dock_group_realization_scheduled = False
+        self._offscreen_realized_dock_groups: set[tuple[str, str]] = set()
         self._post_assembly_compact_chrome_visibility: tuple[bool, ...] | None = None
         self._managed_output_lines: dict[
             str,
@@ -602,6 +605,15 @@ class MainWindow(QMainWindow):
         self.resizeDocks(
             [self.output_dock], [DIAGNOSTICS_DEFAULT_HEIGHT], Qt.Orientation.Vertical
         )
+        for dock in (
+            self.project_dock,
+            self.operation_manager_dock,
+            self.properties_dock,
+            self.secondary_dock,
+        ):
+            dock.visibilityChanged.connect(
+                self._schedule_offscreen_dock_group_realization
+            )
         self.operation_manager_host.collapse_requested.connect(
             self.operation_manager_dock.hide
         )
@@ -1013,6 +1025,10 @@ class MainWindow(QMainWindow):
         self.menuBar().setStyleSheet(
             ribbon_menu_style_sheet(RibbonMetrics.from_scale_manager(manager))
         )
+        # Applying the root stylesheet re-evaluates its RibbonButton
+        # min-width rule. Reapply the component-owned, font-derived
+        # minimums afterwards so localized labels remain authoritative.
+        self._ribbon.apply_ui_scale(manager.current_percent)
         # Queue the native dock solve before the panel's deferred scroll restore
         # so the latter observes the final viewport/range.
         self._schedule_post_assembly_dock_containment()
@@ -1382,7 +1398,6 @@ class MainWindow(QMainWindow):
         self._ui_scale_manager.notify_external_application_font_changed(
             already_scaled=True
         )
-        localize_widget_tree(self)
         self._apply_ui_scale(self._ui_scale_manager.current_percent)
         self.refresh_localized_layout(active_tab_indices)
         for model in self.findChildren(QAbstractItemModel):
@@ -1417,6 +1432,7 @@ class MainWindow(QMainWindow):
             self._restore_dialog.retranslate_ui(selected)
         if self._profiles_dialog is not None:
             self._profiles_dialog.retranslate_ui(selected)
+        localize_widget_tree(self)
 
     def refresh_localized_layout(
         self,
@@ -1435,10 +1451,28 @@ class MainWindow(QMainWindow):
         # native update completes.
         QTimer.singleShot(
             0,
-            lambda: self._refresh_compact_dock_titles(
+            lambda: self._refresh_localized_native_chrome(
                 preserved_active_tabs
             ),
         )
+
+    def _refresh_localized_native_chrome(
+        self,
+        active_tab_indices: dict[int, int] | None = None,
+    ) -> None:
+        """Finalize localized native chrome after it is materialized."""
+
+        if QGuiApplication.platformName().casefold() == "offscreen":
+            self._realize_offscreen_dock_groups(force=True)
+        for button in self.findChildren(QAbstractButton):
+            object_name = button.objectName()
+            if (
+                object_name.startswith("qt_")
+                or object_name in {"ScrollLeftButton", "ScrollRightButton"}
+            ):
+                localize_widget_tree(button)
+        self._ribbon.apply_ui_scale(self._ui_scale_manager.current_percent)
+        self._refresh_compact_dock_titles(active_tab_indices)
 
     def _retranslate_output_log(self) -> None:
         """Translate managed log lines while preserving arbitrary diagnostics."""
@@ -1903,6 +1937,63 @@ class MainWindow(QMainWindow):
         dock.setWidget(tabs)
         return dock
 
+    def _schedule_offscreen_dock_group_realization(
+        self,
+        _visible: bool | None = None,
+    ) -> None:
+        """Coalesce one dock-group solve for Qt's synthetic offscreen surface."""
+
+        if (
+            QGuiApplication.platformName().casefold() != "offscreen"
+            or self._offscreen_dock_group_realization_scheduled
+            or not self.isVisible()
+        ):
+            return
+        self._offscreen_dock_group_realization_scheduled = True
+        QTimer.singleShot(0, self._realize_offscreen_dock_groups)
+
+    def _realize_offscreen_dock_groups(
+        self,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Materialize each visible semantic group once without locale churn."""
+
+        self._offscreen_dock_group_realization_scheduled = False
+        changed = False
+        for primary, secondary in (
+            (self.project_dock, self.operation_manager_dock),
+            (self.properties_dock, self.secondary_dock),
+        ):
+            identity = (primary.objectName(), secondary.objectName())
+            if (
+                (
+                    not force
+                    and identity in self._offscreen_realized_dock_groups
+                )
+                or (
+                    not primary.isVisible()
+                    and not secondary.isVisible()
+                )
+            ):
+                continue
+            active = (
+                primary
+                if not primary.visibleRegion().isEmpty()
+                else secondary
+            )
+            primary.show()
+            secondary.show()
+            self._offscreen_realized_dock_groups.add(identity)
+            self.tabifyDockWidget(primary, secondary)
+            active.raise_()
+            changed = True
+        if changed:
+            layout = self.layout()
+            if layout is not None:
+                layout.activate()
+            self._refresh_compact_dock_titles()
+
     def _dock_tab_indices(self) -> dict[int, int]:
         """Capture native dock-group selection without changing layout."""
         return {
@@ -1963,6 +2054,12 @@ class MainWindow(QMainWindow):
             for _dock, compact_source, full_source in definitions
             for source in (compact_source, full_source)
         }
+        layout = self.layout()
+        if layout is not None:
+            # The offscreen QPA defers its private dock-row solve until the
+            # main-window layout is explicitly activated. This updates
+            # geometry only; dock placement and object identity stay intact.
+            layout.activate()
         visible_group_bottoms = {
             dock.geometry().bottom() + 1
             for dock in (
@@ -1973,6 +2070,9 @@ class MainWindow(QMainWindow):
             )
             if dock.isVisible() and not dock.visibleRegion().isEmpty()
         }
+        seen_native_rows: set[
+            tuple[tuple[int, int, int, int], tuple[str, ...]]
+        ] = set()
         for tab_bar in self.findChildren(QTabBar):
             # Qt leaves private placeholder tab bars behind for individual
             # docks. Only a native dock-group bar carries the QDockWidget
@@ -1988,6 +2088,17 @@ class MainWindow(QMainWindow):
             ):
                 tab_bar.setProperty("hmsDockTabBar", False)
                 continue
+            native_row = (
+                tab_bar.geometry().getRect(),
+                tuple(
+                    str(tab_bar.tabData(index))
+                    for index in range(tab_bar.count())
+                ),
+            )
+            if native_row in seen_native_rows:
+                tab_bar.setProperty("hmsDockTabBar", False)
+                continue
+            seen_native_rows.add(native_row)
             full_labels: list[str] = []
             semantic_ids: list[str] = []
             compact_sources = [""] * tab_bar.count()
@@ -2968,6 +3079,8 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self._update_responsive_minimum()
         self._apply_post_assembly_compact_layout()
+        self._schedule_offscreen_dock_group_realization()
+        QTimer.singleShot(0, self._refresh_localized_native_chrome)
 
     def _update_responsive_minimum(self) -> None:
         """Keep the client minimum within the current screen work area."""
@@ -2987,7 +3100,14 @@ class MainWindow(QMainWindow):
         self._effective_minimum_size = effective
         if effective != self.minimumSize():
             self.setMinimumSize(effective)
-        if not available.isNull():
+        # The offscreen plugin exposes a synthetic 800px work area even when
+        # callers request a larger deterministic render surface. It has no
+        # native desktop boundary to protect, so retain the requested size;
+        # real Windows screens continue to receive the containment pass.
+        constrain_to_screen = (
+            QGuiApplication.platformName().casefold() != "offscreen"
+        )
+        if not available.isNull() and constrain_to_screen:
             client_budget = QSize(
                 max(1, available.width() - max(0, frame_delta.width())),
                 max(1, available.height() - max(0, frame_delta.height())),

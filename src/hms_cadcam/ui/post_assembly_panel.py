@@ -1243,15 +1243,19 @@ class UnifiedPostAssemblyPanel(QWidget):
         return group
 
     def _set_capability_placeholders(self) -> None:
+        reason = "This capability is not available in the current work package."
         disabled_reasons = {
-            self.generate_button: "wp4_generation_executor_unavailable",
-            self.save_managed_button: "wp4_managed_publish_unavailable",
-            self.export_external_button: "wp4_external_export_unavailable",
+            self.generate_button: reason,
+            self.save_managed_button: reason,
+            self.export_external_button: reason,
         }
         for button, reason in disabled_reasons.items():
             button.setEnabled(False)
-            button.setToolTip(f"{ui_text('Unavailable')}: {reason}")
+            button.setToolTip(
+                f"{ui_text('Unavailable')}: {ui_text(reason)}"
+            )
             button.setStatusTip(button.toolTip())
+            button.setAccessibleDescription(button.toolTip())
 
     def retranslate_ui(self, language: object = None) -> None:
         """Retranslate every visible WP2 label without changing panel state."""
