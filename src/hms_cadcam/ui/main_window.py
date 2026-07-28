@@ -93,6 +93,7 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cam_ui import CamWorkspace
+from hms_cadcam.ui.cam3d_function_panel import Cam3DFunctionPanel
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
@@ -230,6 +231,9 @@ class MainWindow(QMainWindow):
         self._cad_kernel = cad_kernel
         self._project_service = project_service
         self._ui_feature_flags = ui_feature_flags or UiFeatureFlags.for_production()
+        self._cam3d_review_host = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.CAM_3D_9A8
+        )
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
         )
@@ -369,6 +373,11 @@ class MainWindow(QMainWindow):
         )
         self.cam_workspace.message.connect(self._append_output)
         self.cam_workspace.toolbar.hide()
+        if self._cam3d_review_host:
+            self.cam3d_function_panel = Cam3DFunctionPanel(
+                feature_enabled=True,
+                parent=self,
+            )
 
         self._post_assembly_adapter = PostAssemblyProjectionAdapter(
             project_service, project_service.current_project
@@ -479,6 +488,23 @@ class MainWindow(QMainWindow):
         self.secondary_dock.setMaximumWidth(SECONDARY_PANEL_MAX_WIDTH)
         self.secondary_dock.setWidget(self.secondary_panel_host)
 
+        if self._cam3d_review_host:
+            self.cam3d_function_dock = QDockWidget(
+                ui_text("CAM 3D Function UI"), self
+            )
+            self.cam3d_function_dock.setObjectName("Cam3DFunctionDock")
+            self.cam3d_function_dock.setAccessibleName(
+                ui_text("CAM 3D Function UI")
+            )
+            self.cam3d_function_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.cam3d_function_dock.setMinimumWidth(360)
+            self.cam3d_function_dock.setMaximumWidth(620)
+            self.cam3d_function_dock.setWidget(self.cam3d_function_panel)
+            self.cam3d_function_dock.hide()
+
         if self._post_assembly_review_host:
             self.post_assembly_dock = QDockWidget(
                 ui_text("Post / Program Assembly"), self
@@ -558,6 +584,11 @@ class MainWindow(QMainWindow):
             self.addDockWidget(
                 Qt.DockWidgetArea.RightDockWidgetArea, self.post_assembly_dock
             )
+        if self._cam3d_review_host:
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea, self.cam3d_function_dock
+            )
+            self.tabifyDockWidget(self.properties_dock, self.cam3d_function_dock)
         self.project_dock.show()
         self.operation_manager_dock.show()
         self.properties_dock.show()
@@ -594,6 +625,8 @@ class MainWindow(QMainWindow):
         self.secondary_dock.hide()
         if self._post_assembly_review_host:
             self.post_assembly_dock.hide()
+        if self._cam3d_review_host:
+            self.cam3d_function_dock.hide()
         self.function_editor_dock.hide()
         self.incoming_geometry_panel_dock.hide()
         self.incoming_geometry_dock.hide()
@@ -764,6 +797,24 @@ class MainWindow(QMainWindow):
             self._open_post_assembly
         )
         cam_menu.addAction(self.post_assembly_action)
+        if self._cam3d_review_host:
+            self.cam3d_function_action = QAction(
+                ui_text("CAM 3D Function UI"), self
+            )
+            self.cam3d_function_action.setObjectName("Cam3DFunctionOpenAction")
+            self.cam3d_function_action.setProperty(
+                "commandId", "cam.cam3d.open"
+            )
+            self.cam3d_function_action.setProperty(
+                "accessibleName", ui_text("CAM 3D Function UI")
+            )
+            self.cam3d_function_action.setToolTip(
+                ui_text("Open CAM 3D Function UI")
+            )
+            self.cam3d_function_action.triggered.connect(
+                self._open_cam3d_function_ui
+            )
+            cam_menu.addAction(self.cam3d_function_action)
         cam_menu.addAction(self.project_controller.actions["new"])
         cam_menu.addAction(
             self.project_controller.actions["new_from_document"]
@@ -993,6 +1044,24 @@ class MainWindow(QMainWindow):
             self.unified_post_assembly_panel.refresh_from_adapter()
         except (RuntimeError, TypeError, ValueError):
             self.unified_post_assembly_panel.set_available_operations(())
+
+    def _open_cam3d_function_ui(self) -> None:
+        """Open the review-only CAM 3D shell or preserve the legacy route."""
+        if not self._cam3d_review_host:
+            self._show_cam_workspace()
+            return
+        session = self._project_service.current_project
+        self.cam3d_function_panel.bind_project(
+            session,
+            generation=(
+                self._project_service.cam_generation
+                if session is not None
+                else None
+            ),
+        )
+        self.cam3d_function_dock.show()
+        self.cam3d_function_dock.raise_()
+        self.cam3d_function_dock.activateWindow()
 
     def _show_cam_workspace(self) -> None:
         """Switch to MILL 2D without replacing the CAD/OCP viewport."""
@@ -1410,6 +1479,18 @@ class MainWindow(QMainWindow):
             self.post_assembly_action.setText(
                 ui_text("Post / Program Assembly")
             )
+        if hasattr(self, "cam3d_function_panel"):
+            self.cam3d_function_action.setText(ui_text("CAM 3D Function UI"))
+            self.cam3d_function_action.setToolTip(
+                ui_text("Open CAM 3D Function UI")
+            )
+            self.cam3d_function_dock.setWindowTitle(
+                ui_text("CAM 3D Function UI")
+            )
+            self.cam3d_function_dock.setAccessibleName(
+                ui_text("CAM 3D Function UI")
+            )
+            self.cam3d_function_panel.retranslate_ui(selected)
         self._general_settings_action.setText(ui_text("General settings"))
         self._general_settings_action.setToolTip(
             ui_text("Open general settings...")
@@ -2382,6 +2463,18 @@ class MainWindow(QMainWindow):
         self.cam_workspace.bind_project(
             session if isinstance(session, ProjectSession) else None
         )
+        if self._cam3d_review_host:
+            project_session = (
+                session if isinstance(session, ProjectSession) else None
+            )
+            self.cam3d_function_panel.bind_project(
+                project_session,
+                generation=(
+                    self._project_service.cam_generation
+                    if project_session is not None
+                    else None
+                ),
+            )
         self._post_assembly_adapter.set_session(
             session if isinstance(session, ProjectSession) else None
         )

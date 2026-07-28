@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from dataclasses import fields, is_dataclass
 from uuid import uuid4
@@ -149,7 +150,7 @@ def test_default_rows_are_omitted_and_reset_deletes_existing_rows(tmp_path) -> N
 
     with store.transaction(database_path) as connection:
         store.replace_all(connection, [CadViewState(source_id)], [source_id])
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM cad_view_state").fetchone()[0] == 0
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
@@ -166,14 +167,14 @@ def test_default_rows_are_omitted_and_reset_deletes_existing_rows(tmp_path) -> N
     )
     with store.transaction(database_path) as connection:
         store.replace_all(connection, [changed], [source_id])
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
         ).fetchone()[0] == 1
 
     with store.transaction(database_path) as connection:
         store.replace_all(connection, [CadViewState(source_id)], [source_id])
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
         ).fetchone()[0] == 0
@@ -184,7 +185,7 @@ def test_future_view_state_blocks_appearance_rows_for_the_same_source(tmp_path) 
     ProjectDatabase().initialize(database_path)
     source_id = uuid4()
     timestamp = "2026-01-01T00:00:00Z"
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute(
             "INSERT INTO cad_view_state VALUES (?, ?, ?, ?, ?)",
             (str(source_id), 99, "shaded", "top", timestamp),

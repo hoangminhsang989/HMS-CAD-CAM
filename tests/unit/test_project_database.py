@@ -1,5 +1,6 @@
 """Unit tests for versioned SQLite project schemas."""
 
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -17,7 +18,7 @@ def test_database_initialization_is_idempotent_and_has_cam_v4_tables(tmp_path) -
     database.validate(path)
 
     assert database.current_schema_version(path) == 4
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
             row[0]
@@ -44,7 +45,7 @@ def test_database_initialization_is_idempotent_and_has_cam_v4_tables(tmp_path) -
 
 def test_database_migrates_schema_v1_to_latest_transactionally(tmp_path) -> None:
     path = tmp_path / "legacy-v1.db"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
@@ -55,7 +56,7 @@ def test_database_migrates_schema_v1_to_latest_transactionally(tmp_path) -> None
     database.open_and_migrate(path)
 
     assert database.current_schema_version(path) == 4
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         tables = {
             row[0]
             for row in connection.execute(
@@ -74,7 +75,7 @@ def test_database_migrates_v2_to_v3_without_changing_v2_rows(tmp_path) -> None:
     path = tmp_path / "legacy-v2.db"
     database = ProjectDatabase()
     database.initialize(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         for table in (
             "toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes",
             "cam_setups", "cam_jobs", "cam_project_state", "cam_tool_definitions",
@@ -92,7 +93,7 @@ def test_database_migrates_v2_to_v3_without_changing_v2_rows(tmp_path) -> None:
     database.open_and_migrate(path)
 
     assert database.current_schema_version(path) == 4
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT source_id FROM cad_view_state"
         ).fetchone() == ("legacy-source",)
@@ -111,7 +112,7 @@ def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path)
     manifest_before = (project_root / "project.hms.json").read_bytes()
     source_before = stored_source.read_bytes()
     service.close_project()
-    with sqlite3.connect(project_root / "project.db") as connection:
+    with closing(sqlite3.connect(project_root / "project.db")) as connection, connection:
         connection.execute("DROP TABLE cad_object_appearance")
         connection.execute("DROP TABLE cad_view_state")
         connection.execute("DROP TABLE cad_xcaf_occurrence_appearance")
@@ -136,7 +137,7 @@ def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:
     database = ProjectDatabase()
     future = tmp_path / "future.db"
     database.initialize(future)
-    with sqlite3.connect(future) as connection:
+    with closing(sqlite3.connect(future)) as connection, connection:
         connection.execute("INSERT INTO schema_migrations VALUES (99, 'now')")
         connection.execute("PRAGMA user_version = 99")
     with pytest.raises(UnsupportedFormatVersionError):
@@ -150,14 +151,14 @@ def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:
 
 def test_future_pragma_without_migration_table_is_not_downgraded(tmp_path) -> None:
     path = tmp_path / "future-pragma.db"
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA user_version = 99")
 
     database = ProjectDatabase()
     with pytest.raises(ProjectDatabaseError):
         database.open_and_migrate(path)
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 99
         table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='schema_migrations'"

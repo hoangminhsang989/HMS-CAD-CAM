@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
@@ -119,7 +120,7 @@ def test_xcaf_override_round_trip_uses_nullable_v3_columns(tmp_path: Path) -> No
     with store.transaction(database_path) as connection:
         store.replace_all(connection, (state,), (source_id,))
 
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         row = connection.execute(
             """
             SELECT visible, color_r, color_g, color_b, transparency
@@ -134,7 +135,7 @@ def test_xcaf_override_round_trip_uses_nullable_v3_columns(tmp_path: Path) -> No
 
     with store.transaction(database_path) as connection:
         store.replace_all(connection, (CadViewState(source_id),), (source_id,))
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 0

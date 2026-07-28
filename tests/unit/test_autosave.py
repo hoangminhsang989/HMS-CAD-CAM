@@ -1,5 +1,6 @@
 """Unit and failure tests for atomic HMS autosave snapshots."""
 
+from contextlib import closing
 import json
 import sqlite3
 import threading
@@ -143,11 +144,11 @@ def test_autosave_database_contains_pending_cad_state_without_cleaning_main(tmp_
 
     assert snapshot is not None
     assert session.is_dirty
-    with sqlite3.connect(snapshot.path / DATABASE_FILENAME) as connection:
+    with closing(sqlite3.connect(snapshot.path / DATABASE_FILENAME)) as connection, connection:
         assert connection.execute(
             "SELECT visible FROM cad_object_appearance"
         ).fetchone()[0] == 0
-    with sqlite3.connect(session.root_path / DATABASE_FILENAME) as connection:
+    with closing(sqlite3.connect(session.root_path / DATABASE_FILENAME)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
         ).fetchone()[0] == 0
@@ -183,14 +184,14 @@ def test_autosave_contains_pending_xcaf_override_without_source_color(
     snapshot = service.autosave()
 
     assert snapshot is not None and session.is_dirty
-    with sqlite3.connect(snapshot.path / DATABASE_FILENAME) as connection:
+    with closing(sqlite3.connect(snapshot.path / DATABASE_FILENAME)) as connection, connection:
         assert connection.execute(
             """
             SELECT visible, color_r, color_g, color_b
             FROM cad_xcaf_occurrence_appearance
             """
         ).fetchone() == (0, None, None, None)
-    with sqlite3.connect(session.root_path / DATABASE_FILENAME) as connection:
+    with closing(sqlite3.connect(session.root_path / DATABASE_FILENAME)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 0

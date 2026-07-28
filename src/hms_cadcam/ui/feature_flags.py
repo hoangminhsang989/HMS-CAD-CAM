@@ -1,6 +1,6 @@
 """Typed, in-memory feature flags for UI review work.
 
-Stage 9A.7 WP1 intentionally does not persist flags in SQLite, ``.HMS``
+Stages 9A.7/9A.8 intentionally do not persist review flags in SQLite, ``.HMS``
 projects, profiles, or backup categories.  Production remains disabled until
 the later GUI approval gate.
 """
@@ -15,6 +15,7 @@ from typing import Mapping
 
 class UiFeatureFlag(StrEnum):
     POST_ASSEMBLY_9A7 = "post_assembly_9a7"
+    CAM_3D_9A8 = "cam_3d_9a8"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,16 +45,31 @@ class UiFeatureFlags:
 
     @classmethod
     def for_development_and_tests(cls) -> "UiFeatureFlags":
-        return cls({UiFeatureFlag.POST_ASSEMBLY_9A7: False})
+        return cls(
+            {
+                UiFeatureFlag.POST_ASSEMBLY_9A7: False,
+                UiFeatureFlag.CAM_3D_9A8: False,
+            }
+        )
 
     @classmethod
     def for_review_harness(cls) -> "UiFeatureFlags":
-        return cls({UiFeatureFlag.POST_ASSEMBLY_9A7: True})
+        return cls(
+            {
+                UiFeatureFlag.POST_ASSEMBLY_9A7: True,
+                UiFeatureFlag.CAM_3D_9A8: True,
+            }
+        )
 
     @classmethod
     def for_production(cls) -> "UiFeatureFlags":
         # WP1 stays fail-closed until the GUI approval gate.
-        return cls({UiFeatureFlag.POST_ASSEMBLY_9A7: False})
+        return cls(
+            {
+                UiFeatureFlag.POST_ASSEMBLY_9A7: False,
+                UiFeatureFlag.CAM_3D_9A8: False,
+            }
+        )
 
 
 __all__ = ["UiFeatureFlag", "UiFeatureFlags"]

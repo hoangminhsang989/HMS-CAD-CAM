@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 
@@ -72,7 +73,7 @@ def _snapshot(fixture, operation, metadata=()):
 
 def _persist(path, snapshot):
     repository = CamSqliteRepository()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys = ON")
         repository.replace_all(connection, snapshot)
     return repository

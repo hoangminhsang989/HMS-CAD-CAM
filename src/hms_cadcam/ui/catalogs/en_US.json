@@ -1522,5 +1522,11 @@
   "Open General Settings": "Open General Settings",
   "Open general settings...": "Open general settings...",
   "Performance": "Performance",
-  "Scale and density": "Scale and density"
+  "Scale and density": "Scale and density",
+  "CAM 3D Function UI": "CAM 3D Function UI",
+  "Feature disabled": "Feature disabled",
+  "Open CAM 3D Function UI": "Open CAM 3D Function UI",
+  "Part": "Part",
+  "Safe motion": "Safe motion",
+  "WP1 shell only": "WP1 shell only"
 }

@@ -1522,5 +1522,11 @@
   "Open General Settings": "일반 설정 열기",
   "Open general settings...": "일반 설정 열기...",
   "Performance": "성능",
-  "Scale and density": "배율 및 밀도"
+  "Scale and density": "배율 및 밀도",
+  "CAM 3D Function UI": "CAM 3D 기능 UI",
+  "Feature disabled": "기능 비활성화",
+  "Open CAM 3D Function UI": "CAM 3D 기능 UI 열기",
+  "Part": "파트",
+  "Safe motion": "안전 이동",
+  "WP1 shell only": "WP1 셸 전용"
 }

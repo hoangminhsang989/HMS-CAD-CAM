@@ -754,7 +754,7 @@
   "No changes": "Không có thay đổi",
   "No current result": "Không có kết quả hiện hành",
   "No current result to delete.": "Chưa có kết quả hiện hành để xóa.",
-  "No data": "Không có dữ liệu",
+  "No data": "Chưa có dữ liệu",
   "No global ProgramData lock": "Không khóa toàn bộ ProgramData",
   "No job · No setup · No machine assigned": "Chưa có công việc · Chưa có thiết lập · Chưa gán máy",
   "No layout description": "Chưa có mô tả bố cục",
@@ -1522,5 +1522,11 @@
   "Open General Settings": "Mở Cài đặt tổng",
   "Open general settings...": "Mở Cài đặt tổng...",
   "Performance": "Hiệu năng",
-  "Scale and density": "Tỷ lệ và mật độ"
+  "Scale and density": "Tỷ lệ và mật độ",
+  "CAM 3D Function UI": "Giao diện chức năng CAM 3D",
+  "Feature disabled": "Tính năng đang tắt",
+  "Open CAM 3D Function UI": "Mở giao diện chức năng CAM 3D",
+  "Part": "Chi tiết",
+  "Safe motion": "Chuyển động an toàn",
+  "WP1 shell only": "Chỉ là khung giao diện WP1"
 }

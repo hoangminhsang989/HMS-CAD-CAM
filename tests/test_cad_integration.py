@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import os
 import sqlite3
 import threading
@@ -1292,7 +1293,7 @@ def test_project_xcaf_repeated_occurrence_save_open_and_reset_round_trip(
     )
     service.save()
     project_root = session.root_path
-    with sqlite3.connect(project_root / "project.db") as connection:
+    with closing(sqlite3.connect(project_root / "project.db")) as connection, connection:
         rows = connection.execute(
             """
             SELECT visible, color_r, color_g, color_b, transparency
@@ -1342,7 +1343,7 @@ def test_project_xcaf_repeated_occurrence_save_open_and_reset_round_trip(
     )
     assert len(pending.object_appearances) == 1
     reopened_service.save()
-    with sqlite3.connect(project_root / "project.db") as connection:
+    with closing(sqlite3.connect(project_root / "project.db")) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 1
@@ -1402,11 +1403,11 @@ def test_project_xcaf_save_as_preserves_source_id_and_instance_override(
         copied_tree.document_id, copied_target.object_id
     )
     service.save()
-    with sqlite3.connect(original_root / "project.db") as connection:
+    with closing(sqlite3.connect(original_root / "project.db")) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 1
-    with sqlite3.connect(copy_root / "project.db") as connection:
+    with closing(sqlite3.connect(copy_root / "project.db")) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_xcaf_occurrence_appearance"
         ).fetchone()[0] == 0
@@ -1445,7 +1446,7 @@ def test_xcaf_stale_and_foreign_occurrence_keys_are_not_applied(
     )
     service.save()
     timestamp = "2026-01-01T00:00:00Z"
-    with sqlite3.connect(session.root_path / "project.db") as connection:
+    with closing(sqlite3.connect(session.root_path / "project.db")) as connection, connection:
         connection.execute(
             """
             INSERT INTO cad_xcaf_occurrence_appearance VALUES (
@@ -1658,7 +1659,7 @@ def test_stale_kind_and_foreign_source_rows_are_never_applied(
     service.close_project()
     timestamp = "2026-01-01T00:00:00Z"
     row = (1, "solid:" + "f" * 32, 0, 0.1, 0.2, 0.3, 0.4, timestamp)
-    with sqlite3.connect(project_root / "project.db") as connection:
+    with closing(sqlite3.connect(project_root / "project.db")) as connection, connection:
         for stored_source, geometry_kind in (
             (source_id, "brep"),
             (source_id, "triangle_mesh"),

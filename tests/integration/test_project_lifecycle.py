@@ -1,5 +1,6 @@
 """Integration tests for the complete HMS project lifecycle."""
 
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -53,7 +54,7 @@ def test_unicode_create_import_open_and_save_as(tmp_path) -> None:
     assert copied_session.manifest.project_id != project_id
     assert digest(copied_session.root_path / "source" / source.name) == original_hash
     assert digest(root / "source" / source.name) == original_hash
-    with sqlite3.connect(copied_session.root_path / "project.db") as connection:
+    with closing(sqlite3.connect(copied_session.root_path / "project.db")) as connection, connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
 
 

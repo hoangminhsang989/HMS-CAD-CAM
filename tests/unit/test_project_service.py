@@ -1,5 +1,7 @@
 """Unit-level project service state tests using real lightweight adapters."""
 
+from contextlib import closing
+
 import pytest
 
 from hms_cadcam.cad.models import CadGeometryKind
@@ -136,7 +138,7 @@ def test_failed_save_keeps_pending_cad_state_dirty_and_out_of_main_db(
 
     assert session.is_dirty
     assert service.cad_view_state(source_id) == state
-    with sqlite3.connect(session.root_path / "project.db") as connection:
+    with closing(sqlite3.connect(session.root_path / "project.db")) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM cad_object_appearance"
         ).fetchone()[0] == 0

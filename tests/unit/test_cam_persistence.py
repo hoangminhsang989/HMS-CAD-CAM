@@ -1,5 +1,6 @@
 """Stage 7A.6 CAM SQLite, artifact store and project lifecycle tests."""
 
+from contextlib import closing
 import dataclasses
 import json
 import math
@@ -114,7 +115,7 @@ def _snapshot(*, computing=False, repeated=False):
 
 def _persist(database_path, snapshot):
     repository = CamSqliteRepository()
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         connection.execute("PRAGMA foreign_keys = ON")
         repository.replace_all(connection, snapshot)
     return repository
@@ -139,7 +140,7 @@ def test_v3_to_v4_migration_is_safe_and_empty_cam(tmp_path):
     path = tmp_path / "project.db"
     database = ProjectDatabase()
     database.initialize(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         for table in ("toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes", "cam_setups",
                       "cam_jobs", "cam_project_state", "cam_tool_definitions", "cam_holder_definitions",
                       "cam_tool_assemblies", "cam_machine_definitions"):
@@ -155,7 +156,7 @@ def test_v4_migration_rolls_back_all_statements_on_error(tmp_path, monkeypatch):
     path = tmp_path / "rollback.db"
     database = ProjectDatabase()
     database.initialize(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         for table in ("toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes", "cam_setups",
                       "cam_jobs", "cam_project_state", "cam_tool_definitions", "cam_holder_definitions",
                       "cam_tool_assemblies", "cam_machine_definitions"):
@@ -165,7 +166,7 @@ def test_v4_migration_rolls_back_all_statements_on_error(tmp_path, monkeypatch):
     monkeypatch.setitem(MIGRATIONS, 4, ("CREATE TABLE rollback_probe(value TEXT)", "INVALID SQL"))
     with pytest.raises(Exception):
         database.open_and_migrate(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("SELECT 1 FROM sqlite_master WHERE name='rollback_probe'").fetchone() is None
 
@@ -275,7 +276,7 @@ def test_malformed_editable_payload_fails_atomically(tmp_path):
     ProjectDatabase().initialize(path)
     snapshot, _ = _snapshot()
     repository = _persist(path, snapshot)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("UPDATE cam_operations SET payload_json='{}'")
     with pytest.raises(CamPersistencePayloadError):
         repository.load(path)
@@ -379,7 +380,7 @@ def test_failed_cam_open_keeps_current_project_and_cam_snapshot(tmp_path):
     other = ProjectService.create_default(tmp_path / "other-config")
     broken = other.new_project(tmp_path, "Broken CAM")
     other.close_project()
-    with sqlite3.connect(broken.root_path / "project.db") as connection:
+    with closing(sqlite3.connect(broken.root_path / "project.db")) as connection, connection:
         connection.execute("INSERT INTO cam_jobs VALUES('bad',0,'Bad','{}',NULL)")
     with pytest.raises(CamPersistencePayloadError):
         service.open_project(broken.root_path)

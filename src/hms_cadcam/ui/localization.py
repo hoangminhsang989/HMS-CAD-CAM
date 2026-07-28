@@ -360,6 +360,15 @@ UI_TRANSLATIONS = MappingProxyType(
         # Operation display names. Stable strategy IDs and persisted defaults
         # remain English; only presentation strings pass through this catalog.
         **OPERATION_DISPLAY_NAMES,
+        # Stage 9A.8 WP1 CAM 3D shell.
+        "CAM 3D Function UI": "Giao diện chức năng CAM 3D",
+        "Open CAM 3D Function UI": "Mở giao diện chức năng CAM 3D",
+        "Part": "Chi tiết",
+        "Safe motion": "Chuyển động an toàn",
+        "Feature disabled": "Tính năng đang tắt",
+        "No data": "Chưa có dữ liệu",
+        "WP1 shell only": "Chỉ là khung giao diện WP1",
+        "Status": "Trạng thái",
         # Workspace shell and shared panels.
         "HMS CAD/CAM — Design": "HMS CAD/CAM — Thiết kế",
         "Operation Manager": "Quản lý nguyên công",

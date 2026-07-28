@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import sqlite3
@@ -434,7 +435,7 @@ def test_profile_persistence_round_trip_keeps_sqlite_schema_v4(tmp_path) -> None
     database_path = tmp_path / "project.db"
     ProjectDatabase().initialize(database_path)
     repository = CamSqliteRepository()
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection, connection:
         repository.replace_all(
             connection, CamProjectSnapshot(tool_definitions=(configured,))
         )
