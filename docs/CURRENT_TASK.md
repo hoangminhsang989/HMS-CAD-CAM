@@ -1,31 +1,38 @@
-# Nhiệm vụ hiện tại — Stage 9A.7
+# Nhiệm vụ hiện tại — Chờ Stage được phê duyệt tiếp theo
 
 ## Trạng thái ưu tiên
 
-- **Stage 9A.7 — Post/Program Assembly UI Cleanup — IN PROGRESS.**
-- Đặc tả Stage 9A.7 R4 đã được duyệt; baseline nguồn là branch `main`, HEAD
-  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`.
-- **WP1 Review R7 đã được duyệt** và là baseline source. Extracted R7 review
-  tree đã được xác minh đủ **19/19 manifest hashes**; không khẳng định ZIP R7
-  hiện còn tồn tại.
-- **WP2 R4 production source đã được tách trên WP1**. Unified Post/Program
-  Assembly panel, projection integration, F2B package lifecycle, I18N và
-  responsive WP2 foundation có mặt trong source.
-- R3 là **historical immutable artifact**, SHA-256
-  `6b24960f4ff61e60f0c74f7cb5dfc20c89492026e0e5f388a1168d4ee4b5f253`;
-  R3 không phải current source identity. Package WP2 R4: **NOT CREATED**.
-- **C3.1 Global UI Settings đã triển khai source qua Step A, Step B, Step C,
-  Step D1, Step D2, Step E và Step F1**: Settings package, General Settings,
-  `UiScaleManager`, point/pixel font scaling, theme rebase, `RibbonMetrics`,
-  Ctrl+, Settings action, I18N VI/EN/KO, containment/reflow, semantic scroll
-  restoration và duplicate-retranslate fix đều có mặt.
-- Các blocker được nêu trong Review R1/R2 đã đóng trong source hiện tại.
-- F2A audit kết luận cần cả source separation và tool repair. F2B package
-  lifecycle đã triển khai và focused package QA PASS. F2C separation rehearsal
-  đạt **PASS_WITH_NOTES**.
-- Chưa claim C3.1 final approved, full regression/full suite đã chạy, main
-  commits/push đã hoàn thành, hoặc R4 candidate/final đã được tạo.
-- C3.2, OS integration và WP3–WP6 chưa bắt đầu.
+- **Stage 9A.7 — Post/Program Assembly UI Cleanup — FINALIZED / COMPLETE.**
+- Final immutable review package:
+  `reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
+  SHA-256
+  `1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
+  **109344 bytes**, **27 entries**; CRC, manifest, byte-for-byte promotion và
+  no-overwrite gate đều PASS.
+- Canonical R4 source là WP1 base
+  `9465d294f60ae31b810983c71588be9945a71368` tới maintenance target
+  `bbb07b9ba436293faa9d286927186d5e885016ea`, tree
+  `ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`; original WP2/parent là
+  `ff250d67c70abfe80224befee4a17cccb4e4d3fb`. Canonical patch SHA-256 là
+  `e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
+  trên **16 paths**; maintenance delta chỉ sửa test harness.
+- Exact-source QA đạt **315 passed, 1 skipped** focused; **147 passed,
+  1 skipped** regression; **2185 passed, 1 skipped, 2 deselected** full
+  offscreen; native geometry **1 passed**; native smoke **17 passed**;
+  `pip check`, `compileall` và `diff-check` PASS. Offscreen geometry skip chỉ
+  áp dụng vì production geometry audit yêu cầu native Windows QPA.
+- Main offscreen-fix commit
+  `33c9330fe16ec5c371470072c9ef7b94e7dda3c0` có supplementary compatibility
+  evidence: targeted **18 passed**, native **398 passed**, và hai lượt full
+  offscreen cùng đạt **2262 passed, 6 skipped, 2 deselected**. Evidence này
+  không thay thế exact-source QA và không phải canonical R4 source.
+- Maintenance branch/worktree không merge vào `main` và được giữ tạm thời để
+  bảo toàn canonical provenance:
+  **RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**.
+- Final ZIP là Git-ignored review artifact; không claim ZIP hoặc maintenance
+  commit đã được commit trên `main`.
+- Stage 9A.7 đã đóng; chưa tự chọn hoặc khởi động stage phát triển kế tiếp.
+  Trạng thái hiện tại: **WAITING_FOR_NEXT_APPROVED_STAGE**.
 - **Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu — COMPLETED.**
 - **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
 - **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
@@ -61,8 +68,9 @@ CWD và test/review chỉ dùng injection sandbox rõ nguồn.
   liên quan và **1870 passed, 2 deselected** toàn dự án; `pip check`,
   `compileall src tests tools` và `git diff --check` đều PASS.
 
-Stage 8A.4.4 đã `COMPLETED`; Stage 9A.7 đang `IN PROGRESS` theo phê duyệt R4.
-WP1 Review R7 là ranh giới source hiện hành; WP2 và C3.1 chưa được áp dụng.
+Stage 8A.4.4 đã `COMPLETED`; Stage 9A.7 cũng đã `FINALIZED / COMPLETE`.
+Canonical R4 source vẫn được giữ trên maintenance branch riêng và trạng thái
+hiện tại là `WAITING_FOR_NEXT_APPROVED_STAGE`.
 
 Không thay đổi SQLite schema v4, `.HMS`, CAM project-root, Tool payload,
 geometry transfer, CAM algorithms, Simulation/Post safety hoặc machine-ready.

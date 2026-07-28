@@ -2,10 +2,39 @@
 
 ## Baseline/lifecycle
 
-Specification R4 and WP1 Review R7 are approved. WP2 Review R3 blocker remediation is
-**COMPLETED_WAITING_REVIEW** on `main` at
-`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. No stage/commit/push; WP3-WP6 are not started.
-Final QA/stage/commit may proceed only after GUI approval under the R4 lifecycle.
+Stage 9A.7 is **FINALIZED / COMPLETE**. Final immutable R4 is
+`reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
+SHA-256
+`1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
+**109344 bytes**, **27 entries**. CRC, manifest/per-entry hashes,
+candidate-final binary comparison, portability rehearsal and no-overwrite gate
+all PASS.
+
+Canonical source is the explicit revision range from WP1 base
+`9465d294f60ae31b810983c71588be9945a71368` to maintenance target
+`bbb07b9ba436293faa9d286927186d5e885016ea`, tree
+`ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`. Original WP2 and maintenance
+parent are `ff250d67c70abfe80224befee4a17cccb4e4d3fb`; canonical patch SHA-256 is
+`e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
+over **16 paths**. The maintenance delta is test-harness-only.
+
+Exact-source QA PASS: focused **315 passed, 1 skipped**; regression **147
+passed, 1 skipped**; full offscreen **2185 passed, 1 skipped, 2 deselected**;
+native geometry **1 passed**; native smoke **17 passed**; `pip check`,
+`compileall` and `diff-check` PASS. The single offscreen geometry skip is
+limited to the native-Windows-QPA production geometry contract.
+
+Main offscreen-fix commit
+`33c9330fe16ec5c371470072c9ef7b94e7dda3c0` supplies supplementary integrated
+compatibility evidence: targeted **18 passed**, native **398 passed**, and two
+full offscreen runs each at **2262 passed, 6 skipped, 2 deselected**. It is not
+the canonical R4 source and does not replace exact-source QA.
+
+The maintenance branch/worktree is not merged into `main` and is retained to
+preserve canonical R4 provenance:
+**RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**. The Git-ignored final ZIP
+is not claimed as a tracked main artifact. Current project state is
+**WAITING_FOR_NEXT_APPROVED_STAGE**.
 
 ## Acceptance gates áp dụng cho WP1
 

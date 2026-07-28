@@ -2,9 +2,33 @@
 
 ## Trạng thái và ranh giới
 
-Stage 9A.7 WP2 Review R3 is **COMPLETED_WAITING_REVIEW** on `main` /
-`7dd26867f27e67baef0ca2e7dc04d95663e8d27a`. Specification R4 and WP1 Review R7 are approved.
-WP2 R3 blocker remediation is complete and waiting for review. WP3-WP6 are not started.
+Stage 9A.7 is **FINALIZED / COMPLETE**. The immutable final review artifact is
+`reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
+SHA-256
+`1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
+**109344 bytes**, **27 entries**, with CRC/manifest, byte-for-byte promotion,
+portability and no-overwrite audits PASS.
+
+Canonical source is WP1 base `9465d294f60ae31b810983c71588be9945a71368`
+through maintenance target `bbb07b9ba436293faa9d286927186d5e885016ea`,
+tree `ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`, original WP2/parent
+`ff250d67c70abfe80224befee4a17cccb4e4d3fb`, and canonical patch SHA-256
+`e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
+over **16 paths**. The maintenance delta is test-harness-only.
+
+Exact-source QA PASS: focused **315 passed, 1 skipped**; regression **147
+passed, 1 skipped**; full offscreen **2185 passed, 1 skipped, 2 deselected**;
+native geometry **1 passed**; native smoke **17 passed**; `pip check`,
+`compileall` and `diff-check` PASS. Offscreen geometry skips only under the
+native-QPA production geometry contract.
+
+Integrated compatibility evidence on main offscreen-fix commit
+`33c9330fe16ec5c371470072c9ef7b94e7dda3c0` is supplementary: targeted
+**18 passed**, native **398 passed**, and both full offscreen runs **2262
+passed, 6 skipped, 2 deselected**. It is not the canonical R4 source.
+Maintenance branch/worktree is retained, not merged into `main`, under
+**RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**. Current state is
+**WAITING_FOR_NEXT_APPROVED_STAGE**.
 
 WP1 không thay đổi Post, Program Assembly, Simulation, NC artifact, project,
 `.HMS` hay SQLite schema v4. UI/application boundary capture evidence rồi gọi
@@ -151,7 +175,7 @@ Legacy artifact owner `BUILTIN\Administrators` không rename/xóa được nên 
 ghi cleanup failed; không sửa permission, không dùng Administrator hoặc ACL
 reset rộng. `pip check`, `compileall src tests tools` và `git diff --check` PASS;
 deleted tracked = 0.
-WP2–WP6 vẫn chưa bắt đầu và chưa stage/commit/push.
+WP2 exact-source implementation, QA và final R4 package đã hoàn tất trên`nmaintenance source riêng; WP3–WP6 chưa bắt đầu và maintenance source chưa`nmerge vào `main`.
 
 Ngoài phạm vi: unified production panel, operation table, action footer,
 preview/diagnostics drawer, localization/DPI package, compound external

@@ -2,30 +2,34 @@
 
 ## Stage 9A.7 — Post/Program Assembly UI Cleanup
 
-- Stage 9A.7 đang **IN PROGRESS** trên baseline HEAD
-  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`; đặc tả R4 đã được duyệt.
-- **WP1 Review R7 đã được duyệt** và là baseline source; extracted R7 review
-  tree đã được xác minh đủ **19/19 manifest hashes**, không khẳng định ZIP R7
-  hiện còn tồn tại.
-- **WP2 R4 production source đã được tách trên WP1**. WP2 source gồm total-state
-  projection/feature flags, unified Post/Program Assembly panel, actions, table
-  rendering, responsive foundation, I18N, geometry evidence và F2B lifecycle.
-- R3 là **historical immutable artifact**, SHA-256
-  `6b24960f4ff61e60f0c74f7cb5dfc20c89492026e0e5f388a1168d4ee4b5f253`;
-  R3 không phải current source identity. Package WP2 R4: **NOT CREATED**.
-- **C3.1 Global UI Settings đã triển khai source qua Step A, Step B, Step C,
-  Step D1, Step D2, Step E và Step F1**. Source hiện có Settings package,
-  General Settings responsive UI, `UiScaleManager`, point/pixel font và theme
-  scaling, `RibbonMetrics`, Ctrl+, Settings action, VI/EN/KO keys, Post Assembly
-  scale hook, semantic scroll restoration, containment/reflow và F1 duplicate
-  retranslate fix.
-- Các blocker Review R1/R2 đã đóng trong source hiện tại. F2A audit xác định cần
-  cả source separation và tool repair; F2B package lifecycle đã triển khai và
-  focused package QA PASS; F2C separation rehearsal đạt **PASS_WITH_NOTES**.
-- Không claim C3.1 final approved, full regression/full suite đã chạy, main
-  commits/push đã hoàn thành, hoặc R4 candidate/final đã được tạo.
+- Stage 9A.7 đã **FINALIZED / COMPLETE**. Final immutable R4 nằm tại
+  `reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
+  SHA-256
+  `1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
+  **109344 bytes**, **27 entries**; immutable/no-overwrite audit PASS.
+- Canonical source là WP1 base `9465d294f60ae31b810983c71588be9945a71368`
+  tới maintenance target `bbb07b9ba436293faa9d286927186d5e885016ea`,
+  tree `ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`, parent/original WP2
+  `ff250d67c70abfe80224befee4a17cccb4e4d3fb`. Patch SHA-256
+  `e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
+  bao phủ **16 paths**; maintenance delta là test-harness-only.
+- Exact-source QA: focused **315 passed, 1 skipped**; regression **147 passed,
+  1 skipped**; full offscreen **2185 passed, 1 skipped, 2 deselected**; native
+  geometry **1 passed**; native smoke **17 passed**; `pip check`, `compileall`
+  và `diff-check` PASS. Offscreen geometry skip đúng native-QPA contract.
+- Integrated compatibility evidence tại main offscreen-fix commit
+  `33c9330fe16ec5c371470072c9ef7b94e7dda3c0` đạt targeted **18 passed**,
+  native **398 passed**, và hai lượt full offscreen cùng **2262 passed,
+  6 skipped, 2 deselected**. Đây chỉ là supplementary evidence, không thay thế
+  exact-source QA và không đổi canonical R4 identity.
+- Maintenance branch/worktree chưa merge vào `main` và được giữ để bảo toàn
+  provenance với trạng thái
+  **RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**. Không claim final ZIP
+  Git-ignored hoặc maintenance commit nằm trong commit history của `main`.
+- Dự án đang **WAITING_FOR_NEXT_APPROVED_STAGE**; không stage phát triển kế
+  tiếp nào được tự động chọn hoặc bắt đầu.
 - SQLite schema v4, `.HMS`, CAM project data, toolpath/Post safety và machine
-  readiness không đổi. C3.2, OS integration và WP3–WP6 chưa bắt đầu.
+  readiness không đổi.
 ## Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu
 
 - Stage 8A.4.4 đã **COMPLETED** trên baseline `3b70b5c`; package GUI R3 đã
