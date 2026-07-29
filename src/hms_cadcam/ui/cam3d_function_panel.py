@@ -1,8 +1,8 @@
-"""Stage 9A.8 WP1 CAM 3D presentation shell.
+"""Stage 9A.8 WP1 shell with the WP2A typed selection editor.
 
-The widget is deliberately presentation-only: no CAD kernel, persistence, or
-worker service is imported here.  Later work packages may connect commands to
-application services without changing this fail-closed shell contract.
+The widget remains presentation-only: no CAD kernel, persistence, or worker
+service is imported here.  Selection commands leave through typed signals and
+immutable application state is rendered without retaining viewport objects.
 """
 
 from __future__ import annotations
@@ -24,10 +24,17 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.project.models import ProjectSession
+from hms_cadcam.cam.application.cam3d_selection import (
+    Cam3DSelectionIssue,
+    Cam3DSelectionRole,
+    Cam3DSelectionState,
+    Cam3DSelectionStatus,
+)
 from hms_cadcam.ui.cam3d_function_state import (
     Cam3DPresentationState,
     Cam3DUiCommandPolicy,
 )
+from hms_cadcam.ui.cam3d_selection_editor import Cam3DSelectionRoleEditor
 from hms_cadcam.ui.localization import ui_text
 
 
@@ -49,6 +56,8 @@ class Cam3DFunctionPanel(QWidget):
     """Responsive, state-driven shell for the CAM 3D function UI."""
 
     state_changed = Signal(object)
+    selection_assign_requested = Signal(object)
+    selection_clear_requested = Signal(object)
 
     def __init__(
         self,
@@ -68,7 +77,9 @@ class Cam3DFunctionPanel(QWidget):
             if feature_enabled
             else Cam3DPresentationState.feature_disabled()
         )
+        self._selection_state = Cam3DSelectionState.closed()
         self._section_titles: dict[str, QGroupBox] = {}
+        self._role_editors: dict[Cam3DSelectionRole, Cam3DSelectionRoleEditor] = {}
         self._placeholder_controls: list[QWidget] = []
         self._build_ui()
         self.retranslate_ui()
@@ -91,6 +102,20 @@ class Cam3DFunctionPanel(QWidget):
         """Expose the non-operational WP1 controls for focused UI verification."""
 
         return tuple(self._placeholder_controls)
+
+    @property
+    def selection_state(self) -> Cam3DSelectionState:
+        """Return the immutable WP2A selection aggregate currently rendered."""
+
+        return self._selection_state
+
+    @property
+    def role_editors(
+        self,
+    ) -> tuple[tuple[Cam3DSelectionRole, Cam3DSelectionRoleEditor], ...]:
+        """Expose stable typed role editors for focused UI verification."""
+
+        return tuple(self._role_editors.items())
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -144,7 +169,22 @@ class Cam3DFunctionPanel(QWidget):
                     Qt.TextInteractionFlag.TextSelectableByMouse
                 )
                 self.diagnostics_value = control
-            elif key in {"machining_zone", "part", "check", "fixtures", "tool"}:
+            elif key in {"part", "check", "fixtures"}:
+                role = {
+                    "part": Cam3DSelectionRole.PART,
+                    "check": Cam3DSelectionRole.CHECK,
+                    "fixtures": Cam3DSelectionRole.FIXTURE,
+                }[key]
+                control = QPushButton(group)
+                control.setObjectName(f"Cam3DPlaceholder_{key}")
+                control.setProperty("textSource", "Select")
+                control.hide()
+                editor = Cam3DSelectionRoleEditor(role, group)
+                editor.assign_requested.connect(self.selection_assign_requested.emit)
+                editor.clear_requested.connect(self.selection_clear_requested.emit)
+                self._role_editors[role] = editor
+                layout.addWidget(editor)
+            elif key in {"machining_zone", "tool"}:
                 control = QPushButton(group)
                 control.setObjectName(f"Cam3DPlaceholder_{key}")
                 control.setProperty("textSource", "Select")
@@ -220,13 +260,48 @@ class Cam3DFunctionPanel(QWidget):
         self._render_state()
         self.state_changed.emit(state)
 
+    def set_selection_state(self, state: Cam3DSelectionState) -> None:
+        """Project one immutable WP2A aggregate into the existing shell state."""
+
+        if not isinstance(state, Cam3DSelectionState):
+            raise TypeError("state must be Cam3DSelectionState")
+        self._selection_state = state
+        if not self._feature_enabled:
+            presentation = Cam3DPresentationState.feature_disabled()
+        elif state.project_id is None:
+            presentation = Cam3DPresentationState.empty()
+        elif state.read_only:
+            presentation = Cam3DPresentationState.for_read_only(
+                state.project_id,
+                state.project_generation,
+            )
+        elif state.status is Cam3DSelectionStatus.STALE:
+            presentation = Cam3DPresentationState.stale(
+                state.project_id,
+                state.project_generation,
+            )
+        elif state.status is Cam3DSelectionStatus.INVALID:
+            presentation = Cam3DPresentationState.error(
+                "",
+                state.project_id,
+                state.project_generation,
+            )
+        else:
+            presentation = Cam3DPresentationState.ready(
+                state.project_id,
+                state.project_generation,
+            )
+        self.set_state(presentation)
+
     def retranslate_ui(self, _language: object = None) -> None:
         """Retranslate visible shell text without changing state or identity."""
 
         self.title_label.setText(ui_text("CAM 3D Function UI"))
         self.title_label.setAccessibleName(ui_text("CAM 3D Function UI"))
         self.state_caption.setText(f"{ui_text('Status')}:")
-        scope_description = ui_text("WP1 shell only")
+        scope_description = ui_text(
+            "Select Part, Check and Fixture surfaces; calculation remains unavailable"
+        )
         self.scroll_area.setAccessibleName(ui_text("CAM 3D Function UI"))
         self.scroll_area.setAccessibleDescription(scope_description)
         for (key, source), control in zip(
@@ -246,8 +321,10 @@ class Cam3DFunctionPanel(QWidget):
             placeholder_source = control.property("placeholderSource")
             if isinstance(control, QLineEdit) and isinstance(placeholder_source, str):
                 control.setPlaceholderText(ui_text(placeholder_source))
+        for editor in self._role_editors.values():
+            editor.retranslate_ui()
         self.scope_note.setText(
-            ui_text("3D CAM is foundational; the production UI is not implemented")
+            ui_text("Select Part, Check and Fixture surfaces; calculation remains unavailable")
         )
         self.scope_note.setAccessibleDescription(scope_description)
         self._render_state()
@@ -260,9 +337,22 @@ class Cam3DFunctionPanel(QWidget):
         self.state_value.setAccessibleName(
             f"{ui_text('Status')}: {ui_text(state.label_key)}"
         )
-        self.reason_label.setText(ui_text(state.reason_key))
-        self.reason_label.setAccessibleDescription(ui_text(state.reason_key))
+        selection = self._selection_state
+        selection_message = (
+            ui_text(selection.issue.label_key)
+            if selection.issue is not Cam3DSelectionIssue.NONE
+            else ui_text(selection.status.label_key)
+        )
+        reason_text = (
+            selection_message
+            if selection.project_id is not None
+            else ui_text(state.reason_key)
+        )
+        self.reason_label.setText(reason_text)
+        self.reason_label.setAccessibleDescription(reason_text)
         diagnostics = state.message.strip()
+        if not diagnostics and selection.issue is not Cam3DSelectionIssue.NONE:
+            diagnostics = selection_message
         if not diagnostics:
             diagnostics = f"{ui_text('DIAGNOSTICS')}: {state.diagnostic_count}"
         self.diagnostics_value.setText(diagnostics)
@@ -271,6 +361,8 @@ class Cam3DFunctionPanel(QWidget):
         )
         for control in self._placeholder_controls:
             control.setEnabled(False)
+        for editor in self._role_editors.values():
+            editor.set_state(selection)
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()

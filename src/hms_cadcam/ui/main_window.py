@@ -71,6 +71,11 @@ from hms_cadcam.cam.domain import (
     Revision,
 )
 from hms_cadcam.cam.cam3d import CamSurfaceReference, CamSurfaceRole
+from hms_cadcam.cam.application.cam3d_selection import (
+    Cam3DSelectionApplicationService,
+    Cam3DSelectionRole,
+    Cam3DSelectionSource,
+)
 from hms_cadcam.cad.measurement import (
     AreaMeasurement,
     BoundingDimensions,
@@ -305,6 +310,11 @@ class MainWindow(QMainWindow):
             self.viewport,
             project_service=project_service,
         )
+        if self._cam3d_review_host:
+            self._cam3d_selection_service = Cam3DSelectionApplicationService(
+                self._current_cam3d_selection_source,
+                self._bind_cam3d_selection_surface,
+            )
         self.cad_controller.set_open_command(
             self.project_controller.request_open_path
         )
@@ -377,6 +387,12 @@ class MainWindow(QMainWindow):
             self.cam3d_function_panel = Cam3DFunctionPanel(
                 feature_enabled=True,
                 parent=self,
+            )
+            self.cam3d_function_panel.selection_assign_requested.connect(
+                self._assign_cam3d_selection_role
+            )
+            self.cam3d_function_panel.selection_clear_requested.connect(
+                self._clear_cam3d_selection_role
             )
 
         self._post_assembly_adapter = PostAssemblyProjectionAdapter(
@@ -1051,17 +1067,57 @@ class MainWindow(QMainWindow):
             self._show_cam_workspace()
             return
         session = self._project_service.current_project
-        self.cam3d_function_panel.bind_project(
-            session,
-            generation=(
-                self._project_service.cam_generation
-                if session is not None
-                else None
-            ),
-        )
+        self._bind_cam3d_selection_project(session)
         self.cam3d_function_dock.show()
         self.cam3d_function_dock.raise_()
         self.cam3d_function_dock.activateWindow()
+
+    def _bind_cam3d_selection_project(
+        self,
+        session: ProjectSession | None,
+    ) -> None:
+        """Bind the WP2A session to current project generation/read-only facts."""
+
+        if not self._cam3d_review_host:
+            return
+        if session is None:
+            state = self._cam3d_selection_service.reset()
+            self.cam3d_function_panel.bind_project(None, generation=None)
+        else:
+            workspace = self._project_service.current_workspace
+            read_only = bool(
+                workspace is not None
+                and workspace.mode is DocumentMode.CAM_PROJECT
+                and workspace.read_only
+            )
+            generation = self._project_service.cam_generation
+            state = self._cam3d_selection_service.bind_project(
+                session.manifest.project_id,
+                generation,
+                read_only=read_only,
+            )
+            self.cam3d_function_panel.bind_project(
+                session,
+                generation=generation,
+                read_only=read_only,
+            )
+        self.cam3d_function_panel.set_selection_state(state)
+
+    def _assign_cam3d_selection_role(self, role: object) -> None:
+        """Assign current eligible viewport faces through the application service."""
+
+        if not isinstance(role, Cam3DSelectionRole):
+            return
+        state = self._cam3d_selection_service.assign_current(role)
+        self.cam3d_function_panel.set_selection_state(state)
+
+    def _clear_cam3d_selection_role(self, role: object) -> None:
+        """Clear one role without persistence or geometry calculation."""
+
+        if not isinstance(role, Cam3DSelectionRole):
+            return
+        state = self._cam3d_selection_service.clear_role(role)
+        self.cam3d_function_panel.set_selection_state(state)
 
     def _show_cam_workspace(self) -> None:
         """Switch to MILL 2D without replacing the CAD/OCP viewport."""
@@ -1736,6 +1792,36 @@ class MainWindow(QMainWindow):
         if selection.topology is SelectionMode.FACE:
             return self._planar_face_resolver().bind_selection(selection)
         raise GeometryPickError("Planar Facing requires exactly one FACE selection.")
+
+    def _current_cam3d_selection_source(self) -> Cam3DSelectionSource | None:
+        """Return native-free viewport/project facts for the WP2A service."""
+
+        session = self._project_service.current_project
+        if session is None:
+            return None
+        workspace = self._project_service.current_workspace
+        read_only = bool(
+            workspace is not None
+            and workspace.mode is DocumentMode.CAM_PROJECT
+            and workspace.read_only
+        )
+        return Cam3DSelectionSource(
+            project_id=session.manifest.project_id,
+            project_generation=self._project_service.cam_generation,
+            document_id=self.cad_controller.active_document_id,
+            source_id=self.cad_controller.active_source_id,
+            read_only=read_only,
+            selections=self.cad_controller.active_selection,
+        )
+
+    def _bind_cam3d_selection_surface(
+        self,
+        selection: SelectionMetadata,
+        role: CamSurfaceRole,
+    ) -> CamSurfaceReference:
+        """Resolve one FACE through the existing project-owned OCP adapter."""
+
+        return self._parallel_surface_adapter().bind_selection(selection, role)
 
     def _parallel_surface_adapter(self) -> OcpCam3DSurfaceAdapter:
         """Return the active project-owned CAM 3D BRep adapter."""
@@ -2467,14 +2553,7 @@ class MainWindow(QMainWindow):
             project_session = (
                 session if isinstance(session, ProjectSession) else None
             )
-            self.cam3d_function_panel.bind_project(
-                project_session,
-                generation=(
-                    self._project_service.cam_generation
-                    if project_session is not None
-                    else None
-                ),
-            )
+            self._bind_cam3d_selection_project(project_session)
         self._post_assembly_adapter.set_session(
             session if isinstance(session, ProjectSession) else None
         )
