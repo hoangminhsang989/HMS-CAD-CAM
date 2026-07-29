@@ -99,6 +99,13 @@ from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam3d_function_panel import Cam3DFunctionPanel
+from hms_cadcam.cam.application.cam3d_editor import (
+    Cam3DEditorField,
+    Cam3DProjectContext,
+    Cam3DToolAssemblyChoice,
+    Cam3DToolProfileChoice,
+)
+from hms_cadcam.ui.cam3d_editor_binding import Cam3DEditorBindingController
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
@@ -315,6 +322,7 @@ class MainWindow(QMainWindow):
                 self._current_cam3d_selection_source,
                 self._bind_cam3d_selection_surface,
             )
+            self._cam3d_editor_binding_controller = Cam3DEditorBindingController()
         self.cad_controller.set_open_command(
             self.project_controller.request_open_path
         )
@@ -393,6 +401,15 @@ class MainWindow(QMainWindow):
             )
             self.cam3d_function_panel.selection_clear_requested.connect(
                 self._clear_cam3d_selection_role
+            )
+            self.cam3d_function_panel.tool_assembly_changed.connect(
+                self._assign_cam3d_tool_assembly
+            )
+            self.cam3d_function_panel.tool_profile_changed.connect(
+                self._assign_cam3d_tool_profile
+            )
+            self.cam3d_function_panel.numeric_field_changed.connect(
+                self._replace_cam3d_numeric_field
             )
 
         self._post_assembly_adapter = PostAssemblyProjectionAdapter(
@@ -1076,13 +1093,14 @@ class MainWindow(QMainWindow):
         self,
         session: ProjectSession | None,
     ) -> None:
-        """Bind the WP2A session to current project generation/read-only facts."""
+        """Bind WP2A selection and WP2B-B editor to immutable live facts."""
 
         if not self._cam3d_review_host:
             return
         if session is None:
             state = self._cam3d_selection_service.reset()
             self.cam3d_function_panel.bind_project(None, generation=None)
+            render = self._cam3d_editor_binding_controller.reset()
         else:
             workspace = self._project_service.current_workspace
             read_only = bool(
@@ -1091,6 +1109,25 @@ class MainWindow(QMainWindow):
                 and workspace.read_only
             )
             generation = self._project_service.cam_generation
+            context = Cam3DProjectContext.open(
+                session.manifest.project_id,
+                generation,
+                document_id=self.cad_controller.active_document_id,
+                source_id=self.cad_controller.active_source_id,
+                read_only=read_only,
+            )
+            bound = self._cam3d_editor_binding_controller.state.context
+            identity_changed = (
+                bound.is_open
+                and (
+                    bound.project_id != context.project_id
+                    or bound.project_generation != context.project_generation
+                    or bound.document_id != context.document_id
+                    or bound.source_id != context.source_id
+                )
+            )
+            if identity_changed:
+                self._cam3d_selection_service.reset()
             state = self._cam3d_selection_service.bind_project(
                 session.manifest.project_id,
                 generation,
@@ -1101,7 +1138,70 @@ class MainWindow(QMainWindow):
                 generation=generation,
                 read_only=read_only,
             )
+            snapshot = session.cam_snapshot
+            render = self._cam3d_editor_binding_controller.bind(
+                context,
+                state,
+                tools=snapshot.tool_definitions,
+                holders=snapshot.holder_definitions,
+                assemblies=snapshot.tool_assemblies,
+            )
         self.cam3d_function_panel.set_selection_state(state)
+        self.cam3d_function_panel.set_editor_render_state(render)
+
+    def _current_cam3d_editor_context(self) -> Cam3DProjectContext:
+        session = self._project_service.current_project
+        if session is None:
+            return Cam3DProjectContext.closed()
+        workspace = self._project_service.current_workspace
+        read_only = bool(
+            workspace is not None
+            and workspace.mode is DocumentMode.CAM_PROJECT
+            and workspace.read_only
+        )
+        return Cam3DProjectContext.open(
+            session.manifest.project_id,
+            self._project_service.cam_generation,
+            document_id=self.cad_controller.active_document_id,
+            source_id=self.cad_controller.active_source_id,
+            read_only=read_only,
+        )
+
+    def _assign_cam3d_tool_assembly(self, choice: object) -> None:
+        if choice is not None and not isinstance(choice, Cam3DToolAssemblyChoice):
+            return
+        controller = self._cam3d_editor_binding_controller
+        controller.set_live_context(self._current_cam3d_editor_context())
+        render = (
+            controller.clear_tool_assembly()
+            if choice is None
+            else controller.assign_tool_assembly(choice)
+        )
+        self.cam3d_function_panel.set_editor_render_state(render)
+
+    def _assign_cam3d_tool_profile(self, choice: object) -> None:
+        if choice is not None and not isinstance(choice, Cam3DToolProfileChoice):
+            return
+        controller = self._cam3d_editor_binding_controller
+        controller.set_live_context(self._current_cam3d_editor_context())
+        render = (
+            controller.clear_tool_profile()
+            if choice is None
+            else controller.assign_tool_profile(choice)
+        )
+        self.cam3d_function_panel.set_editor_render_state(render)
+
+    def _replace_cam3d_numeric_field(self, field: object, value: object) -> None:
+        if not isinstance(field, Cam3DEditorField):
+            return
+        controller = self._cam3d_editor_binding_controller
+        controller.set_live_context(self._current_cam3d_editor_context())
+        render = (
+            controller.replace_numeric_text(field, value)
+            if isinstance(value, str)
+            else controller.replace_numeric_field(field, value)
+        )
+        self.cam3d_function_panel.set_editor_render_state(render)
 
     def _assign_cam3d_selection_role(self, role: object) -> None:
         """Assign current eligible viewport faces through the application service."""
@@ -1109,7 +1209,11 @@ class MainWindow(QMainWindow):
         if not isinstance(role, Cam3DSelectionRole):
             return
         state = self._cam3d_selection_service.assign_current(role)
+        controller = self._cam3d_editor_binding_controller
+        controller.set_live_context(self._current_cam3d_editor_context())
+        render = controller.set_selection(state)
         self.cam3d_function_panel.set_selection_state(state)
+        self.cam3d_function_panel.set_editor_render_state(render)
 
     def _clear_cam3d_selection_role(self, role: object) -> None:
         """Clear one role without persistence or geometry calculation."""
@@ -1117,7 +1221,11 @@ class MainWindow(QMainWindow):
         if not isinstance(role, Cam3DSelectionRole):
             return
         state = self._cam3d_selection_service.clear_role(role)
+        controller = self._cam3d_editor_binding_controller
+        controller.set_live_context(self._current_cam3d_editor_context())
+        render = controller.set_selection(state)
         self.cam3d_function_panel.set_selection_state(state)
+        self.cam3d_function_panel.set_editor_render_state(render)
 
     def _show_cam_workspace(self) -> None:
         """Switch to MILL 2D without replacing the CAD/OCP viewport."""
@@ -1570,6 +1678,8 @@ class MainWindow(QMainWindow):
         if self._profiles_dialog is not None:
             self._profiles_dialog.retranslate_ui(selected)
         localize_widget_tree(self)
+        if hasattr(self, "cam3d_function_panel"):
+            self.cam3d_function_panel.editor_widget.retranslate_ui()
 
     def refresh_localized_layout(
         self,
@@ -2632,6 +2742,8 @@ class MainWindow(QMainWindow):
                                   previous_document_id != current_document_id)
             )
         self._show_document_properties()
+        if self._cam3d_review_host and hasattr(self, "cam3d_function_panel"):
+            self._bind_cam3d_selection_project(self._project_service.current_project)
 
     def _update_topology_tree(self, tree: object) -> None:
         self._active_document_tree = (

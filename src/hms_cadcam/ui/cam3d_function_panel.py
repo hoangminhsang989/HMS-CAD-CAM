@@ -35,8 +35,14 @@ from hms_cadcam.ui.cam3d_function_state import (
     Cam3DUiCommandPolicy,
 )
 from hms_cadcam.ui.cam3d_selection_editor import Cam3DSelectionRoleEditor
+from hms_cadcam.ui.cam3d_editor_binding import Cam3DEditorRenderState
+from hms_cadcam.ui.cam3d_editor_widget import Cam3DEditorWidget
 from hms_cadcam.ui.localization import ui_text
 
+
+_EDITOR_SECTION_KEYS = frozenset(
+    {"tool", "tolerance", "allowance", "safe_motion", "diagnostics"}
+)
 
 _SECTION_SOURCES: tuple[tuple[str, str], ...] = (
     ("machining_zone", "Machining zone"),
@@ -58,6 +64,9 @@ class Cam3DFunctionPanel(QWidget):
     state_changed = Signal(object)
     selection_assign_requested = Signal(object)
     selection_clear_requested = Signal(object)
+    tool_assembly_changed = Signal(object)
+    tool_profile_changed = Signal(object)
+    numeric_field_changed = Signal(object, object)
 
     def __init__(
         self,
@@ -81,6 +90,17 @@ class Cam3DFunctionPanel(QWidget):
         self._section_titles: dict[str, QGroupBox] = {}
         self._role_editors: dict[Cam3DSelectionRole, Cam3DSelectionRoleEditor] = {}
         self._placeholder_controls: list[QWidget] = []
+        self.editor_widget = Cam3DEditorWidget(self)
+        self.editor_widget.hide()
+        self.editor_widget.tool_assembly_changed.connect(
+            self.tool_assembly_changed.emit
+        )
+        self.editor_widget.tool_profile_changed.connect(
+            self.tool_profile_changed.emit
+        )
+        self.editor_widget.numeric_field_changed.connect(
+            self.numeric_field_changed.emit
+        )
         self._build_ui()
         self.retranslate_ui()
         self._render_state()
@@ -196,6 +216,9 @@ class Cam3DFunctionPanel(QWidget):
             control.setEnabled(False)
             self._placeholder_controls.append(control)
             layout.addWidget(control)
+            if key in _EDITOR_SECTION_KEYS:
+                control.hide()
+                layout.addWidget(self.editor_widget.section_widget(key))
             self._section_titles[key] = group
             content_layout.addWidget(group)
         content_layout.addStretch(1)
@@ -323,6 +346,7 @@ class Cam3DFunctionPanel(QWidget):
                 control.setPlaceholderText(ui_text(placeholder_source))
         for editor in self._role_editors.values():
             editor.retranslate_ui()
+        self.editor_widget.retranslate_ui()
         self.scope_note.setText(
             ui_text("Select Part, Check and Fixture surfaces; calculation remains unavailable")
         )
@@ -366,6 +390,12 @@ class Cam3DFunctionPanel(QWidget):
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
+
+    def set_editor_render_state(self, state: Cam3DEditorRenderState) -> None:
+        """Render the immutable WP2B-B projection into concrete controls."""
+        if not isinstance(state, Cam3DEditorRenderState):
+            raise TypeError("state must be Cam3DEditorRenderState")
+        self.editor_widget.set_render_state(state)
 
     def section_keys(self) -> Iterable[str]:
         """Return stable section identifiers in visual order."""
