@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from threading import get_ident
 from uuid import UUID
 
-from OCP.AIS import AIS_Shape
+from OCP.AIS import AIS_Shape, AIS_Triangulation
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeVertex
 from OCP.GC import GC_MakeArcOfCircle
+from OCP.Poly import Poly_Triangle, Poly_Triangulation
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCP.TopoDS import TopoDS_Compound
 from OCP.V3d import V3d_TypeOfOrientation
@@ -29,6 +31,13 @@ from hms_cadcam.cam.domain import OperationId, SimulationResultId, WcsFrame
 from hms_cadcam.cam.simulation.model import SimulationResult, SimulationStatus
 from hms_cadcam.cam.toolpath import ArcMove, LinearMove, RapidMove, ToolpathArtifact
 from hms_cadcam.viewer.backend import SelectionCallback
+from hms_cadcam.viewer.cam3d import (
+    Cam3DPreviewActorIdentity,
+    Cam3DPreviewOwnership,
+    Cam3DPreviewPublication,
+    Cam3DPreviewPublicationCode,
+    Cam3DPreviewPublicationResult,
+)
 from hms_cadcam.viewer.models import (
     DisplayMode,
     KeyboardModifier,
@@ -72,6 +81,9 @@ _SIMULATION_STATUS_COLORS = {
     SimulationStatus.WARN: (1.0, 0.72, 0.05),
     SimulationStatus.FAIL: (1.0, 0.12, 0.08),
 }
+_CAM3D_PREVIEW_COLOR = (0.1, 0.72, 0.95)
+_CAM3D_PREVIEW_TRANSPARENCY = 0.12
+
 _SIMULATION_PATH_COLORS = {
     SimulationPathSemantic.RAPID: (0.25, 0.58, 1.0),
     SimulationPathSemantic.CUTTING: (0.15, 1.0, 0.3),
@@ -144,14 +156,34 @@ def _simulation_marker_shape(marker: SimulationIssueMarker) -> AIS_Shape | None:
     return AIS_Shape(compound)
 
 
+class _OcpCam3DPreviewRollbackError(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class _OcpCam3DPreviewActor:
+    identity: Cam3DPreviewActorIdentity
+    triangulation: Poly_Triangulation
+    native: AIS_Triangulation
+
+
 class OcpCadViewportBackend:
     """Render OCP kernel documents without exposing native objects to Qt UI."""
 
-    def __init__(self, kernel: CadKernel) -> None:
+    def __init__(
+        self,
+        kernel: CadKernel,
+        *,
+        lifecycle: OcpViewportLifecycle | None = None,
+    ) -> None:
         if not isinstance(kernel, OcpCadKernel):
             raise TypeError("OCP viewport requires OcpCadKernel")
+        if lifecycle is not None and not isinstance(
+            lifecycle, OcpViewportLifecycle
+        ):
+            raise TypeError("OCP viewport lifecycle is invalid")
         self._kernel = kernel
-        self._lifecycle = OcpViewportLifecycle()
+        self._lifecycle = lifecycle or OcpViewportLifecycle()
         self._selection: OcpSelectionController | None = None
         self._input: OcpInputController | None = None
         self._selection_callback: SelectionCallback = lambda _items: None
@@ -171,6 +203,8 @@ class OcpCadViewportBackend:
             OperationId, str, AIS_Shape
         ] | None = None
         self._simulation_registry = SimulationPresentationRegistry()
+        self._cam3d_preview_actor: _OcpCam3DPreviewActor | None = None
+        self._owner_thread_id: int | None = None
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(
@@ -183,6 +217,11 @@ class OcpCadViewportBackend:
         self._selection_callback = callback
 
     def initialize(self, native_window_id: int) -> None:
+        current_thread = get_ident()
+        if self._owner_thread_id is None:
+            self._owner_thread_id = current_thread
+        elif self._owner_thread_id != current_thread:
+            raise RuntimeError("OCP viewport must initialize on its owner thread")
         if self._lifecycle.initialized:
             return
         if self._closed:
@@ -196,6 +235,7 @@ class OcpCadViewportBackend:
 
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
+        self._clear_cam3d_preview_unconditionally()
         self.clear_simulations()
         self.clear_toolpaths()
         old_document_id = self._document_id
@@ -309,6 +349,7 @@ class OcpCadViewportBackend:
         self.fit_all()
 
     def clear(self) -> None:
+        self._clear_cam3d_preview_unconditionally()
         self.clear_simulations()
         simulation_registry = getattr(self, "_simulation_registry", None)
         if simulation_registry is not None:
@@ -856,6 +897,257 @@ class OcpCadViewportBackend:
         self._simulation_marker_objects.clear()
         self._simulation_registry.clear()
 
+    def publish_cam3d_preview(
+        self,
+        publication: Cam3DPreviewPublication,
+    ) -> Cam3DPreviewPublicationResult:
+        """Build and atomically replace one exact-owner CAM 3D preview actor."""
+        if not isinstance(publication, Cam3DPreviewPublication):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.CLOSED,
+                publication.identity,
+            )
+        if not self._lifecycle.initialized:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.NOT_INITIALIZED,
+                publication.identity,
+            )
+        if not self._on_owner_thread():
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.WRONG_THREAD,
+                publication.identity,
+            )
+        previous = getattr(self, "_cam3d_preview_actor", None)
+        if previous is not None and (
+            previous.identity.ownership != publication.identity.ownership
+            or previous.identity.project_generation
+            != publication.identity.project_generation
+        ):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.OWNERSHIP_MISMATCH,
+                previous.identity,
+            )
+        try:
+            candidate = self._build_cam3d_preview_actor(publication)
+        except _OcpCam3DPreviewRollbackError:
+            logging.getLogger(__name__).exception(
+                "CAM 3D preview candidate cleanup failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.ROLLBACK_FAILURE,
+                previous.identity if previous is not None else None,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "CAM 3D preview candidate build/display failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.BACKEND_FAILURE,
+                previous.identity if previous is not None else None,
+            )
+
+        self._cam3d_preview_actor = candidate
+        if previous is None:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.PUBLISHED,
+                candidate.identity,
+            )
+        context = self._lifecycle.context
+        try:
+            context.Remove(previous.native, False)
+            context.UpdateCurrentViewer()
+        except Exception:
+            self._cam3d_preview_actor = previous
+            rollback_error = self._rollback_cam3d_preview_swap(
+                candidate,
+                previous,
+            )
+            logging.getLogger(__name__).exception(
+                "CAM 3D preview replacement failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                (
+                    Cam3DPreviewPublicationCode.ROLLBACK_FAILURE
+                    if rollback_error is not None
+                    else Cam3DPreviewPublicationCode.BACKEND_FAILURE
+                ),
+                previous.identity,
+            )
+        return Cam3DPreviewPublicationResult(
+            Cam3DPreviewPublicationCode.REPLACED,
+            candidate.identity,
+        )
+
+    def clear_cam3d_preview(
+        self,
+        ownership: Cam3DPreviewOwnership,
+    ) -> Cam3DPreviewPublicationResult:
+        """Clear only an actor owned by the exact semantic context."""
+        if not isinstance(ownership, Cam3DPreviewOwnership):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.CLOSED
+            )
+        if not self._on_owner_thread():
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.WRONG_THREAD
+            )
+        actor = self._cam3d_preview_actor
+        if actor is None:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.ALREADY_CLEAR
+            )
+        if actor.identity.ownership != ownership:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.OWNERSHIP_MISMATCH,
+                actor.identity,
+            )
+        try:
+            self._remove_cam3d_preview_actor(actor)
+        except Exception:
+            rollback_error = self._restore_cam3d_preview_actor(actor)
+            logging.getLogger(__name__).exception(
+                "CAM 3D preview clear failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                (
+                    Cam3DPreviewPublicationCode.ROLLBACK_FAILURE
+                    if rollback_error is not None
+                    else Cam3DPreviewPublicationCode.BACKEND_FAILURE
+                ),
+                actor.identity,
+            )
+        self._cam3d_preview_actor = None
+        return Cam3DPreviewPublicationResult(
+            Cam3DPreviewPublicationCode.CLEARED,
+            actor.identity,
+        )
+
+    def get_cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None:
+        actor = getattr(self, "_cam3d_preview_actor", None)
+        return actor.identity if actor is not None else None
+
+    def _build_cam3d_preview_actor(
+        self,
+        publication: Cam3DPreviewPublication,
+    ) -> _OcpCam3DPreviewActor:
+        mesh = publication.mesh
+        triangulation = Poly_Triangulation(
+            mesh.vertex_count,
+            mesh.triangle_count,
+            False,
+            False,
+        )
+        for index, point in enumerate(mesh.vertices, start=1):
+            triangulation.SetNode(index, gp_Pnt(*point))
+        for index, triangle in enumerate(mesh.triangles, start=1):
+            triangulation.SetTriangle(
+                index,
+                Poly_Triangle(*(item + 1 for item in triangle)),
+            )
+        triangulation.ComputeNormals()
+        native = AIS_Triangulation(triangulation)
+        actor = _OcpCam3DPreviewActor(
+            publication.identity,
+            triangulation,
+            native,
+        )
+        context = self._lifecycle.context
+        try:
+            context.Display(native, False)
+            context.SetColor(
+                native,
+                Quantity_Color(*_CAM3D_PREVIEW_COLOR, Quantity_TOC_RGB),
+                False,
+            )
+            context.SetTransparency(
+                native,
+                _CAM3D_PREVIEW_TRANSPARENCY,
+                False,
+            )
+            deactivate = getattr(context, "Deactivate", None)
+            if callable(deactivate):
+                deactivate(native)
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            cleanup_error = self._discard_cam3d_preview_actor(actor)
+            if cleanup_error is not None:
+                raise _OcpCam3DPreviewRollbackError(
+                    "CAM 3D preview candidate cleanup failed"
+                ) from error
+            raise
+        return actor
+
+    def _remove_cam3d_preview_actor(
+        self,
+        actor: _OcpCam3DPreviewActor,
+    ) -> None:
+        context = self._lifecycle.context
+        context.Remove(actor.native, False)
+        context.UpdateCurrentViewer()
+
+    def _discard_cam3d_preview_actor(
+        self,
+        actor: _OcpCam3DPreviewActor,
+    ) -> Exception | None:
+        context = self._lifecycle.context
+        first_error: Exception | None = None
+        try:
+            context.Remove(actor.native, False)
+        except Exception as error:
+            first_error = error
+        try:
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            first_error = first_error or error
+        return first_error
+
+    def _restore_cam3d_preview_actor(
+        self,
+        actor: _OcpCam3DPreviewActor,
+    ) -> Exception | None:
+        context = self._lifecycle.context
+        try:
+            context.Display(actor.native, False)
+            deactivate = getattr(context, "Deactivate", None)
+            if callable(deactivate):
+                deactivate(actor.native)
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            return error
+        return None
+
+    def _rollback_cam3d_preview_swap(
+        self,
+        candidate: _OcpCam3DPreviewActor,
+        previous: _OcpCam3DPreviewActor,
+    ) -> Exception | None:
+        first_error = self._discard_cam3d_preview_actor(candidate)
+        restore_error = self._restore_cam3d_preview_actor(previous)
+        return first_error or restore_error
+
+    def _clear_cam3d_preview_unconditionally(self) -> None:
+        actor = getattr(self, "_cam3d_preview_actor", None)
+        if actor is None:
+            return
+        self._remove_cam3d_preview_actor(actor)
+        self._cam3d_preview_actor = None
+
+    def _on_owner_thread(self) -> bool:
+        current = get_ident()
+        owner_thread_id = getattr(self, "_owner_thread_id", None)
+        if owner_thread_id is None:
+            self._owner_thread_id = current
+            owner_thread_id = current
+        return owner_thread_id == current
+
     def _build_simulation_candidate(
         self,
         metadata: SimulationPresentation,
@@ -1155,6 +1447,7 @@ class OcpCadViewportBackend:
     def close(self) -> None:
         if self._closed:
             return
+        self._clear_cam3d_preview_unconditionally()
         self.clear_simulations()
         simulation_registry = getattr(self, "_simulation_registry", None)
         if simulation_registry is not None:
@@ -1172,6 +1465,7 @@ class OcpCadViewportBackend:
         self._tree = None
         self._selected_object_ids = ()
         self._lifecycle.close()
+        self._owner_thread_id = None
 
     def _require_initialized(self) -> None:
         if not self._lifecycle.initialized:

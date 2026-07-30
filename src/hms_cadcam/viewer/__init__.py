@@ -1,6 +1,15 @@
 """Product CAD viewport abstractions and Qt widget."""
 
 from hms_cadcam.viewer.backend import CadViewportBackend
+from hms_cadcam.viewer.cam3d import (
+    Cam3DPreviewActorIdentity,
+    Cam3DPreviewMeshData,
+    Cam3DPreviewOwnership,
+    Cam3DPreviewPublication,
+    Cam3DPreviewPublicationCode,
+    Cam3DPreviewPublicationResult,
+    Cam3DPreviewPublicationSource,
+)
 from hms_cadcam.viewer.factory import CadViewportBackendFactory
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -28,6 +37,13 @@ from hms_cadcam.viewer.simulation import (
 __all__ = [
     "CadViewportBackend",
     "CadViewportBackendFactory",
+    "Cam3DPreviewActorIdentity",
+    "Cam3DPreviewMeshData",
+    "Cam3DPreviewOwnership",
+    "Cam3DPreviewPublication",
+    "Cam3DPreviewPublicationCode",
+    "Cam3DPreviewPublicationResult",
+    "Cam3DPreviewPublicationSource",
     "DisplayMode",
     "KeyboardModifier",
     "MouseButton",

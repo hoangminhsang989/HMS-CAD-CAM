@@ -123,6 +123,7 @@ from hms_cadcam.cam.application.cam3d_editor import (
 )
 from hms_cadcam.ui.cam3d_editor_binding import Cam3DEditorBindingController
 from hms_cadcam.ui.cam3d_preview_worker import Cam3DQtWorkerBridge
+from hms_cadcam.ui.cam3d_viewport import Cam3DViewportPreviewSink
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
@@ -196,31 +197,6 @@ from hms_cadcam.viewer.widget import CadViewportWidget
 
 _logger = logging.getLogger(__name__)
 
-
-class _Cam3DViewportPreviewSink:
-    """Fail-closed production boundary until the viewport owns a CAM3D actor API."""
-
-    def __init__(self, viewport: object) -> None:
-        self._viewport = viewport
-
-    def publish(self, result: Cam3DPreviewResult) -> bool:
-        callback = getattr(self._viewport, "publish_cam3d_preview", None)
-        if not callable(callback):
-            return False
-        try:
-            return bool(callback(result))
-        except (RuntimeError, TypeError, ValueError):
-            _logger.exception("CAM 3D viewport preview publication failed")
-            return False
-
-    def clear(self, ownership: Cam3DCalculationOwnershipKey) -> None:
-        callback = getattr(self._viewport, "clear_cam3d_preview", None)
-        if not callable(callback):
-            return
-        try:
-            callback(ownership)
-        except (RuntimeError, TypeError, ValueError):
-            _logger.exception("CAM 3D viewport preview clear failed")
 
 
 _OBJECT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
@@ -372,7 +348,7 @@ class MainWindow(QMainWindow):
             self._cam3d_workflow: Cam3DPreviewWorkflow | None = None
             self._cam3d_worker_bridge = None
             self._cam3d_workflow_runtime_key = None
-            self._cam3d_preview_sink = _Cam3DViewportPreviewSink(self.viewport)
+            self._cam3d_preview_sink = Cam3DViewportPreviewSink(self.viewport)
         self.cad_controller.set_open_command(
             self.project_controller.request_open_path
         )

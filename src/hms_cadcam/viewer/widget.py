@@ -6,7 +6,7 @@ from collections.abc import Callable
 import logging
 from uuid import UUID
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QMouseEvent,
@@ -34,6 +34,13 @@ from hms_cadcam.viewer.models import (
     SelectionMode,
     ViewDirection,
     ViewportStatus,
+)
+from hms_cadcam.viewer.cam3d import (
+    Cam3DPreviewActorIdentity,
+    Cam3DPreviewOwnership,
+    Cam3DPreviewPublication,
+    Cam3DPreviewPublicationCode,
+    Cam3DPreviewPublicationResult,
 )
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
@@ -291,6 +298,99 @@ class CadViewportWidget(QWidget):
         callback = getattr(self._backend, "clear_simulations", None)
         if callable(callback):
             self._invoke("clear simulations", callback, clear_error=True)
+
+    def publish_cam3d_preview(
+        self,
+        publication: Cam3DPreviewPublication,
+    ) -> Cam3DPreviewPublicationResult:
+        """Publish one accepted immutable publication on the widget owner thread."""
+        if QThread.currentThread() is not self.thread():
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.WRONG_THREAD
+            )
+        if not isinstance(publication, Cam3DPreviewPublication):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.CLOSED,
+                publication.identity,
+            )
+        self.initialize_viewport()
+        if not self._initialized:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.NOT_INITIALIZED,
+                publication.identity,
+            )
+        try:
+            outcome = self._backend.publish_cam3d_preview(publication)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "CAM 3D viewport publication backend failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.BACKEND_FAILURE,
+                publication.identity,
+            )
+        if not isinstance(outcome, Cam3DPreviewPublicationResult):
+            logging.getLogger(__name__).error(
+                "CAM 3D viewport backend returned an invalid publication outcome"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.BACKEND_FAILURE,
+                publication.identity,
+            )
+        return outcome
+
+    def clear_cam3d_preview(
+        self,
+        ownership: Cam3DPreviewOwnership,
+    ) -> Cam3DPreviewPublicationResult:
+        """Clear only the preview owned by the exact semantic context."""
+        if QThread.currentThread() is not self.thread():
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.WRONG_THREAD
+            )
+        if not isinstance(ownership, Cam3DPreviewOwnership):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.CLOSED
+            )
+        try:
+            outcome = self._backend.clear_cam3d_preview(ownership)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "CAM 3D viewport clear backend failed"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.BACKEND_FAILURE
+            )
+        if not isinstance(outcome, Cam3DPreviewPublicationResult):
+            logging.getLogger(__name__).error(
+                "CAM 3D viewport backend returned an invalid clear outcome"
+            )
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.BACKEND_FAILURE
+            )
+        return outcome
+
+    @property
+    def cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None:
+        """Return native-free current preview identity for diagnostics/tests."""
+        if self._closed or QThread.currentThread() is not self.thread():
+            return None
+        try:
+            identity = self._backend.get_cam3d_preview_identity()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "CAM 3D viewport identity query failed"
+            )
+            return None
+        return identity if isinstance(identity, Cam3DPreviewActorIdentity) else None
 
     def fit_all(self) -> None:
         """Fit the displayed document into the current widget."""

@@ -20,6 +20,13 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.cam3d import (
+    Cam3DPreviewActorIdentity,
+    Cam3DPreviewOwnership,
+    Cam3DPreviewPublication,
+    Cam3DPreviewPublicationCode,
+    Cam3DPreviewPublicationResult,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
@@ -144,6 +151,38 @@ class UnavailableCadViewportBackend:
         del operation_id
 
     def clear_simulations(self) -> None:
+        return None
+
+    def publish_cam3d_preview(
+        self,
+        publication: Cam3DPreviewPublication,
+    ) -> Cam3DPreviewPublicationResult:
+        if not isinstance(publication, Cam3DPreviewPublication):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        return Cam3DPreviewPublicationResult(
+            Cam3DPreviewPublicationCode.CLOSED
+            if self._closed
+            else Cam3DPreviewPublicationCode.UNAVAILABLE,
+            publication.identity,
+        )
+
+    def clear_cam3d_preview(
+        self,
+        ownership: Cam3DPreviewOwnership,
+    ) -> Cam3DPreviewPublicationResult:
+        if not isinstance(ownership, Cam3DPreviewOwnership):
+            return Cam3DPreviewPublicationResult(
+                Cam3DPreviewPublicationCode.INVALID_PAYLOAD
+            )
+        return Cam3DPreviewPublicationResult(
+            Cam3DPreviewPublicationCode.CLOSED
+            if self._closed
+            else Cam3DPreviewPublicationCode.ALREADY_CLEAR
+        )
+
+    def get_cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None:
         return None
 
     def fit_all(self) -> None:

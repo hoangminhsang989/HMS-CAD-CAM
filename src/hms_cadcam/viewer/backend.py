@@ -22,6 +22,12 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.cam3d import (
+    Cam3DPreviewActorIdentity,
+    Cam3DPreviewOwnership,
+    Cam3DPreviewPublication,
+    Cam3DPreviewPublicationResult,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
@@ -112,6 +118,18 @@ class CadViewportBackend(Protocol):
     def remove_simulation(self, operation_id: OperationId) -> None: ...
 
     def clear_simulations(self) -> None: ...
+
+    def publish_cam3d_preview(
+        self,
+        publication: Cam3DPreviewPublication,
+    ) -> Cam3DPreviewPublicationResult: ...
+
+    def clear_cam3d_preview(
+        self,
+        ownership: Cam3DPreviewOwnership,
+    ) -> Cam3DPreviewPublicationResult: ...
+
+    def get_cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None: ...
 
     def fit_all(self) -> None: ...
 
