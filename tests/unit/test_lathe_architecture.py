@@ -173,17 +173,34 @@ def test_fifty_session_and_lifecycle_transition_cycles_leak_no_state() -> None:
         assert reopened.list_operations() == ()
 
 
-def test_no_lathe_ui_or_execution_modules_exist() -> None:
-    ui_paths = tuple((ROOT / "src" / "hms_cadcam" / "ui").rglob("*.py"))
-    lathe_ui_classes: list[str] = []
-    for path in ui_paths:
+def test_lathe_ui_exists_only_in_authorized_stage9a9_modules() -> None:
+    ui_root = ROOT / "src" / "hms_cadcam" / "ui"
+    lathe_ui_paths = tuple(sorted(ui_root.glob("lathe_*.py")))
+    assert {path.name for path in lathe_ui_paths} == {
+        "lathe_adapters.py",
+        "lathe_presenter.py",
+        "lathe_session.py",
+        "lathe_workspace.py",
+    }
+    forbidden_imports = (
+        "sqlite3",
+        "hms_cadcam.cam.post",
+        "hms_cadcam.cam.simulation",
+        "hms_cadcam.cam.toolpath",
+        "hms_cadcam.project.database",
+    )
+    forbidden_runtime_names = {"QThread", "Thread", "Process"}
+    for path in lathe_ui_paths:
+        imports = _imports(path)
+        assert not any(
+            item == prefix or item.startswith(f"{prefix}.")
+            for item in imports
+            for prefix in forbidden_imports
+        ), (path, imports)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        lathe_ui_classes.extend(
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef) and "lathe" in node.name.casefold()
-        )
-    assert lathe_ui_classes == []
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        assert names.isdisjoint(forbidden_runtime_names), path
+
     assert not (LATHE_ROOT / "toolpath.py").exists()
     assert not (LATHE_ROOT / "post.py").exists()
     assert not (LATHE_ROOT / "simulation.py").exists()

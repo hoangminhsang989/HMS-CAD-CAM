@@ -97,6 +97,18 @@ class WorkspaceBar(QToolBar):
         action.setChecked(True)
         return selected
 
+    def configure_lathe(self, *, enabled: bool, explanation: str) -> None:
+        """Configure the existing LATHE action without changing shell topology."""
+
+        if type(enabled) is not bool:
+            raise TypeError("Lathe workspace enabled state must be bool")
+        if not isinstance(explanation, str) or not explanation.strip():
+            raise ValueError("Lathe workspace explanation must be non-blank")
+        action = self.actions_by_workspace[WorkspaceId.LATHE]
+        action.setEnabled(enabled)
+        action.setToolTip(explanation)
+        action.setStatusTip(explanation)
+
     def _workspace_triggered(self, action: QAction) -> None:
         self.workspace_changed.emit(str(action.data()))
 

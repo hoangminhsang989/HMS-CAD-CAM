@@ -16,6 +16,7 @@ from typing import Mapping
 class UiFeatureFlag(StrEnum):
     POST_ASSEMBLY_9A7 = "post_assembly_9a7"
     CAM_3D_9A8 = "cam_3d_9a8"
+    LATHE_9A9 = "lathe_9a9"
 
 
 @dataclass(frozen=True, slots=True)

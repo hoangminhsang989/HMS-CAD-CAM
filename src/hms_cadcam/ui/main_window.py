@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QAbstractItemModel, QByteArray, QRect, QSize, QTimer, Qt
+from shiboken6 import isValid
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -134,6 +135,12 @@ from hms_cadcam.ui.geometry_transfer_ui import (
 )
 from hms_cadcam.ui.cam_function_popup import CAMFunctionPopupHost
 from hms_cadcam.ui.feature_flags import UiFeatureFlag, UiFeatureFlags
+from hms_cadcam.ui.lathe_adapters import LatheSelectionContext
+from hms_cadcam.ui.lathe_session import (
+    LatheSessionController,
+    LatheUiContext,
+)
+from hms_cadcam.ui.lathe_workspace import LatheWorkspace
 from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyProjectionAdapter,
     UnifiedPostAssemblyPanel,
@@ -267,6 +274,9 @@ class MainWindow(QMainWindow):
         self._ui_feature_flags = ui_feature_flags or UiFeatureFlags.for_production()
         self._cam3d_review_host = self._ui_feature_flags.is_enabled(
             UiFeatureFlag.CAM_3D_9A8
+        )
+        self._lathe_review_host = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.LATHE_9A9
         )
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
@@ -639,6 +649,26 @@ class MainWindow(QMainWindow):
         # Compatibility alias for existing callers; the CAM coordinator remains
         # available as ``cam_workspace`` while its tree is hosted in this dock.
         self.cam_dock = self.operation_manager_dock
+        if self._lathe_review_host:
+            self.lathe_workspace = LatheWorkspace(self)
+            self.lathe_dock = QDockWidget(ui_text("lathe.workspace.title"), self)
+            self.lathe_dock.setObjectName("LatheWorkspaceDock")
+            self.lathe_dock.setAccessibleName(ui_text("lathe.workspace.title"))
+            self.lathe_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.lathe_dock.setMinimumWidth(520)
+            self.lathe_dock.setMaximumWidth(1000)
+            self.lathe_dock.setWidget(self.lathe_workspace)
+            self._lathe_session_controller = LatheSessionController(
+                self.lathe_workspace,
+                self._current_lathe_selection_context,
+                parent=self,
+            )
+            self._lathe_session_controller.availability_changed.connect(
+                self._lathe_availability_changed
+            )
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.project_dock)
         self.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea, self.operation_manager_dock
@@ -654,6 +684,11 @@ class MainWindow(QMainWindow):
                 Qt.DockWidgetArea.RightDockWidgetArea, self.cam3d_function_dock
             )
             self.tabifyDockWidget(self.properties_dock, self.cam3d_function_dock)
+        if self._lathe_review_host:
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea, self.lathe_dock
+            )
+            self.tabifyDockWidget(self.properties_dock, self.lathe_dock)
         self.project_dock.show()
         self.operation_manager_dock.show()
         self.properties_dock.show()
@@ -693,6 +728,8 @@ class MainWindow(QMainWindow):
         if self._cam3d_review_host:
             self.cam3d_function_dock.hide()
         self.function_editor_dock.hide()
+        if self._lathe_review_host:
+            self.lathe_dock.hide()
         self.incoming_geometry_panel_dock.hide()
         self.incoming_geometry_dock.hide()
         self.resizeDocks(
@@ -728,6 +765,10 @@ class MainWindow(QMainWindow):
         self.diagnostics_host.collapse_requested.connect(self.output_dock.hide)
         self.secondary_panel_host.collapse_requested.connect(self.secondary_dock.hide)
         self._build_panel_visibility_actions()
+        if self._lathe_review_host:
+            self.cam_workspace.projection_changed.connect(
+                self._sync_lathe_context
+            )
         self._build_status_bar()
         self.project_controller.project_changed.connect(self._handle_project_change)
         self.cam_workspace.projection_changed.connect(
@@ -769,6 +810,10 @@ class MainWindow(QMainWindow):
             self.cad_controller.handle_selection_event
         )
         self.cad_controller.selection_context_changed.connect(self._update_selection)
+        if self._lathe_review_host:
+            self.cad_controller.selection_context_changed.connect(
+                self._lathe_selection_changed
+            )
         self.cad_controller.object_selection_context_changed.connect(
             self._update_object_selection
         )
@@ -1865,6 +1910,8 @@ class MainWindow(QMainWindow):
         localize_widget_tree(self)
         if hasattr(self, "cam3d_function_panel"):
             self.cam3d_function_panel.editor_widget.retranslate_ui()
+        if self._lathe_review_host:
+            self.lathe_workspace.retranslate_ui(selected)
 
     def refresh_localized_layout(
         self,
@@ -1964,6 +2011,9 @@ class MainWindow(QMainWindow):
             self.secondary_panel_host.select_simulation()
             self.secondary_dock.show()
             self.secondary_dock.raise_()
+        elif workspace is WorkspaceId.LATHE and self._lathe_review_host:
+            self.lathe_dock.show()
+            self.lathe_dock.raise_()
         elif workspace is WorkspaceId.POST:
             self.secondary_panel_host.select_post()
             self.secondary_dock.show()
@@ -1988,6 +2038,7 @@ class MainWindow(QMainWindow):
             self.function_editor_dock,
             self.secondary_dock,
             self.output_dock,
+            *((self.lathe_dock,) if self._lathe_review_host else ()),
         )
         for dock in docks:
             if dock.isFloating():
@@ -2035,6 +2086,8 @@ class MainWindow(QMainWindow):
         self.properties_dock.hide()
         self.secondary_dock.hide()
         self.function_editor_dock.hide()
+        if self._lathe_review_host:
+            self.lathe_dock.hide()
         self.operation_manager_dock.show()
         self.operation_manager_dock.raise_()
         self.output_dock.show()
@@ -2074,6 +2127,9 @@ class MainWindow(QMainWindow):
             elif workspace is WorkspaceId.POST:
                 self.secondary_panel_host.select_post()
         self.function_editor_dock.hide()
+        if self._lathe_review_host:
+            if self.workspace_bar.active_workspace is not WorkspaceId.LATHE:
+                self.lathe_dock.hide()
         clamp_window_to_available_screens(self)
 
     def _current_geometry_reference(self):
@@ -2421,6 +2477,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Materialize each visible semantic group once without locale churn."""
 
+        if not isValid(self):
+            return
         self._offscreen_dock_group_realization_scheduled = False
         changed = False
         for primary, secondary in (
@@ -2853,6 +2911,8 @@ class MainWindow(QMainWindow):
             session if isinstance(session, ProjectSession) else None
         )
         self._refresh_post_assembly_panel()
+        if self._lathe_review_host:
+            self._sync_lathe_context()
 
     def _incoming_geometry_changed(self, requests: object) -> None:
         if not isinstance(requests, tuple):
@@ -2929,6 +2989,8 @@ class MainWindow(QMainWindow):
         self._show_document_properties()
         if self._cam3d_review_host and hasattr(self, "cam3d_function_panel"):
             self._bind_cam3d_selection_project(self._project_service.current_project)
+        if self._lathe_review_host:
+            self._sync_lathe_context()
 
     def _update_topology_tree(self, tree: object) -> None:
         self._active_document_tree = (
@@ -3431,6 +3493,115 @@ class MainWindow(QMainWindow):
                     return record.source_id, candidate
         return None
 
+    def _sync_lathe_context(self) -> None:
+        """Project existing immutable runtime facts into one Lathe UI session."""
+
+        if not self._lathe_review_host:
+            return
+        session = self._project_service.current_project
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        if session is None or document_id is None or source_id is None:
+            self._lathe_session_controller.update_context(None)
+            self.workspace_bar.configure_lathe(
+                enabled=False,
+                explanation=ui_text(
+                    "lathe.presenter.project_context_unavailable"
+                ),
+            )
+            self.lathe_dock.hide()
+            return
+        try:
+            snapshot = self._project_service.cam_snapshot
+            generation = self._project_service.cam_generation
+        except RuntimeError:
+            self._lathe_session_controller.update_context(None)
+            self.workspace_bar.configure_lathe(
+                enabled=False,
+                explanation=ui_text(
+                    "lathe.presenter.project_context_unavailable"
+                ),
+            )
+            self.lathe_dock.hide()
+            return
+        active_job = next(
+            (
+                item
+                for item in snapshot.jobs
+                if item.job_id == snapshot.active_job_id
+            ),
+            None,
+        )
+        setup_id = None if active_job is None else active_job.active_setup_id
+        workspace = self._project_service.current_workspace
+        read_only = bool(workspace is not None and workspace.read_only)
+        self._lathe_session_controller.update_context(
+            LatheUiContext(
+                session.manifest.project_id,
+                document_id,
+                source_id,
+                generation,
+                setup_id,
+                read_only,
+                snapshot.tool_definitions,
+                snapshot.holder_definitions,
+                snapshot.tool_assemblies,
+            )
+        )
+        self.workspace_bar.configure_lathe(
+            enabled=True,
+            explanation=ui_text("lathe.workspace.available"),
+        )
+
+    def _current_lathe_selection_context(
+        self,
+    ) -> LatheSelectionContext | None:
+        """Return current OCP-free selection facts for the live Lathe session."""
+
+        if not self._lathe_review_host:
+            return None
+        context = self._lathe_session_controller.context
+        if context is None:
+            return None
+        document_id = self.cad_controller.active_document_id
+        source_id = self.cad_controller.active_source_id
+        if document_id != context.document_id or source_id != context.source_id:
+            return None
+        try:
+            generation = self._project_service.cam_generation
+        except RuntimeError:
+            return None
+        return LatheSelectionContext(
+            document_id,
+            source_id,
+            generation,
+            self.cad_controller.active_selection,
+        )
+
+    def _lathe_selection_changed(
+        self, _document_id: object, _items: object
+    ) -> None:
+        if self._lathe_review_host:
+            self.lathe_workspace.refresh_geometry_selection()
+
+    def _lathe_availability_changed(
+        self, available: bool, reason: str
+    ) -> None:
+        if not self._lathe_review_host:
+            return
+        self.workspace_bar.configure_lathe(
+            enabled=available,
+            explanation=ui_text(
+                "lathe.workspace.available" if available else reason
+            ),
+        )
+        if (
+            not available
+            and self.workspace_bar.active_workspace is WorkspaceId.LATHE
+        ):
+            self.workspace_bar.set_active_workspace(WorkspaceId.HOME)
+            self.lathe_dock.hide()
+
     def _update_import_status(self, status: str) -> None:
         self._import_status.setText(f"CAD: {ui_text(status)}")
         severity = "error" if "lỗi" in status.casefold() else "info"
@@ -3698,6 +3869,8 @@ class MainWindow(QMainWindow):
                     )
             if self._cam3d_review_host:
                 self._teardown_cam3d_workflow(wait=True)
+            if self._lathe_review_host:
+                self._lathe_session_controller.teardown()
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()
