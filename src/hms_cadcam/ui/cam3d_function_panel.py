@@ -38,6 +38,10 @@ from hms_cadcam.ui.cam3d_selection_editor import Cam3DSelectionRoleEditor
 from hms_cadcam.ui.cam3d_editor_binding import Cam3DEditorRenderState
 from hms_cadcam.ui.cam3d_editor_widget import Cam3DEditorWidget
 from hms_cadcam.ui.localization import ui_text
+from hms_cadcam.cam.application.cam3d_workflow import (
+    Cam3DWorkflowState,
+    Cam3DWorkflowStatus,
+)
 
 
 _EDITOR_SECTION_KEYS = frozenset(
@@ -67,6 +71,8 @@ class Cam3DFunctionPanel(QWidget):
     tool_assembly_changed = Signal(object)
     tool_profile_changed = Signal(object)
     numeric_field_changed = Signal(object, object)
+    preview_requested = Signal()
+    cancel_requested = Signal()
 
     def __init__(
         self,
@@ -87,6 +93,7 @@ class Cam3DFunctionPanel(QWidget):
             else Cam3DPresentationState.feature_disabled()
         )
         self._selection_state = Cam3DSelectionState.closed()
+        self._workflow_state = Cam3DWorkflowState.closed()
         self._section_titles: dict[str, QGroupBox] = {}
         self._role_editors: dict[Cam3DSelectionRole, Cam3DSelectionRoleEditor] = {}
         self._placeholder_controls: list[QWidget] = []
@@ -130,6 +137,12 @@ class Cam3DFunctionPanel(QWidget):
         return self._selection_state
 
     @property
+    def workflow_state(self) -> Cam3DWorkflowState:
+        """Return the immutable WP4 workflow state currently rendered."""
+
+        return self._workflow_state
+
+    @property
     def role_editors(
         self,
     ) -> tuple[tuple[Cam3DSelectionRole, Cam3DSelectionRoleEditor], ...]:
@@ -139,6 +152,7 @@ class Cam3DFunctionPanel(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
@@ -213,6 +227,8 @@ class Cam3DFunctionPanel(QWidget):
                 control.setObjectName(f"Cam3DPlaceholder_{key}")
                 control.setProperty("placeholderSource", "No data")
                 control.setReadOnly(True)
+                if key == "calculation_status":
+                    self.calculation_status_value = control
             control.setEnabled(False)
             self._placeholder_controls.append(control)
             layout.addWidget(control)
@@ -225,6 +241,9 @@ class Cam3DFunctionPanel(QWidget):
         self.scroll_area.setWidget(content)
         root.addWidget(self.scroll_area, 1)
 
+        if self._feature_enabled:
+            self._ensure_workflow_actions()
+
         self.scope_note = QLabel(self)
         self.scope_note.setObjectName("Cam3DWP1ScopeNote")
         self.scope_note.setWordWrap(True)
@@ -236,6 +255,10 @@ class Cam3DFunctionPanel(QWidget):
         if type(enabled) is not bool:
             raise TypeError("enabled must be bool")
         self._feature_enabled = enabled
+        if enabled:
+            self._ensure_workflow_actions()
+        elif hasattr(self, "workflow_action_host"):
+            self.workflow_action_host.hide()
         self.set_state(
             Cam3DPresentationState.empty()
             if enabled
@@ -347,8 +370,23 @@ class Cam3DFunctionPanel(QWidget):
         for editor in self._role_editors.values():
             editor.retranslate_ui()
         self.editor_widget.retranslate_ui()
+        if hasattr(self, "preview_button"):
+            self.preview_button.setText(ui_text("Preview"))
+            self.preview_button.setAccessibleName(ui_text("Preview"))
+            self.preview_button.setAccessibleDescription(
+                ui_text("Preview only; no files created")
+            )
+            self.cancel_button.setText(ui_text("Cancel Calculation"))
+            self.cancel_button.setAccessibleName(ui_text("Cancel Calculation"))
+            self.cancel_button.setAccessibleDescription(
+                ui_text("Cancel the running task")
+            )
         self.scope_note.setText(
-            ui_text("Select Part, Check and Fixture surfaces; calculation remains unavailable")
+            ui_text(
+                "Preview only; no files created"
+                if self._feature_enabled
+                else "Select Part, Check and Fixture surfaces; calculation remains unavailable"
+            )
         )
         self.scope_note.setAccessibleDescription(scope_description)
         self._render_state()
@@ -379,6 +417,13 @@ class Cam3DFunctionPanel(QWidget):
             diagnostics = selection_message
         if not diagnostics:
             diagnostics = f"{ui_text('DIAGNOSTICS')}: {state.diagnostic_count}"
+        workflow = self._workflow_state
+        self.calculation_status_value.setText(ui_text(workflow.status_key))
+        self.calculation_status_value.setAccessibleDescription(
+            ui_text(workflow.diagnostic_key)
+        )
+        if workflow.status is not Cam3DWorkflowStatus.CLOSED:
+            diagnostics = ui_text(workflow.diagnostic_key)
         self.diagnostics_value.setText(diagnostics)
         self.scroll_area.setEnabled(
             state.command_policy is not Cam3DUiCommandPolicy.HIDDEN
@@ -387,6 +432,14 @@ class Cam3DFunctionPanel(QWidget):
             control.setEnabled(False)
         for editor in self._role_editors.values():
             editor.set_state(selection)
+        if hasattr(self, "preview_button"):
+            self.workflow_action_host.setVisible(self._feature_enabled)
+            self.preview_button.setEnabled(
+                self._feature_enabled and workflow.preview_enabled
+            )
+            self.cancel_button.setEnabled(
+                self._feature_enabled and workflow.cancel_enabled
+            )
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -396,6 +449,43 @@ class Cam3DFunctionPanel(QWidget):
         if not isinstance(state, Cam3DEditorRenderState):
             raise TypeError("state must be Cam3DEditorRenderState")
         self.editor_widget.set_render_state(state)
+
+    def set_workflow_state(self, state: Cam3DWorkflowState) -> None:
+        """Render the immutable WP4 command/publication state."""
+
+        if not isinstance(state, Cam3DWorkflowState):
+            raise TypeError("state must be Cam3DWorkflowState")
+        self._workflow_state = state
+        self._render_state()
+
+    def _ensure_workflow_actions(self) -> None:
+        """Create the two feature-on WP4 actions exactly once."""
+
+        if hasattr(self, "workflow_action_host"):
+            self.workflow_action_host.show()
+            return
+        host = QWidget(self)
+        host.setObjectName("Cam3DWorkflowActions")
+        layout = QHBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_button = QPushButton(host)
+        self.preview_button.setObjectName("Cam3DPreviewAction")
+        self.cancel_button = QPushButton(host)
+        self.cancel_button.setObjectName("Cam3DCancelAction")
+        self.preview_button.clicked.connect(self.preview_requested.emit)
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        layout.addStretch(1)
+        layout.addWidget(self.cancel_button)
+        layout.addWidget(self.preview_button)
+        QWidget.setTabOrder(self.cancel_button, self.preview_button)
+        self.workflow_action_host = host
+        insert_at = max(
+            0,
+            self._root_layout.count() - int(hasattr(self, "scope_note")),
+        )
+        self._root_layout.insertWidget(insert_at, host)
+        if hasattr(self, "scope_note"):
+            self.retranslate_ui()
 
     def section_keys(self) -> Iterable[str]:
         """Return stable section identifiers in visual order."""

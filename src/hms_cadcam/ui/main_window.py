@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
@@ -62,6 +63,21 @@ from hms_cadcam.cam.adapters import (
 from hms_cadcam.cam.adapters.ocp_simulation import OcpSimulationCollisionBackend
 from hms_cadcam.cam.simulation import CollisionBackend, CollisionScene, SimulationInputSnapshot
 from hms_cadcam.cam.application import DrillingGeometryResolver, PocketGeometryResolver
+from hms_cadcam.cam.adapters.ocp_cam3d_preview import OcpCam3DPreviewTessellator
+from hms_cadcam.cam.application.cam3d_preview import (
+    Cam3DPreviewCoordinator,
+    Cam3DPreviewResult,
+)
+from hms_cadcam.cam.application.cam3d_request import (
+    Cam3DActiveSetupContext,
+    Cam3DCalculationOwnershipKey,
+)
+from hms_cadcam.cam.application.cam3d_workflow import (
+    Cam3DPreviewWorkflow,
+    Cam3DWorkflowInput,
+    Cam3DWorkflowState,
+    Cam3DWorkflowStatus,
+)
 from hms_cadcam.cam.domain import (
     DrillDepthDefinition, DrillGeometryInput, GeometryReference,
     GeometryResolutionStatus, HolePattern, HoleReference,
@@ -106,6 +122,7 @@ from hms_cadcam.cam.application.cam3d_editor import (
     Cam3DToolProfileChoice,
 )
 from hms_cadcam.ui.cam3d_editor_binding import Cam3DEditorBindingController
+from hms_cadcam.ui.cam3d_preview_worker import Cam3DQtWorkerBridge
 from hms_cadcam.ui.cam_geometry_adapter import (
     GeometryPickError,
 )
@@ -176,6 +193,35 @@ from hms_cadcam.ui.backup_profiles import (
 from hms_cadcam.viewer.backend import CadViewportBackend
 from hms_cadcam.viewer.models import ObjectAppearance, ObjectColor, SelectionMetadata, SelectionMode
 from hms_cadcam.viewer.widget import CadViewportWidget
+
+_logger = logging.getLogger(__name__)
+
+
+class _Cam3DViewportPreviewSink:
+    """Fail-closed production boundary until the viewport owns a CAM3D actor API."""
+
+    def __init__(self, viewport: object) -> None:
+        self._viewport = viewport
+
+    def publish(self, result: Cam3DPreviewResult) -> bool:
+        callback = getattr(self._viewport, "publish_cam3d_preview", None)
+        if not callable(callback):
+            return False
+        try:
+            return bool(callback(result))
+        except (RuntimeError, TypeError, ValueError):
+            _logger.exception("CAM 3D viewport preview publication failed")
+            return False
+
+    def clear(self, ownership: Cam3DCalculationOwnershipKey) -> None:
+        callback = getattr(self._viewport, "clear_cam3d_preview", None)
+        if not callable(callback):
+            return
+        try:
+            callback(ownership)
+        except (RuntimeError, TypeError, ValueError):
+            _logger.exception("CAM 3D viewport preview clear failed")
+
 
 _OBJECT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 _DOCUMENT_ID_ROLE = int(Qt.ItemDataRole.UserRole) + 2
@@ -323,6 +369,10 @@ class MainWindow(QMainWindow):
                 self._bind_cam3d_selection_surface,
             )
             self._cam3d_editor_binding_controller = Cam3DEditorBindingController()
+            self._cam3d_workflow: Cam3DPreviewWorkflow | None = None
+            self._cam3d_worker_bridge = None
+            self._cam3d_workflow_runtime_key = None
+            self._cam3d_preview_sink = _Cam3DViewportPreviewSink(self.viewport)
         self.cad_controller.set_open_command(
             self.project_controller.request_open_path
         )
@@ -410,6 +460,12 @@ class MainWindow(QMainWindow):
             )
             self.cam3d_function_panel.numeric_field_changed.connect(
                 self._replace_cam3d_numeric_field
+            )
+            self.cam3d_function_panel.preview_requested.connect(
+                self._request_cam3d_preview
+            )
+            self.cam3d_function_panel.cancel_requested.connect(
+                self._cancel_cam3d_preview
             )
 
         self._post_assembly_adapter = PostAssemblyProjectionAdapter(
@@ -1148,6 +1204,7 @@ class MainWindow(QMainWindow):
             )
         self.cam3d_function_panel.set_selection_state(state)
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _current_cam3d_editor_context(self) -> Cam3DProjectContext:
         session = self._project_service.current_project
@@ -1167,6 +1224,153 @@ class MainWindow(QMainWindow):
             read_only=read_only,
         )
 
+    def _current_cam3d_active_setup(self) -> Cam3DActiveSetupContext | None:
+        """Derive active Setup facts from the immutable CAM project snapshot."""
+        session = self._project_service.current_project
+        context = self._current_cam3d_editor_context()
+        if session is None or not context.is_open:
+            return None
+        snapshot = session.cam_snapshot
+        active_job = next(
+            (
+                job
+                for job in snapshot.jobs
+                if job.job_id == snapshot.active_job_id
+            ),
+            None,
+        )
+        setup = active_job.active_setup if active_job is not None else None
+        if (
+            setup is None
+            or context.project_id is None
+            or context.project_generation is None
+            or context.document_id is None
+            or context.source_id is None
+        ):
+            return None
+        try:
+            ownership = Cam3DCalculationOwnershipKey(
+                context.project_id,
+                context.document_id,
+                context.source_id,
+                setup.setup_id,
+            )
+            return Cam3DActiveSetupContext(
+                ownership,
+                context.project_generation,
+                setup.revision,
+                setup.wcs,
+                active=setup.enabled,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def _current_cam3d_workflow_input(self) -> Cam3DWorkflowInput:
+        controller = self._cam3d_editor_binding_controller
+        context = self._current_cam3d_editor_context()
+        try:
+            editor_ready = controller.service.evaluate(context).valid
+        except (RuntimeError, TypeError, ValueError):
+            editor_ready = False
+        return Cam3DWorkflowInput(
+            controller.state,
+            context,
+            self._cam3d_selection_service.state,
+            self._current_cam3d_active_setup(),
+            editor_ready,
+        )
+
+    def _teardown_cam3d_workflow(self, *, wait: bool = False) -> None:
+        workflow = self._cam3d_workflow
+        bridge = self._cam3d_worker_bridge
+        self._cam3d_workflow = None
+        self._cam3d_worker_bridge = None
+        self._cam3d_workflow_runtime_key = None
+        if bridge is not None:
+            try:
+                bridge.set_receiver(None)
+            except (RuntimeError, TypeError, ValueError):
+                pass
+        if workflow is not None:
+            workflow.shutdown(wait=wait)
+        if bridge is not None:
+            try:
+                bridge.deleteLater()
+            except RuntimeError:
+                pass
+
+    def _sync_cam3d_workflow(self) -> None:
+        """Compose/reuse one runtime and bind the latest immutable UI facts."""
+        if not self._cam3d_review_host or not hasattr(
+            self, "_cam3d_editor_binding_controller"
+        ):
+            return
+        inputs = self._current_cam3d_workflow_input()
+        ownership = inputs.ownership
+        generation = inputs.live_context.project_generation
+        if ownership is None or generation is None:
+            self._teardown_cam3d_workflow()
+            self.cam3d_function_panel.set_workflow_state(
+                Cam3DWorkflowState.closed()
+            )
+            return
+        runtime_key = (ownership, generation)
+        if runtime_key != self._cam3d_workflow_runtime_key:
+            self._teardown_cam3d_workflow()
+            try:
+                surface_mesher = self._parallel_surface_adapter()
+                tessellator = OcpCam3DPreviewTessellator(
+                    surface_mesher,
+                    ownership,
+                )
+                coordinator = Cam3DPreviewCoordinator(tessellator)
+                bridge = Cam3DQtWorkerBridge(coordinator, self)
+                workflow = Cam3DPreviewWorkflow(
+                    bridge,
+                    self._cam3d_preview_sink,
+                )
+                bridge.set_receiver(self)
+            except (RuntimeError, TypeError, ValueError):
+                _logger.exception("CAM 3D preview runtime composition failed")
+                self.cam3d_function_panel.set_workflow_state(
+                    Cam3DWorkflowState(
+                        Cam3DWorkflowStatus.BLOCKED,
+                        ownership,
+                        generation,
+                    )
+                )
+                return
+            self._cam3d_worker_bridge = bridge
+            self._cam3d_workflow = workflow
+            self._cam3d_workflow_runtime_key = runtime_key
+        assert self._cam3d_workflow is not None
+        state = self._cam3d_workflow.bind_inputs(inputs)
+        self.cam3d_function_panel.set_workflow_state(state)
+
+    def _request_cam3d_preview(self) -> None:
+        if self._cam3d_workflow is None:
+            self._sync_cam3d_workflow()
+        if self._cam3d_workflow is not None:
+            self.cam3d_function_panel.set_workflow_state(
+                self._cam3d_workflow.submit_preview()
+            )
+
+    def _cancel_cam3d_preview(self) -> None:
+        workflow = self._cam3d_workflow
+        if workflow is not None:
+            workflow.cancel_preview()
+            self.cam3d_function_panel.set_workflow_state(workflow.state)
+
+    def handle_cam3d_preview(self, result: object) -> None:
+        """Receive only immutable queued results from the WP3-B Qt bridge."""
+        if not isinstance(result, Cam3DPreviewResult):
+            return
+        workflow = self._cam3d_workflow
+        if workflow is None:
+            return
+        workflow.accept_result(result)
+        self.cam3d_function_panel.set_workflow_state(workflow.state)
+
     def _assign_cam3d_tool_assembly(self, choice: object) -> None:
         if choice is not None and not isinstance(choice, Cam3DToolAssemblyChoice):
             return
@@ -1178,6 +1382,7 @@ class MainWindow(QMainWindow):
             else controller.assign_tool_assembly(choice)
         )
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _assign_cam3d_tool_profile(self, choice: object) -> None:
         if choice is not None and not isinstance(choice, Cam3DToolProfileChoice):
@@ -1190,6 +1395,7 @@ class MainWindow(QMainWindow):
             else controller.assign_tool_profile(choice)
         )
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _replace_cam3d_numeric_field(self, field: object, value: object) -> None:
         if not isinstance(field, Cam3DEditorField):
@@ -1202,6 +1408,7 @@ class MainWindow(QMainWindow):
             else controller.replace_numeric_field(field, value)
         )
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _assign_cam3d_selection_role(self, role: object) -> None:
         """Assign current eligible viewport faces through the application service."""
@@ -1214,6 +1421,7 @@ class MainWindow(QMainWindow):
         render = controller.set_selection(state)
         self.cam3d_function_panel.set_selection_state(state)
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _clear_cam3d_selection_role(self, role: object) -> None:
         """Clear one role without persistence or geometry calculation."""
@@ -1226,6 +1434,7 @@ class MainWindow(QMainWindow):
         render = controller.set_selection(state)
         self.cam3d_function_panel.set_selection_state(state)
         self.cam3d_function_panel.set_editor_render_state(render)
+        self._sync_cam3d_workflow()
 
     def _show_cam_workspace(self) -> None:
         """Switch to MILL 2D without replacing the CAD/OCP viewport."""
@@ -3511,6 +3720,8 @@ class MainWindow(QMainWindow):
                         ui_text("Profile switch failed; the previous profile was restored."),
                         8000,
                     )
+            if self._cam3d_review_host:
+                self._teardown_cam3d_workflow(wait=True)
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()
