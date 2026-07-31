@@ -90,26 +90,13 @@ def _cuts(result) -> tuple[LathePathSegment, ...]:
     )
 
 
-def test_registry_is_exact_ordered_nine_executable_two_unsupported() -> None:
+def test_registry_is_exact_ordered_eleven_executable_zero_unsupported() -> None:
     registry = LatheToolpathGeneratorRegistry()
     assert registry.executable_strategy_ids == EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
     assert registry.unsupported_strategy_ids == UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES
-    assert registry.executable_strategy_ids == (
-        LatheStrategyId.FACE,
-        LatheStrategyId.OD_ROUGH,
-        LatheStrategyId.OD_FINISH,
-        LatheStrategyId.ID_ROUGH,
-        LatheStrategyId.ID_FINISH,
-        LatheStrategyId.OD_GROOVE,
-        LatheStrategyId.ID_GROOVE,
-        LatheStrategyId.PART_OFF,
-        LatheStrategyId.AXIAL_DRILL,
-    )
-    assert registry.unsupported_strategy_ids == (
-        LatheStrategyId.OD_THREAD,
-        LatheStrategyId.ID_THREAD,
-    )
-    assert len(set(registry.executable_strategy_ids)) == 9
+    assert registry.executable_strategy_ids == tuple(LatheStrategyId)
+    assert registry.unsupported_strategy_ids == ()
+    assert len(set(registry.executable_strategy_ids)) == 11
 
 
 def test_six_algorithm_versions_are_exact() -> None:

@@ -88,7 +88,6 @@ def test_pure_v2_toolpath_has_no_qt_ocp_viewer_post_simulation_or_persistence() 
         "collision_check",
         "project.db",
         "project.hms.json",
-        "ThreadToolpathGenerator",
     )
     for path in sorted(TOOLPATH.glob("*.py")):
         imports = _imports(path)
@@ -102,11 +101,9 @@ def test_pure_v2_toolpath_has_no_qt_ocp_viewer_post_simulation_or_persistence() 
 
 
 def test_registry_partition_and_feature_flag_topology_are_reused() -> None:
-    assert len(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES) == 9
-    assert len(UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES) == 2
-    assert set(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES).isdisjoint(
-        UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES
-    )
+    assert len(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES) == 11
+    assert UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES == ()
+    assert len(set(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES)) == 11
     assert UiFeatureFlag.LATHE_TOOLPATH_12_1.value == "lathe_toolpath_12_1"
     assert not UiFeatureFlags.for_development_and_tests().is_enabled(
         UiFeatureFlag.LATHE_TOOLPATH_12_1

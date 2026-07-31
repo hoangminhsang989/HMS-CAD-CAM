@@ -10,8 +10,10 @@ from typing import Mapping, Protocol
 
 from hms_cadcam.cam.lathe.toolpath.model import (
     LATHE_TOOLPATH_ALGORITHM_VERSION,
+    LATHE_THREAD_TOOLPATH_PREVIEW_CAPABILITY,
     LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM,
     LatheDwellEvent,
+    LatheMetadata,
     LatheMotionClass,
     LathePathSegment,
     LatheToolpathBounds,
@@ -22,6 +24,7 @@ from hms_cadcam.cam.lathe.toolpath.model import (
     LatheToolpathResultIdentity,
     LatheToolpathResultSource,
     LatheToolpathResultState,
+    LatheThreadPassMetadata,
     LatheXZPoint,
 )
 from hms_cadcam.cam.lathe.toolpath.request import (
@@ -29,7 +32,7 @@ from hms_cadcam.cam.lathe.toolpath.request import (
     UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES,
     LatheToolpathRequestV1,
 )
-from hms_cadcam.cam.lathe.types import LatheStrategyId
+from hms_cadcam.cam.lathe.types import LatheStrategyId, LatheThreadHand
 
 CancellationProbe = Callable[[], bool]
 _MAX_GENERATED_PASSES = 100_000
@@ -84,6 +87,7 @@ class _MotionBuilder:
         *,
         feed_mm_per_rev: float | None = None,
         pass_index: int,
+        metadata: LatheMetadata = (),
     ) -> None:
         _checkpoint(self._cancellation)
         if (
@@ -100,6 +104,16 @@ class _MotionBuilder:
             and previous.feed_mm_per_rev == feed_mm_per_rev
         ):
             return
+        if metadata:
+            try:
+                metadata_pass_index = dict(metadata)["pass_index"]
+            except (TypeError, ValueError, KeyError) as error:
+                raise ValueError("Lathe motion metadata requires pass_index") from error
+            if metadata_pass_index != pass_index:
+                raise ValueError("Lathe motion metadata pass_index differs")
+            event_metadata = metadata
+        else:
+            event_metadata = (("pass_index", pass_index),)
         self._events.append(
             LathePathSegment(
                 len(self._events),
@@ -108,7 +122,7 @@ class _MotionBuilder:
                 end,
                 semantic_source,
                 feed_mm_per_rev,
-                (("pass_index", pass_index),),
+                event_metadata,
             )
         )
 
@@ -148,6 +162,8 @@ def _success(
     *,
     pass_count: int,
     diagnostics: tuple[LatheToolpathDiagnostic, ...] = (),
+    generation_metadata: LatheMetadata = (),
+    thread_pass_metadata: tuple[LatheThreadPassMetadata, ...] = (),
 ) -> LatheToolpathResult:
     segments = tuple(item for item in events if isinstance(item, LathePathSegment))
     cutting_length = sum(
@@ -177,7 +193,9 @@ def _success(
             ("global_algorithm_version", LATHE_TOOLPATH_ALGORITHM_VERSION),
             ("preview_scope", "offline_nominal_xz"),
             ("strategy_algorithm_version", request.algorithm_version),
+            *generation_metadata,
         ),
+        thread_pass_metadata,
     )
 
 
@@ -1299,6 +1317,380 @@ class PartOffToolpathGenerator:
 
 
 @dataclass(frozen=True, slots=True)
+class _ThreadInputs:
+    start_z_mm: float
+    end_z_mm: float
+    major_diameter_mm: float
+    minor_diameter_mm: float
+    pitch_mm: float
+    thread_hand: LatheThreadHand
+    pass_count: int
+    spring_passes: int
+    infeed_angle_deg: float
+    clearance_mm: float
+    retract_mm: float
+    direction: float
+    safe_x_mm: float
+
+
+def _thread_hand_parameter(request: LatheToolpathRequestV1) -> LatheThreadHand:
+    value = request.operation.parameters["thread_hand"]
+    try:
+        return LatheThreadHand(value)
+    except (TypeError, ValueError) as error:
+        raise _GenerationValidationError(
+            "thread_hand",
+            "valid_thread_hand",
+        ) from error
+
+
+def _validate_thread_inputs(
+    request: LatheToolpathRequestV1,
+    *,
+    internal: bool,
+) -> _ThreadInputs:
+    start = _float_parameter(request, "start_z_mm")
+    end = _float_parameter(request, "end_z_mm")
+    major = _float_parameter(request, "major_diameter_mm")
+    minor = _float_parameter(request, "minor_diameter_mm")
+    pitch = _float_parameter(request, "pitch_mm")
+    pass_count = _int_parameter(request, "pass_count")
+    spring_passes = _int_parameter(request, "spring_passes")
+    infeed_angle = _float_parameter(request, "infeed_angle_deg")
+    clearance = _float_parameter(request, "clearance_mm")
+    retract = _float_parameter(request, "retract_mm")
+    common_feed = _float_parameter(request, "feed_mm_per_rev")
+    thread_hand = _thread_hand_parameter(request)
+
+    if start == end:
+        raise _GenerationValidationError(
+            "end_z_mm",
+            "start_not_equal_end",
+            LatheToolpathDiagnosticCode.THREAD_RANGE_OUTSIDE_STOCK,
+        )
+    if pitch <= 0.0:
+        raise _GenerationValidationError(
+            "pitch_mm",
+            "positive",
+            LatheToolpathDiagnosticCode.INVALID_PITCH,
+        )
+    if pass_count < 1 or pass_count > _MAX_GENERATED_PASSES:
+        raise _GenerationValidationError(
+            "pass_count",
+            "valid_thread_pass_count",
+            LatheToolpathDiagnosticCode.INVALID_PASS_COUNT,
+        )
+    if spring_passes < 0 or pass_count + spring_passes > _MAX_GENERATED_PASSES:
+        raise _GenerationValidationError(
+            "spring_passes",
+            "valid_thread_spring_passes",
+            LatheToolpathDiagnosticCode.INVALID_SPRING_PASSES,
+        )
+    if not 0.0 <= infeed_angle < 90.0:
+        raise _GenerationValidationError(
+            "infeed_angle_deg",
+            "zero_inclusive_ninety_exclusive",
+            LatheToolpathDiagnosticCode.INVALID_INFEED_ANGLE,
+        )
+    if major <= minor:
+        raise _GenerationValidationError(
+            "minor_diameter_mm",
+            "major_greater_than_minor",
+            LatheToolpathDiagnosticCode.INVALID_THREAD_DIAMETER_ORDER,
+        )
+    _validate_common_safety(
+        clearance_mm=clearance,
+        retract_mm=retract,
+        feed_mm_per_rev=common_feed,
+    )
+
+    stock = request.stock
+    if internal and stock.inner_diameter_mm <= 0.0:
+        raise _GenerationValidationError(
+            None,
+            "explicit_bore_required",
+            LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE,
+        )
+    if (internal and major >= stock.outer_diameter_mm) or (
+        not internal and major > stock.outer_diameter_mm
+    ):
+        raise _GenerationValidationError(
+            "major_diameter_mm",
+            "thread_major_inside_stock",
+            LatheToolpathDiagnosticCode.THREAD_MAJOR_EXCEEDS_STOCK,
+        )
+    if minor <= 0.0 or minor < stock.inner_diameter_mm:
+        raise _GenerationValidationError(
+            "minor_diameter_mm",
+            "thread_minor_at_or_above_bore",
+            LatheToolpathDiagnosticCode.THREAD_MINOR_BELOW_BORE,
+        )
+    minimum_z = min(stock.front_z_mm, stock.back_z_mm)
+    maximum_z = max(stock.front_z_mm, stock.back_z_mm)
+    if not (
+        minimum_z <= start <= maximum_z
+        and minimum_z <= end <= maximum_z
+    ):
+        raise _GenerationValidationError(
+            "start_z_mm",
+            "thread_range_inside_stock",
+            LatheToolpathDiagnosticCode.THREAD_RANGE_OUTSIDE_STOCK,
+        )
+
+    safe_x = (
+        _internal_safe_x(stock.inner_diameter_mm, clearance)
+        if internal
+        else max(stock.outer_diameter_mm, major) + 2.0 * clearance
+    )
+    if not math.isfinite(safe_x) or safe_x < 0.0:
+        raise _GenerationValidationError("clearance_mm", "finite_safe_x")
+    return _ThreadInputs(
+        start,
+        end,
+        major,
+        minor,
+        pitch,
+        thread_hand,
+        pass_count,
+        spring_passes,
+        infeed_angle,
+        clearance,
+        retract,
+        1.0 if end > start else -1.0,
+        safe_x,
+    )
+
+
+def _thread_pass_schedule(
+    request: LatheToolpathRequestV1,
+    inputs: _ThreadInputs,
+    cancellation: CancellationProbe,
+    *,
+    internal: bool,
+) -> tuple[LatheThreadPassMetadata, ...]:
+    total_depth = (
+        inputs.major_diameter_mm - inputs.minor_diameter_mm
+    ) / 2.0
+    schedule: list[LatheThreadPassMetadata] = []
+    final_diameter = (
+        inputs.major_diameter_mm if internal else inputs.minor_diameter_mm
+    )
+    for pass_index in range(inputs.pass_count):
+        _checkpoint(cancellation)
+        cumulative = total_depth * (pass_index + 1) / inputs.pass_count
+        diameter = (
+            inputs.minor_diameter_mm + 2.0 * cumulative
+            if internal
+            else inputs.major_diameter_mm - 2.0 * cumulative
+        )
+        if pass_index == inputs.pass_count - 1:
+            cumulative = total_depth
+            diameter = final_diameter
+        schedule.append(
+            LatheThreadPassMetadata(
+                pass_index,
+                inputs.pass_count,
+                None,
+                cumulative,
+                diameter,
+                inputs.pitch_mm,
+                inputs.thread_hand,
+                inputs.infeed_angle_deg,
+                True,
+                inputs.pitch_mm,
+                request.algorithm_version,
+            )
+        )
+    for spring_pass_index in range(inputs.spring_passes):
+        _checkpoint(cancellation)
+        schedule.append(
+            LatheThreadPassMetadata(
+                inputs.pass_count + spring_pass_index,
+                inputs.pass_count,
+                spring_pass_index,
+                total_depth,
+                final_diameter,
+                inputs.pitch_mm,
+                inputs.thread_hand,
+                inputs.infeed_angle_deg,
+                True,
+                inputs.pitch_mm,
+                request.algorithm_version,
+            )
+        )
+    return tuple(schedule)
+
+
+_THREAD_SUCCESS_DIAGNOSTICS = (
+    LatheToolpathDiagnostic(
+        LatheToolpathDiagnosticCode.PHASE_NEUTRAL_SYNCHRONIZED_CENTERLINE_PREVIEW
+    ),
+    LatheToolpathDiagnostic(
+        LatheToolpathDiagnosticCode.THREAD_FEED_DERIVED_FROM_PITCH
+    ),
+    LatheToolpathDiagnostic(
+        LatheToolpathDiagnosticCode.NOMINAL_INFEED_ANGLE_METADATA_ONLY
+    ),
+    LatheToolpathDiagnostic(LatheToolpathDiagnosticCode.NOT_MACHINE_READY),
+)
+
+
+def _generate_thread(
+    request: LatheToolpathRequestV1,
+    cancellation: CancellationProbe,
+    *,
+    strategy_id: LatheStrategyId,
+    internal: bool,
+) -> LatheToolpathResult:
+    _require_request_strategy(request, strategy_id)
+    _checkpoint(cancellation)
+    inputs = _validate_thread_inputs(request, internal=internal)
+    schedule = _thread_pass_schedule(
+        request,
+        inputs,
+        cancellation,
+        internal=internal,
+    )
+    lead_distance = inputs.pitch_mm
+    pre_start_z = inputs.start_z_mm - inputs.direction * lead_distance
+    post_end_z = inputs.end_z_mm + inputs.direction * lead_distance
+    parking_z = pre_start_z - inputs.direction * max(
+        inputs.clearance_mm,
+        inputs.retract_mm,
+        inputs.pitch_mm,
+    )
+    prefix = "id_thread" if internal else "od_thread"
+    builder = _MotionBuilder(cancellation)
+    for pass_metadata in schedule:
+        _checkpoint(cancellation)
+        pass_index = pass_metadata.pass_index
+        pass_kind = (
+            f"spring.{pass_metadata.spring_pass_index}"
+            if pass_metadata.spring_pass_index is not None
+            else f"cutting.{pass_index}"
+        )
+        metadata = pass_metadata.canonical_metadata()
+        parking = LatheXZPoint(inputs.safe_x_mm, parking_z)
+        radial_origin = LatheXZPoint(
+            pass_metadata.cutting_diameter_mm,
+            parking_z,
+        )
+        safe_pre_start = LatheXZPoint(inputs.safe_x_mm, pre_start_z)
+        cutting_start = LatheXZPoint(
+            pass_metadata.cutting_diameter_mm,
+            inputs.start_z_mm,
+        )
+        cutting_end = LatheXZPoint(
+            pass_metadata.cutting_diameter_mm,
+            inputs.end_z_mm,
+        )
+        safe_post_end = LatheXZPoint(inputs.safe_x_mm, post_end_z)
+        builder.segment(
+            LatheMotionClass.RAPID,
+            radial_origin,
+            parking,
+            f"{prefix}.{pass_kind}.rapid_to_safe_x",
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+        builder.segment(
+            LatheMotionClass.RAPID,
+            parking,
+            safe_pre_start,
+            f"{prefix}.{pass_kind}.rapid_to_pre_start",
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+        builder.segment(
+            LatheMotionClass.LEAD_IN,
+            safe_pre_start,
+            cutting_start,
+            f"{prefix}.{pass_kind}.one_pitch_lead_in",
+            feed_mm_per_rev=inputs.pitch_mm,
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+        builder.segment(
+            LatheMotionClass.CUTTING,
+            cutting_start,
+            cutting_end,
+            f"{prefix}.{pass_kind}.pitch_synchronized_cut",
+            feed_mm_per_rev=inputs.pitch_mm,
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+        builder.segment(
+            LatheMotionClass.LEAD_OUT,
+            cutting_end,
+            safe_post_end,
+            f"{prefix}.{pass_kind}.one_pitch_lead_out",
+            feed_mm_per_rev=inputs.pitch_mm,
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+        builder.segment(
+            LatheMotionClass.RAPID,
+            safe_post_end,
+            parking,
+            f"{prefix}.{pass_kind}.rapid_return",
+            pass_index=pass_index,
+            metadata=metadata,
+        )
+    _checkpoint(cancellation)
+    return _success(
+        request,
+        builder.events,
+        pass_count=len(schedule),
+        diagnostics=_THREAD_SUCCESS_DIAGNOSTICS,
+        generation_metadata=(
+            ("cutting_feed_source", "pitch_mm"),
+            ("infeed_model", "metadata_only"),
+            ("phase_neutral", True),
+            ("thread_hand", inputs.thread_hand.value),
+            (
+                "thread_preview_capability",
+                LATHE_THREAD_TOOLPATH_PREVIEW_CAPABILITY,
+            ),
+        ),
+        thread_pass_metadata=schedule,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class OdThreadToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.OD_THREAD
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        return _generate_thread(
+            request,
+            cancellation,
+            strategy_id=self.strategy_id,
+            internal=False,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IdThreadToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.ID_THREAD
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        return _generate_thread(
+            request,
+            cancellation,
+            strategy_id=self.strategy_id,
+            internal=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AxialDrillToolpathGenerator:
     strategy_id: LatheStrategyId = LatheStrategyId.AXIAL_DRILL
 
@@ -1394,7 +1786,7 @@ class AxialDrillToolpathGenerator:
 
 
 class LatheToolpathGeneratorRegistry:
-    """Injected immutable exact registry with nine executable strategies."""
+    """Injected immutable exact registry with eleven executable strategies."""
 
     def __init__(
         self,
@@ -1409,6 +1801,8 @@ class LatheToolpathGeneratorRegistry:
             OdGrooveToolpathGenerator(),
             IdGrooveToolpathGenerator(),
             PartOffToolpathGenerator(),
+            OdThreadToolpathGenerator(),
+            IdThreadToolpathGenerator(),
             AxialDrillToolpathGenerator(),
         )
         overrides = () if generators is None else generators
@@ -1426,14 +1820,19 @@ class LatheToolpathGeneratorRegistry:
             LatheStrategyId.OD_FINISH,
             LatheStrategyId.AXIAL_DRILL,
         }
+        stage12_2_override_ids = set(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES) - {
+            LatheStrategyId.OD_THREAD,
+            LatheStrategyId.ID_THREAD,
+        }
         supplied_ids = frozenset(override_ids)
         if overrides and supplied_ids not in {
             frozenset(legacy_override_ids),
+            frozenset(stage12_2_override_ids),
             frozenset(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES),
         }:
             raise ValueError(
-                "Lathe V2 registry requires the exact Stage 12.1 override set "
-                "or exactly nine generators"
+                "Lathe V3 registry requires the exact Stage 12.1, Stage 12.2 "
+                "or eleven-generator override set"
             )
         by_id = {item.strategy_id: item for item in defaults}
         by_id.update((item.strategy_id, item) for item in overrides)
@@ -1445,7 +1844,7 @@ class LatheToolpathGeneratorRegistry:
             EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
         ):
             raise ValueError(
-                "Lathe V2 registry must contain exactly nine generators"
+                "Lathe V3 registry must contain exactly eleven generators"
             )
         self._generators: Mapping[
             LatheStrategyId, LatheStrategyToolpathGenerator
@@ -1521,11 +1920,13 @@ __all__ = [
     "IdFinishToolpathGenerator",
     "IdGrooveToolpathGenerator",
     "IdRoughToolpathGenerator",
+    "IdThreadToolpathGenerator",
     "LatheStrategyToolpathGenerator",
     "LatheToolpathCancelledError",
     "LatheToolpathGeneratorRegistry",
     "OdFinishToolpathGenerator",
     "OdGrooveToolpathGenerator",
     "OdRoughToolpathGenerator",
+    "OdThreadToolpathGenerator",
     "PartOffToolpathGenerator",
 ]

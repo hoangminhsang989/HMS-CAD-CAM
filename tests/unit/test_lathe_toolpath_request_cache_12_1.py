@@ -225,18 +225,9 @@ def test_builder_copies_resolved_capability_and_service_blocks_mismatch() -> Non
     assert rejected_request.diagnostics[0].code is LatheToolpathDiagnosticCode.MISSING_TOOL
 
 
-@pytest.mark.parametrize("strategy_id", UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES)
-def test_builder_fails_closed_for_thread_strategies(
-    strategy_id: LatheStrategyId,
-) -> None:
-    service, reference = service_for(strategy_id)
-    operation = complete_operation(service, reference, strategy_id)
-    built = _build(service, operation)
-    assert not built.accepted and built.request is None
-    assert built.diagnostics[0].code is (
-        LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2
-    )
-    assert dict(built.diagnostics[0].details)["strategy_id"] == strategy_id.value
+def test_builder_partition_has_no_unsupported_foundation_strategy() -> None:
+    assert UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES == ()
+    assert EXECUTABLE_LATHE_TOOLPATH_STRATEGIES == tuple(LatheStrategyId)
 
 
 def test_builder_rejects_target_and_depth_outside_live_stock() -> None:

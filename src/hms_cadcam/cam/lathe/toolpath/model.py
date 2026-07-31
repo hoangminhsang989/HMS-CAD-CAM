@@ -1,4 +1,4 @@
-"""Immutable, Qt/OCP-free Lathe Toolpath Preview V1 value objects."""
+"""Immutable, Qt/OCP-free Lathe Toolpath Preview V1/V2/V3 values."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from hms_cadcam.cam.domain.revision import Revision
 from hms_cadcam.cam.lathe.domain import LatheOwnershipKey
-from hms_cadcam.cam.lathe.types import LatheStrategyId
+from hms_cadcam.cam.lathe.types import LatheStrategyId, LatheThreadHand
 
 LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM = 1.0e-9
 LATHE_TOOLPATH_ALGORITHM_VERSION = "lathe.toolpath.preview.v1"
@@ -22,7 +22,10 @@ LATHE_ID_FINISH_ALGORITHM_VERSION = "lathe.id_finish.toolpath.v2"
 LATHE_OD_GROOVE_ALGORITHM_VERSION = "lathe.od_groove.toolpath.v2"
 LATHE_ID_GROOVE_ALGORITHM_VERSION = "lathe.id_groove.toolpath.v2"
 LATHE_PART_OFF_ALGORITHM_VERSION = "lathe.part_off.toolpath.v2"
+LATHE_OD_THREAD_ALGORITHM_VERSION = "lathe.od_thread.toolpath.v3"
+LATHE_ID_THREAD_ALGORITHM_VERSION = "lathe.id_thread.toolpath.v3"
 LATHE_AXIAL_DRILL_ALGORITHM_VERSION = "lathe.axial_drill.toolpath.v1"
+LATHE_THREAD_TOOLPATH_PREVIEW_CAPABILITY = "lathe.thread.toolpath.preview.v3"
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 LatheMetadata: TypeAlias = tuple[tuple[str, JsonScalar], ...]
@@ -63,6 +66,98 @@ def normalized_metadata(value: object) -> LatheMetadata:
     if len({key for key, _raw in ordered}) != len(ordered):
         raise ValueError("Lathe metadata keys must be unique")
     return ordered
+
+
+@dataclass(frozen=True, slots=True)
+class LatheThreadPassMetadata:
+    """One deterministic thread pass without controller or render objects."""
+
+    pass_index: int
+    cutting_pass_count: int
+    spring_pass_index: int | None
+    cumulative_radial_depth_mm: float
+    cutting_diameter_mm: float
+    pitch_mm: float
+    thread_hand: LatheThreadHand
+    infeed_angle_deg: float
+    phase_neutral: bool
+    synchronized_feed_mm_per_rev: float
+    strategy_algorithm_version: str
+
+    def __post_init__(self) -> None:
+        if type(self.pass_index) is not int or self.pass_index < 0:
+            raise ValueError("Lathe thread pass index is invalid")
+        if type(self.cutting_pass_count) is not int or self.cutting_pass_count < 1:
+            raise ValueError("Lathe thread cutting-pass count is invalid")
+        if self.spring_pass_index is None:
+            if self.pass_index >= self.cutting_pass_count:
+                raise ValueError("Lathe cutting pass index exceeds its schedule")
+        elif (
+            type(self.spring_pass_index) is not int
+            or self.spring_pass_index < 0
+            or self.pass_index
+            != self.cutting_pass_count + self.spring_pass_index
+        ):
+            raise ValueError("Lathe spring-pass identity is invalid")
+        depth = finite_number(
+            self.cumulative_radial_depth_mm,
+            "Lathe thread cumulative radial depth",
+        )
+        diameter = finite_number(
+            self.cutting_diameter_mm,
+            "Lathe thread cutting diameter",
+        )
+        pitch = finite_number(self.pitch_mm, "Lathe thread pitch")
+        infeed = finite_number(self.infeed_angle_deg, "Lathe thread infeed angle")
+        synchronized_feed = finite_number(
+            self.synchronized_feed_mm_per_rev,
+            "Lathe thread synchronized feed",
+        )
+        if depth <= 0.0 or diameter <= 0.0 or pitch <= 0.0:
+            raise ValueError("Lathe thread pass dimensions must be positive")
+        if not isinstance(self.thread_hand, LatheThreadHand):
+            raise TypeError("Lathe thread hand metadata is invalid")
+        if not 0.0 <= infeed < 90.0:
+            raise ValueError("Lathe thread infeed metadata is invalid")
+        if self.phase_neutral is not True:
+            raise ValueError("Lathe thread pass must be phase-neutral")
+        if synchronized_feed != pitch:
+            raise ValueError("Lathe thread synchronized feed must equal pitch")
+        if self.strategy_algorithm_version not in {
+            LATHE_OD_THREAD_ALGORITHM_VERSION,
+            LATHE_ID_THREAD_ALGORITHM_VERSION,
+        }:
+            raise ValueError("Lathe thread pass algorithm version is invalid")
+        object.__setattr__(self, "cumulative_radial_depth_mm", depth)
+        object.__setattr__(self, "cutting_diameter_mm", diameter)
+        object.__setattr__(self, "pitch_mm", pitch)
+        object.__setattr__(self, "infeed_angle_deg", infeed)
+        object.__setattr__(self, "synchronized_feed_mm_per_rev", synchronized_feed)
+
+    def canonical_metadata(self) -> LatheMetadata:
+        """Return the immutable JSON-scalar representation used by motions."""
+
+        return normalized_metadata(
+            (
+                ("cumulative_radial_depth_mm", self.cumulative_radial_depth_mm),
+                ("cutting_diameter_mm", self.cutting_diameter_mm),
+                ("cutting_pass_count", self.cutting_pass_count),
+                ("infeed_angle_deg", self.infeed_angle_deg),
+                ("pass_index", self.pass_index),
+                ("phase_neutral", self.phase_neutral),
+                ("pitch_mm", self.pitch_mm),
+                ("spring_pass_index", self.spring_pass_index),
+                (
+                    "strategy_algorithm_version",
+                    self.strategy_algorithm_version,
+                ),
+                (
+                    "synchronized_feed_mm_per_rev",
+                    self.synchronized_feed_mm_per_rev,
+                ),
+                ("thread_hand", self.thread_hand.value),
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -297,6 +392,22 @@ class LatheToolpathDiagnosticCode(StrEnum):
     NOMINAL_PART_OFF_CENTERLINE_PREVIEW = (
         "nominal_part_off_centerline_preview"
     )
+    PHASE_NEUTRAL_SYNCHRONIZED_CENTERLINE_PREVIEW = (
+        "phase_neutral_synchronized_centerline_preview"
+    )
+    THREAD_FEED_DERIVED_FROM_PITCH = "thread_feed_derived_from_pitch"
+    NOMINAL_INFEED_ANGLE_METADATA_ONLY = "nominal_infeed_angle_metadata_only"
+    NOT_MACHINE_READY = "not_machine_ready"
+    INVALID_THREAD_DIAMETER_ORDER = "invalid_thread_diameter_order"
+    THREAD_MAJOR_EXCEEDS_STOCK = "thread_major_exceeds_stock"
+    THREAD_MINOR_BELOW_BORE = "thread_minor_below_bore"
+    INVALID_PITCH = "invalid_pitch"
+    INVALID_PASS_COUNT = "invalid_pass_count"
+    INVALID_SPRING_PASSES = "invalid_spring_passes"
+    INVALID_INFEED_ANGLE = "invalid_infeed_angle"
+    THREAD_RANGE_OUTSIDE_STOCK = "thread_range_outside_stock"
+    INCOMPATIBLE_THREAD_TOOL = "incompatible_thread_tool"
+    INCOMPATIBLE_THREAD_GEOMETRY = "incompatible_thread_geometry"
     PUBLICATION_FAILED = "publication_failed"
     STALE_RESULT_DROPPED = "stale_result_dropped"
 
@@ -378,6 +489,7 @@ class LatheToolpathResult:
     rapid_length_mm: float = 0.0
     diagnostics: tuple[LatheToolpathDiagnostic, ...] = ()
     generation_metadata: LatheMetadata = ()
+    thread_pass_metadata: tuple[LatheThreadPassMetadata, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, LatheToolpathResultIdentity):
@@ -427,6 +539,29 @@ class LatheToolpathResult:
         object.__setattr__(
             self, "generation_metadata", normalized_metadata(self.generation_metadata)
         )
+        if not isinstance(self.thread_pass_metadata, tuple) or any(
+            not isinstance(item, LatheThreadPassMetadata)
+            for item in self.thread_pass_metadata
+        ):
+            raise TypeError("Lathe thread pass metadata is invalid")
+        thread_strategy = self.strategy_id in {
+            LatheStrategyId.OD_THREAD,
+            LatheStrategyId.ID_THREAD,
+        }
+        if self.state is LatheToolpathResultState.SUCCESS and thread_strategy:
+            if len(self.thread_pass_metadata) != self.pass_count:
+                raise ValueError("Lathe thread result pass metadata is incomplete")
+            if tuple(item.pass_index for item in self.thread_pass_metadata) != tuple(
+                range(self.pass_count)
+            ):
+                raise ValueError("Lathe thread result pass metadata is unordered")
+            if any(
+                item.strategy_algorithm_version != self.algorithm_version
+                for item in self.thread_pass_metadata
+            ):
+                raise ValueError("Lathe thread result algorithm metadata differs")
+        elif self.thread_pass_metadata:
+            raise ValueError("Only successful thread results may expose pass metadata")
 
         if self.state is LatheToolpathResultState.SUCCESS:
             if not self.motions or self.bounds is None or self.pass_count <= 0:
@@ -496,7 +631,14 @@ class LatheToolpathResult:
             self.rapid_length_mm,
             self.diagnostics,
             self.generation_metadata,
+            self.thread_pass_metadata,
         )
+
+    @property
+    def thread_passes(self) -> tuple[LatheThreadPassMetadata, ...]:
+        """Return the typed per-pass schedule for thread previews."""
+
+        return self.thread_pass_metadata
 
 
 __all__ = [
@@ -506,12 +648,15 @@ __all__ = [
     "LATHE_ID_FINISH_ALGORITHM_VERSION",
     "LATHE_ID_GROOVE_ALGORITHM_VERSION",
     "LATHE_ID_ROUGH_ALGORITHM_VERSION",
+    "LATHE_ID_THREAD_ALGORITHM_VERSION",
     "LATHE_OD_FINISH_ALGORITHM_VERSION",
     "LATHE_OD_GROOVE_ALGORITHM_VERSION",
     "LATHE_OD_ROUGH_ALGORITHM_VERSION",
+    "LATHE_OD_THREAD_ALGORITHM_VERSION",
     "LATHE_PART_OFF_ALGORITHM_VERSION",
     "LATHE_TOOLPATH_ALGORITHM_VERSION",
     "LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM",
+    "LATHE_THREAD_TOOLPATH_PREVIEW_CAPABILITY",
     "LatheDwellEvent",
     "LatheMetadata",
     "LatheMotionClass",
@@ -527,6 +672,7 @@ __all__ = [
     "LatheToolpathResultIdentity",
     "LatheToolpathResultSource",
     "LatheToolpathResultState",
+    "LatheThreadPassMetadata",
     "LatheXZPoint",
     "finite_number",
     "normalized_metadata",

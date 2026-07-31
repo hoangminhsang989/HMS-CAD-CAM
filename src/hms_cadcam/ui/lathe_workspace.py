@@ -70,6 +70,37 @@ from hms_cadcam.ui.localization import ui_text
 
 _IDENTITY_ROLE = int(Qt.ItemDataRole.UserRole) + 101
 _CHOICE_ROLE = int(Qt.ItemDataRole.UserRole) + 102
+_THREAD_SUCCESS_DIAGNOSTIC_CODES = (
+    "phase_neutral_synchronized_centerline_preview",
+    "thread_feed_derived_from_pitch",
+    "nominal_infeed_angle_metadata_only",
+    "not_machine_ready",
+)
+_THREAD_FAILURE_DIAGNOSTIC_CODES = frozenset(
+    {
+        "missing_internal_bore",
+        "invalid_thread_diameter_order",
+        "thread_major_exceeds_stock",
+        "thread_minor_below_bore",
+        "invalid_pitch",
+        "invalid_pass_count",
+        "invalid_spring_passes",
+        "invalid_infeed_angle",
+        "thread_range_outside_stock",
+        "incompatible_thread_tool",
+        "incompatible_thread_geometry",
+    }
+)
+_THREAD_PARAMETER_DIAGNOSTIC_CODES = {
+    "pitch_mm": "invalid_pitch",
+    "pass_count": "invalid_pass_count",
+    "spring_passes": "invalid_spring_passes",
+    "infeed_angle_deg": "invalid_infeed_angle",
+    "major_diameter_mm": "invalid_thread_diameter_order",
+    "minor_diameter_mm": "invalid_thread_diameter_order",
+    "start_z_mm": "thread_range_outside_stock",
+    "end_z_mm": "thread_range_outside_stock",
+}
 
 
 def _tr(key: str, **values: object) -> str:
@@ -1126,9 +1157,39 @@ class LatheWorkspace(QWidget):
             self._toolpath_controller is not None
             and self._toolpath_state.code is not LatheToolpathUiStateCode.READY
         ):
-            self.outcome_label.setText(
-                _tr(f"lathe.toolpath.status.{self._toolpath_state.code.value}")
+            text = _tr(
+                f"lathe.toolpath.status.{self._toolpath_state.code.value}"
             )
+            if self._toolpath_state.code in {
+                LatheToolpathUiStateCode.PREVIEW_READY,
+                LatheToolpathUiStateCode.CACHE_HIT,
+            }:
+                by_code = {
+                    item.code.value: item
+                    for item in self._toolpath_state.diagnostics
+                }
+                details = tuple(
+                    _tr(f"lathe.diagnostic.{code}")
+                    for code in _THREAD_SUCCESS_DIAGNOSTIC_CODES
+                    if code in by_code
+                )
+                if details:
+                    text = " · ".join((text, *details))
+            elif (
+                self._toolpath_state.diagnostic is not None
+                and self._toolpath_state.diagnostic.code.value
+                in _THREAD_FAILURE_DIAGNOSTIC_CODES
+            ):
+                text = " · ".join(
+                    (
+                        text,
+                        _tr(
+                            "lathe.diagnostic."
+                            f"{self._toolpath_state.diagnostic.code.value}"
+                        ),
+                    )
+                )
+            self.outcome_label.setText(text)
             return
         if self._outcome_diagnostic is not None:
             self.outcome_label.setText(
@@ -1141,11 +1202,22 @@ class LatheWorkspace(QWidget):
         self.outcome_label.setText("")
 
     def _diagnostic_text(self, diagnostic: LatheQtDiagnostic) -> str:
-        key = (
-            diagnostic.code
-            if diagnostic.code.startswith("lathe.")
-            else f"lathe.diagnostic.{diagnostic.code}"
-        )
+        code = diagnostic.code
+        active = self._active_operation(self._snapshot)
+        if active is not None and active.strategy_id in {
+            LatheStrategyId.OD_THREAD,
+            LatheStrategyId.ID_THREAD,
+        }:
+            if code == "invalid_parameter" and diagnostic.field_id is not None:
+                code = _THREAD_PARAMETER_DIAGNOSTIC_CODES.get(
+                    diagnostic.field_id,
+                    code,
+                )
+            elif code == "incompatible_tool":
+                code = "incompatible_thread_tool"
+            elif code == "incompatible_geometry":
+                code = "incompatible_thread_geometry"
+        key = code if code.startswith("lathe.") else f"lathe.diagnostic.{code}"
         text = _tr(key)
         if diagnostic.field_id:
             text = f"{_tr(f'lathe.parameter.{diagnostic.field_id}.label')}: {text}"

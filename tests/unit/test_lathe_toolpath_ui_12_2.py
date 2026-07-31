@@ -143,9 +143,9 @@ def test_internal_ui_propagates_missing_bore_without_worker_submission() -> None
     _dispose(controller, presenter)
 
 
-def test_thread_ui_is_editable_ready_but_preview_fails_closed_with_v2_code() -> None:
+def test_internal_thread_ui_requires_explicit_bore_before_submission() -> None:
     application()
-    presenter, operation = _ready_presenter(LatheStrategyId.OD_THREAD)
+    presenter, operation = _ready_presenter(LatheStrategyId.ID_THREAD)
     sink = _Sink()
     controller = LatheToolpathUiController(
         presenter.facade.service,
@@ -154,10 +154,10 @@ def test_thread_ui_is_editable_ready_but_preview_fails_closed_with_v2_code() -> 
     )
     assert operation.readiness.value == "READY"
     assert controller.preview(operation) is None
-    assert controller.state.code is LatheToolpathUiStateCode.THREAD_UNSUPPORTED_V2
+    assert controller.state.code is LatheToolpathUiStateCode.INVALID_REQUEST
     assert controller.state.diagnostic is not None
     assert controller.state.diagnostic.code is (
-        LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2
+        LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE
     )
     assert sink.publications == []
     _dispose(controller, presenter)

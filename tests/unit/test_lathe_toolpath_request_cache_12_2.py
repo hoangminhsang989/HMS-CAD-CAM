@@ -144,15 +144,17 @@ def test_internal_builder_rejects_missing_bore_without_inference(
     "strategy_id",
     (LatheStrategyId.OD_THREAD, LatheStrategyId.ID_THREAD),
 )
-def test_thread_strategies_fail_closed_with_narrow_v2_diagnostic(
+def test_thread_strategies_delegate_to_stage12_3_request_builder(
     strategy_id: LatheStrategyId,
 ) -> None:
-    _service, _operation, built = _build(strategy_id)
-    assert not built.accepted and built.request is None
-    assert built.diagnostics[0].code is (
-        LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2
+    stock = stock_snapshot(
+        inner_diameter_mm=10.0
+        if strategy_id is LatheStrategyId.ID_THREAD
+        else 0.0
     )
-    assert dict(built.diagnostics[0].details)["strategy_id"] == strategy_id.value
+    _service, _operation, built = _build(strategy_id, stock=stock)
+    assert built.accepted and built.request is not None
+    assert built.request.algorithm_version.endswith(".toolpath.v3")
 
 
 @pytest.mark.parametrize(

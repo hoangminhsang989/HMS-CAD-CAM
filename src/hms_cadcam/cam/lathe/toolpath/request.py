@@ -28,9 +28,11 @@ from hms_cadcam.cam.lathe.toolpath.model import (
     LATHE_ID_FINISH_ALGORITHM_VERSION,
     LATHE_ID_GROOVE_ALGORITHM_VERSION,
     LATHE_ID_ROUGH_ALGORITHM_VERSION,
+    LATHE_ID_THREAD_ALGORITHM_VERSION,
     LATHE_OD_FINISH_ALGORITHM_VERSION,
     LATHE_OD_GROOVE_ALGORITHM_VERSION,
     LATHE_OD_ROUGH_ALGORITHM_VERSION,
+    LATHE_OD_THREAD_ALGORITHM_VERSION,
     LATHE_PART_OFF_ALGORITHM_VERSION,
     LATHE_TOOLPATH_ALGORITHM_VERSION,
     LatheToolpathCacheKey,
@@ -53,12 +55,11 @@ EXECUTABLE_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = (
     LatheStrategyId.OD_GROOVE,
     LatheStrategyId.ID_GROOVE,
     LatheStrategyId.PART_OFF,
-    LatheStrategyId.AXIAL_DRILL,
-)
-UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = (
     LatheStrategyId.OD_THREAD,
     LatheStrategyId.ID_THREAD,
+    LatheStrategyId.AXIAL_DRILL,
 )
+UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = ()
 
 _ALGORITHM_BY_STRATEGY: Mapping[LatheStrategyId, str] = MappingProxyType(
     {
@@ -70,6 +71,8 @@ _ALGORITHM_BY_STRATEGY: Mapping[LatheStrategyId, str] = MappingProxyType(
         LatheStrategyId.OD_GROOVE: LATHE_OD_GROOVE_ALGORITHM_VERSION,
         LatheStrategyId.ID_GROOVE: LATHE_ID_GROOVE_ALGORITHM_VERSION,
         LatheStrategyId.PART_OFF: LATHE_PART_OFF_ALGORITHM_VERSION,
+        LatheStrategyId.OD_THREAD: LATHE_OD_THREAD_ALGORITHM_VERSION,
+        LatheStrategyId.ID_THREAD: LATHE_ID_THREAD_ALGORITHM_VERSION,
         LatheStrategyId.AXIAL_DRILL: LATHE_AXIAL_DRILL_ALGORITHM_VERSION,
     }
 )
@@ -351,6 +354,39 @@ _DOMAIN_DIAGNOSTIC_MAP: Mapping[LatheDiagnosticCode, LatheToolpathDiagnosticCode
 )
 
 
+_THREAD_PARAMETER_DIAGNOSTICS: Mapping[str, LatheToolpathDiagnosticCode] = (
+    MappingProxyType(
+        {
+            "pitch_mm": LatheToolpathDiagnosticCode.INVALID_PITCH,
+            "pass_count": LatheToolpathDiagnosticCode.INVALID_PASS_COUNT,
+            "spring_passes": LatheToolpathDiagnosticCode.INVALID_SPRING_PASSES,
+            "infeed_angle_deg": LatheToolpathDiagnosticCode.INVALID_INFEED_ANGLE,
+            "major_diameter_mm": (
+                LatheToolpathDiagnosticCode.INVALID_THREAD_DIAMETER_ORDER
+            ),
+            "minor_diameter_mm": (
+                LatheToolpathDiagnosticCode.INVALID_THREAD_DIAMETER_ORDER
+            ),
+            "start_z_mm": LatheToolpathDiagnosticCode.THREAD_RANGE_OUTSIDE_STOCK,
+            "end_z_mm": LatheToolpathDiagnosticCode.THREAD_RANGE_OUTSIDE_STOCK,
+        }
+    )
+)
+
+
+def _thread_readiness_diagnostic(
+    diagnostic_code: LatheDiagnosticCode,
+    field_id: str | None,
+) -> LatheToolpathDiagnosticCode | None:
+    if diagnostic_code is LatheDiagnosticCode.INCOMPATIBLE_TOOL:
+        return LatheToolpathDiagnosticCode.INCOMPATIBLE_THREAD_TOOL
+    if diagnostic_code is LatheDiagnosticCode.INCOMPATIBLE_GEOMETRY:
+        return LatheToolpathDiagnosticCode.INCOMPATIBLE_THREAD_GEOMETRY
+    if diagnostic_code is LatheDiagnosticCode.INVALID_PARAMETER and field_id:
+        return _THREAD_PARAMETER_DIAGNOSTICS.get(field_id)
+    return None
+
+
 def _stock_parameter_diagnostic(
     operation: LatheOperationState,
     stock: LatheStockSnapshotV1,
@@ -541,6 +577,47 @@ def _stock_parameter_diagnostic(
             )
         return None
 
+    if strategy_id in {
+        LatheStrategyId.OD_THREAD,
+        LatheStrategyId.ID_THREAD,
+    }:
+        internal = strategy_id is LatheStrategyId.ID_THREAD
+        if internal and stock.inner_diameter_mm <= 0.0:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE,
+                details=(("strategy_id", strategy_id.value),),
+            )
+        major = float(parameters["major_diameter_mm"])
+        minor = float(parameters["minor_diameter_mm"])
+        if major <= minor:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_THREAD_DIAMETER_ORDER,
+                "minor_diameter_mm",
+            )
+        if (internal and major >= stock.outer_diameter_mm) or (
+            not internal and major > stock.outer_diameter_mm
+        ):
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.THREAD_MAJOR_EXCEEDS_STOCK,
+                "major_diameter_mm",
+            )
+        if minor < stock.inner_diameter_mm:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.THREAD_MINOR_BELOW_BORE,
+                "minor_diameter_mm",
+            )
+        start = float(parameters["start_z_mm"])
+        end = float(parameters["end_z_mm"])
+        if not (
+            minimum_z <= start <= maximum_z
+            and minimum_z <= end <= maximum_z
+        ):
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.THREAD_RANGE_OUTSIDE_STOCK,
+                "start_z_mm",
+            )
+        return None
+
     if strategy_id is LatheStrategyId.AXIAL_DRILL:
         depth = float(parameters["depth_mm"])
         if depth > stock.axial_length_mm:
@@ -628,7 +705,14 @@ class LatheToolpathRequestBuilder:
         evaluation = service.evaluate(operation_id)
         if evaluation.readiness is not LatheOperationReadiness.READY:
             first = evaluation.diagnostics[0] if evaluation.diagnostics else None
-            mapped = (
+            thread_mapped = (
+                _thread_readiness_diagnostic(first.code, first.field_id)
+                if first is not None
+                and operation.strategy_id
+                in {LatheStrategyId.OD_THREAD, LatheStrategyId.ID_THREAD}
+                else None
+            )
+            mapped = thread_mapped or (
                 _DOMAIN_DIAGNOSTIC_MAP.get(
                     first.code, LatheToolpathDiagnosticCode.OPERATION_NOT_READY
                 )

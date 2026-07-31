@@ -143,7 +143,7 @@ def test_explicit_preview_only_and_cache_fresh_share_gui_publication_gate(qtbot)
     presenter.teardown()
 
 
-def test_incomplete_and_unsupported_operations_fail_closed_without_submission() -> None:
+def test_incomplete_operation_fails_closed_without_submission() -> None:
     application()
     presenter, _catalog, _reference = presenter_for(LatheStrategyId.OD_ROUGH)
     presenter.create_operation(LatheStrategyId.OD_ROUGH)
@@ -160,17 +160,6 @@ def test_incomplete_and_unsupported_operations_fail_closed_without_submission() 
     assert sink.publications == []
     _dispose_controller(controller)
     presenter.teardown()
-
-    unsupported_presenter, unsupported, sink, controller = _controller_for(
-        LatheStrategyId.OD_THREAD
-    )
-    assert controller.preview(unsupported) is None
-    assert controller.state.code is LatheToolpathUiStateCode.THREAD_UNSUPPORTED_V2
-    assert controller.state.diagnostic is not None
-    assert controller.state.diagnostic.code.value == "thread_toolpath_not_implemented_v2"
-    assert sink.publications == []
-    _dispose_controller(controller)
-    unsupported_presenter.teardown()
 
 
 def test_publication_failure_is_never_reported_as_preview_success(qtbot) -> None:

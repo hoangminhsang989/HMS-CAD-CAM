@@ -310,15 +310,13 @@ def test_axial_drill_cancellation_between_pecks_discards_partial_path() -> None:
     assert result.motions == ()
 
 
-def test_registry_preserves_stage12_1_generators_inside_v2_partition() -> None:
+def test_registry_preserves_stage12_1_generators_inside_v3_partition() -> None:
     registry = LatheToolpathGeneratorRegistry()
     assert registry.executable_strategy_ids == EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
     assert registry.unsupported_strategy_ids == UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES
-    assert len(registry.executable_strategy_ids) == 9
-    assert len(registry.unsupported_strategy_ids) == 2
-    assert set(registry.executable_strategy_ids).isdisjoint(
-        registry.unsupported_strategy_ids
-    )
+    assert len(registry.executable_strategy_ids) == 11
+    assert registry.unsupported_strategy_ids == ()
+    assert set(registry.executable_strategy_ids) == set(LatheStrategyId)
 
 
 def test_generator_output_is_byte_semantic_deterministic_across_repeated_runs() -> None:
@@ -365,7 +363,7 @@ def test_registry_rejects_duplicate_or_incomplete_registration() -> None:
                 OdRoughToolpathGenerator(),
             )
         )
-    with pytest.raises(ValueError, match="exact Stage 12.1 override set"):
+    with pytest.raises(ValueError, match="exact Stage 12.1"):
         LatheToolpathGeneratorRegistry(
             (OdRoughToolpathGenerator(), OdFinishToolpathGenerator())
         )
@@ -376,4 +374,4 @@ def test_registry_rejects_duplicate_or_incomplete_registration() -> None:
             AxialDrillToolpathGenerator(),
         )
     )
-    assert len(registry.executable_strategy_ids) == 9
+    assert len(registry.executable_strategy_ids) == 11

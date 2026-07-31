@@ -1,4 +1,4 @@
-"""Qt bridge, UI coordinator and viewport mapper for Lathe Preview V1."""
+"""Qt bridge, UI coordinator and viewport mapper for Lathe Preview V1-V3."""
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ class LatheToolpathUiState:
     ownership: LatheOwnershipKey | None = None
     job_id: LatheToolpathJobId | None = None
     diagnostic: LatheToolpathDiagnostic | None = None
+    diagnostics: tuple[LatheToolpathDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.code, LatheToolpathUiStateCode):
@@ -84,6 +85,19 @@ class LatheToolpathUiState:
             self.diagnostic, LatheToolpathDiagnostic
         ):
             raise TypeError("Lathe toolpath UI diagnostic is invalid")
+        if not isinstance(self.diagnostics, tuple) or any(
+            not isinstance(item, LatheToolpathDiagnostic)
+            for item in self.diagnostics
+        ):
+            raise TypeError("Lathe toolpath UI diagnostics are invalid")
+        if self.diagnostic is not None and not self.diagnostics:
+            object.__setattr__(self, "diagnostics", (self.diagnostic,))
+        elif (
+            self.diagnostic is not None
+            and self.diagnostics
+            and self.diagnostic not in self.diagnostics
+        ):
+            raise ValueError("Lathe toolpath primary diagnostic is not in its set")
 
 
 class LatheToolpathQtBridge(QObject):
@@ -558,6 +572,15 @@ class LatheToolpathUiController(QObject):
             return
         self._published_ownership = ownership
         self._active_job_id = None
+        primary_diagnostic = next(
+            (
+                item
+                for item in payload.diagnostics
+                if item.code
+                is LatheToolpathDiagnosticCode.PHASE_NEUTRAL_SYNCHRONIZED_CENTERLINE_PREVIEW
+            ),
+            payload.diagnostics[0] if payload.diagnostics else None,
+        )
         self._set_state(
             LatheToolpathUiState(
                 (
@@ -567,7 +590,8 @@ class LatheToolpathUiController(QObject):
                 ),
                 ownership,
                 payload.identity.job_id,
-                payload.diagnostics[0] if payload.diagnostics else None,
+                primary_diagnostic,
+                payload.diagnostics,
             )
         )
 
