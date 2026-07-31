@@ -24,8 +24,14 @@ from hms_cadcam.cam.lathe.types import (
 )
 from hms_cadcam.cam.lathe.toolpath.model import (
     LATHE_AXIAL_DRILL_ALGORITHM_VERSION,
+    LATHE_FACE_ALGORITHM_VERSION,
+    LATHE_ID_FINISH_ALGORITHM_VERSION,
+    LATHE_ID_GROOVE_ALGORITHM_VERSION,
+    LATHE_ID_ROUGH_ALGORITHM_VERSION,
     LATHE_OD_FINISH_ALGORITHM_VERSION,
+    LATHE_OD_GROOVE_ALGORITHM_VERSION,
     LATHE_OD_ROUGH_ALGORITHM_VERSION,
+    LATHE_PART_OFF_ALGORITHM_VERSION,
     LATHE_TOOLPATH_ALGORITHM_VERSION,
     LatheToolpathCacheKey,
     LatheToolpathDiagnostic,
@@ -39,20 +45,31 @@ LATHE_TOOLPATH_REQUEST_CONTRACT_VERSION = 1
 LATHE_TOOLPATH_CACHE_KEY_CONTRACT_VERSION = 1
 
 EXECUTABLE_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = (
+    LatheStrategyId.FACE,
     LatheStrategyId.OD_ROUGH,
     LatheStrategyId.OD_FINISH,
+    LatheStrategyId.ID_ROUGH,
+    LatheStrategyId.ID_FINISH,
+    LatheStrategyId.OD_GROOVE,
+    LatheStrategyId.ID_GROOVE,
+    LatheStrategyId.PART_OFF,
     LatheStrategyId.AXIAL_DRILL,
 )
-UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = tuple(
-    strategy
-    for strategy in LatheStrategyId
-    if strategy not in EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
+UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES: tuple[LatheStrategyId, ...] = (
+    LatheStrategyId.OD_THREAD,
+    LatheStrategyId.ID_THREAD,
 )
 
 _ALGORITHM_BY_STRATEGY: Mapping[LatheStrategyId, str] = MappingProxyType(
     {
+        LatheStrategyId.FACE: LATHE_FACE_ALGORITHM_VERSION,
         LatheStrategyId.OD_ROUGH: LATHE_OD_ROUGH_ALGORITHM_VERSION,
         LatheStrategyId.OD_FINISH: LATHE_OD_FINISH_ALGORITHM_VERSION,
+        LatheStrategyId.ID_ROUGH: LATHE_ID_ROUGH_ALGORITHM_VERSION,
+        LatheStrategyId.ID_FINISH: LATHE_ID_FINISH_ALGORITHM_VERSION,
+        LatheStrategyId.OD_GROOVE: LATHE_OD_GROOVE_ALGORITHM_VERSION,
+        LatheStrategyId.ID_GROOVE: LATHE_ID_GROOVE_ALGORITHM_VERSION,
+        LatheStrategyId.PART_OFF: LATHE_PART_OFF_ALGORITHM_VERSION,
         LatheStrategyId.AXIAL_DRILL: LATHE_AXIAL_DRILL_ALGORITHM_VERSION,
     }
 )
@@ -64,7 +81,7 @@ def strategy_algorithm_version(strategy_id: LatheStrategyId) -> str:
     try:
         return _ALGORITHM_BY_STRATEGY[strategy_id]
     except KeyError as error:
-        raise ValueError("Lathe toolpath strategy is unsupported in V1") from error
+        raise ValueError("Lathe toolpath strategy is unsupported") from error
 
 
 def _geometry_payload(binding: LatheGeometryBinding) -> dict[str, object]:
@@ -341,12 +358,63 @@ def _stock_parameter_diagnostic(
     parameters = operation.parameter_state.mapping
     minimum_z = min(stock.front_z_mm, stock.back_z_mm)
     maximum_z = max(stock.front_z_mm, stock.back_z_mm)
-    if operation.strategy_id in {
+    strategy_id = operation.strategy_id
+
+    if strategy_id is LatheStrategyId.FACE:
+        outer = float(parameters["outer_diameter_mm"])
+        inner = float(parameters["inner_diameter_mm"])
+        if outer > stock.outer_diameter_mm:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "outer_diameter_mm",
+                (("rule", "outer_diameter_within_stock"),),
+            )
+        if stock.inner_diameter_mm > 0.0 and inner < stock.inner_diameter_mm:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "inner_diameter_mm",
+                (("rule", "inner_diameter_at_or_above_bore"),),
+            )
+        face = float(parameters["face_z_mm"])
+        effective = face - stock.axial_direction * float(
+            parameters["finish_allowance_mm"]
+        )
+        if not minimum_z <= face <= maximum_z:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "face_z_mm",
+                (("rule", "face_inside_stock_axial_range"),),
+            )
+        if not minimum_z <= effective <= maximum_z:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "finish_allowance_mm",
+                (("rule", "effective_face_inside_stock"),),
+            )
+        return None
+
+    if strategy_id in {
         LatheStrategyId.OD_ROUGH,
         LatheStrategyId.OD_FINISH,
+        LatheStrategyId.ID_ROUGH,
+        LatheStrategyId.ID_FINISH,
     }:
+        internal = strategy_id in {
+            LatheStrategyId.ID_ROUGH,
+            LatheStrategyId.ID_FINISH,
+        }
+        if internal and stock.inner_diameter_mm <= 0.0:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE,
+                details=(("strategy_id", strategy_id.value),),
+            )
         target = float(parameters["target_diameter_mm"])
-        if target > stock.outer_diameter_mm or target <= stock.inner_diameter_mm:
+        invalid_target = (
+            target >= stock.outer_diameter_mm
+            if internal
+            else target > stock.outer_diameter_mm
+        ) or target <= stock.inner_diameter_mm
+        if invalid_target:
             return LatheToolpathDiagnostic(
                 LatheToolpathDiagnosticCode.INVALID_PARAMETER,
                 "target_diameter_mm",
@@ -355,22 +423,42 @@ def _stock_parameter_diagnostic(
         start = float(parameters["start_z_mm"])
         end = float(parameters["end_z_mm"])
         if not (
-            minimum_z <= start <= maximum_z and minimum_z <= end <= maximum_z
+            minimum_z <= start <= maximum_z
+            and minimum_z <= end <= maximum_z
         ):
             return LatheToolpathDiagnostic(
                 LatheToolpathDiagnosticCode.INVALID_PARAMETER,
                 "start_z_mm",
                 (("rule", "axial_range_inside_stock"),),
             )
-        if operation.strategy_id is LatheStrategyId.OD_ROUGH:
-            rough_target = target + 2.0 * float(
+        if strategy_id in {
+            LatheStrategyId.OD_ROUGH,
+            LatheStrategyId.ID_ROUGH,
+        }:
+            radial_allowance = 2.0 * float(
                 parameters["radial_stock_to_leave_mm"]
             )
-            if rough_target > stock.outer_diameter_mm:
+            rough_target = (
+                target - radial_allowance
+                if internal
+                else target + radial_allowance
+            )
+            if (
+                internal and rough_target < stock.inner_diameter_mm
+            ) or (not internal and rough_target > stock.outer_diameter_mm):
                 return LatheToolpathDiagnostic(
                     LatheToolpathDiagnosticCode.INVALID_PARAMETER,
                     "radial_stock_to_leave_mm",
-                    (("rule", "rough_target_below_stock_od"),),
+                    (
+                        (
+                            "rule",
+                            (
+                                "rough_target_at_or_above_stock_bore"
+                                if internal
+                                else "rough_target_below_stock_od"
+                            ),
+                        ),
+                    ),
                 )
             direction = 1.0 if end > start else -1.0
             effective_end = end - direction * float(
@@ -382,7 +470,78 @@ def _stock_parameter_diagnostic(
                     "axial_stock_to_leave_mm",
                     (("rule", "effective_end_beyond_start"),),
                 )
-    elif operation.strategy_id is LatheStrategyId.AXIAL_DRILL:
+        return None
+
+    if strategy_id in {
+        LatheStrategyId.OD_GROOVE,
+        LatheStrategyId.ID_GROOVE,
+    }:
+        internal = strategy_id is LatheStrategyId.ID_GROOVE
+        if internal and stock.inner_diameter_mm <= 0.0:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE,
+                details=(("strategy_id", strategy_id.value),),
+            )
+        target = float(parameters["target_diameter_mm"])
+        if (
+            target <= stock.inner_diameter_mm
+            or target >= stock.outer_diameter_mm
+        ):
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "target_diameter_mm",
+                (("rule", "target_inside_stock_envelope"),),
+            )
+        effective_width = float(parameters["groove_width_mm"]) - 2.0 * float(
+            parameters["side_allowance_mm"]
+        )
+        if effective_width <= 0.0:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "side_allowance_mm",
+                (("rule", "positive_effective_groove_width"),),
+            )
+        center = float(parameters["center_z_mm"])
+        left = center - effective_width / 2.0
+        right = center + effective_width / 2.0
+        if left < minimum_z or right > maximum_z:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "center_z_mm",
+                (("rule", "groove_inside_stock_axial_range"),),
+            )
+        return None
+
+    if strategy_id is LatheStrategyId.PART_OFF:
+        target = float(parameters["target_diameter_mm"])
+        if target >= stock.outer_diameter_mm or (
+            stock.inner_diameter_mm > 0.0
+            and target < stock.inner_diameter_mm
+        ):
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "target_diameter_mm",
+                (("rule", "part_off_target_inside_stock_envelope"),),
+            )
+        cutoff = float(parameters["cutoff_z_mm"])
+        approach = cutoff - stock.axial_direction * float(
+            parameters["side_clearance_mm"]
+        )
+        if not minimum_z <= cutoff <= maximum_z:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "cutoff_z_mm",
+                (("rule", "cutoff_inside_stock_axial_range"),),
+            )
+        if not minimum_z <= approach <= maximum_z:
+            return LatheToolpathDiagnostic(
+                LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                "side_clearance_mm",
+                (("rule", "approach_inside_stock_axial_range"),),
+            )
+        return None
+
+    if strategy_id is LatheStrategyId.AXIAL_DRILL:
         depth = float(parameters["depth_mm"])
         if depth > stock.axial_length_mm:
             return LatheToolpathDiagnostic(
@@ -457,7 +616,7 @@ class LatheToolpathRequestBuilder:
             return _failure(LatheToolpathDiagnosticCode.STALE_OWNERSHIP)
         if operation.strategy_id in UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES:
             return _failure(
-                LatheToolpathDiagnosticCode.TOOLPATH_NOT_IMPLEMENTED_V1,
+                LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2,
                 strategy_id=operation.strategy_id.value,
             )
         if not operation.enabled:

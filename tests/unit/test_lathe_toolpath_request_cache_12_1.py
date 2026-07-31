@@ -48,6 +48,13 @@ from tests.unit._lathe_toolpath_fixtures import (
 )
 
 
+STAGE12_1_EXECUTABLE = (
+    LatheStrategyId.OD_ROUGH,
+    LatheStrategyId.OD_FINISH,
+    LatheStrategyId.AXIAL_DRILL,
+)
+
+
 def _build(
     service: LatheOperationService,
     operation,
@@ -65,8 +72,8 @@ def _build(
     )
 
 
-@pytest.mark.parametrize("strategy_id", EXECUTABLE_LATHE_TOOLPATH_STRATEGIES)
-def test_builder_accepts_exact_three_ready_executable_strategies(
+@pytest.mark.parametrize("strategy_id", STAGE12_1_EXECUTABLE)
+def test_builder_accepts_stage12_1_ready_executable_strategies(
     strategy_id: LatheStrategyId,
 ) -> None:
     _service, operation, request = ready_request(strategy_id)
@@ -219,7 +226,7 @@ def test_builder_copies_resolved_capability_and_service_blocks_mismatch() -> Non
 
 
 @pytest.mark.parametrize("strategy_id", UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES)
-def test_builder_fails_closed_for_all_eight_unsupported_strategies(
+def test_builder_fails_closed_for_thread_strategies(
     strategy_id: LatheStrategyId,
 ) -> None:
     service, reference = service_for(strategy_id)
@@ -227,7 +234,7 @@ def test_builder_fails_closed_for_all_eight_unsupported_strategies(
     built = _build(service, operation)
     assert not built.accepted and built.request is None
     assert built.diagnostics[0].code is (
-        LatheToolpathDiagnosticCode.TOOLPATH_NOT_IMPLEMENTED_V1
+        LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2
     )
     assert dict(built.diagnostics[0].details)["strategy_id"] == strategy_id.value
 

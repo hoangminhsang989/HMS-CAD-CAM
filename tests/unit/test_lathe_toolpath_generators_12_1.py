@@ -310,19 +310,19 @@ def test_axial_drill_cancellation_between_pecks_discards_partial_path() -> None:
     assert result.motions == ()
 
 
-def test_registry_has_exact_three_executable_and_eight_unsupported_no_fallback() -> None:
+def test_registry_preserves_stage12_1_generators_inside_v2_partition() -> None:
     registry = LatheToolpathGeneratorRegistry()
     assert registry.executable_strategy_ids == EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
     assert registry.unsupported_strategy_ids == UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES
-    assert len(registry.executable_strategy_ids) == 3
-    assert len(registry.unsupported_strategy_ids) == 8
+    assert len(registry.executable_strategy_ids) == 9
+    assert len(registry.unsupported_strategy_ids) == 2
     assert set(registry.executable_strategy_ids).isdisjoint(
         registry.unsupported_strategy_ids
     )
 
 
 def test_generator_output_is_byte_semantic_deterministic_across_repeated_runs() -> None:
-    for strategy_id in EXECUTABLE_LATHE_TOOLPATH_STRATEGIES:
+    for strategy_id in (LatheStrategyId.OD_ROUGH, LatheStrategyId.OD_FINISH, LatheStrategyId.AXIAL_DRILL):
         request = ready_request(strategy_id)[2]
         results = tuple(generate(request) for _index in range(5))
         first = results[0]
@@ -363,10 +363,17 @@ def test_registry_rejects_duplicate_or_incomplete_registration() -> None:
             (
                 OdRoughToolpathGenerator(),
                 OdRoughToolpathGenerator(),
-                AxialDrillToolpathGenerator(),
             )
         )
-    with pytest.raises(ValueError, match="exactly three"):
+    with pytest.raises(ValueError, match="exact Stage 12.1 override set"):
         LatheToolpathGeneratorRegistry(
             (OdRoughToolpathGenerator(), OdFinishToolpathGenerator())
         )
+    registry = LatheToolpathGeneratorRegistry(
+        (
+            OdRoughToolpathGenerator(),
+            OdFinishToolpathGenerator(),
+            AxialDrillToolpathGenerator(),
+        )
+    )
+    assert len(registry.executable_strategy_ids) == 9

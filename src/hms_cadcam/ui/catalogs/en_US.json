@@ -1669,6 +1669,7 @@
   "lathe.toolpath.status.cache_hit": "Offline nominal preview displayed from memory cache · Not machine-ready.",
   "lathe.toolpath.status.cancelled": "Toolpath calculation cancelled",
   "lathe.toolpath.status.unsupported_strategy": "This strategy has no V1 toolpath preview implementation.",
+  "lathe.toolpath.status.stage12_2_thread_unsupported": "Thread toolpath preview is not implemented in V2.",
   "lathe.toolpath.status.invalid_request": "A preview request cannot be built from the current data.",
   "lathe.toolpath.status.generation_failed": "The offline toolpath preview could not be calculated.",
   "lathe.toolpath.status.publication_failed": "The path was calculated but could not be published safely in the viewport.",

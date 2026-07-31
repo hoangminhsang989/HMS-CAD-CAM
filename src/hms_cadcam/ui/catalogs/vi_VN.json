@@ -1669,6 +1669,7 @@
   "lathe.toolpath.status.cache_hit": "Đã hiển thị bản xem trước danh nghĩa offline từ bộ nhớ đệm · Không sẵn sàng chạy máy.",
   "lathe.toolpath.status.cancelled": "Đã hủy tính toán đường chạy dao",
   "lathe.toolpath.status.unsupported_strategy": "Chiến lược này chưa hỗ trợ xem trước đường chạy dao trong V1.",
+  "lathe.toolpath.status.stage12_2_thread_unsupported": "Xem trước đường chạy dao ren chưa được triển khai trong V2.",
   "lathe.toolpath.status.invalid_request": "Không thể tạo yêu cầu xem trước từ dữ liệu hiện tại.",
   "lathe.toolpath.status.generation_failed": "Không thể tính bản xem trước đường chạy dao.",
   "lathe.toolpath.status.publication_failed": "Đã tính đường dao nhưng không thể hiển thị an toàn trong viewport.",

@@ -210,7 +210,7 @@ def test_save_preview_defaults_to_overrides_and_blocks_invalid_confirmation(qtbo
     assert ToolProfileDiffKind.SKIPPED in kinds
     assert dialog.confirm_button.isEnabled()
 
-    qtbot.mouseClick(dialog.all_effective, Qt.MouseButton.LeftButton)
+    dialog.all_effective.click()
     assert dialog.selected_mode is ToolProfileSaveMode.ALL_EFFECTIVE
     quality_row = next(
         index
@@ -218,7 +218,7 @@ def test_save_preview_defaults_to_overrides_and_blocks_invalid_confirmation(qtbo
         if entry.field_id == "quality_profile"
     )
     assert dialog.table.item(quality_row, 3).text() == "Chất lượng cao"
-    qtbot.mouseClick(dialog.only_overrides, Qt.MouseButton.LeftButton)
+    dialog.only_overrides.click()
 
     invalid = replace(
         preview,

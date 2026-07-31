@@ -1,4 +1,4 @@
-"""Deterministic Qt-free Lathe OD rough/finish and axial-drill generators."""
+"""Deterministic Qt-free Lathe Toolpath Preview V1/V2 generators."""
 
 from __future__ import annotations
 
@@ -41,11 +41,12 @@ class LatheToolpathCancelledError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _GenerationValidationError(ValueError):
-    field_id: str
+    field_id: str | None
     rule: str
+    code: LatheToolpathDiagnosticCode = LatheToolpathDiagnosticCode.INVALID_PARAMETER
 
     def __post_init__(self) -> None:
-        ValueError.__init__(self, f"{self.field_id}:{self.rule}")
+        ValueError.__init__(self, f"{self.field_id or 'request'}:{self.rule}")
 
 
 def _checkpoint(cancellation: CancellationProbe) -> None:
@@ -85,6 +86,20 @@ class _MotionBuilder:
         pass_index: int,
     ) -> None:
         _checkpoint(self._cancellation)
+        if (
+            start.distance_to(end)
+            <= LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM
+        ):
+            return
+        previous = self._events[-1] if self._events else None
+        if (
+            isinstance(previous, LathePathSegment)
+            and previous.motion_class is motion_class
+            and previous.start == start
+            and previous.end == end
+            and previous.feed_mm_per_rev == feed_mm_per_rev
+        ):
+            return
         self._events.append(
             LathePathSegment(
                 len(self._events),
@@ -233,6 +248,260 @@ def _validate_od_range(
     ):
         raise _GenerationValidationError("start_z_mm", "inside_stock_axial_range")
     return 1.0 if end_z_mm > start_z_mm else -1.0
+
+
+def _validate_common_safety(
+    *,
+    clearance_mm: float,
+    retract_mm: float,
+    feed_mm_per_rev: float,
+) -> None:
+    if clearance_mm <= 0.0:
+        raise _GenerationValidationError("clearance_mm", "positive")
+    if retract_mm < 0.0:
+        raise _GenerationValidationError("retract_mm", "non_negative")
+    if feed_mm_per_rev <= 0.0:
+        raise _GenerationValidationError("feed_mm_per_rev", "positive")
+
+
+def _validate_axial_range(
+    request: LatheToolpathRequestV1,
+    *positions_mm: float,
+    field_id: str,
+) -> None:
+    minimum_z = min(request.stock.front_z_mm, request.stock.back_z_mm)
+    maximum_z = max(request.stock.front_z_mm, request.stock.back_z_mm)
+    if any(position < minimum_z or position > maximum_z for position in positions_mm):
+        raise _GenerationValidationError(field_id, "inside_stock_axial_range")
+
+
+def _require_internal_bore(request: LatheToolpathRequestV1) -> float:
+    bore = request.stock.inner_diameter_mm
+    if bore <= 0.0:
+        raise _GenerationValidationError(
+            None,
+            "explicit_bore_required",
+            LatheToolpathDiagnosticCode.MISSING_INTERNAL_BORE,
+        )
+    return bore
+
+
+def _incremental_targets(
+    start: float,
+    target: float,
+    maximum_step: float,
+    cancellation: CancellationProbe,
+    *,
+    field_id: str = "maximum_step",
+) -> tuple[float, ...]:
+    if maximum_step <= 0.0:
+        raise _GenerationValidationError(field_id, "positive")
+    delta = target - start
+    if abs(delta) <= LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM:
+        return (target,)
+    direction = 1.0 if delta > 0.0 else -1.0
+    current = start
+    targets: list[float] = []
+    while direction * (target - (current + direction * maximum_step)) > (
+        LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM
+    ):
+        _checkpoint(cancellation)
+        current += direction * maximum_step
+        targets.append(current)
+        if len(targets) >= _MAX_GENERATED_PASSES:
+            raise _GenerationValidationError(
+                field_id, "pass_count_exceeds_limit"
+            )
+    targets.append(target)
+    return tuple(targets)
+
+
+def _face_planes(
+    front_z_mm: float,
+    effective_target_z_mm: float,
+    maximum_step_mm: float,
+    direction: float,
+    cancellation: CancellationProbe,
+) -> tuple[float, ...]:
+    distance = direction * (effective_target_z_mm - front_z_mm)
+    if distance < -LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM:
+        raise _GenerationValidationError(
+            "face_z_mm", "effective_face_beyond_stock_front"
+        )
+    if distance <= LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM:
+        return (effective_target_z_mm,)
+    travelled = 0.0
+    planes: list[float] = []
+    while travelled + maximum_step_mm < (
+        distance - LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM
+    ):
+        _checkpoint(cancellation)
+        travelled += maximum_step_mm
+        planes.append(front_z_mm + direction * travelled)
+        if len(planes) >= _MAX_GENERATED_PASSES:
+            raise _GenerationValidationError(
+                "max_depth_of_cut_mm", "pass_count_exceeds_limit"
+            )
+    planes.append(effective_target_z_mm)
+    return tuple(planes)
+
+
+def _groove_positions(
+    left_z_mm: float,
+    right_z_mm: float,
+    maximum_step_mm: float,
+    stock_direction: float,
+) -> tuple[float, ...]:
+    span = right_z_mm - left_z_mm
+    if span < 0.0:
+        raise _GenerationValidationError("groove_width_mm", "non_negative_span")
+    if span <= LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM:
+        return ((left_z_mm + right_z_mm) / 2.0,)
+    interval_count = max(1, math.ceil(span / maximum_step_mm))
+    if interval_count + 1 > _MAX_GENERATED_PASSES:
+        raise _GenerationValidationError("max_step_mm", "pass_count_exceeds_limit")
+    positions = tuple(
+        left_z_mm + span * index / interval_count
+        for index in range(interval_count + 1)
+    )
+    positions = (left_z_mm, *positions[1:-1], right_z_mm)
+    return positions if stock_direction > 0.0 else tuple(reversed(positions))
+
+
+def _external_safe_x(stock_outer_mm: float, clearance_mm: float) -> float:
+    return stock_outer_mm + 2.0 * clearance_mm
+
+
+def _internal_safe_x(stock_inner_mm: float, clearance_mm: float) -> float:
+    return max(0.0, stock_inner_mm - 2.0 * clearance_mm)
+
+
+def _internal_retract_x(
+    safe_x_mm: float,
+    cutting_x_mm: float,
+    retract_mm: float,
+) -> float:
+    return max(0.0, min(safe_x_mm, cutting_x_mm - 2.0 * retract_mm))
+
+
+@dataclass(frozen=True, slots=True)
+class FaceToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.FACE
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        face_z = _float_parameter(request, "face_z_mm")
+        outer = _float_parameter(request, "outer_diameter_mm")
+        inner = _float_parameter(request, "inner_diameter_mm")
+        maximum_step = _float_parameter(request, "max_depth_of_cut_mm")
+        finish_allowance = _float_parameter(request, "finish_allowance_mm")
+        clearance = _float_parameter(request, "clearance_mm")
+        retract = _float_parameter(request, "retract_mm")
+        feed = _float_parameter(request, "feed_mm_per_rev")
+        stock = request.stock
+        _validate_common_safety(
+            clearance_mm=clearance,
+            retract_mm=retract,
+            feed_mm_per_rev=feed,
+        )
+        if (
+            outer <= 0.0
+            or inner < 0.0
+            or inner >= outer
+            or outer > stock.outer_diameter_mm
+        ):
+            raise _GenerationValidationError(
+                "outer_diameter_mm", "valid_facing_diameter_range"
+            )
+        if stock.inner_diameter_mm > 0.0 and inner < stock.inner_diameter_mm:
+            raise _GenerationValidationError(
+                "inner_diameter_mm", "at_or_above_stock_bore"
+            )
+        if maximum_step <= 0.0:
+            raise _GenerationValidationError("max_depth_of_cut_mm", "positive")
+        if finish_allowance < 0.0:
+            raise _GenerationValidationError("finish_allowance_mm", "non_negative")
+        direction = stock.axial_direction
+        effective_target = face_z - direction * finish_allowance
+        _validate_axial_range(
+            request,
+            face_z,
+            effective_target,
+            field_id="face_z_mm",
+        )
+        planes = _face_planes(
+            stock.front_z_mm,
+            effective_target,
+            maximum_step,
+            direction,
+            cancellation,
+        )
+        safe_x = _external_safe_x(stock.outer_diameter_mm, clearance)
+        safe_z = stock.front_z_mm - direction * max(clearance, retract)
+        builder = _MotionBuilder(cancellation)
+        for pass_index, plane_z in enumerate(planes):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, plane_z)
+            cut_start = LatheXZPoint(outer, plane_z)
+            cut_end = LatheXZPoint(inner, plane_z)
+            lead_out = LatheXZPoint(
+                max(safe_x, inner + 2.0 * retract),
+                plane_z,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"face.slice.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                cut_start,
+                f"face.slice.{pass_index}.lead_in",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                cut_start,
+                cut_end,
+                f"face.slice.{pass_index}.radial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                cut_end,
+                lead_out,
+                f"face.slice.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"face.slice.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=len(planes),
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_FACING_CENTERLINE_PREVIEW
+                ),
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -445,6 +714,590 @@ class OdFinishToolpathGenerator:
         )
 
 
+def _validate_id_range(
+    request: LatheToolpathRequestV1,
+    *,
+    target_diameter_mm: float,
+    start_z_mm: float,
+    end_z_mm: float,
+) -> tuple[float, float]:
+    bore = _require_internal_bore(request)
+    if (
+        target_diameter_mm <= bore
+        or target_diameter_mm >= request.stock.outer_diameter_mm
+    ):
+        raise _GenerationValidationError(
+            "target_diameter_mm", "target_inside_stock_envelope"
+        )
+    if start_z_mm == end_z_mm:
+        raise _GenerationValidationError("end_z_mm", "start_not_equal_end")
+    _validate_axial_range(
+        request,
+        start_z_mm,
+        end_z_mm,
+        field_id="start_z_mm",
+    )
+    return (1.0 if end_z_mm > start_z_mm else -1.0, bore)
+
+
+@dataclass(frozen=True, slots=True)
+class IdRoughToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.ID_ROUGH
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        start = _float_parameter(request, "start_z_mm")
+        end = _float_parameter(request, "end_z_mm")
+        target = _float_parameter(request, "target_diameter_mm")
+        doc = _float_parameter(request, "max_depth_of_cut_mm")
+        radial_leave = _float_parameter(request, "radial_stock_to_leave_mm")
+        axial_leave = _float_parameter(request, "axial_stock_to_leave_mm")
+        clearance = _float_parameter(request, "clearance_mm")
+        retract = _float_parameter(request, "retract_mm")
+        feed = _float_parameter(request, "feed_mm_per_rev")
+        direction, bore = _validate_id_range(
+            request,
+            target_diameter_mm=target,
+            start_z_mm=start,
+            end_z_mm=end,
+        )
+        _validate_common_safety(
+            clearance_mm=clearance,
+            retract_mm=retract,
+            feed_mm_per_rev=feed,
+        )
+        if doc <= 0.0:
+            raise _GenerationValidationError("max_depth_of_cut_mm", "positive")
+        if radial_leave < 0.0 or axial_leave < 0.0:
+            raise _GenerationValidationError(
+                "radial_stock_to_leave_mm", "non_negative"
+            )
+        rough_target = target - 2.0 * radial_leave
+        if rough_target < bore:
+            raise _GenerationValidationError(
+                "radial_stock_to_leave_mm",
+                "rough_target_at_or_above_stock_bore",
+            )
+        effective_end = end - direction * axial_leave
+        if direction * (effective_end - start) <= 0.0:
+            raise _GenerationValidationError(
+                "axial_stock_to_leave_mm", "effective_end_beyond_start"
+            )
+        pass_diameters = _incremental_targets(
+            bore,
+            rough_target,
+            2.0 * doc,
+            cancellation,
+            field_id="max_depth_of_cut_mm",
+        )
+        safe_x = _internal_safe_x(bore, clearance)
+        safe_z = start - direction * max(clearance, retract)
+        builder = _MotionBuilder(cancellation)
+        for pass_index, diameter in enumerate(pass_diameters):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, start)
+            pass_start = LatheXZPoint(diameter, start)
+            pass_end = LatheXZPoint(diameter, effective_end)
+            lead_out = LatheXZPoint(
+                _internal_retract_x(safe_x, diameter, retract),
+                effective_end,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"id_rough.pass.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                pass_start,
+                f"id_rough.pass.{pass_index}.lead_in",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                pass_start,
+                pass_end,
+                f"id_rough.pass.{pass_index}.axial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                pass_end,
+                lead_out,
+                f"id_rough.pass.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"id_rough.pass.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=len(pass_diameters),
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_INTERNAL_CENTERLINE_PREVIEW
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IdFinishToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.ID_FINISH
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        start = _float_parameter(request, "start_z_mm")
+        end = _float_parameter(request, "end_z_mm")
+        target = _float_parameter(request, "target_diameter_mm")
+        finish_passes = _int_parameter(request, "finish_passes")
+        spring_passes = _int_parameter(request, "spring_passes")
+        clearance = _float_parameter(request, "clearance_mm")
+        retract = _float_parameter(request, "retract_mm")
+        feed = _float_parameter(request, "feed_mm_per_rev")
+        direction, bore = _validate_id_range(
+            request,
+            target_diameter_mm=target,
+            start_z_mm=start,
+            end_z_mm=end,
+        )
+        _validate_common_safety(
+            clearance_mm=clearance,
+            retract_mm=retract,
+            feed_mm_per_rev=feed,
+        )
+        if finish_passes < 1 or spring_passes < 0:
+            raise _GenerationValidationError(
+                "finish_passes", "valid_pass_counts"
+            )
+        total_passes = finish_passes + spring_passes
+        if total_passes > _MAX_GENERATED_PASSES:
+            raise _GenerationValidationError(
+                "finish_passes", "pass_count_exceeds_limit"
+            )
+        safe_x = _internal_safe_x(bore, clearance)
+        safe_z = start - direction * max(clearance, retract)
+        builder = _MotionBuilder(cancellation)
+        for pass_index in range(total_passes):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, start)
+            pass_start = LatheXZPoint(target, start)
+            pass_end = LatheXZPoint(target, end)
+            lead_out = LatheXZPoint(
+                _internal_retract_x(safe_x, target, retract),
+                end,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"id_finish.pass.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                pass_start,
+                f"id_finish.pass.{pass_index}.lead_in",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                pass_start,
+                pass_end,
+                f"id_finish.pass.{pass_index}.axial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                pass_end,
+                lead_out,
+                f"id_finish.pass.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"id_finish.pass.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=total_passes,
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_INTERNAL_CENTERLINE_PREVIEW
+                ),
+            ),
+        )
+
+
+def _validated_groove_inputs(
+    request: LatheToolpathRequestV1,
+    *,
+    internal: bool,
+) -> tuple[float, float, tuple[float, ...], float, float, float]:
+    center = _float_parameter(request, "center_z_mm")
+    width = _float_parameter(request, "groove_width_mm")
+    target = _float_parameter(request, "target_diameter_mm")
+    maximum_step = _float_parameter(request, "max_step_mm")
+    side_allowance = _float_parameter(request, "side_allowance_mm")
+    clearance = _float_parameter(request, "clearance_mm")
+    retract = _float_parameter(request, "retract_mm")
+    feed = _float_parameter(request, "feed_mm_per_rev")
+    _validate_common_safety(
+        clearance_mm=clearance,
+        retract_mm=retract,
+        feed_mm_per_rev=feed,
+    )
+    bore = _require_internal_bore(request) if internal else request.stock.inner_diameter_mm
+    if width <= 0.0:
+        raise _GenerationValidationError("groove_width_mm", "positive")
+    if maximum_step <= 0.0:
+        raise _GenerationValidationError("max_step_mm", "positive")
+    if side_allowance < 0.0:
+        raise _GenerationValidationError("side_allowance_mm", "non_negative")
+    if target <= bore or target >= request.stock.outer_diameter_mm:
+        raise _GenerationValidationError(
+            "target_diameter_mm", "target_inside_stock_envelope"
+        )
+    effective_width = width - 2.0 * side_allowance
+    if effective_width <= 0.0:
+        raise _GenerationValidationError(
+            "side_allowance_mm", "positive_effective_groove_width"
+        )
+    left = center - effective_width / 2.0
+    right = center + effective_width / 2.0
+    _validate_axial_range(
+        request,
+        left,
+        right,
+        field_id="center_z_mm",
+    )
+    positions = _groove_positions(
+        left,
+        right,
+        maximum_step,
+        request.stock.axial_direction,
+    )
+    return bore, target, positions, clearance, retract, feed
+
+
+@dataclass(frozen=True, slots=True)
+class OdGrooveToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.OD_GROOVE
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        _bore, target, positions, clearance, retract, feed = (
+            _validated_groove_inputs(request, internal=False)
+        )
+        stock = request.stock
+        safe_x = _external_safe_x(stock.outer_diameter_mm, clearance)
+        safe_z = stock.front_z_mm - stock.axial_direction * max(
+            clearance, retract
+        )
+        builder = _MotionBuilder(cancellation)
+        for pass_index, position in enumerate(positions):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, position)
+            plunge_start = LatheXZPoint(stock.outer_diameter_mm, position)
+            plunge_end = LatheXZPoint(target, position)
+            lead_out = LatheXZPoint(
+                max(safe_x, target + 2.0 * retract),
+                position,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"od_groove.plunge.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                plunge_start,
+                f"od_groove.plunge.{pass_index}.lead_in",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                plunge_start,
+                plunge_end,
+                f"od_groove.plunge.{pass_index}.radial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                plunge_end,
+                lead_out,
+                f"od_groove.plunge.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"od_groove.plunge.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=len(positions),
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_MULTI_PLUNGE_GROOVE_PREVIEW
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class IdGrooveToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.ID_GROOVE
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        bore, target, positions, clearance, retract, feed = (
+            _validated_groove_inputs(request, internal=True)
+        )
+        stock = request.stock
+        safe_x = _internal_safe_x(bore, clearance)
+        safe_z = stock.front_z_mm - stock.axial_direction * max(
+            clearance, retract
+        )
+        builder = _MotionBuilder(cancellation)
+        for pass_index, position in enumerate(positions):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, position)
+            plunge_start = LatheXZPoint(bore, position)
+            plunge_end = LatheXZPoint(target, position)
+            lead_out = LatheXZPoint(
+                _internal_retract_x(safe_x, target, retract),
+                position,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"id_groove.plunge.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                plunge_start,
+                f"id_groove.plunge.{pass_index}.lead_in",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                plunge_start,
+                plunge_end,
+                f"id_groove.plunge.{pass_index}.radial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                plunge_end,
+                lead_out,
+                f"id_groove.plunge.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"id_groove.plunge.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=len(positions),
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_INTERNAL_MULTI_PLUNGE_GROOVE_PREVIEW
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PartOffToolpathGenerator:
+    strategy_id: LatheStrategyId = LatheStrategyId.PART_OFF
+
+    def generate(
+        self,
+        request: LatheToolpathRequestV1,
+        cancellation: CancellationProbe,
+    ) -> LatheToolpathResult:
+        _require_request_strategy(request, self.strategy_id)
+        _checkpoint(cancellation)
+        cutoff = _float_parameter(request, "cutoff_z_mm")
+        target = _float_parameter(request, "target_diameter_mm")
+        maximum_step = _float_parameter(request, "max_step_mm")
+        side_clearance = _float_parameter(request, "side_clearance_mm")
+        clearance = _float_parameter(request, "clearance_mm")
+        retract = _float_parameter(request, "retract_mm")
+        feed = _float_parameter(request, "feed_mm_per_rev")
+        stock = request.stock
+        _validate_common_safety(
+            clearance_mm=clearance,
+            retract_mm=retract,
+            feed_mm_per_rev=feed,
+        )
+        if target < 0.0 or target >= stock.outer_diameter_mm:
+            raise _GenerationValidationError(
+                "target_diameter_mm", "part_off_target_inside_stock_envelope"
+            )
+        if stock.inner_diameter_mm > 0.0 and target < stock.inner_diameter_mm:
+            raise _GenerationValidationError(
+                "target_diameter_mm", "not_below_existing_bore"
+            )
+        if maximum_step <= 0.0:
+            raise _GenerationValidationError("max_step_mm", "positive")
+        if side_clearance < 0.0:
+            raise _GenerationValidationError("side_clearance_mm", "non_negative")
+        approach_z = cutoff - stock.axial_direction * side_clearance
+        _validate_axial_range(
+            request,
+            cutoff,
+            approach_z,
+            field_id="cutoff_z_mm",
+        )
+        pass_diameters = _incremental_targets(
+            stock.outer_diameter_mm,
+            target,
+            2.0 * maximum_step,
+            cancellation,
+            field_id="max_step_mm",
+        )
+        safe_x = _external_safe_x(stock.outer_diameter_mm, clearance)
+        safe_z = stock.front_z_mm - stock.axial_direction * max(
+            clearance, retract
+        )
+        builder = _MotionBuilder(cancellation)
+        for pass_index, diameter in enumerate(pass_diameters):
+            _checkpoint(cancellation)
+            safe = LatheXZPoint(safe_x, safe_z)
+            approach = LatheXZPoint(safe_x, approach_z)
+            axial_lead_start = LatheXZPoint(
+                stock.outer_diameter_mm,
+                approach_z,
+            )
+            plunge_start = LatheXZPoint(stock.outer_diameter_mm, cutoff)
+            plunge_end = LatheXZPoint(diameter, cutoff)
+            lead_out = LatheXZPoint(
+                max(safe_x, diameter + 2.0 * retract),
+                cutoff,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                safe,
+                approach,
+                f"part_off.stage.{pass_index}.rapid_approach",
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                approach,
+                axial_lead_start,
+                f"part_off.stage.{pass_index}.lead_to_stock_od",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_IN,
+                axial_lead_start,
+                plunge_start,
+                f"part_off.stage.{pass_index}.axial_lead_to_cutoff",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.CUTTING,
+                plunge_start,
+                plunge_end,
+                f"part_off.stage.{pass_index}.radial_cut",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.LEAD_OUT,
+                plunge_end,
+                lead_out,
+                f"part_off.stage.{pass_index}.lead_out",
+                feed_mm_per_rev=feed,
+                pass_index=pass_index,
+            )
+            builder.segment(
+                LatheMotionClass.RAPID,
+                lead_out,
+                safe,
+                f"part_off.stage.{pass_index}.rapid_return",
+                pass_index=pass_index,
+            )
+        return _success(
+            request,
+            builder.events,
+            pass_count=len(pass_diameters),
+            diagnostics=(
+                LatheToolpathDiagnostic(
+                    LatheToolpathDiagnosticCode.NOMINAL_PART_OFF_CENTERLINE_PREVIEW
+                ),
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class AxialDrillToolpathGenerator:
     strategy_id: LatheStrategyId = LatheStrategyId.AXIAL_DRILL
@@ -541,28 +1394,59 @@ class AxialDrillToolpathGenerator:
 
 
 class LatheToolpathGeneratorRegistry:
-    """Injected immutable exact registry with three executable strategies."""
+    """Injected immutable exact registry with nine executable strategies."""
 
     def __init__(
         self,
         generators: tuple[LatheStrategyToolpathGenerator, ...] | None = None,
     ) -> None:
-        selected = generators or (
+        defaults: tuple[LatheStrategyToolpathGenerator, ...] = (
+            FaceToolpathGenerator(),
             OdRoughToolpathGenerator(),
             OdFinishToolpathGenerator(),
+            IdRoughToolpathGenerator(),
+            IdFinishToolpathGenerator(),
+            OdGrooveToolpathGenerator(),
+            IdGrooveToolpathGenerator(),
+            PartOffToolpathGenerator(),
             AxialDrillToolpathGenerator(),
         )
-        if not isinstance(selected, tuple) or any(
+        overrides = () if generators is None else generators
+        if not isinstance(overrides, tuple) or any(
             not callable(getattr(item, "generate", None))
             or not isinstance(getattr(item, "strategy_id", None), LatheStrategyId)
-            for item in selected
+            for item in overrides
         ):
             raise TypeError("Lathe toolpath generators are invalid")
-        ids = tuple(item.strategy_id for item in selected)
-        if len(set(ids)) != len(ids):
+        override_ids = tuple(item.strategy_id for item in overrides)
+        if len(set(override_ids)) != len(override_ids):
             raise ValueError("Lathe toolpath generator IDs are duplicated")
-        if set(ids) != set(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES):
-            raise ValueError("Lathe V1 registry must contain exactly three generators")
+        legacy_override_ids = {
+            LatheStrategyId.OD_ROUGH,
+            LatheStrategyId.OD_FINISH,
+            LatheStrategyId.AXIAL_DRILL,
+        }
+        supplied_ids = frozenset(override_ids)
+        if overrides and supplied_ids not in {
+            frozenset(legacy_override_ids),
+            frozenset(EXECUTABLE_LATHE_TOOLPATH_STRATEGIES),
+        }:
+            raise ValueError(
+                "Lathe V2 registry requires the exact Stage 12.1 override set "
+                "or exactly nine generators"
+            )
+        by_id = {item.strategy_id: item for item in defaults}
+        by_id.update((item.strategy_id, item) for item in overrides)
+        selected = tuple(
+            by_id[strategy_id]
+            for strategy_id in EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
+        )
+        if tuple(item.strategy_id for item in selected) != (
+            EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
+        ):
+            raise ValueError(
+                "Lathe V2 registry must contain exactly nine generators"
+            )
         self._generators: Mapping[
             LatheStrategyId, LatheStrategyToolpathGenerator
         ] = MappingProxyType({item.strategy_id: item for item in selected})
@@ -590,7 +1474,7 @@ class LatheToolpathGeneratorRegistry:
                 request,
                 LatheToolpathResultState.UNSUPPORTED_STRATEGY,
                 LatheToolpathDiagnostic(
-                    LatheToolpathDiagnosticCode.TOOLPATH_NOT_IMPLEMENTED_V1,
+                    LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2,
                     details=(("strategy_id", request.strategy_id.value),),
                 ),
             )
@@ -607,7 +1491,7 @@ class LatheToolpathGeneratorRegistry:
                 request,
                 LatheToolpathResultState.INVALID_REQUEST,
                 LatheToolpathDiagnostic(
-                    LatheToolpathDiagnosticCode.INVALID_PARAMETER,
+                    error.code,
                     error.field_id,
                     (("rule", error.rule),),
                 ),
@@ -633,9 +1517,15 @@ class LatheToolpathGeneratorRegistry:
 __all__ = [
     "AxialDrillToolpathGenerator",
     "CancellationProbe",
+    "FaceToolpathGenerator",
+    "IdFinishToolpathGenerator",
+    "IdGrooveToolpathGenerator",
+    "IdRoughToolpathGenerator",
     "LatheStrategyToolpathGenerator",
     "LatheToolpathCancelledError",
     "LatheToolpathGeneratorRegistry",
     "OdFinishToolpathGenerator",
+    "OdGrooveToolpathGenerator",
     "OdRoughToolpathGenerator",
+    "PartOffToolpathGenerator",
 ]

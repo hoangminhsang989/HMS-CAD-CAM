@@ -164,28 +164,24 @@ def test_all_touched_python_files_parse_and_direct_import_without_cycle() -> Non
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_exact_three_executable_and_eight_unsupported_strategy_partition() -> None:
+def test_exact_nine_executable_and_two_unsupported_strategy_partition() -> None:
     assert EXECUTABLE_LATHE_TOOLPATH_STRATEGIES == (
+        LatheStrategyId.FACE,
         LatheStrategyId.OD_ROUGH,
         LatheStrategyId.OD_FINISH,
+        LatheStrategyId.ID_ROUGH,
+        LatheStrategyId.ID_FINISH,
+        LatheStrategyId.OD_GROOVE,
+        LatheStrategyId.ID_GROOVE,
+        LatheStrategyId.PART_OFF,
         LatheStrategyId.AXIAL_DRILL,
     )
-    assert UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES == tuple(
-        item
-        for item in LatheStrategyId
-        if item not in EXECUTABLE_LATHE_TOOLPATH_STRATEGIES
+    assert UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES == (
+        LatheStrategyId.OD_THREAD,
+        LatheStrategyId.ID_THREAD,
     )
-    assert len(UNSUPPORTED_LATHE_TOOLPATH_STRATEGIES) == 8
     generator_source = (TOOLPATH_ROOT / "generators.py").read_text(encoding="utf-8")
-    forbidden_classes = (
-        "FaceToolpathGenerator",
-        "IdRoughToolpathGenerator",
-        "IdFinishToolpathGenerator",
-        "GrooveToolpathGenerator",
-        "PartOffToolpathGenerator",
-        "ThreadToolpathGenerator",
-    )
-    assert not any(name in generator_source for name in forbidden_classes)
+    assert "ThreadToolpathGenerator" not in generator_source
 
 
 def test_toolpath_layers_have_no_persistence_post_gcode_simulation_or_process_worker() -> None:

@@ -14,8 +14,14 @@ from hms_cadcam.cam.lathe.types import LatheStrategyId
 
 LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM = 1.0e-9
 LATHE_TOOLPATH_ALGORITHM_VERSION = "lathe.toolpath.preview.v1"
+LATHE_FACE_ALGORITHM_VERSION = "lathe.face.toolpath.v2"
 LATHE_OD_ROUGH_ALGORITHM_VERSION = "lathe.od_rough.toolpath.v1"
 LATHE_OD_FINISH_ALGORITHM_VERSION = "lathe.od_finish.toolpath.v1"
+LATHE_ID_ROUGH_ALGORITHM_VERSION = "lathe.id_rough.toolpath.v2"
+LATHE_ID_FINISH_ALGORITHM_VERSION = "lathe.id_finish.toolpath.v2"
+LATHE_OD_GROOVE_ALGORITHM_VERSION = "lathe.od_groove.toolpath.v2"
+LATHE_ID_GROOVE_ALGORITHM_VERSION = "lathe.id_groove.toolpath.v2"
+LATHE_PART_OFF_ALGORITHM_VERSION = "lathe.part_off.toolpath.v2"
 LATHE_AXIAL_DRILL_ALGORITHM_VERSION = "lathe.axial_drill.toolpath.v1"
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -263,7 +269,9 @@ class LatheToolpathBounds:
 class LatheToolpathDiagnosticCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     TOOLPATH_NOT_IMPLEMENTED_V1 = "toolpath_not_implemented_v1"
+    THREAD_TOOLPATH_NOT_IMPLEMENTED_V2 = "thread_toolpath_not_implemented_v2"
     INVALID_STOCK = "invalid_stock"
+    MISSING_INTERNAL_BORE = "missing_internal_bore"
     INVALID_PARAMETER = "invalid_parameter"
     STALE_OWNERSHIP = "stale_ownership"
     REVISION_MISMATCH = "revision_mismatch"
@@ -278,6 +286,17 @@ class LatheToolpathDiagnosticCode(StrEnum):
     CANCELLED = "cancelled"
     GENERATION_FAILED = "generation_failed"
     NOMINAL_CENTERLINE_PREVIEW = "nominal_centerline_preview"
+    NOMINAL_FACING_CENTERLINE_PREVIEW = "nominal_facing_centerline_preview"
+    NOMINAL_INTERNAL_CENTERLINE_PREVIEW = "nominal_internal_centerline_preview"
+    NOMINAL_MULTI_PLUNGE_GROOVE_PREVIEW = (
+        "nominal_multi_plunge_groove_preview"
+    )
+    NOMINAL_INTERNAL_MULTI_PLUNGE_GROOVE_PREVIEW = (
+        "nominal_internal_multi_plunge_groove_preview"
+    )
+    NOMINAL_PART_OFF_CENTERLINE_PREVIEW = (
+        "nominal_part_off_centerline_preview"
+    )
     PUBLICATION_FAILED = "publication_failed"
     STALE_RESULT_DROPPED = "stale_result_dropped"
 
@@ -483,8 +502,14 @@ class LatheToolpathResult:
 __all__ = [
     "JsonScalar",
     "LATHE_AXIAL_DRILL_ALGORITHM_VERSION",
+    "LATHE_FACE_ALGORITHM_VERSION",
+    "LATHE_ID_FINISH_ALGORITHM_VERSION",
+    "LATHE_ID_GROOVE_ALGORITHM_VERSION",
+    "LATHE_ID_ROUGH_ALGORITHM_VERSION",
     "LATHE_OD_FINISH_ALGORITHM_VERSION",
+    "LATHE_OD_GROOVE_ALGORITHM_VERSION",
     "LATHE_OD_ROUGH_ALGORITHM_VERSION",
+    "LATHE_PART_OFF_ALGORITHM_VERSION",
     "LATHE_TOOLPATH_ALGORITHM_VERSION",
     "LATHE_TOOLPATH_NUMERIC_TOLERANCE_MM",
     "LatheDwellEvent",

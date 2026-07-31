@@ -55,6 +55,7 @@ class LatheToolpathUiStateCode(StrEnum):
     CACHE_HIT = "cache_hit"
     CANCELLED = "cancelled"
     UNSUPPORTED_STRATEGY = "unsupported_strategy"
+    THREAD_UNSUPPORTED_V2 = "stage12_2_thread_unsupported"
     INVALID_REQUEST = "invalid_request"
     GENERATION_FAILED = "generation_failed"
     PUBLICATION_FAILED = "publication_failed"
@@ -388,12 +389,16 @@ class LatheToolpathUiController(QObject):
         )
         if not built.accepted or built.request is None:
             diagnostic = built.diagnostics[0]
-            code = (
-                LatheToolpathUiStateCode.UNSUPPORTED_STRATEGY
-                if diagnostic.code
-                is LatheToolpathDiagnosticCode.TOOLPATH_NOT_IMPLEMENTED_V1
-                else LatheToolpathUiStateCode.INVALID_REQUEST
-            )
+            if diagnostic.code is (
+                LatheToolpathDiagnosticCode.THREAD_TOOLPATH_NOT_IMPLEMENTED_V2
+            ):
+                code = LatheToolpathUiStateCode.THREAD_UNSUPPORTED_V2
+            elif diagnostic.code is (
+                LatheToolpathDiagnosticCode.TOOLPATH_NOT_IMPLEMENTED_V1
+            ):
+                code = LatheToolpathUiStateCode.UNSUPPORTED_STRATEGY
+            else:
+                code = LatheToolpathUiStateCode.INVALID_REQUEST
             self._set_state(
                 LatheToolpathUiState(
                     code,

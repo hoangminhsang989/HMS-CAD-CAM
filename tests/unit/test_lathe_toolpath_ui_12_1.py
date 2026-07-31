@@ -162,12 +162,12 @@ def test_incomplete_and_unsupported_operations_fail_closed_without_submission() 
     presenter.teardown()
 
     unsupported_presenter, unsupported, sink, controller = _controller_for(
-        LatheStrategyId.FACE
+        LatheStrategyId.OD_THREAD
     )
     assert controller.preview(unsupported) is None
-    assert controller.state.code is LatheToolpathUiStateCode.UNSUPPORTED_STRATEGY
+    assert controller.state.code is LatheToolpathUiStateCode.THREAD_UNSUPPORTED_V2
     assert controller.state.diagnostic is not None
-    assert controller.state.diagnostic.code.value == "toolpath_not_implemented_v1"
+    assert controller.state.diagnostic.code.value == "thread_toolpath_not_implemented_v2"
     assert sink.publications == []
     _dispose_controller(controller)
     unsupported_presenter.teardown()
