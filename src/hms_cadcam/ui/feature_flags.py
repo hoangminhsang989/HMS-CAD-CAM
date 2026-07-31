@@ -19,6 +19,7 @@ class UiFeatureFlag(StrEnum):
     LATHE_9A9 = "lathe_9a9"
     LATHE_TOOLPATH_12_1 = "lathe_toolpath_12_1"
     LATHE_POST_FOUNDATION_12_4A = "lathe_post_foundation_12_4a"
+    LATHE_BASIC_POST_12_4B = "lathe_basic_post_12_4b"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +45,10 @@ class UiFeatureFlags:
 
         if type(flag) is not UiFeatureFlag:
             return False
-        return self._values.get(flag, False)
+        enabled = self._values.get(flag, False)
+        if flag is UiFeatureFlag.LATHE_BASIC_POST_12_4B:
+            return enabled and self._values.get(UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A, False)
+        return enabled
 
     @classmethod
     def for_development_and_tests(cls) -> "UiFeatureFlags":
@@ -55,6 +59,9 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
             }
         )
 
@@ -67,6 +74,9 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
             }
         )
 
@@ -80,6 +90,9 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
             }
         )
 
