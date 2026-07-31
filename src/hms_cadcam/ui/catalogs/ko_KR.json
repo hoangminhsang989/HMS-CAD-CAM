@@ -1810,4 +1810,22 @@
   "lathe.enum.ccw": "반시계 방향",
   "lathe.enum.right": "오른나사",
   "lathe.enum.left": "왼나사"
+,
+  "lathe.program.close":"닫기",
+  "lathe.program.do_not_run":"CNC 기계에서 실행하지 마십시오",
+  "lathe.program.incomplete":"프로그램이 불완전함",
+  "lathe.program.invalid":"프로그램이 유효하지 않음",
+  "lathe.program.neutral_profile":"중립 미리 보기 프로필",
+  "lathe.program.no_production_post":"생산용 Post 프로필 없음",
+  "lathe.program.not_machine_ready":"기계 실행용이 아님",
+  "lathe.program.operation_summary":"가공 작업 요약",
+  "lathe.program.preview.title":"중간 프로그램 미리 보기",
+  "lathe.program.preview_only":"미리 보기 전용",
+  "lathe.program.preview_ready":"중립 미리 보기 준비됨",
+  "lathe.program.production_unavailable":"생산용 Post 사용 불가",
+  "lathe.program.refresh":"새로 고침",
+  "lathe.program.stale_operation":"오래된 작업 또는 공구 경로",
+  "lathe.program.toolpath_missing":"승인된 공구 경로 없음",
+  "lathe.program.validation":"프로그램 검증",
+  "lathe.program.warning_footer":"미리 보기 전용 — 기계 실행용 아님 — 컨트롤러 Post 없음"
 }

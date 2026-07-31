@@ -1810,4 +1810,22 @@
   "lathe.enum.ccw": "Ngược chiều kim đồng hồ",
   "lathe.enum.right": "Ren phải",
   "lathe.enum.left": "Ren trái"
+,
+  "lathe.program.close":"Đóng",
+  "lathe.program.do_not_run":"Không chạy trên máy CNC",
+  "lathe.program.incomplete":"Chương trình chưa đầy đủ",
+  "lathe.program.invalid":"Chương trình không hợp lệ",
+  "lathe.program.neutral_profile":"Profile xem trung gian trung lập",
+  "lathe.program.no_production_post":"Chưa có Post sản xuất",
+  "lathe.program.not_machine_ready":"Không sẵn sàng chạy máy",
+  "lathe.program.operation_summary":"Tóm tắt nguyên công",
+  "lathe.program.preview.title":"Xem chương trình trung gian",
+  "lathe.program.preview_only":"Chỉ xem trước",
+  "lathe.program.preview_ready":"Đã sẵn sàng xem trung gian",
+  "lathe.program.production_unavailable":"Post sản xuất không khả dụng",
+  "lathe.program.refresh":"Làm mới",
+  "lathe.program.stale_operation":"Nguyên công hoặc toolpath đã cũ",
+  "lathe.program.toolpath_missing":"Thiếu toolpath được chấp nhận",
+  "lathe.program.validation":"Kiểm tra chương trình",
+  "lathe.program.warning_footer":"CHỈ XEM TRƯỚC — KHÔNG SẴN SÀNG CHẠY MÁY — KHÔNG CÓ POST ĐIỀU KHIỂN"
 }

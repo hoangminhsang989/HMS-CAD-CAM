@@ -18,6 +18,7 @@ class UiFeatureFlag(StrEnum):
     CAM_3D_9A8 = "cam_3d_9a8"
     LATHE_9A9 = "lathe_9a9"
     LATHE_TOOLPATH_12_1 = "lathe_toolpath_12_1"
+    LATHE_POST_FOUNDATION_12_4A = "lathe_post_foundation_12_4a"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.CAM_3D_9A8: False,
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
+                UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
             }
         )
 
@@ -64,6 +66,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.CAM_3D_9A8: True,
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
+                UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
             }
         )
 
@@ -76,6 +79,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.CAM_3D_9A8: False,
                 UiFeatureFlag.LATHE_9A9: False,
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
+                UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
             }
         )
 

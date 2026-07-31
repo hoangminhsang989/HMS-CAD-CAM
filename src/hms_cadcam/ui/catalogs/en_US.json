@@ -1810,4 +1810,22 @@
   "lathe.enum.ccw": "Counter-clockwise",
   "lathe.enum.right": "Right-hand",
   "lathe.enum.left": "Left-hand"
+,
+  "lathe.program.close":"Close",
+  "lathe.program.do_not_run":"Do not run on a CNC machine",
+  "lathe.program.incomplete":"Program incomplete",
+  "lathe.program.invalid":"Program invalid",
+  "lathe.program.neutral_profile":"Neutral preview profile",
+  "lathe.program.no_production_post":"No production Post profile",
+  "lathe.program.not_machine_ready":"Not machine-ready",
+  "lathe.program.operation_summary":"Operation summary",
+  "lathe.program.preview.title":"Program Preview",
+  "lathe.program.preview_only":"Preview only",
+  "lathe.program.preview_ready":"Neutral preview ready",
+  "lathe.program.production_unavailable":"Production Post unavailable",
+  "lathe.program.refresh":"Refresh",
+  "lathe.program.stale_operation":"Stale operation or toolpath",
+  "lathe.program.toolpath_missing":"Accepted toolpath missing",
+  "lathe.program.validation":"Program validation",
+  "lathe.program.warning_footer":"PREVIEW ONLY — NOT MACHINE-READY — NO CONTROLLER POST PROFILE"
 }

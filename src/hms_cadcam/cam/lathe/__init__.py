@@ -37,3 +37,18 @@ __all__ = [
     "lathe_operation_from_canonical_mapping", "lathe_operation_to_canonical_mapping",
     "lathe_parameter_schema", "lathe_strategy_definition",
 ]
+# Stage 12.4A additive controller-neutral Program IR public surface.
+from hms_cadcam.cam.lathe.lathe_post import *
+from hms_cadcam.cam.lathe.lathe_post import __all__ as _STAGE12_4A_PUBLIC
+
+__all__ += _STAGE12_4A_PUBLIC
+
+# Preserve the approved semantic import name without creating a reserved
+# pre-12.4A post.py module or generic cam/post dependency.
+import sys as _sys
+from hms_cadcam.cam.lathe import lathe_post as _lathe_post
+_sys.modules[f"{__name__}.post"] = _lathe_post
+for _name in ("assembler", "identity", "ir", "listing", "profile", "service"):
+    _canonical = f"{__name__}.lathe_post.{_name}"
+    if _canonical in _sys.modules:
+        _sys.modules[f"{__name__}.post.{_name}"] = _sys.modules[_canonical]
