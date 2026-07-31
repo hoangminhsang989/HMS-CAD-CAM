@@ -45,6 +45,7 @@ from hms_cadcam.cam.lathe.presenter import (
 from hms_cadcam.cam.lathe.types import (
     LatheDiagnosticCode,
     LatheGeometryKind,
+    LatheOperationReadiness,
     LatheParameterGroup,
     LatheParameterUnitKind,
     LatheParameterValueKind,
@@ -58,6 +59,11 @@ from hms_cadcam.ui.lathe_presenter import (
     LatheQtCommandResult,
     LatheQtDiagnostic,
     LatheQtPresenter,
+)
+from hms_cadcam.ui.lathe_toolpath import (
+    LatheToolpathUiController,
+    LatheToolpathUiState,
+    LatheToolpathUiStateCode,
 )
 from hms_cadcam.ui.localization import ui_text
 
@@ -364,8 +370,13 @@ class LatheWorkspace(QWidget):
         self._unavailable_reason_key = "lathe.presenter.unavailable"
         self._outcome_key: str | None = None
         self._outcome_diagnostic: LatheQtDiagnostic | None = None
+        self._toolpath_controller: LatheToolpathUiController | None = None
+        self._toolpath_state = LatheToolpathUiState(
+            LatheToolpathUiStateCode.READY
+        )
 
         root = QVBoxLayout(self)
+        self._root_layout = root
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
         self.header_label = QLabel()
@@ -394,6 +405,10 @@ class LatheWorkspace(QWidget):
     @property
     def parameter_editor(self) -> LatheParameterEditor:
         return self._parameter_editor
+
+    @property
+    def toolpath_controller(self) -> LatheToolpathUiController | None:
+        return self._toolpath_controller
 
     def bind_presenter(
         self,
@@ -439,6 +454,61 @@ class LatheWorkspace(QWidget):
         self.unavailable_label.hide()
         self._render(presenter.snapshot)
 
+    def bind_toolpath_controller(
+        self, controller: LatheToolpathUiController | None
+    ) -> None:
+        """Create Preview/Cancel controls only for the additive capability."""
+
+        if controller is not None and not isinstance(
+            controller, LatheToolpathUiController
+        ):
+            raise TypeError("Lathe workspace toolpath controller is invalid")
+        previous = self._toolpath_controller
+        if previous is controller:
+            return
+        if previous is not None:
+            try:
+                previous.state_changed.disconnect(self._toolpath_state_changed)
+            except (RuntimeError, TypeError):
+                pass
+        self._toolpath_controller = controller
+        existing = getattr(self, "toolpath_action_bar", None)
+        if existing is not None:
+            self._root_layout.removeWidget(existing)
+            existing.setParent(None)
+            existing.deleteLater()
+            for name in (
+                "toolpath_action_bar",
+                "preview_toolpath_button",
+                "cancel_toolpath_button",
+            ):
+                if hasattr(self, name):
+                    delattr(self, name)
+        self._toolpath_state = LatheToolpathUiState(
+            LatheToolpathUiStateCode.READY
+        )
+        if controller is None:
+            self._render_outcome()
+            return
+        bar = QFrame()
+        bar.setObjectName("LatheToolpathActionBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(6, 3, 6, 3)
+        row.addStretch(1)
+        self.preview_toolpath_button = QPushButton()
+        self.preview_toolpath_button.setObjectName("LathePreviewToolpathButton")
+        self.preview_toolpath_button.clicked.connect(self._preview_toolpath)
+        self.cancel_toolpath_button = QPushButton()
+        self.cancel_toolpath_button.setObjectName("LatheCancelCalculationButton")
+        self.cancel_toolpath_button.clicked.connect(self._cancel_toolpath)
+        row.addWidget(self.preview_toolpath_button)
+        row.addWidget(self.cancel_toolpath_button)
+        self.toolpath_action_bar = bar
+        self._root_layout.insertWidget(self._root_layout.count() - 1, bar)
+        controller.state_changed.connect(self._toolpath_state_changed)
+        self._toolpath_state = controller.state
+        self.retranslate_ui()
+
     def retranslate_ui(self, _language: object = None) -> None:
         """Retranslate presentation while stable IDs and values stay untouched."""
 
@@ -466,6 +536,13 @@ class LatheWorkspace(QWidget):
         self.geometry_help.setText(_tr("lathe.geometry.current_selection.help"))
         self.geometry_bind_button.setText(_tr("lathe.geometry.bind"))
         self.geometry_clear_button.setText(_tr("lathe.geometry.clear"))
+        if self._toolpath_controller is not None:
+            self.preview_toolpath_button.setText(
+                _tr("lathe.toolpath.preview.action")
+            )
+            self.cancel_toolpath_button.setText(
+                _tr("lathe.toolpath.cancel.action")
+            )
         self._parameter_editor.retranslate_ui()
         if self._presenter is None:
             self.unavailable_label.setText(_tr(self._unavailable_reason_key))
@@ -858,6 +935,20 @@ class LatheWorkspace(QWidget):
         self.validate_button.setEnabled(available and active is not None)
         self._parameter_editor.set_read_only(not writable or active is None)
         self._tool_choice_changed()
+        if self._toolpath_controller is not None:
+            calculating = self._toolpath_state.code in {
+                LatheToolpathUiStateCode.CALCULATING,
+                LatheToolpathUiStateCode.CANCELLING,
+            }
+            self.preview_toolpath_button.setEnabled(
+                bool(
+                    writable
+                    and active is not None
+                    and active.readiness is LatheOperationReadiness.READY
+                    and not calculating
+                )
+            )
+            self.cancel_toolpath_button.setEnabled(calculating)
 
     def _create_operation(self) -> None:
         presenter = self._presenter
@@ -984,9 +1075,28 @@ class LatheWorkspace(QWidget):
                 active.ownership.operation_id, active.revision
             )
 
+    def _preview_toolpath(self) -> None:
+        active = self._active_operation(self._snapshot)
+        if self._toolpath_controller is not None and active is not None:
+            self._toolpath_controller.preview(active)
+
+    def _cancel_toolpath(self) -> None:
+        if self._toolpath_controller is not None:
+            self._toolpath_controller.cancel()
+
+    def _toolpath_state_changed(self, state: object) -> None:
+        if not isinstance(state, LatheToolpathUiState):
+            return
+        self._toolpath_state = state
+        active = self._active_operation(self._snapshot)
+        self._apply_mutation_state(self._snapshot, active)
+        self._render_outcome()
+
     def _command_completed(self, result: LatheQtCommandResult) -> None:
         if not isinstance(result, LatheQtCommandResult):
             return
+        if result.accepted and result.changed and self._toolpath_controller is not None:
+            self._toolpath_controller.invalidate_after_edit()
         if result.accepted:
             self._set_outcome_key("lathe.command.accepted")
         elif result.diagnostics:
@@ -1011,6 +1121,14 @@ class LatheWorkspace(QWidget):
         snapshot = self._snapshot
         if snapshot is not None and snapshot.read_only:
             self.outcome_label.setText(_tr("lathe.read_only"))
+            return
+        if (
+            self._toolpath_controller is not None
+            and self._toolpath_state.code is not LatheToolpathUiStateCode.READY
+        ):
+            self.outcome_label.setText(
+                _tr(f"lathe.toolpath.status.{self._toolpath_state.code.value}")
+            )
             return
         if self._outcome_diagnostic is not None:
             self.outcome_label.setText(
@@ -1093,6 +1211,19 @@ class LatheWorkspace(QWidget):
         )
         for control, key in controls:
             control.setAccessibleName(_tr(key))
+        if self._toolpath_controller is not None:
+            self.preview_toolpath_button.setAccessibleName(
+                _tr("lathe.toolpath.preview.action")
+            )
+            self.preview_toolpath_button.setAccessibleDescription(
+                _tr("lathe.toolpath.preview.help")
+            )
+            self.cancel_toolpath_button.setAccessibleName(
+                _tr("lathe.toolpath.cancel.action")
+            )
+            self.cancel_toolpath_button.setAccessibleDescription(
+                _tr("lathe.toolpath.cancel.help")
+            )
         self.delete_button.setAccessibleDescription(
             _tr("lathe.operation.delete.confirm.help")
         )

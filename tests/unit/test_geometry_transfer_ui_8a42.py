@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QMainWindow, QMessageBox
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, qInstallMessageHandler
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QMessageBox
+from shiboken6 import isValid
 
 from hms_cadcam.project.geometry_transfer import (
     GeometryApplyChoice,
@@ -60,6 +62,26 @@ def _project(
         UnitSystem.MILLIMETER,
     )
     return service, session.root_path
+
+
+def _destroy_controller_window(
+    window: QMainWindow,
+    controller: ProjectUiController,
+) -> tuple[str, ...]:
+    """Destroy the watcher owner before a test removes its project path."""
+
+    watcher = controller._inbox_watcher
+    watched = tuple(watcher.directories())
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    application = QApplication.instance()
+    if application is not None:
+        application.processEvents()
+    assert not isValid(watcher)
+    assert not isValid(controller)
+    assert not isValid(window)
+    return watched
 
 
 def test_send_command_available_only_for_saved_hms_document(
@@ -276,10 +298,12 @@ def test_filesystem_scan_from_separate_sender_emits_one_request(
     tmp_path: Path,
 ) -> None:
     parent = _safe_parent()
+    window: QMainWindow | None = None
+    controller: ProjectUiController | None = None
+    root: Path | None = None
     try:
         target, root = _project(tmp_path, parent)
         window = QMainWindow()
-        qtbot.addWidget(window)
         controller = ProjectUiController(window, target)
         qtbot.wait(80)
         qtbot.waitUntil(lambda: controller._incoming_scan_task is None)
@@ -301,4 +325,74 @@ def test_filesystem_scan_from_separate_sender_emits_one_request(
         qtbot.waitUntil(lambda: controller._incoming_scan_task is None)
         assert len(controller.incoming_requests) == 1
     finally:
-        shutil.rmtree(parent, ignore_errors=True)
+        if window is not None and controller is not None:
+            watched = _destroy_controller_window(window, controller)
+            assert root is not None
+            assert watched == (
+                str(root / "incoming-geometry" / "pending"),
+            )
+        shutil.rmtree(parent)
+        assert not parent.exists()
+
+
+def test_watcher_owner_teardown_precedes_test_path_deletion_for_20_cycles(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    messages: list[str] = []
+    previous_handler = None
+
+    def capture_and_forward(mode, context, message: str) -> None:
+        messages.append(message)
+        if previous_handler is not None:
+            previous_handler(mode, context, message)
+        else:
+            sys.__stderr__.write(message + chr(10))
+            sys.__stderr__.flush()
+
+    previous_handler = qInstallMessageHandler(capture_and_forward)
+    try:
+        for _index in range(20):
+            parent = _safe_parent()
+            window: QMainWindow | None = None
+            controller: ProjectUiController | None = None
+            try:
+                target, root = _project(tmp_path, parent)
+                window = QMainWindow()
+                controller = ProjectUiController(window, target)
+                with qtbot.waitSignal(
+                    controller.incoming_geometry_changed,
+                    timeout=5000,
+                ):
+                    QCoreApplication.processEvents()
+                qtbot.waitUntil(
+                    lambda: controller._incoming_scan_task is None
+                )
+                expected = str(root / "incoming-geometry" / "pending")
+                assert tuple(controller._inbox_watcher.directories()) == (
+                    expected,
+                )
+                assert _destroy_controller_window(window, controller) == (
+                    expected,
+                )
+                window = None
+                controller = None
+                shutil.rmtree(parent)
+                assert not parent.exists()
+                application = QApplication.instance()
+                assert application is not None
+                application.processEvents()
+            finally:
+                if (
+                    window is not None
+                    and controller is not None
+                    and isValid(window)
+                    and isValid(controller)
+                ):
+                    _destroy_controller_window(window, controller)
+                if parent.exists():
+                    shutil.rmtree(parent)
+    finally:
+        qInstallMessageHandler(previous_handler)
+
+    assert not any("QFileSystemWatcher" in message for message in messages)

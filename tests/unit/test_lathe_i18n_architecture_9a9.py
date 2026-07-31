@@ -160,15 +160,18 @@ def test_foundation_modules_remain_qt_free_and_ui_imports_only_presenter_boundar
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_lathe_ui_has_no_persistence_toolpath_post_simulation_worker_or_ocp_import() -> None:
+def test_lathe_ui_has_only_approved_toolpath_boundary_and_no_forbidden_import() -> None:
     forbidden_imports = (
         "sqlite",
         "persistence",
-        "toolpath",
         "hms_cadcam.cam.post",
         "hms_cadcam.cam.simulation",
         "hms_cadcam.cam.adapters",
         "OCP.",
+    )
+    approved_toolpath_imports = (
+        "from hms_cadcam.cam.lathe.toolpath.stock import ",
+        "from hms_cadcam.ui.lathe_toolpath import ",
     )
     forbidden_runtime = (
         "QThread",
@@ -184,6 +187,11 @@ def test_lathe_ui_has_no_persistence_toolpath_post_simulation_worker_or_ocp_impo
             line for line in source.splitlines() if line.startswith(("import ", "from "))
         )
         assert not any(token in imports for token in forbidden_imports)
+        assert all(
+            line.startswith(approved_toolpath_imports)
+            for line in imports.splitlines()
+            if "toolpath" in line
+        )
         assert not any(token in source for token in forbidden_runtime)
 
 

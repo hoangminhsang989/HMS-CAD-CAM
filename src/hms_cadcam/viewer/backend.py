@@ -28,6 +28,12 @@ from hms_cadcam.viewer.cam3d import (
     Cam3DPreviewPublication,
     Cam3DPreviewPublicationResult,
 )
+from hms_cadcam.viewer.lathe import (
+    LathePreviewActorIdentity,
+    LathePreviewOwnership,
+    LathePreviewPublication,
+    LathePreviewPublicationResult,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
@@ -130,6 +136,18 @@ class CadViewportBackend(Protocol):
     ) -> Cam3DPreviewPublicationResult: ...
 
     def get_cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None: ...
+
+    def publish_lathe_preview(
+        self,
+        publication: LathePreviewPublication,
+    ) -> LathePreviewPublicationResult: ...
+
+    def clear_lathe_preview(
+        self,
+        ownership: LathePreviewOwnership,
+    ) -> LathePreviewPublicationResult: ...
+
+    def get_lathe_preview_identity(self) -> LathePreviewActorIdentity | None: ...
 
     def fit_all(self) -> None: ...
 

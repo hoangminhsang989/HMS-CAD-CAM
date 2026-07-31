@@ -87,6 +87,7 @@ from hms_cadcam.cam.domain import (
     Vector3,
     Revision,
 )
+from hms_cadcam.cam.domain.setup import CylinderStock
 from hms_cadcam.cam.cam3d import CamSurfaceReference, CamSurfaceRole
 from hms_cadcam.cam.application.cam3d_selection import (
     Cam3DSelectionApplicationService,
@@ -140,6 +141,7 @@ from hms_cadcam.ui.lathe_session import (
     LatheSessionController,
     LatheUiContext,
 )
+from hms_cadcam.ui.lathe_toolpath import LatheViewportPreviewSink
 from hms_cadcam.ui.lathe_workspace import LatheWorkspace
 from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyProjectionAdapter,
@@ -278,6 +280,10 @@ class MainWindow(QMainWindow):
         self._lathe_review_host = self._ui_feature_flags.is_enabled(
             UiFeatureFlag.LATHE_9A9
         )
+        self._lathe_toolpath_preview_host = (
+            self._lathe_review_host
+            and self._ui_feature_flags.is_enabled(UiFeatureFlag.LATHE_TOOLPATH_12_1)
+        )
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
         )
@@ -340,6 +346,8 @@ class MainWindow(QMainWindow):
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self._viewport_baseline_minimum = QSize(self.viewport.minimumSize())
         self.viewport.set_status_text_resolver(ui_text)
+        if self._lathe_toolpath_preview_host:
+            self._lathe_toolpath_sink = LatheViewportPreviewSink(self.viewport)
         self.setAcceptDrops(True)
         self._drop_overlay = DropOpenOverlay(self.viewport)
         self.project_controller = ProjectUiController(self, project_service)
@@ -664,6 +672,11 @@ class MainWindow(QMainWindow):
             self._lathe_session_controller = LatheSessionController(
                 self.lathe_workspace,
                 self._current_lathe_selection_context,
+                toolpath_sink=(
+                    self._lathe_toolpath_sink
+                    if self._lathe_toolpath_preview_host
+                    else None
+                ),
                 parent=self,
             )
             self._lathe_session_controller.availability_changed.connect(
@@ -3532,7 +3545,13 @@ class MainWindow(QMainWindow):
             ),
             None,
         )
-        setup_id = None if active_job is None else active_job.active_setup_id
+        active_setup = None if active_job is None else active_job.active_setup
+        setup_id = None if active_setup is None else active_setup.setup_id
+        stock = (
+            active_setup.stock
+            if active_setup is not None and isinstance(active_setup.stock, CylinderStock)
+            else None
+        )
         workspace = self._project_service.current_workspace
         read_only = bool(workspace is not None and workspace.read_only)
         self._lathe_session_controller.update_context(
@@ -3546,6 +3565,7 @@ class MainWindow(QMainWindow):
                 snapshot.tool_definitions,
                 snapshot.holder_definitions,
                 snapshot.tool_assemblies,
+                stock,
             )
         )
         self.workspace_bar.configure_lathe(

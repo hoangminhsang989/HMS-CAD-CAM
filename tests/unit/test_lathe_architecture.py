@@ -173,12 +173,13 @@ def test_fifty_session_and_lifecycle_transition_cycles_leak_no_state() -> None:
         assert reopened.list_operations() == ()
 
 
-def test_lathe_ui_exists_only_in_authorized_stage9a9_modules() -> None:
+def test_lathe_ui_exists_only_in_authorized_stage9a9_and_stage12_1_modules() -> None:
     ui_root = ROOT / "src" / "hms_cadcam" / "ui"
     lathe_ui_paths = tuple(sorted(ui_root.glob("lathe_*.py")))
     assert {path.name for path in lathe_ui_paths} == {
         "lathe_adapters.py",
         "lathe_presenter.py",
+        "lathe_toolpath.py",
         "lathe_session.py",
         "lathe_workspace.py",
     }

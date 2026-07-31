@@ -17,6 +17,7 @@ class UiFeatureFlag(StrEnum):
     POST_ASSEMBLY_9A7 = "post_assembly_9a7"
     CAM_3D_9A8 = "cam_3d_9a8"
     LATHE_9A9 = "lathe_9a9"
+    LATHE_TOOLPATH_12_1 = "lathe_toolpath_12_1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,8 @@ class UiFeatureFlags:
             {
                 UiFeatureFlag.POST_ASSEMBLY_9A7: False,
                 UiFeatureFlag.CAM_3D_9A8: False,
+                UiFeatureFlag.LATHE_9A9: False,
+                UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
             }
         )
 
@@ -59,6 +62,8 @@ class UiFeatureFlags:
             {
                 UiFeatureFlag.POST_ASSEMBLY_9A7: True,
                 UiFeatureFlag.CAM_3D_9A8: True,
+                UiFeatureFlag.LATHE_9A9: False,
+                UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
             }
         )
 
@@ -69,6 +74,8 @@ class UiFeatureFlags:
             {
                 UiFeatureFlag.POST_ASSEMBLY_9A7: False,
                 UiFeatureFlag.CAM_3D_9A8: False,
+                UiFeatureFlag.LATHE_9A9: False,
+                UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
             }
         )
 

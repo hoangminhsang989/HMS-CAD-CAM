@@ -42,6 +42,13 @@ from hms_cadcam.viewer.cam3d import (
     Cam3DPreviewPublicationCode,
     Cam3DPreviewPublicationResult,
 )
+from hms_cadcam.viewer.lathe import (
+    LathePreviewActorIdentity,
+    LathePreviewOwnership,
+    LathePreviewPublication,
+    LathePreviewPublicationCode,
+    LathePreviewPublicationResult,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
@@ -391,6 +398,102 @@ class CadViewportWidget(QWidget):
             )
             return None
         return identity if isinstance(identity, Cam3DPreviewActorIdentity) else None
+
+    def publish_lathe_preview(
+        self,
+        publication: LathePreviewPublication,
+    ) -> LathePreviewPublicationResult:
+        """Publish one accepted Lathe path on the widget owner thread."""
+
+        if QThread.currentThread() is not self.thread():
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.WRONG_THREAD
+            )
+        if not isinstance(publication, LathePreviewPublication):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.CLOSED,
+                publication.identity,
+            )
+        self.initialize_viewport()
+        if not self._initialized:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.NOT_INITIALIZED,
+                publication.identity,
+            )
+        try:
+            outcome = self._backend.publish_lathe_preview(publication)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Lathe viewport publication backend failed"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.BACKEND_FAILURE,
+                publication.identity,
+            )
+        if not isinstance(outcome, LathePreviewPublicationResult):
+            logging.getLogger(__name__).error(
+                "Lathe viewport backend returned an invalid publication outcome"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.BACKEND_FAILURE,
+                publication.identity,
+            )
+        return outcome
+
+    def clear_lathe_preview(
+        self,
+        ownership: LathePreviewOwnership,
+    ) -> LathePreviewPublicationResult:
+        """Clear only the Lathe preview owned by the exact operation context."""
+
+        if QThread.currentThread() is not self.thread():
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.WRONG_THREAD
+            )
+        if not isinstance(ownership, LathePreviewOwnership):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if self._closed:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.CLOSED
+            )
+        try:
+            outcome = self._backend.clear_lathe_preview(ownership)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Lathe viewport clear backend failed"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.BACKEND_FAILURE
+            )
+        if not isinstance(outcome, LathePreviewPublicationResult):
+            logging.getLogger(__name__).error(
+                "Lathe viewport backend returned an invalid clear outcome"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.BACKEND_FAILURE
+            )
+        return outcome
+
+    @property
+    def lathe_preview_identity(self) -> LathePreviewActorIdentity | None:
+        """Return native-free current Lathe preview identity for diagnostics/tests."""
+
+        if self._closed or QThread.currentThread() is not self.thread():
+            return None
+        try:
+            identity = self._backend.get_lathe_preview_identity()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Lathe viewport identity query failed"
+            )
+            return None
+        return identity if isinstance(identity, LathePreviewActorIdentity) else None
 
     def fit_all(self) -> None:
         """Fit the displayed document into the current widget."""

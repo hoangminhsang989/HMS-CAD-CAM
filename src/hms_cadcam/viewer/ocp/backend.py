@@ -30,6 +30,7 @@ from hms_cadcam.cad.ocp import OcpCadKernel
 from hms_cadcam.cam.domain import OperationId, SimulationResultId, WcsFrame
 from hms_cadcam.cam.simulation.model import SimulationResult, SimulationStatus
 from hms_cadcam.cam.toolpath import ArcMove, LinearMove, RapidMove, ToolpathArtifact
+from hms_cadcam.cam.lathe.toolpath.model import LatheMotionClass
 from hms_cadcam.viewer.backend import SelectionCallback
 from hms_cadcam.viewer.cam3d import (
     Cam3DPreviewActorIdentity,
@@ -37,6 +38,13 @@ from hms_cadcam.viewer.cam3d import (
     Cam3DPreviewPublication,
     Cam3DPreviewPublicationCode,
     Cam3DPreviewPublicationResult,
+)
+from hms_cadcam.viewer.lathe import (
+    LathePreviewActorIdentity,
+    LathePreviewOwnership,
+    LathePreviewPublication,
+    LathePreviewPublicationCode,
+    LathePreviewPublicationResult,
 )
 from hms_cadcam.viewer.models import (
     DisplayMode,
@@ -92,6 +100,12 @@ _SIMULATION_PATH_COLORS = {
     SimulationPathSemantic.APPROACH: (1.0, 0.62, 0.08),
 }
 
+_LATHE_PREVIEW_COLORS = {
+    LatheMotionClass.RAPID: (1.0, 0.0, 0.0),
+    LatheMotionClass.CUTTING: (1.0, 1.0, 0.0),
+    LatheMotionClass.LEAD_IN: (1.0, 1.0, 1.0),
+    LatheMotionClass.LEAD_OUT: (0.0, 1.0, 0.0),
+}
 
 def _simulation_marker_color(
     marker: SimulationIssueMarker,
@@ -167,6 +181,16 @@ class _OcpCam3DPreviewActor:
     native: AIS_Triangulation
 
 
+class _OcpLathePreviewRollbackError(RuntimeError):
+    pass
+
+
+@dataclass(slots=True)
+class _OcpLathePreviewActor:
+    identity: LathePreviewActorIdentity
+    natives: tuple[AIS_Shape, ...]
+
+
 class OcpCadViewportBackend:
     """Render OCP kernel documents without exposing native objects to Qt UI."""
 
@@ -204,6 +228,7 @@ class OcpCadViewportBackend:
         ] | None = None
         self._simulation_registry = SimulationPresentationRegistry()
         self._cam3d_preview_actor: _OcpCam3DPreviewActor | None = None
+        self._lathe_preview_actor: _OcpLathePreviewActor | None = None
         self._owner_thread_id: int | None = None
 
     def get_status(self) -> ViewportStatus:
@@ -236,6 +261,7 @@ class OcpCadViewportBackend:
     def display_document(self, document_id: CadDocumentId) -> None:
         self._require_initialized()
         self._clear_cam3d_preview_unconditionally()
+        self._clear_lathe_preview_unconditionally()
         self.clear_simulations()
         self.clear_toolpaths()
         old_document_id = self._document_id
@@ -350,6 +376,7 @@ class OcpCadViewportBackend:
 
     def clear(self) -> None:
         self._clear_cam3d_preview_unconditionally()
+        self._clear_lathe_preview_unconditionally()
         self.clear_simulations()
         simulation_registry = getattr(self, "_simulation_registry", None)
         if simulation_registry is not None:
@@ -1140,6 +1167,248 @@ class OcpCadViewportBackend:
         self._remove_cam3d_preview_actor(actor)
         self._cam3d_preview_actor = None
 
+    def publish_lathe_preview(
+        self,
+        publication: LathePreviewPublication,
+    ) -> LathePreviewPublicationResult:
+        """Build and atomically replace the current Lathe path actor group."""
+
+        if not isinstance(publication, LathePreviewPublication):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if getattr(self, "_closed", False):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.CLOSED,
+                publication.identity,
+            )
+        lifecycle = getattr(self, "_lifecycle", None)
+        if lifecycle is None or not getattr(lifecycle, "initialized", False):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.NOT_INITIALIZED,
+                publication.identity,
+            )
+        try:
+            context = lifecycle.context
+        except (AttributeError, RuntimeError):
+            context = None
+        if context is None:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.NOT_INITIALIZED,
+                publication.identity,
+            )
+        if not self._on_owner_thread():
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.WRONG_THREAD,
+                publication.identity,
+            )
+        previous = self._lathe_preview_actor_or_none()
+        try:
+            candidate = self._build_lathe_preview_actor(publication)
+        except _OcpLathePreviewRollbackError:
+            logging.getLogger(__name__).exception(
+                "Lathe preview candidate cleanup failed"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.ROLLBACK_FAILURE,
+                previous.identity if previous is not None else None,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Lathe preview candidate build/display failed"
+            )
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.BACKEND_FAILURE,
+                previous.identity if previous is not None else None,
+            )
+        self._lathe_preview_actor = candidate
+        if previous is None:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.PUBLISHED,
+                candidate.identity,
+            )
+        try:
+            self._remove_lathe_preview_actor(previous)
+        except Exception:
+            self._lathe_preview_actor = previous
+            rollback_error = self._rollback_lathe_preview_swap(
+                candidate, previous
+            )
+            logging.getLogger(__name__).exception(
+                "Lathe preview replacement failed"
+            )
+            return LathePreviewPublicationResult(
+                (
+                    LathePreviewPublicationCode.ROLLBACK_FAILURE
+                    if rollback_error is not None
+                    else LathePreviewPublicationCode.BACKEND_FAILURE
+                ),
+                previous.identity,
+            )
+        return LathePreviewPublicationResult(
+            LathePreviewPublicationCode.REPLACED,
+            candidate.identity,
+        )
+
+    def clear_lathe_preview(
+        self,
+        ownership: LathePreviewOwnership,
+    ) -> LathePreviewPublicationResult:
+        """Clear only the exact current Lathe operation owner."""
+
+        if not isinstance(ownership, LathePreviewOwnership):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        if getattr(self, "_closed", False):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.CLOSED
+            )
+        if not self._on_owner_thread():
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.WRONG_THREAD
+            )
+        actor = self._lathe_preview_actor_or_none()
+        if actor is None:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.ALREADY_CLEAR
+            )
+        if actor.identity.ownership != ownership:
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.OWNERSHIP_MISMATCH,
+                actor.identity,
+            )
+        try:
+            self._remove_lathe_preview_actor(actor)
+        except Exception:
+            rollback_error = self._restore_lathe_preview_actor(actor)
+            logging.getLogger(__name__).exception("Lathe preview clear failed")
+            return LathePreviewPublicationResult(
+                (
+                    LathePreviewPublicationCode.ROLLBACK_FAILURE
+                    if rollback_error is not None
+                    else LathePreviewPublicationCode.BACKEND_FAILURE
+                ),
+                actor.identity,
+            )
+        self._lathe_preview_actor = None
+        return LathePreviewPublicationResult(
+            LathePreviewPublicationCode.CLEARED,
+            actor.identity,
+        )
+
+    def get_lathe_preview_identity(self) -> LathePreviewActorIdentity | None:
+        actor = self._lathe_preview_actor_or_none()
+        return actor.identity if actor is not None else None
+
+    def _lathe_preview_actor_or_none(self) -> _OcpLathePreviewActor | None:
+        """Treat an absent optional Lathe slot as an empty preview state."""
+
+        return getattr(self, "_lathe_preview_actor", None)
+
+    def _build_lathe_preview_actor(
+        self,
+        publication: LathePreviewPublication,
+    ) -> _OcpLathePreviewActor:
+        context = self._lifecycle.context
+        natives: list[AIS_Shape] = []
+        try:
+            for motion_class in LatheMotionClass:
+                segments = tuple(
+                    item
+                    for item in publication.segments
+                    if item.motion_class is motion_class
+                )
+                if not segments:
+                    continue
+                compound, builder = TopoDS_Compound(), BRep_Builder()
+                builder.MakeCompound(compound)
+                for segment in segments:
+                    builder.Add(
+                        compound,
+                        BRepBuilderAPI_MakeEdge(
+                            gp_Pnt(*segment.start),
+                            gp_Pnt(*segment.end),
+                        ).Edge(),
+                    )
+                native = AIS_Shape(compound)
+                natives.append(native)
+                context.Display(native, False)
+                context.SetColor(
+                    native,
+                    Quantity_Color(
+                        *_LATHE_PREVIEW_COLORS[motion_class],
+                        Quantity_TOC_RGB,
+                    ),
+                    False,
+                )
+                deactivate = getattr(context, "Deactivate", None)
+                if callable(deactivate):
+                    deactivate(native)
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            actor = _OcpLathePreviewActor(publication.identity, tuple(natives))
+            cleanup_error = self._discard_lathe_preview_actor(actor)
+            if cleanup_error is not None:
+                raise _OcpLathePreviewRollbackError(
+                    "Lathe preview candidate cleanup failed"
+                ) from error
+            raise
+        return _OcpLathePreviewActor(publication.identity, tuple(natives))
+
+    def _remove_lathe_preview_actor(self, actor: _OcpLathePreviewActor) -> None:
+        context = self._lifecycle.context
+        for native in actor.natives:
+            context.Remove(native, False)
+        context.UpdateCurrentViewer()
+
+    def _discard_lathe_preview_actor(
+        self, actor: _OcpLathePreviewActor
+    ) -> Exception | None:
+        first_error: Exception | None = None
+        context = self._lifecycle.context
+        for native in actor.natives:
+            try:
+                context.Remove(native, False)
+            except Exception as error:
+                first_error = first_error or error
+        try:
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            first_error = first_error or error
+        return first_error
+
+    def _restore_lathe_preview_actor(
+        self, actor: _OcpLathePreviewActor
+    ) -> Exception | None:
+        context = self._lifecycle.context
+        try:
+            for native in actor.natives:
+                context.Display(native, False)
+                deactivate = getattr(context, "Deactivate", None)
+                if callable(deactivate):
+                    deactivate(native)
+            context.UpdateCurrentViewer()
+        except Exception as error:
+            return error
+        return None
+
+    def _rollback_lathe_preview_swap(
+        self,
+        candidate: _OcpLathePreviewActor,
+        previous: _OcpLathePreviewActor,
+    ) -> Exception | None:
+        first_error = self._discard_lathe_preview_actor(candidate)
+        restore_error = self._restore_lathe_preview_actor(previous)
+        return first_error or restore_error
+
+    def _clear_lathe_preview_unconditionally(self) -> None:
+        actor = self._lathe_preview_actor_or_none()
+        if actor is None:
+            return
+        self._remove_lathe_preview_actor(actor)
+        self._lathe_preview_actor = None
+
     def _on_owner_thread(self) -> bool:
         current = get_ident()
         owner_thread_id = getattr(self, "_owner_thread_id", None)
@@ -1448,6 +1717,7 @@ class OcpCadViewportBackend:
         if self._closed:
             return
         self._clear_cam3d_preview_unconditionally()
+        self._clear_lathe_preview_unconditionally()
         self.clear_simulations()
         simulation_registry = getattr(self, "_simulation_registry", None)
         if simulation_registry is not None:

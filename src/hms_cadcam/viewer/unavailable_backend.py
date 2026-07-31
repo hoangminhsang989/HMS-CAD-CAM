@@ -27,6 +27,13 @@ from hms_cadcam.viewer.cam3d import (
     Cam3DPreviewPublicationCode,
     Cam3DPreviewPublicationResult,
 )
+from hms_cadcam.viewer.lathe import (
+    LathePreviewActorIdentity,
+    LathePreviewOwnership,
+    LathePreviewPublication,
+    LathePreviewPublicationCode,
+    LathePreviewPublicationResult,
+)
 from hms_cadcam.viewer.toolpath import ToolpathPresentation
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
@@ -183,6 +190,38 @@ class UnavailableCadViewportBackend:
         )
 
     def get_cam3d_preview_identity(self) -> Cam3DPreviewActorIdentity | None:
+        return None
+
+    def publish_lathe_preview(
+        self,
+        publication: LathePreviewPublication,
+    ) -> LathePreviewPublicationResult:
+        if not isinstance(publication, LathePreviewPublication):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        return LathePreviewPublicationResult(
+            LathePreviewPublicationCode.CLOSED
+            if self._closed
+            else LathePreviewPublicationCode.UNAVAILABLE,
+            publication.identity,
+        )
+
+    def clear_lathe_preview(
+        self,
+        ownership: LathePreviewOwnership,
+    ) -> LathePreviewPublicationResult:
+        if not isinstance(ownership, LathePreviewOwnership):
+            return LathePreviewPublicationResult(
+                LathePreviewPublicationCode.INVALID_PAYLOAD
+            )
+        return LathePreviewPublicationResult(
+            LathePreviewPublicationCode.CLOSED
+            if self._closed
+            else LathePreviewPublicationCode.ALREADY_CLEAR
+        )
+
+    def get_lathe_preview_identity(self) -> LathePreviewActorIdentity | None:
         return None
 
     def fit_all(self) -> None:

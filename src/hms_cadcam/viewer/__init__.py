@@ -20,6 +20,15 @@ from hms_cadcam.viewer.models import (
     ViewDirection,
     ViewportStatus,
 )
+from hms_cadcam.viewer.lathe import (
+    LathePreviewActorIdentity,
+    LathePreviewOwnership,
+    LathePreviewPublication,
+    LathePreviewPublicationCode,
+    LathePreviewPublicationResult,
+    LathePreviewPublicationSource,
+    LathePreviewSegmentData,
+)
 from hms_cadcam.viewer.simulation import (
     SimulationDisplayContext,
     SimulationDisplayPolicy,
@@ -46,6 +55,13 @@ __all__ = [
     "Cam3DPreviewPublicationSource",
     "DisplayMode",
     "KeyboardModifier",
+    "LathePreviewActorIdentity",
+    "LathePreviewOwnership",
+    "LathePreviewPublication",
+    "LathePreviewPublicationCode",
+    "LathePreviewPublicationResult",
+    "LathePreviewPublicationSource",
+    "LathePreviewSegmentData",
     "MouseButton",
     "SelectionMetadata",
     "SelectionMode",

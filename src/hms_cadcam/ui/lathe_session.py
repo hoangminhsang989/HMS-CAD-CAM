@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from hms_cadcam.cad.models import CadDocumentId
 from hms_cadcam.cam.domain.ids import SetupId
+from hms_cadcam.cam.domain.setup import CylinderStock
 from hms_cadcam.cam.domain.tooling import (
     HolderDefinition,
     ToolAssembly,
@@ -24,6 +25,10 @@ from hms_cadcam.cam.lathe.presenter import (
     LathePresenterFacade,
     LathePresenterSnapshot,
 )
+from hms_cadcam.cam.lathe.toolpath.stock import (
+    LatheStockSnapshotV1,
+    lathe_stock_from_cylinder,
+)
 from hms_cadcam.cam.lathe.readiness import LatheWorkspaceReadiness
 from hms_cadcam.cam.lathe.types import (
     LatheStage9A9State,
@@ -36,6 +41,10 @@ from hms_cadcam.ui.lathe_adapters import (
     ProjectLatheToolCatalog,
 )
 from hms_cadcam.ui.lathe_presenter import LatheQtPresenter
+from hms_cadcam.ui.lathe_toolpath import (
+    LathePreviewSink,
+    LatheToolpathUiController,
+)
 
 
 _ACTIVE_READINESS = LatheWorkspaceReadiness(
@@ -70,6 +79,10 @@ class LatheWorkspacePort(Protocol):
         unavailable_reason: str = "lathe.presenter.unavailable",
     ) -> None: ...
 
+    def bind_toolpath_controller(
+        self, controller: LatheToolpathUiController | None
+    ) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class LatheUiContext:
@@ -84,6 +97,7 @@ class LatheUiContext:
     tools: tuple[ToolDefinition, ...] = ()
     holders: tuple[HolderDefinition, ...] = ()
     assemblies: tuple[ToolAssembly, ...] = ()
+    stock: CylinderStock | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.project_id, UUID) or self.project_id.int == 0:
@@ -109,6 +123,8 @@ class LatheUiContext:
             for values, item_type in typed_collections
         ):
             raise TypeError("Lathe UI Tool snapshot collections are invalid")
+        if self.stock is not None and not isinstance(self.stock, CylinderStock):
+            raise TypeError("Lathe UI stock snapshot must be CylinderStock or None")
 
 
 class LatheSessionController(QObject):
@@ -124,6 +140,7 @@ class LatheSessionController(QObject):
         explicit_capabilities: Mapping[
             LatheToolReference, frozenset[LatheToolCapability]
         ] | None = None,
+        toolpath_sink: LathePreviewSink | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -133,10 +150,17 @@ class LatheSessionController(QObject):
         self._workspace = workspace
         self._selection_provider = selection_provider
         self._explicit_capabilities = dict(explicit_capabilities or {})
+        if toolpath_sink is not None and (
+            not callable(getattr(toolpath_sink, "publish", None))
+            or not callable(getattr(toolpath_sink, "clear", None))
+        ):
+            raise TypeError("Lathe session toolpath sink is invalid")
+        self._toolpath_sink = toolpath_sink
         self._context: LatheUiContext | None = None
         self._catalog: ProjectLatheToolCatalog | None = None
         self._service: LatheOperationService | None = None
         self._presenter: LatheQtPresenter | None = None
+        self._toolpath_controller: LatheToolpathUiController | None = None
 
     @property
     def context(self) -> LatheUiContext | None:
@@ -149,6 +173,10 @@ class LatheSessionController(QObject):
     @property
     def presenter(self) -> LatheQtPresenter | None:
         return self._presenter
+
+    @property
+    def toolpath_controller(self) -> LatheToolpathUiController | None:
+        return self._toolpath_controller
 
     def update_context(self, context: LatheUiContext | None) -> None:
         """Create, transition or tear down the exact current runtime session."""
@@ -186,6 +214,16 @@ class LatheSessionController(QObject):
         if previous.read_only != context.read_only:
             self._service.set_read_only(context.read_only)
         self._context = context
+        if self._toolpath_controller is not None and (
+            previous.source_id != context.source_id
+            or previous.generation != context.generation
+            or previous.setup_id != context.setup_id
+            or previous.read_only != context.read_only
+            or previous.stock != context.stock
+        ):
+            self._toolpath_controller.transition(
+                _lathe_stock_snapshot(context)
+            )
         self._presenter.refresh()
         self.availability_changed.emit(True, "")
 
@@ -204,7 +242,13 @@ class LatheSessionController(QObject):
 
         presenter = self._presenter
         service = self._service
+        toolpath = self._toolpath_controller
+        self._workspace.bind_toolpath_controller(None)
         self._workspace.bind_presenter(None, unavailable_reason=reason)
+        if toolpath is not None:
+            toolpath.shutdown(wait=True)
+            toolpath.setParent(None)
+            toolpath.deleteLater()
         if presenter is not None:
             presenter.teardown()
             presenter.setParent(None)
@@ -215,6 +259,7 @@ class LatheSessionController(QObject):
         self._catalog = None
         self._service = None
         self._presenter = None
+        self._toolpath_controller = None
         self.availability_changed.emit(False, reason)
 
     def _replace_session(self, context: LatheUiContext) -> None:
@@ -243,12 +288,37 @@ class LatheSessionController(QObject):
             self._selection_provider,
             self,
         )
+        toolpath = (
+            LatheToolpathUiController(
+                service,
+                _lathe_stock_snapshot(context),
+                self._toolpath_sink,
+                parent=self,
+            )
+            if self._toolpath_sink is not None
+            else None
+        )
         self._context = context
         self._catalog = catalog
         self._service = service
         self._presenter = presenter
+        self._toolpath_controller = toolpath
         self._workspace.bind_presenter(presenter)
+        self._workspace.bind_toolpath_controller(toolpath)
         self.availability_changed.emit(True, "")
+
+
+def _lathe_stock_snapshot(
+    context: LatheUiContext,
+) -> LatheStockSnapshotV1 | None:
+    if context.stock is None or context.setup_id is None:
+        return None
+    return lathe_stock_from_cylinder(
+        context.stock,
+        setup_id=context.setup_id,
+        source_id=context.source_id,
+        generation=context.generation,
+    )
 
 
 __all__ = [
