@@ -97,7 +97,7 @@ def test_sample_program_envelope_and_operation_order() -> None:
     assert text.startswith("%\r\nO0000\r\n")
     assert text.endswith("M30\r\n%\r\n")
     assert text.count("\r\nM30\r\n") == 1
-    assert "G21\r\n" in text and "G99\r\n" in text
+    assert "G21\r\n" in text and ("G99 G1 " in text or "G99 G32 " in text)
     assert "G0 T0101\r\n" in text
     assert "G0 G54 X" in text
     assert "G1 X" in text

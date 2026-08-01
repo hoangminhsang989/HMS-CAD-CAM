@@ -22,6 +22,8 @@ def _word(value: str, field: str) -> str:
 class BasicLathePostProfile:
     profile_id: str = "hms.lathe.fanuc_basic_sample_v1"
     schema_version: str = "lathe.basic.fanuc.profile.v1"
+    sample_contract_revision: int = 1
+    renderer_algorithm_version: str = "lathe.basic_fanuc.renderer.v1.1"
     display_name_key: str = "lathe.post.basic_fanuc_sample_v1"
     controller_family: str = "FANUC_STYLE_UNVERIFIED"
     machine_model: str = "UNSPECIFIED"
@@ -78,11 +80,14 @@ class BasicLathePostProfile:
     def __post_init__(self) -> None:
         object.__setattr__(self, "profile_id", canonical_id(self.profile_id, "profile_id"))
         object.__setattr__(self, "schema_version", canonical_id(self.schema_version, "schema_version"))
+        object.__setattr__(self, "renderer_algorithm_version", canonical_id(self.renderer_algorithm_version, "renderer_algorithm_version"))
         object.__setattr__(self, "display_name_key", canonical_id(self.display_name_key, "display_name_key"))
         for name in ("controller_family", "machine_model", "controller_model"):
             object.__setattr__(self, name, canonical_id(getattr(self, name), name))
         if self.output_extension != ".NC":
             raise ValueError("basic profile output extension must be .NC")
+        if type(self.sample_contract_revision) is not int or self.sample_contract_revision <= 0:
+            raise ValueError("sample_contract_revision must be a positive integer")
         if type(self.program_number) is not int or not 0 <= self.program_number <= 9999:
             raise ValueError("program_number must be an integer from 0 through 9999")
         if self.program_number_width != 4 or self.tool_number_width != 2 or self.offset_number_width != 2:

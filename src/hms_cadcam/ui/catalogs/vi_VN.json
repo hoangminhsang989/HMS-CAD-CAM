@@ -1846,5 +1846,22 @@
   "lathe.basic_post.diagnostic.basic_post_dwell_syntax_undefined":"Chưa xác định cú pháp dwell cho profile cơ bản.",
   "lathe.basic_post.diagnostic.basic_post_thread_feed_mismatch":"Lượng chạy dao ren phải bằng bước ren.",
   "lathe.basic_post.diagnostic.basic_post_missing_tool_mapping":"Thiếu mapping dao/offset dạng typed.",
-  "lathe.basic_post.diagnostic.basic_post_output_invalid":"Kiểm tra NC sinh ra thất bại."
+  "lathe.basic_post.diagnostic.basic_post_output_invalid":"Kiểm tra NC sinh ra thất bại.",
+  "lathe.basic_post.conformance.title":"Đối chiếu Post mẫu",
+  "lathe.basic_post.conformance.run":"Chạy đối chiếu Post mẫu",
+  "lathe.basic_post.conformance.conformant":"Phù hợp",
+  "lathe.basic_post.conformance.conformant_safe_deviations":"Phù hợp với sai khác an toàn có chủ ý",
+  "lathe.basic_post.conformance.partially_conformant":"Phù hợp một phần",
+  "lathe.basic_post.conformance.nonconformant":"Không phù hợp",
+  "lathe.basic_post.conformance.no_owner_sample_coverage":"Không có mẫu do chủ dự án cung cấp",
+  "lathe.basic_post.conformance.external_unavailable":"Mẫu ngoài không khả dụng",
+  "lathe.basic_post.conformance.mandatory":"Phát hiện bắt buộc",
+  "lathe.basic_post.conformance.safety":"Sai khác an toàn",
+  "lathe.basic_post.conformance.unsupported":"Tính năng mẫu chưa được hỗ trợ",
+  "lathe.basic_post.conformance.structural_only":"Chỉ đánh giá định dạng và cấu trúc",
+  "lathe.basic_post.conformance.not_machine_verification":"Không phải xác minh máy",
+  "lathe.basic_post.conformance.sample_backed":"Chiến lược có mẫu đối chiếu",
+  "lathe.basic_post.conformance.contract_derived":"Chiến lược dẫn xuất từ contract",
+  "lathe.basic_post.conformance.strategy_coverage":"Độ phủ chiến lược",
+  "lathe.basic_post.conformance.behavior_revision":"Bản sửa đổi hành vi"
 }

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -21,7 +22,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hms_cadcam.cam.lathe.lathe_post import BasicPostReadiness, LatheBasicNcService
+from hms_cadcam.cam.lathe.lathe_post import (
+    BasicPostReadiness,
+    LatheBasicNcService,
+    LatheNcConformanceReport,
+)
 
 
 def _label(key: str, fallback: str) -> str:
@@ -97,6 +102,39 @@ class BasicNcPreviewPanel(QWidget):
         self.diagnostics.setAccessibleName(_label("lathe.program.validation", "Program validation"))
         self.diagnostics.setMaximumHeight(90)
         root.addWidget(self.diagnostics)
+        self.conformance_group = QGroupBox(
+            _label("lathe.basic_post.conformance.title", "Sample Conformance Review")
+        )
+        conformance_layout = QVBoxLayout(self.conformance_group)
+        conformance_meta = QHBoxLayout()
+        self.conformance_revision = QLabel()
+        self.conformance_status = QLabel()
+        self.conformance_status.setWordWrap(True)
+        conformance_meta.addWidget(self.conformance_revision)
+        conformance_meta.addWidget(self.conformance_status, 1)
+        conformance_layout.addLayout(conformance_meta)
+        self.conformance_coverage = QLabel()
+        self.conformance_coverage.setWordWrap(True)
+        conformance_layout.addWidget(self.conformance_coverage)
+        self.conformance_findings = QListWidget()
+        self.conformance_findings.setObjectName("LatheBasicNcConformanceFindings")
+        self.conformance_findings.setAccessibleName(
+            _label("lathe.basic_post.conformance.mandatory", "Mandatory findings")
+        )
+        self.conformance_findings.setMaximumHeight(105)
+        conformance_layout.addWidget(self.conformance_findings)
+        self.conformance_review_button = QPushButton(
+            _label("lathe.basic_post.conformance.run", "Run Conformance Review")
+        )
+        self.conformance_review_button.setObjectName("LatheBasicNcConformanceReviewAction")
+        self.conformance_review_button.setAccessibleName(
+            self.conformance_review_button.text()
+        )
+        self.conformance_review_button.setEnabled(False)
+        self.conformance_review_button.clicked.connect(self._run_conformance_review)
+        conformance_layout.addWidget(self.conformance_review_button)
+        root.addWidget(self.conformance_group)
+        self._retranslate_conformance()
         self.listing = QTextEdit()
         self.listing.setReadOnly(True)
         self.listing.setAcceptRichText(False)
@@ -120,6 +158,103 @@ class BasicNcPreviewPanel(QWidget):
         row.addWidget(self.export_button)
         row.addWidget(self.close_button)
         root.addLayout(row)
+        self.setTabOrder(self.generate_button, self.conformance_review_button)
+        self.setTabOrder(self.conformance_review_button, self.export_button)
+        self.setTabOrder(self.export_button, self.close_button)
+        try:
+            from hms_cadcam.ui.i18n import translation_service
+            translation_service().language_changed.connect(self._retranslate_conformance)
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+
+    def _retranslate_conformance(self, _language: object = None) -> None:
+        self.conformance_group.setTitle(
+            _label("lathe.basic_post.conformance.title", "Sample Conformance Review")
+        )
+        self.conformance_review_button.setText(
+            _label("lathe.basic_post.conformance.run", "Run Conformance Review")
+        )
+        self.conformance_review_button.setAccessibleName(
+            self.conformance_review_button.text()
+        )
+        self.conformance_findings.setAccessibleName(
+            _label("lathe.basic_post.conformance.mandatory", "Mandatory findings")
+        )
+        report = self.service.state.conformance_report
+        if report is None:
+            self.conformance_revision.setText(
+                f"{_label('lathe.basic_post.conformance.behavior_revision', 'Behavior revision')}: "
+                f"{self.service.profile.sample_contract_revision}"
+            )
+            self.conformance_status.setText(
+                f"{_label('lathe.basic_post.conformance.external_unavailable', 'External sample unavailable')} ? "
+                f"{_label('lathe.basic_post.conformance.structural_only', 'Structural review only')} ? "
+                f"{_label('lathe.basic_post.conformance.not_machine_verification', 'Not machine verification')}"
+            )
+            self.conformance_coverage.setText(
+                f"{_label('lathe.basic_post.conformance.strategy_coverage', 'Strategy coverage')}: "
+                "11/11 generated"
+            )
+        else:
+            self._show_conformance_report(report)
+
+    def _show_conformance_report(
+        self, report: LatheNcConformanceReport
+    ) -> None:
+        self.conformance_revision.setText(
+            f"{_label('lathe.basic_post.conformance.behavior_revision', 'Behavior revision')}: "
+            f"{report.behavior_revision}"
+        )
+        self.conformance_status.setText(
+            f"{report.status.value} ? "
+            f"{_label('lathe.basic_post.conformance.structural_only', 'Structural review only')} ? "
+            f"{_label('lathe.basic_post.conformance.not_machine_verification', 'Not machine verification')}"
+        )
+        coverage_states = {state for _, state in report.strategy_coverage}
+        if coverage_states == {"CONTRACT_DERIVED_NO_OWNER_SAMPLE_COVERAGE"}:
+            owner_coverage = _label(
+                "lathe.basic_post.conformance.contract_derived",
+                "Contract-derived strategy",
+            )
+        else:
+            owner_coverage = _label(
+                "lathe.basic_post.conformance.sample_backed",
+                "Sample-backed strategy",
+            )
+        self.conformance_coverage.setText(
+            f"{_label('lathe.basic_post.conformance.strategy_coverage', 'Strategy coverage')}: "
+            f"11/11 generated; {owner_coverage}; {report.external_sample_state}"
+        )
+        self.conformance_findings.clear()
+        groups = (
+            (
+                _label("lathe.basic_post.conformance.mandatory", "Mandatory findings"),
+                report.mandatory_findings,
+            ),
+            (
+                _label("lathe.basic_post.conformance.safety", "Safety deviations"),
+                report.intentional_safe_deviations,
+            ),
+            (
+                _label(
+                    "lathe.basic_post.conformance.unsupported",
+                    "Unsupported sample features",
+                ),
+                report.unsupported_sample_features,
+            ),
+        )
+        for heading, findings in groups:
+            if not findings:
+                self.conformance_findings.addItem(f"{heading}: ?")
+            for finding in findings:
+                self.conformance_findings.addItem(
+                    f"{heading}: {finding.code} [{finding.severity.value}]"
+                )
+
+    def _run_conformance_review(self) -> None:
+        if self.service.latest is None:
+            return
+        self._show_conformance_report(self.service.review_latest())
 
     def show_result(self) -> None:
         snapshot = self.service.latest
@@ -133,12 +268,18 @@ class BasicNcPreviewPanel(QWidget):
             self.filename_label.setText(_label("lathe.basic_post.filename", "Suggested filename: —"))
             self.status.setText(_label("lathe.basic_post.incomplete", "Basic NC preview incomplete"))
             self.export_button.setEnabled(False)
+            self.conformance_review_button.setEnabled(False)
+            self.conformance_findings.clear()
+            self._retranslate_conformance()
             return
         self.listing.setPlainText(snapshot.text)
         self.sha_label.setText(f"{_label('lathe.basic_post.output_sha', 'Output SHA')}: {snapshot.sha256}")
         self.filename_label.setText(f"{_label('lathe.basic_post.filename', 'Suggested filename')}: {snapshot.suggested_filename}")
         self.status.setText(snapshot.readiness.value)
         self.export_button.setEnabled(snapshot.readiness is BasicPostReadiness.BASIC_NC_PREVIEW_READY_UNVERIFIED)
+        self.conformance_review_button.setEnabled(True)
+        if self.service.state.conformance_report is not None:
+            self._show_conformance_report(self.service.state.conformance_report)
 
     def _interactive_export(self) -> None:
         dialog = BasicNcExportAcknowledgementDialog(self)

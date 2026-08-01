@@ -147,6 +147,7 @@ class LatheBasicFanucPostRendererV1:
             lines.append(f"{self.profile.spindle_mode_code} S{rpm} {direction}")
             first_motion = True
             feed: float | None = None
+            feed_mode_emitted = False
             for block in motion_blocks:
                 payload = block.payload
                 if not isinstance(payload, MotionPayload):
@@ -173,7 +174,11 @@ class LatheBasicFanucPostRendererV1:
                     continue
                 first_motion = False
                 emit_feed = motion_feed is not None and (feed is None or not math.isclose(float(feed), float(motion_feed), rel_tol=0.0, abs_tol=1.0e-12))
-                lines.append(_motion_words(payload, self.profile, motion_code, motion_feed if emit_feed else None))
+                rendered_motion_code = motion_code
+                if motion_code != "G0" and not feed_mode_emitted:
+                    rendered_motion_code = f"{self.profile.feed_mode_code} {motion_code}"
+                    feed_mode_emitted = True
+                lines.append(_motion_words(payload, self.profile, rendered_motion_code, motion_feed if emit_feed else None))
                 if emit_feed:
                     feed = float(motion_feed)
             if self.profile.emit_spindle_stop_each_operation:
@@ -243,7 +248,12 @@ class LatheBasicFanucPostRendererV1:
         return groups
 
     def _header(self, metadata: BasicPostMetadata) -> list[str]:
-        lines = ["%", self.profile.program_word(), "(HMS BASIC FANUC STYLE LATHE POST)"]
+        lines = [
+            "%",
+            self.profile.program_word(),
+            "(HMS BASIC FANUC STYLE LATHE POST)",
+            f"(PROFILE REVISION = {self.profile.sample_contract_revision} RENDERER = {self.profile.renderer_algorithm_version.upper()})",
+        ]
         if self.profile.warning_header_enabled and (not self.profile.machine_verified or not self.profile.production_approved):
             lines.append("(UNVERIFIED OUTPUT - CHECK BEFORE MACHINE USE)")
         lines.extend([f"(TEN FILE = {sanitize_comment(metadata.file_stem, uppercase=self.profile.uppercase_comments)})", "(SHL_TECH)"])
@@ -253,7 +263,7 @@ class LatheBasicFanucPostRendererV1:
             lines.append("G40")
         if self.profile.emit_g80:
             lines.append("G80")
-        lines.extend(["G21", self.profile.feed_mode_code])
+        lines.append("G21")
         if self.profile.optional_setup_m73:
             lines.append("M73")
         if self.profile.optional_setup_m74:

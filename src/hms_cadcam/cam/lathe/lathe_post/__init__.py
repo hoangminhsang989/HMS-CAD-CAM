@@ -16,6 +16,23 @@ from hms_cadcam.cam.lathe.lathe_post.basic_types import (
     BasicToolMapping,
 )
 from hms_cadcam.cam.lathe.lathe_post.export import BasicNcExportResult, BasicNcExportService
+from hms_cadcam.cam.lathe.lathe_post.conformance import (
+    DEFAULT_LATHE_SAMPLE_CONTRACT_V1,
+    ExternalSampleDiscoveryReport,
+    ExternalSampleDiscoveryStatus,
+    ExternalSampleFileResult,
+    LatheNcConformanceAnalyzerV1,
+    LatheNcConformanceCategory,
+    LatheNcConformanceFinding,
+    LatheNcConformanceReport,
+    LatheNcConformanceSeverity,
+    LatheNcConformanceStatus,
+    LatheNcLineClassification,
+    LatheSampleContractV1,
+    LatheSampleSignature,
+    discover_external_samples,
+    lathe_sample_contract_v1,
+)
 from hms_cadcam.cam.lathe.lathe_post.renderer import (
     BasicNcOutputSnapshot,
     BasicNcRenderResult,
@@ -89,6 +106,11 @@ __all__ = [
     "BasicFinalSafeTool", "BasicLathePostProfile", "BasicLathePostProfileRegistry",
     "BasicNcExportResult", "BasicNcExportService", "BasicNcOutputSnapshot", "BasicNcRenderResult",
     "BasicNcServiceState", "BasicPostDiagnostic", "BasicPostDiagnosticCode", "BasicPostMetadata",
+    "DEFAULT_LATHE_SAMPLE_CONTRACT_V1", "ExternalSampleDiscoveryReport",
+    "ExternalSampleDiscoveryStatus", "ExternalSampleFileResult",
+    "LatheNcConformanceAnalyzerV1", "LatheNcConformanceCategory", "LatheNcConformanceFinding",
+    "LatheNcConformanceReport", "LatheNcConformanceSeverity", "LatheNcConformanceStatus",
+    "LatheNcLineClassification", "LatheSampleContractV1", "LatheSampleSignature",
     "BasicPostReadiness", "BasicToolMapping", "LatheBasicFanucPostRendererV1", "LatheBasicFanucPostV1",
     "LatheBasicNcService", "DEFAULT_LATHE_POST_PROFILE_REGISTRY", "DwellPayload", "LatheNeutralListingSnapshot",
     "LatheOperationProgramInput", "LathePostCapability", "LathePostProfile",
@@ -105,6 +127,7 @@ __all__ = [
     "ProgramBlockKind", "ProgramReadiness", "SpindleIntentPayload", "ThreadCutIntentPayload",
     "ToolIntentPayload", "UnitsPayload", "WARNING_LINES", "lathe_post_profile_registry",
     "basic_lathe_post_profile", "basic_lathe_post_profile_registry", "neutral_preview_profile",
+    "discover_external_samples", "lathe_sample_contract_v1",
     "neutral_program_listing", "render_neutral_listing",
     "render_program_ir_listing",
 ]
