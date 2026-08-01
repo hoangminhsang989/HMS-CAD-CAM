@@ -127,7 +127,7 @@ def test_review_harness_builds_exact_unique_production_evidence(
     assert all(item["dependency_contribution"] for item in resolution["values"])
 
     persistence = _read_json(output, "persistence_report.json")
-    assert persistence["sqlite_schema_version"] == 4
+    assert persistence["sqlite_schema_version"] == 5
     assert persistence["sqlite_schema_bumped"] is False
     assert persistence["configured_tool_round_trip"] is True
     assert persistence["legacy_tool_round_trip"] is True

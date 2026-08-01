@@ -121,6 +121,40 @@ def _persist(database_path, snapshot):
     return repository
 
 
+def _downgrade_current_database_to_v3_fixture(database_path: Path) -> None:
+    """Construct an exact legacy V3 fixture from a freshly initialized database."""
+    current_only_tables = (
+        "lathe_derived_snapshots",
+        "lathe_tool_bindings",
+        "lathe_operations",
+        "lathe_programs",
+        "toolpath_artifacts",
+        "cam_dependencies",
+        "cam_operations",
+        "cam_nodes",
+        "cam_setups",
+        "cam_jobs",
+        "cam_project_state",
+        "cam_tool_definitions",
+        "cam_holder_definitions",
+        "cam_tool_assemblies",
+        "cam_machine_definitions",
+    )
+    with closing(sqlite3.connect(database_path)) as connection, connection:
+        for table in current_only_tables:
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute("DELETE FROM schema_migrations WHERE version > ?", (3,))
+        connection.execute("PRAGMA user_version = 3")
+        ledger = tuple(
+            int(row[0])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        )
+        assert ledger == (1, 2, 3)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
 def _artifact(operation, fingerprint=None):
     fingerprint = fingerprint or DependencyFingerprint.from_payload({"artifact": 1})
     computing, token = operation.artifact_state.begin(fingerprint)
@@ -140,15 +174,10 @@ def test_v3_to_v4_migration_is_safe_and_empty_cam(tmp_path):
     path = tmp_path / "project.db"
     database = ProjectDatabase()
     database.initialize(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
-        for table in ("toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes", "cam_setups",
-                      "cam_jobs", "cam_project_state", "cam_tool_definitions", "cam_holder_definitions",
-                      "cam_tool_assemblies", "cam_machine_definitions"):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM schema_migrations WHERE version=4")
-        connection.execute("PRAGMA user_version=3")
+    _downgrade_current_database_to_v3_fixture(path)
     database.open_and_migrate(path)
-    assert database.current_schema_version(path) == 4
+    assert database.current_schema_version(path) == DATABASE_SCHEMA_VERSION
+    assert DATABASE_SCHEMA_VERSION == 5
     assert CamSqliteRepository().load(path).is_empty
 
 
@@ -156,13 +185,7 @@ def test_v4_migration_rolls_back_all_statements_on_error(tmp_path, monkeypatch):
     path = tmp_path / "rollback.db"
     database = ProjectDatabase()
     database.initialize(path)
-    with closing(sqlite3.connect(path)) as connection, connection:
-        for table in ("toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes", "cam_setups",
-                      "cam_jobs", "cam_project_state", "cam_tool_definitions", "cam_holder_definitions",
-                      "cam_tool_assemblies", "cam_machine_definitions"):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM schema_migrations WHERE version=4")
-        connection.execute("PRAGMA user_version=3")
+    _downgrade_current_database_to_v3_fixture(path)
     monkeypatch.setitem(MIGRATIONS, 4, ("CREATE TABLE rollback_probe(value TEXT)", "INVALID SQL"))
     with pytest.raises(Exception):
         database.open_and_migrate(path)
@@ -258,7 +281,8 @@ def test_boring_strategy_and_tooling_round_trip_in_sqlite_v4(tmp_path):
     ) == strategy
     assert restored.tool_definitions == (tool,)
     assert restored.tool_assemblies == (assembly,)
-    assert ProjectDatabase().current_schema_version(path) == 4
+    assert ProjectDatabase().current_schema_version(path) == DATABASE_SCHEMA_VERSION
+    assert DATABASE_SCHEMA_VERSION == 5
 
 
 def test_computing_state_is_persisted_as_dirty_without_runtime_token(tmp_path):

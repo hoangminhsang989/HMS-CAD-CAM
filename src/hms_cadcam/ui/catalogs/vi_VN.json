@@ -1863,5 +1863,10 @@
   "lathe.basic_post.conformance.sample_backed":"Chiến lược có mẫu đối chiếu",
   "lathe.basic_post.conformance.contract_derived":"Chiến lược dẫn xuất từ contract",
   "lathe.basic_post.conformance.strategy_coverage":"Độ phủ chiến lược",
-  "lathe.basic_post.conformance.behavior_revision":"Bản sửa đổi hành vi"
+  "lathe.basic_post.conformance.behavior_revision":"Bản sửa đổi hành vi",
+  "lathe.persistence.derived_corrupt":"Cache Tiện bị hỏng đã bị bỏ qua: {subject}",
+  "lathe.persistence.derived_stale":"Cache Tiện đã cũ và không được phục hồi: {subject}",
+  "lathe.persistence.derived_ownership_mismatch":"Cache Tiện không khớp chủ sở hữu: {subject}",
+  "lathe.persistence.derived_version_mismatch":"Phiên bản cache Tiện không tương thích: {subject}",
+  "lathe.persistence.authoring_incompatible":"Dữ liệu tác giả Tiện không tương thích: {subject}"
 }

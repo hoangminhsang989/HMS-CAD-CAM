@@ -413,7 +413,7 @@ def test_application_service_save_delete_toggle_and_duplicate() -> None:
     assert deleted.tool_definitions[0].program_profiles == ()
 
 
-def test_profile_persistence_round_trip_keeps_sqlite_schema_v4(tmp_path) -> None:
+def test_profile_persistence_round_trip_keeps_current_sqlite_schema(tmp_path) -> None:
     tool, _center_drill, holder, _assembly, _center_assembly = (
         basic_drilling_resources(LengthUnit.MM)
     )
@@ -443,7 +443,7 @@ def test_profile_persistence_round_trip_keeps_sqlite_schema_v4(tmp_path) -> None
     restored = repository.load(database_path)
 
     assert restored.tool_definitions == (configured,)
-    assert ProjectDatabase().current_schema_version(database_path) == 4
+    assert ProjectDatabase().current_schema_version(database_path) == 5
 
 
 @dataclass(frozen=True, slots=True)

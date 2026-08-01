@@ -32,6 +32,8 @@ from hms_cadcam.cam.persistence import (
 )
 from hms_cadcam.cam.post.export_store import NCArtifactStore
 from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig, Cam3DProjectStore
+from hms_cadcam.cam.lathe.persistence import LatheProjectPersistenceService
+from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.path_policy import normalize_internal_source_filename
 import logging
 
@@ -51,6 +53,7 @@ class ProjectSaver:
         artifact_store: ToolpathArtifactStore | None = None,
         nc_artifact_store: NCArtifactStore | None = None,
         cam3d_store: Cam3DProjectStore | None = None,
+        lathe_persistence: LatheProjectPersistenceService | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -60,9 +63,14 @@ class ProjectSaver:
         self._artifact_store = artifact_store or ToolpathArtifactStore()
         self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
         self._cam3d_store = cam3d_store or Cam3DProjectStore()
+        self._lathe_persistence = (
+            lathe_persistence or LatheProjectPersistenceService()
+        )
 
     def save(self, session: ProjectSession) -> ProjectSession:
         """Validate and atomically save the current manifest."""
+        if session.read_only:
+            raise ProjectError("Read-only project cannot be saved")
         self._nc_artifact_store.flush(
             session.root_path, session.manifest.project_id
         )
@@ -77,6 +85,9 @@ class ProjectSaver:
                 (record.source_id for record in manifest.source_files),
             )
             persisted_cam = self._cam_repository.replace_all(connection, session.cam_snapshot)
+            persisted_lathe = session.lathe_snapshot
+            if persisted_lathe is not None:
+                self._lathe_persistence.replace_all(connection, persisted_lathe)
             cam3d_config = session.cam3d_config or Cam3DProjectConfig(
                 session.manifest.project_id
             )
@@ -89,6 +100,8 @@ class ProjectSaver:
         session.persisted_cad_view_states = dict(session.cad_view_states)
         session.cam_snapshot = persisted_cam
         session.persisted_cam_snapshot = persisted_cam
+        session.lathe_snapshot = persisted_lathe
+        session.persisted_lathe_snapshot = persisted_lathe
         session.cam3d_config = cam3d_config
         session.persisted_cam3d_config = cam3d_config
         session.is_dirty = False
@@ -166,6 +179,7 @@ class ProjectSaver:
             session.cad_view_states != session.persisted_cad_view_states
             or session.cam_snapshot != session.persisted_cam_snapshot
             or session.cam3d_config != session.persisted_cam3d_config
+            or session.lathe_snapshot != session.persisted_lathe_snapshot
         )
         return session
 
@@ -177,6 +191,8 @@ class ProjectSaver:
         overwrite: bool = False,
     ) -> ProjectSession:
         """Create an independent project identity without changing the original."""
+        if session.read_only:
+            raise ProjectError("Read-only project cannot be saved as")
         stem = self._validator.validate_project_name(project_name)
         target = project_target_path(parent_dir, stem)
         if target.resolve() == session.root_path.resolve():
@@ -246,6 +262,15 @@ class ProjectSaver:
                     (record.source_id for record in records),
                 )
                 persisted_cam = self._cam_repository.replace_all(connection, staged_cam)
+                rebound_lathe = self._lathe_persistence.rebind_project(
+                    connection,
+                    session.manifest.project_id,
+                    manifest.project_id,
+                    staged=session.lathe_snapshot,
+                )
+                persisted_lathe = (
+                    rebound_lathe if session.lathe_snapshot is not None else None
+                )
             self._manifest_store.save(staging, manifest)
             self._validator.validate_references(staging, manifest)
             self._database.validate(staging / DATABASE_FILENAME)
@@ -260,4 +285,8 @@ class ProjectSaver:
             persisted_cam_snapshot=persisted_cam,
             cam3d_config=staged_cam3d,
             persisted_cam3d_config=staged_cam3d,
+            lathe_snapshot=persisted_lathe,
+            persisted_lathe_snapshot=persisted_lathe,
+            lathe_persistence_loaded=session.lathe_persistence_loaded,
+            read_only=False,
         )

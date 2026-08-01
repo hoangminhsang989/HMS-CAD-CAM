@@ -10,14 +10,14 @@ from hms_cadcam.project.exceptions import ProjectDatabaseError, UnsupportedForma
 from hms_cadcam.project.service import ProjectService
 
 
-def test_database_initialization_is_idempotent_and_has_cam_v4_tables(tmp_path) -> None:
+def test_database_initialization_is_idempotent_and_has_v5_tables(tmp_path) -> None:
     path = tmp_path / "project.db"
     database = ProjectDatabase()
     database.initialize(path)
     database.open_and_migrate(path)
     database.validate(path)
 
-    assert database.current_schema_version(path) == 4
+    assert database.current_schema_version(path) == 5
     with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         tables = {
@@ -40,6 +40,10 @@ def test_database_initialization_is_idempotent_and_has_cam_v4_tables(tmp_path) -
         "cam_tool_assemblies",
         "cam_machine_definitions",
         "toolpath_artifacts",
+        "lathe_programs",
+        "lathe_operations",
+        "lathe_tool_bindings",
+        "lathe_derived_snapshots",
     }.issubset(tables)
 
 
@@ -55,7 +59,7 @@ def test_database_migrates_schema_v1_to_latest_transactionally(tmp_path) -> None
     database = ProjectDatabase()
     database.open_and_migrate(path)
 
-    assert database.current_schema_version(path) == 4
+    assert database.current_schema_version(path) == 5
     with closing(sqlite3.connect(path)) as connection, connection:
         tables = {
             row[0]
@@ -63,7 +67,7 @@ def test_database_migrates_schema_v1_to_latest_transactionally(tmp_path) -> None
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     assert {
         "cad_view_state",
         "cad_object_appearance",
@@ -77,6 +81,8 @@ def test_database_migrates_v2_to_v3_without_changing_v2_rows(tmp_path) -> None:
     database.initialize(path)
     with closing(sqlite3.connect(path)) as connection, connection:
         for table in (
+            "lathe_derived_snapshots", "lathe_tool_bindings", "lathe_operations",
+            "lathe_programs",
             "toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes",
             "cam_setups", "cam_jobs", "cam_project_state", "cam_tool_definitions",
             "cam_holder_definitions", "cam_tool_assemblies", "cam_machine_definitions",
@@ -92,7 +98,7 @@ def test_database_migrates_v2_to_v3_without_changing_v2_rows(tmp_path) -> None:
 
     database.open_and_migrate(path)
 
-    assert database.current_schema_version(path) == 4
+    assert database.current_schema_version(path) == 5
     with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT source_id FROM cad_view_state"
@@ -117,6 +123,8 @@ def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path)
         connection.execute("DROP TABLE cad_view_state")
         connection.execute("DROP TABLE cad_xcaf_occurrence_appearance")
         for table in (
+            "lathe_derived_snapshots", "lathe_tool_bindings", "lathe_operations",
+            "lathe_programs",
             "toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes",
             "cam_setups", "cam_jobs", "cam_project_state", "cam_tool_definitions",
             "cam_holder_definitions", "cam_tool_assemblies", "cam_machine_definitions",
@@ -130,7 +138,7 @@ def test_project_database_migration_does_not_modify_manifest_or_source(tmp_path)
 
     assert (project_root / "project.hms.json").read_bytes() == manifest_before
     assert stored_source.read_bytes() == source_before
-    assert ProjectDatabase().current_schema_version(project_root / "project.db") == 4
+    assert ProjectDatabase().current_schema_version(project_root / "project.db") == 5
 
 
 def test_future_and_corrupt_databases_are_rejected(tmp_path) -> None:

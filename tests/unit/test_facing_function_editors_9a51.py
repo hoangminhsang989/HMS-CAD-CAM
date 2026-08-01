@@ -956,8 +956,11 @@ def test_real_workspace_draft_apply_calculate_save_open_lifecycle(tmp_path) -> N
     workspace.add_operation()
     service.save()
     assert not service.is_dirty
-    assert service._database.current_schema_version(project.root_path / "project.db") == 4
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert (
+        service._database.current_schema_version(project.root_path / "project.db")
+        == DATABASE_SCHEMA_VERSION
+    )
+    assert DATABASE_SCHEMA_VERSION == 5
 
     session = workspace.production_function_editor_session()
     assert session is not None

@@ -104,8 +104,8 @@ def test_parallel_operation_and_parameters_round_trip_in_sqlite_v4(tmp_path) -> 
     )
     assert operation == fixture.operation
     assert parameters.stepover_mm == 1.5
-    assert database.current_schema_version(database_path) == 4
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert database.current_schema_version(database_path) == DATABASE_SCHEMA_VERSION
+    assert DATABASE_SCHEMA_VERSION == 5
 
 
 def test_published_parallel_artifact_metadata_round_trips_in_sqlite_v4(tmp_path) -> None:
@@ -131,7 +131,7 @@ def test_published_parallel_artifact_metadata_round_trips_in_sqlite_v4(tmp_path)
     operation = restored.jobs[0].setups[0].operation_tree.operations[0]
     assert operation.artifact_state == result.operation.artifact_state
     assert restored.artifacts == (result.metadata,)
-    assert database.current_schema_version(database_path) == 4
+    assert database.current_schema_version(database_path) == DATABASE_SCHEMA_VERSION
 
 
 def test_parallel_operation_survives_real_project_save_close_open(tmp_path) -> None:
@@ -169,4 +169,4 @@ def test_parallel_operation_survives_real_project_save_close_open(tmp_path) -> N
     )
     assert ProjectDatabase().current_schema_version(
         reopened.root_path / "project.db"
-    ) == 4
+    ) == DATABASE_SCHEMA_VERSION

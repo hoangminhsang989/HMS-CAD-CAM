@@ -64,6 +64,7 @@ from hms_cadcam.cam.persistence import (  # noqa: E402
     CamSqliteRepository,
 )
 from hms_cadcam.project.database import ProjectDatabase  # noqa: E402
+from hms_cadcam.project.constants import DATABASE_SCHEMA_VERSION  # noqa: E402
 from hms_cadcam.ui.tool_program_profiles import (  # noqa: E402
     ToolEditorDialog,
     ToolProfileEditorDialog,
@@ -1378,7 +1379,7 @@ def _create_package_in_process(output_root: Path | None = None) -> None:
         "markdown_count": 1,
         "model_state_asserted_before_each_image": True,
         "production_model_service_widget_only": True,
-        "sqlite_schema_version": 4,
+        "sqlite_schema_version": DATABASE_SCHEMA_VERSION,
         "font_policy": font_probe["font_policy"],
         "font_override_applied": font_probe["font_override_applied"],
         "qpa_platform": font_probe["qpa_platform"],

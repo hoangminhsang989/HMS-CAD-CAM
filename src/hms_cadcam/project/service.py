@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from collections.abc import Callable
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from hms_cadcam.project.autosave import AutosaveManager, AutosaveSnapshot
 from hms_cadcam.project.cad_state import CadViewState, default_cad_view_state
@@ -97,6 +97,17 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.cam.application.contour import ContourComputeResult
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import ContentFingerprint, DependencyFingerprint
+from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cam.domain.ids import SetupId
+from hms_cadcam.cam.lathe.domain import LatheOperationState
+from hms_cadcam.cam.lathe.lathe_post.identity import LatheProgramIdentity
+from hms_cadcam.cam.lathe.lathe_post.ir import NEUTRAL_PROFILE_ID
+from hms_cadcam.cam.lathe.persistence import (
+    LathePostConfiguration,
+    LatheProgramState,
+    LatheProjectPersistenceService,
+    LatheProjectSnapshot,
+)
 from hms_cadcam.cam.toolpath import ToolpathArtifact, ToolpathPublishResult
 from hms_cadcam.cam.simulation import (
     SimulationCacheLoad,
@@ -144,6 +155,8 @@ class ProjectService:
         nc_export_service: NCExportService | None = None,
         document_container: HmsDocumentContainer | None = None,
         geometry_inbox: GeometryTransferInbox | None = None,
+        lathe_persistence: LatheProjectPersistenceService | None = None,
+        lathe_persistence_enabled: bool = False,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -174,6 +187,13 @@ class ProjectService:
             database,
             session_locks,
         )
+        self._lathe_persistence = (
+            lathe_persistence or LatheProjectPersistenceService()
+        )
+        if type(lathe_persistence_enabled) is not bool:
+            raise TypeError("lathe_persistence_enabled must be bool")
+        self._lathe_persistence_enabled = lathe_persistence_enabled
+        self._loader.set_lathe_enabled(lathe_persistence_enabled)
         self._lifecycle_generation = 0
         self._project_opened_at = None
         self._project_session_id: UUID | None = None
@@ -185,6 +205,7 @@ class ProjectService:
         *,
         document_runtime_root: Path | None = None,
         default_document_directory: Path | None = None,
+        lathe_persistence_enabled: bool = False,
     ) -> "ProjectService":
         """Build the default project service graph for the application."""
         manifest_store = ProjectManifestStore()
@@ -194,6 +215,7 @@ class ProjectService:
         cam_repository = CamSqliteRepository()
         artifact_store = ToolpathArtifactStore()
         nc_artifact_store = NCArtifactStore()
+        lathe_persistence = LatheProjectPersistenceService()
         session_locks = SessionLockManager()
         autosave = AutosaveManager(
             manifest_store,
@@ -202,6 +224,7 @@ class ProjectService:
             cad_state_store,
             cam_repository,
             nc_artifact_store,
+            lathe_persistence=lathe_persistence,
         )
         return cls(
             creator=ProjectCreator(manifest_store, validator, database),
@@ -212,6 +235,8 @@ class ProjectService:
                 cad_state_store,
                 cam_repository,
                 artifact_store,
+                lathe_persistence=lathe_persistence,
+                lathe_enabled=lathe_persistence_enabled,
             ),
             saver=ProjectSaver(
                 manifest_store,
@@ -221,6 +246,7 @@ class ProjectService:
                 cam_repository,
                 artifact_store,
                 nc_artifact_store,
+                lathe_persistence=lathe_persistence,
             ),
             validator=validator,
             database=database,
@@ -246,6 +272,8 @@ class ProjectService:
                 database,
                 session_locks,
             ),
+            lathe_persistence=lathe_persistence,
+            lathe_persistence_enabled=lathe_persistence_enabled,
         )
 
     @property
@@ -257,6 +285,38 @@ class ProjectService:
     def current_project(self) -> ProjectSession | None:
         """Return the current session without exposing persistence adapters."""
         return self._current_project
+
+    def configure_lathe_persistence(self, enabled: bool) -> None:
+        """Enable/disable Lathe hydration without rewriting opaque database rows."""
+
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        session = self._current_project
+        if not enabled and session is not None and (
+            session.lathe_snapshot != session.persisted_lathe_snapshot
+        ):
+            raise UnsavedChangesError(
+                "Cannot disable Lathe persistence with staged authored state"
+            )
+        self._lathe_persistence_enabled = enabled
+        self._loader.set_lathe_enabled(enabled)
+        if session is None:
+            return
+        if enabled and not session.lathe_persistence_loaded:
+            result = self._lathe_persistence.load_project(
+                session.root_path / DATABASE_FILENAME,
+                session.manifest.project_id,
+                read_only=session.read_only,
+            )
+            session.lathe_snapshot = result.snapshot
+            session.persisted_lathe_snapshot = result.snapshot
+            session.lathe_restore_diagnostics = result.diagnostics
+            session.lathe_persistence_loaded = True
+        elif not enabled:
+            session.lathe_snapshot = None
+            session.persisted_lathe_snapshot = None
+            session.lathe_restore_diagnostics = ()
+            session.lathe_persistence_loaded = False
 
     @property
     def current_document(self) -> CadDocumentSession | None:
@@ -289,7 +349,7 @@ class ProjectService:
             ),
             suggested_save_directory=session.root_path.parent,
             dirty=session.is_dirty,
-            read_only=False,
+            read_only=session.read_only,
             opened_at=opened_at,
             session_id=session_id,
             format_version=session.manifest.format_version,
@@ -776,6 +836,7 @@ class ProjectService:
     def import_source(self, source_path: Path) -> ProjectSession:
         """Import a source into the current project."""
         session = self._require_current()
+        self._require_writable(session)
         self._saver.import_source(session, source_path)
         logger.info("Đã sao chép file nguồn %s vào %s", source_path, session.root_path)
         return session
@@ -785,18 +846,24 @@ class ProjectService:
         project_root: Path,
         *,
         discard_recovery: bool = False,
+        read_only: bool = False,
     ) -> ProjectSession:
         """Open a valid project without replacing current state on failure."""
+        if type(read_only) is not bool:
+            raise TypeError("read_only must be bool")
         replaced = self._recovery.inspect_replaced_for_open(project_root)
         if replaced is not None:
             raise ReplacedProjectRecoveryRequiredError(replaced)
+        if read_only:
+            session = self._loader.load(project_root, read_only=True)
+            return self._complete_activation(session)
         resolved = project_root.resolve()
         if (
             self._current_project is not None
             and self._current_project.root_path.resolve() == resolved
         ):
             self._recover_incomplete_geometry_transfers(project_root)
-            session = self._loader.load(project_root)
+            session = self._loader.load(project_root, read_only=read_only)
             return self._complete_activation(session)
         manifest = self._loader.read_manifest(project_root)
         assessment = self._recovery.assess(
@@ -814,7 +881,7 @@ class ProjectService:
         self._session_locks.acquire(project_root, manifest.project_id)
         try:
             self._recover_incomplete_geometry_transfers(project_root)
-            session = self._loader.load(project_root)
+            session = self._loader.load(project_root, read_only=read_only)
             if session.manifest.project_id != manifest.project_id:
                 raise ProjectError("Project identity changed while opening")
             return self._complete_activation(session)
@@ -885,6 +952,7 @@ class ProjectService:
     def save(self) -> ProjectSession:
         """Persist the current project."""
         current = self._require_current()
+        self._require_writable(current)
         self.flush_simulation_cache()
         current.cam_snapshot = self._cam_application.snapshot
         session = self._saver.save(current)
@@ -902,6 +970,7 @@ class ProjectService:
         if not isinstance(snapshot, CamProjectSnapshot):
             raise TypeError("CAM project snapshot is invalid")
         session = self._require_current()
+        self._require_writable(session)
         before = self._cam_application.snapshot
         changed = self._cam_application.apply(lambda _current: snapshot)
         session.cam_snapshot = changed
@@ -911,6 +980,142 @@ class ProjectService:
             self._remove_deleted_operation_simulations(session, before, changed)
             self._reconcile_nc_artifacts(session, changed)
         return session
+
+    @property
+    def lathe_snapshot(self) -> LatheProjectSnapshot | None:
+        """Return hydrated immutable Lathe state, or None while feature-off."""
+
+        return self._require_current().lathe_snapshot
+
+    def stage_lathe_snapshot(
+        self,
+        snapshot: LatheProjectSnapshot,
+    ) -> ProjectSession:
+        """Stage complete Lathe authoring through the project service boundary."""
+
+        if not isinstance(snapshot, LatheProjectSnapshot):
+            raise TypeError("Lathe snapshot is invalid")
+        session = self._require_current()
+        self._require_writable(session)
+        if not self._lathe_persistence_enabled or not session.lathe_persistence_loaded:
+            raise ProjectError("Lathe persistence facade is not active")
+        project_id = str(session.manifest.project_id)
+        if any(
+            program.identity.project_id != project_id
+            for program in snapshot.programs
+        ):
+            raise ValueError("Lathe snapshot belongs to another project")
+        before = session.lathe_snapshot
+        session.lathe_snapshot = snapshot
+        if snapshot != before:
+            session.is_dirty = True
+        return session
+
+    def stage_lathe_operations(
+        self,
+        *,
+        document_id: CadDocumentId,
+        source_id: UUID,
+        generation: int,
+        setup_id: SetupId,
+        operations: tuple[LatheOperationState, ...],
+    ) -> ProjectSession:
+        """Stage presenter-authored operations as one exact owned Lathe program."""
+
+        if not isinstance(document_id, CadDocumentId):
+            raise TypeError("document_id must be CadDocumentId")
+        if not isinstance(source_id, UUID) or source_id.int == 0:
+            raise ValueError("source_id must be a non-nil UUID")
+        if type(generation) is not int or generation < 0:
+            raise ValueError("generation must be a non-negative integer")
+        if not isinstance(setup_id, SetupId):
+            raise TypeError("setup_id must be SetupId")
+        if not isinstance(operations, tuple) or any(
+            not isinstance(item, LatheOperationState) for item in operations
+        ):
+            raise TypeError("operations must be an immutable Lathe tuple")
+        session = self._require_current()
+        self._require_writable(session)
+        current = session.lathe_snapshot
+        if (
+            not self._lathe_persistence_enabled
+            or not session.lathe_persistence_loaded
+            or current is None
+        ):
+            raise ProjectError("Lathe persistence facade is not active")
+        owner = (
+            str(session.manifest.project_id),
+            str(document_id),
+            str(source_id),
+            str(setup_id),
+        )
+        existing_index = next(
+            (
+                index
+                for index, program in enumerate(current.programs)
+                if (
+                    program.identity.project_id,
+                    program.identity.document_id,
+                    program.identity.source_id,
+                    program.identity.setup_id,
+                )
+                == owner
+            ),
+            None,
+        )
+        existing = (
+            None if existing_index is None else current.programs[existing_index]
+        )
+        if existing is None and not operations:
+            return session
+        if existing is not None and existing.operations == operations:
+            return session
+        if existing is None:
+            stable_program_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    "hms.lathe.program.v1/" + "/".join(owner),
+                )
+            )
+            identity = LatheProgramIdentity(
+                project_id=owner[0],
+                document_id=owner[1],
+                source_id=owner[2],
+                source_generation=generation,
+                setup_id=owner[3],
+                program_id=stable_program_id,
+                revision=0,
+            )
+            program = LatheProgramState(
+                identity,
+                "LATHE_PROGRAM",
+                operations,
+                NEUTRAL_PROFILE_ID,
+                LathePostConfiguration(),
+            )
+            programs = (*current.programs, program)
+            old_operation_ids: set[str] = set()
+        else:
+            identity = replace(
+                existing.identity,
+                source_generation=generation,
+                revision=existing.identity.revision + 1,
+            )
+            program = replace(existing, identity=identity, operations=operations)
+            mutable_programs = list(current.programs)
+            assert existing_index is not None
+            mutable_programs[existing_index] = program
+            programs = tuple(mutable_programs)
+            old_operation_ids = {
+                str(item.ownership.operation_id) for item in existing.operations
+            }
+        derived = tuple(
+            item
+            for item in current.derived_snapshots
+            if item.program_id != program.identity.program_id
+            and item.operation_id not in old_operation_ids
+        )
+        return self.stage_lathe_snapshot(LatheProjectSnapshot(programs, derived))
 
     @property
     def cam3d_config(self) -> Cam3DProjectConfig:
@@ -925,6 +1130,7 @@ class ProjectService:
         if not isinstance(config, Cam3DProjectConfig):
             raise TypeError("CAM 3D project config is invalid")
         session = self._require_current()
+        self._require_writable(session)
         if config.project_id != session.manifest.project_id:
             raise ValueError("CAM 3D config belongs to another project")
         before = session.cam3d_config or Cam3DProjectConfig(config.project_id)
@@ -939,6 +1145,7 @@ class ProjectService:
     ) -> ProjectSession:
         """Apply one atomic CAM snapshot mutation and mark project dirty on change."""
         session = self._require_current()
+        self._require_writable(session)
         before = self._cam_application.snapshot
         changed = self._cam_application.apply(mutation)
         session.cam_snapshot = changed
@@ -957,6 +1164,7 @@ class ProjectService:
     ) -> CamProjectSnapshot:
         """Execute one CAM application command and propagate project dirty state."""
         session = self._require_current()
+        self._require_writable(session)
         if (
             expected_generation is not None
             and expected_generation != self._cam_application.generation
@@ -1680,6 +1888,7 @@ class ProjectService:
             document.mark_dirty(True)
             return document
         session = self._require_current()
+        self._require_writable(session)
         self._require_source(session, state.source_id)
         normalized = state.normalized()
         if normalized.is_default:
@@ -1695,6 +1904,7 @@ class ProjectService:
     ) -> AutosaveSnapshot | None:
         """Snapshot the current dirty session without changing its dirty state."""
         session = self._require_current()
+        self._require_writable(session)
         if (
             expected_project_id is not None
             and session.manifest.project_id != expected_project_id
@@ -1712,6 +1922,11 @@ class ProjectService:
             persisted_cam_snapshot=session.persisted_cam_snapshot,
             cam3d_config=session.cam3d_config,
             persisted_cam3d_config=session.persisted_cam3d_config,
+            lathe_snapshot=session.lathe_snapshot,
+            persisted_lathe_snapshot=session.persisted_lathe_snapshot,
+            lathe_restore_diagnostics=session.lathe_restore_diagnostics,
+            lathe_persistence_loaded=session.lathe_persistence_loaded,
+            read_only=False,
         )
         self.flush_simulation_cache()
         autosave_snapshot = self._autosave.create_snapshot(
@@ -1737,6 +1952,7 @@ class ProjectService:
     ) -> ProjectSession:
         """Create and select an independent copy of the current project."""
         current = self._require_current()
+        self._require_writable(current)
         current.cam_snapshot = self._cam_application.snapshot
         target = self.target_path(parent_dir, project_name)
         if target.resolve() == current.root_path.resolve():
@@ -1769,7 +1985,8 @@ class ProjectService:
             raise UnsavedChangesError("Current project contains unsaved changes")
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
         self._simulation_runs.bind_project(None, None)
-        self._session_locks.release(self._current_project.root_path)
+        if not self._current_project.read_only:
+            self._session_locks.release(self._current_project.root_path)
         self._current_project = None
         self._cam_application.clear()
         self._nc_export_service.bind_project(None, None, None)
@@ -2211,12 +2428,24 @@ class ProjectService:
                 session.root_path / CAM_WORKSPACE_MANIFEST_FILENAME
             ).is_file(),
         )
+        if self._lathe_persistence_enabled and not session.lathe_persistence_loaded:
+            lathe_result = self._lathe_persistence.load_project(
+                session.root_path / session.manifest.database,
+                session.manifest.project_id,
+                read_only=session.read_only,
+            )
+            session.lathe_snapshot = lathe_result.snapshot
+            session.persisted_lathe_snapshot = lathe_result.snapshot
+            session.lathe_restore_diagnostics = lathe_result.diagnostics
+            session.lathe_persistence_loaded = True
         previous = self._current_project
         if previous is not None and previous.root_path.resolve() != session.root_path.resolve():
             try:
-                self._session_locks.release(previous.root_path)
+                if not previous.read_only:
+                    self._session_locks.release(previous.root_path)
             except Exception:
-                self._session_locks.release(session.root_path)
+                if not session.read_only:
+                    self._session_locks.release(session.root_path)
                 raise
         self._current_project = session
         if session.cam3d_config is None:
@@ -2240,7 +2469,8 @@ class ProjectService:
         except OSError:
             logger.warning("Không thể cập nhật danh sách dự án gần đây", exc_info=True)
         logger.info("Dự án hiện hành: %s", session.root_path)
-        self._cleanup_temp(session.root_path)
+        if not session.read_only:
+            self._cleanup_temp(session.root_path)
         previous_document = self._current_document
         self._current_document = None
         if previous_document is not None:
@@ -2283,6 +2513,11 @@ class ProjectService:
         if self._current_project is None:
             raise ProjectError("No HMS project is currently open")
         return self._current_project
+
+    @staticmethod
+    def _require_writable(session: ProjectSession) -> None:
+        if session.read_only:
+            raise ProjectError("Read-only project cannot be staged or saved")
 
     def _require_document(self) -> CadDocumentSession:
         if self._current_document is None:

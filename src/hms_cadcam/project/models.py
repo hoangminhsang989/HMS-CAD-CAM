@@ -12,6 +12,10 @@ from uuid import UUID
 from hms_cadcam.project.cad_state import CadViewState
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot
 from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
+from hms_cadcam.cam.lathe.persistence.models import (
+    LatheProjectSnapshot,
+    LatheRestoreDiagnostic,
+)
 
 
 class UnitSystem(StrEnum):
@@ -277,4 +281,9 @@ class ProjectSession:
     persisted_cam_snapshot: CamProjectSnapshot = field(default_factory=CamProjectSnapshot)
     cam3d_config: Cam3DProjectConfig | None = None
     persisted_cam3d_config: Cam3DProjectConfig | None = None
+    lathe_snapshot: LatheProjectSnapshot | None = None
+    persisted_lathe_snapshot: LatheProjectSnapshot | None = None
+    lathe_restore_diagnostics: tuple[LatheRestoreDiagnostic, ...] = ()
+    lathe_persistence_loaded: bool = False
+    read_only: bool = False
     replaced_directory_name: str | None = None

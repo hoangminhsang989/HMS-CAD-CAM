@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-import sqlite3
 import hashlib
+import json
+import os
+import sqlite3
 from contextlib import closing
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from hms_cadcam.project.constants import DATABASE_SCHEMA_VERSION
+from hms_cadcam.project.constants import (
+    BACKUPS_DIRECTORY,
+    DATABASE_FILENAME,
+    DATABASE_SCHEMA_VERSION,
+)
 from hms_cadcam.project.exceptions import (
     DatabaseMissingError,
     ProjectDatabaseError,
@@ -29,14 +35,38 @@ class ProjectDatabase:
         except sqlite3.Error as error:
             raise ProjectDatabaseError(str(error)) from error
 
-    def open_and_migrate(self, database_path: Path) -> None:
+    def open_and_migrate(
+        self,
+        database_path: Path,
+        *,
+        read_only: bool = False,
+    ) -> None:
         """Validate an existing database and apply supported migrations."""
         if not database_path.is_file():
             raise DatabaseMissingError(f"Missing database: {database_path}")
         try:
-            with closing(self._connect(database_path)) as connection:
+            connector = self._connect_read_only if read_only else self._connect
+            with closing(connector(database_path)) as connection:
                 self._ensure_integrity(connection)
+                current = self._validated_schema_version(connection)
+                if read_only and current < DATABASE_SCHEMA_VERSION:
+                    raise ProjectDatabaseError(
+                        "Read-only project requires a database migration"
+                    )
+                if (
+                    not read_only
+                    and current < DATABASE_SCHEMA_VERSION
+                    and current > 0
+                    and database_path.name == DATABASE_FILENAME
+                ):
+                    self._create_migration_backup(
+                        connection,
+                        database_path,
+                        current,
+                        DATABASE_SCHEMA_VERSION,
+                    )
                 self._migrate_connection(connection)
+                self._verify_schema(connection, DATABASE_SCHEMA_VERSION)
         except sqlite3.Error as error:
             raise ProjectDatabaseError(str(error)) from error
 
@@ -47,10 +77,7 @@ class ProjectDatabase:
         try:
             with closing(self._connect(database_path)) as connection:
                 self._ensure_integrity(connection)
-                version = self._schema_version(connection)
-                pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-                if version != pragma_version:
-                    raise ProjectDatabaseError("Database schema versions do not match")
+                version = self._validated_schema_version(connection)
                 if version > DATABASE_SCHEMA_VERSION:
                     raise UnsupportedFormatVersionError(str(version))
         except sqlite3.Error as error:
@@ -143,6 +170,14 @@ class ProjectDatabase:
         return connection
 
     @staticmethod
+    def _connect_read_only(database_path: Path) -> sqlite3.Connection:
+        uri = f"{database_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        return connection
+
+    @staticmethod
     def _ensure_integrity(connection: sqlite3.Connection) -> None:
         result = connection.execute("PRAGMA quick_check").fetchone()
         if result is None or result[0] != "ok":
@@ -158,13 +193,130 @@ class ProjectDatabase:
         row = connection.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
         return int(row[0]) if row else 0
 
-    def _migrate_connection(self, connection: sqlite3.Connection) -> None:
+    def _validated_schema_version(self, connection: sqlite3.Connection) -> int:
         current = self._schema_version(connection)
         pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if current != pragma_version:
             raise ProjectDatabaseError("Database schema versions do not match")
         if current > DATABASE_SCHEMA_VERSION:
             raise UnsupportedFormatVersionError(str(current))
+        return current
+
+    @staticmethod
+    def _verify_schema(connection: sqlite3.Connection, expected: int) -> None:
+        quick = connection.execute("PRAGMA quick_check").fetchone()
+        if quick is None or quick[0] != "ok":
+            raise ProjectDatabaseError("SQLite quick_check failed")
+        foreign_key_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_key_rows:
+            raise ProjectDatabaseError("SQLite foreign_key_check failed")
+        ledger = connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        if tuple(int(row[0]) for row in ledger) != tuple(range(1, expected + 1)):
+            raise ProjectDatabaseError("Database migration ledger is incomplete")
+        pragma_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if pragma_version != expected:
+            raise ProjectDatabaseError("Database user_version is invalid")
+
+    def _create_migration_backup(
+        self,
+        source: sqlite3.Connection,
+        database_path: Path,
+        source_schema: int,
+        target_schema: int,
+    ) -> Path:
+        backups_root = database_path.parent / BACKUPS_DIRECTORY
+        backups_root.mkdir(exist_ok=True)
+        token = uuid4().hex
+        staging = backups_root / (
+            f".migration-v{source_schema}-to-v{target_schema}-{token}.staging"
+        )
+        final = backups_root / (
+            f"migration-v{source_schema}-to-v{target_schema}-{token}"
+        )
+        staging.mkdir()
+        backup_path = staging / DATABASE_FILENAME
+        try:
+            with closing(self._connect(backup_path)) as target:
+                source.backup(target)
+            with closing(self._connect_read_only(backup_path)) as verified:
+                self._ensure_integrity(verified)
+                if self._validated_backup_version(verified) != source_schema:
+                    raise ProjectDatabaseError(
+                        "Migration backup schema does not match the source"
+                    )
+                if verified.execute("PRAGMA foreign_key_check").fetchall():
+                    raise ProjectDatabaseError(
+                        "Migration backup foreign_key_check failed"
+                    )
+            size_bytes = backup_path.stat().st_size
+            digest = self._sha256_file(backup_path)
+            metadata = {
+                "database": DATABASE_FILENAME,
+                "format": "HMS_SQLITE_MIGRATION_BACKUP",
+                "format_version": 1,
+                "sha256": digest,
+                "size_bytes": size_bytes,
+                "source_schema": source_schema,
+                "target_schema": target_schema,
+            }
+            metadata_path = staging / "migration-backup.json"
+            temporary = staging / f".migration-backup-{token}.tmp"
+            temporary.write_text(
+                json.dumps(
+                    metadata,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            os.replace(temporary, metadata_path)
+            if backup_path.stat().st_size != size_bytes or self._sha256_file(
+                backup_path
+            ) != digest:
+                raise ProjectDatabaseError("Migration backup verification failed")
+            os.replace(staging, final)
+        except Exception:
+            if staging.exists():
+                for child in staging.iterdir():
+                    child.unlink(missing_ok=True)
+                staging.rmdir()
+            raise
+        return final
+
+    @staticmethod
+    def _validated_backup_version(connection: sqlite3.Connection) -> int:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = ? AND name = ?",
+            ("table", "schema_migrations"),
+        ).fetchone()
+        if table is None:
+            return 0
+        row = connection.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()
+        ledger = int(row[0]) if row else 0
+        pragma = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if ledger != pragma:
+            raise ProjectDatabaseError("Migration backup schema versions differ")
+        return ledger
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _migrate_connection(self, connection: sqlite3.Connection) -> None:
+        current = self._validated_schema_version(connection)
         for version in range(current + 1, DATABASE_SCHEMA_VERSION + 1):
             statements = MIGRATIONS.get(version)
             if statements is None:
@@ -178,6 +330,7 @@ class ProjectDatabase:
                     (version, datetime_to_json(utc_now())),
                 )
                 connection.execute(f"PRAGMA user_version = {version}")
+                self._verify_schema(connection, version)
                 connection.commit()
             except Exception:
                 connection.rollback()

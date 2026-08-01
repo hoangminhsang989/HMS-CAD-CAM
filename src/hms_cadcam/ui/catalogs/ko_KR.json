@@ -1863,5 +1863,10 @@
   "lathe.basic_post.conformance.sample_backed":"샘플 기반 전략",
   "lathe.basic_post.conformance.contract_derived":"계약 파생 전략",
   "lathe.basic_post.conformance.strategy_coverage":"전략 범위",
-  "lathe.basic_post.conformance.behavior_revision":"동작 개정"
+  "lathe.basic_post.conformance.behavior_revision":"동작 개정",
+  "lathe.persistence.derived_corrupt":"손상된 선삭 캐시를 무시했습니다: {subject}",
+  "lathe.persistence.derived_stale":"오래된 선삭 캐시를 복원하지 않았습니다: {subject}",
+  "lathe.persistence.derived_ownership_mismatch":"선삭 캐시 소유권이 일치하지 않습니다: {subject}",
+  "lathe.persistence.derived_version_mismatch":"선삭 캐시 버전이 호환되지 않습니다: {subject}",
+  "lathe.persistence.authoring_incompatible":"선삭 작성 데이터가 호환되지 않습니다: {subject}"
 }

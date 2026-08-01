@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+
+import pytest
 
 from hms_cadcam.cam.lathe.toolpath import (
     EXECUTABLE_LATHE_TOOLPATH_STRATEGIES,
@@ -21,14 +23,120 @@ TOOLPATH = ROOT / "src" / "hms_cadcam" / "cam" / "lathe" / "toolpath"
 UI = ROOT / "src" / "hms_cadcam" / "ui"
 SPEC = ROOT / "docs" / "architecture" / "STAGE_12_2_LATHE_TOOLPATH_PREVIEW_V2.md"
 
-HISTORICAL_DIRTY = {
-    "docs/CAM_3D_STAGE_8A3_1_Z_LEVEL_FINISHING_FOUNDATION.md",
-    "docs/CURRENT_TASK.md",
-    "docs/HMS_STORAGE_ARCHITECTURE_8A4_4.md",
-    "docs/PROJECT_STATE.md",
-    "docs/UI_POST_PROGRAM_ASSEMBLY_9A7.md",
-    "docs/UI_STAGE_9A7_ACCEPTANCE.md",
+STAGE12_2_BASE_COMMIT = "a5ac5245f94a02b745ac0e4557a126df182c5618"
+STAGE12_2_CANDIDATE_COMMIT = "2b9ae9f6b0525f13fe7c6676eda2215d26b8e794"
+STAGE12_2_BOUNDARY_PATHS = (
+    "docs/architecture/STAGE_12_2_LATHE_TOOLPATH_PREVIEW_V2.md",
+    "src/hms_cadcam/cam/lathe/toolpath/__init__.py",
+    "src/hms_cadcam/cam/lathe/toolpath/generators.py",
+    "src/hms_cadcam/cam/lathe/toolpath/model.py",
+    "src/hms_cadcam/cam/lathe/toolpath/request.py",
+    "src/hms_cadcam/ui/catalogs/en_US.json",
+    "src/hms_cadcam/ui/catalogs/ko_KR.json",
+    "src/hms_cadcam/ui/catalogs/vi_VN.json",
+    "src/hms_cadcam/ui/lathe_toolpath.py",
+    "tests/unit/test_lathe_toolpath_architecture_12_1.py",
+    "tests/unit/test_lathe_toolpath_architecture_12_2.py",
+    "tests/unit/test_lathe_toolpath_generators_12_1.py",
+    "tests/unit/test_lathe_toolpath_generators_12_2.py",
+    "tests/unit/test_lathe_toolpath_request_cache_12_1.py",
+    "tests/unit/test_lathe_toolpath_request_cache_12_2.py",
+    "tests/unit/test_lathe_toolpath_ui_12_1.py",
+    "tests/unit/test_lathe_toolpath_ui_12_2.py",
+    "tests/unit/test_lathe_toolpath_viewport_12_2.py",
+    "tests/unit/test_tool_program_profiles_ui_8a41.py",
+)
+STAGE12_2_PATH_CAPS = {
+    "total": 47,
+    "non_catalog_src": 24,
+    "tests": 18,
+    "catalogs": 3,
+    "docs": 2,
 }
+STAGE12_2_FORBIDDEN_PATH_TOKENS = (
+    "database",
+    "schema",
+    "/post/",
+    "gcode",
+    "simulation",
+    "persistence",
+)
+
+
+def _validate_candidate_paths(
+    paths: tuple[str, ...],
+    *,
+    allowlist: tuple[str, ...] = STAGE12_2_BOUNDARY_PATHS,
+) -> None:
+    if not paths:
+        raise ValueError("candidate boundary is empty")
+    if len(paths) != len(set(paths)):
+        raise ValueError("candidate boundary contains duplicate paths")
+
+    for path in paths:
+        normalized = PurePosixPath(path).as_posix() if path else ""
+        parts = path.split("/")
+        if (
+            not path
+            or path != path.strip()
+            or "\\" in path
+            or Path(path).is_absolute()
+            or any(part in {"", ".", ".."} for part in parts)
+            or normalized != path
+        ):
+            raise ValueError(f"candidate boundary contains malformed path: {path!r}")
+
+    forbidden_hits = tuple(
+        (path, token)
+        for path in paths
+        for token in STAGE12_2_FORBIDDEN_PATH_TOKENS
+        if token in path.casefold()
+    )
+    if forbidden_hits:
+        raise ValueError(f"candidate boundary contains forbidden paths: {forbidden_hits!r}")
+
+    unexpected = tuple(sorted(set(paths) - set(allowlist)))
+    missing = tuple(sorted(set(allowlist) - set(paths)))
+    if unexpected or missing:
+        raise ValueError(
+            f"candidate boundary differs from allowlist: missing={missing!r}, "
+            f"unexpected={unexpected!r}"
+        )
+
+    counts = {
+        "total": len(paths),
+        "non_catalog_src": sum(
+            path.startswith("src/") and "/catalogs/" not in path for path in paths
+        ),
+        "tests": sum(path.startswith("tests/") for path in paths),
+        "catalogs": sum("/catalogs/" in path for path in paths),
+        "docs": sum(path.startswith("docs/") for path in paths),
+    }
+    excess = {
+        category: (counts[category], cap)
+        for category, cap in STAGE12_2_PATH_CAPS.items()
+        if counts[category] > cap
+    }
+    if excess:
+        raise ValueError(f"candidate boundary exceeds path caps: {excess!r}")
+
+
+def _run_git(*arguments: str) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0 or completed.stderr:
+        raise AssertionError(
+            f"git {' '.join(arguments)} failed: returncode={completed.returncode}; "
+            f"stderr={completed.stderr!r}"
+        )
+    return completed
 
 
 def _imports(path: Path) -> tuple[str, ...]:
@@ -285,34 +393,66 @@ def test_locked_stage12_stage9a9_and_stage12_1_specs_are_unchanged() -> None:
 
 
 def test_candidate_paths_are_allowlisted_and_below_stage12_2_caps() -> None:
-    completed = subprocess.run(
-        ["git", "status", "--short", "--untracked-files=all"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-        check=True,
+    for commit in (STAGE12_2_BASE_COMMIT, STAGE12_2_CANDIDATE_COMMIT):
+        _run_git("cat-file", "-e", f"{commit}^{{commit}}")
+    _run_git(
+        "merge-base",
+        "--is-ancestor",
+        STAGE12_2_BASE_COMMIT,
+        STAGE12_2_CANDIDATE_COMMIT,
     )
-    dirty = {
-        line[3:].replace("\\", "/")
-        for line in completed.stdout.splitlines()
-        if line.strip()
-    } - HISTORICAL_DIRTY
-    assert len(dirty) <= 47
-    assert sum(path.startswith("src/") and "/catalogs/" not in path for path in dirty) <= 24
-    assert sum(path.startswith("tests/") for path in dirty) <= 18
-    assert sum("/catalogs/" in path for path in dirty) <= 3
-    assert sum(path.startswith("docs/") for path in dirty) <= 2
-    forbidden = (
-        "database",
-        "schema",
-        "/post/",
-        "gcode",
-        "simulation",
-        "persistence",
+    completed = _run_git(
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "--diff-filter=ACDMRTUXB",
+        "-z",
+        STAGE12_2_BASE_COMMIT,
+        STAGE12_2_CANDIDATE_COMMIT,
+        "--",
     )
-    assert not any(token in path.casefold() for path in dirty for token in forbidden)
+    boundary_paths = (
+        ()
+        if not completed.stdout
+        else tuple(sorted(completed.stdout.removesuffix("\0").split("\0")))
+    )
+    _validate_candidate_paths(boundary_paths)
+
+
+def test_candidate_path_validator_rejects_empty_duplicate_and_malformed() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        _validate_candidate_paths(())
+
+    duplicate = (STAGE12_2_BOUNDARY_PATHS[0],) * 2
+    with pytest.raises(ValueError, match="duplicate"):
+        _validate_candidate_paths(duplicate, allowlist=duplicate)
+
+    malformed_paths = (
+        "C:/absolute/path.py",
+        "tests\\unit\\backslash.py",
+        "tests/./dot_segment.py",
+        "tests/unit/../dot_dot_segment.py",
+        "tests//unit/non_normalized.py",
+    )
+    for malformed in malformed_paths:
+        with pytest.raises(ValueError, match="malformed"):
+            _validate_candidate_paths((malformed,), allowlist=(malformed,))
+
+
+def test_candidate_path_validator_rejects_out_of_allowlist_and_forbidden() -> None:
+    unexpected = "src/hms_cadcam/cam/lathe/unexpected.py"
+    with pytest.raises(ValueError, match="differs from allowlist"):
+        _validate_candidate_paths((unexpected,))
+
+    forbidden = "src/hms_cadcam/project/persistence.py"
+    with pytest.raises(ValueError, match="forbidden"):
+        _validate_candidate_paths((forbidden,), allowlist=(forbidden,))
+
+
+def test_candidate_path_validator_rejects_cap_excess() -> None:
+    over_total_cap = tuple(f"assets/stage12_2_{index:02d}.txt" for index in range(48))
+    with pytest.raises(ValueError, match="exceeds path caps"):
+        _validate_candidate_paths(over_total_cap, allowlist=over_total_cap)
 
 
 def test_public_toolpath_exports_all_six_generators_and_versions() -> None:

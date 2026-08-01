@@ -284,6 +284,15 @@ class MainWindow(QMainWindow):
             self._lathe_review_host
             and self._ui_feature_flags.is_enabled(UiFeatureFlag.LATHE_TOOLPATH_12_1)
         )
+        self._lathe_persistence_host = (
+            self._lathe_review_host
+            and self._ui_feature_flags.is_enabled(
+                UiFeatureFlag.LATHE_PERSISTENCE_12_5A
+            )
+        )
+        self._project_service.configure_lathe_persistence(
+            self._lathe_persistence_host
+        )
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
         )
@@ -342,6 +351,7 @@ class MainWindow(QMainWindow):
             str,
             tuple[str, dict[str, object], frozenset[str]],
         ] = {}
+        self._reported_lathe_diagnostics: set[tuple[str, str]] = set()
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self._viewport_baseline_minimum = QSize(self.viewport.minimumSize())
@@ -675,6 +685,11 @@ class MainWindow(QMainWindow):
                 toolpath_sink=(
                     self._lathe_toolpath_sink
                     if self._lathe_toolpath_preview_host
+                    else None
+                ),
+                persistence_port=(
+                    self._project_service
+                    if self._lathe_persistence_host
                     else None
                 ),
                 parent=self,
@@ -3537,6 +3552,16 @@ class MainWindow(QMainWindow):
             )
             self.lathe_dock.hide()
             return
+        if self._lathe_persistence_host:
+            for diagnostic in session.lathe_restore_diagnostics:
+                key = (diagnostic.code.value, diagnostic.subject_id)
+                if key in self._reported_lathe_diagnostics:
+                    continue
+                self._reported_lathe_diagnostics.add(key)
+                self._append_localized_output(
+                    diagnostic.code.value,
+                    subject=diagnostic.subject_id,
+                )
         active_job = next(
             (
                 item

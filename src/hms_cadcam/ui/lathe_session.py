@@ -36,6 +36,7 @@ from hms_cadcam.cam.lathe.types import (
     LatheWorkspaceReadinessReason,
     LatheWorkspaceReadinessState,
 )
+from hms_cadcam.cam.lathe.domain import LatheOperationState
 from hms_cadcam.ui.lathe_adapters import (
     LatheSelectionContext,
     ProjectLatheToolCatalog,
@@ -78,6 +79,23 @@ class LatheWorkspacePort(Protocol):
         *,
         unavailable_reason: str = "lathe.presenter.unavailable",
     ) -> None: ...
+
+
+class LathePersistencePort(Protocol):
+    """Narrow project-service boundary; UI never opens SQLite directly."""
+
+    @property
+    def lathe_snapshot(self) -> object | None: ...
+
+    def stage_lathe_operations(
+        self,
+        *,
+        document_id: CadDocumentId,
+        source_id: UUID,
+        generation: int,
+        setup_id: SetupId,
+        operations: tuple[LatheOperationState, ...],
+    ) -> object: ...
 
     def bind_toolpath_controller(
         self, controller: LatheToolpathUiController | None
@@ -141,6 +159,7 @@ class LatheSessionController(QObject):
             LatheToolReference, frozenset[LatheToolCapability]
         ] | None = None,
         toolpath_sink: LathePreviewSink | None = None,
+        persistence_port: LathePersistencePort | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -156,6 +175,12 @@ class LatheSessionController(QObject):
         ):
             raise TypeError("Lathe session toolpath sink is invalid")
         self._toolpath_sink = toolpath_sink
+        if persistence_port is not None and (
+            not hasattr(persistence_port, "lathe_snapshot")
+            or not callable(getattr(persistence_port, "stage_lathe_operations", None))
+        ):
+            raise TypeError("Lathe persistence port is invalid")
+        self._persistence_port = persistence_port
         self._context: LatheUiContext | None = None
         self._catalog: ProjectLatheToolCatalog | None = None
         self._service: LatheOperationService | None = None
@@ -193,6 +218,15 @@ class LatheSessionController(QObject):
             or self._service is None
             or self._presenter is None
             or self._service.session.closed
+            or (
+                self._persistence_port is not None
+                and self._context is not None
+                and (
+                    self._context.source_id != context.source_id
+                    or self._context.generation != context.generation
+                    or self._context.setup_id != context.setup_id
+                )
+            )
         )
         if identity_changed:
             self._replace_session(context)
@@ -281,6 +315,25 @@ class LatheSessionController(QObject):
             ),
             capability_resolver=catalog,
         )
+        if self._persistence_port is not None:
+            snapshot = self._persistence_port.lathe_snapshot
+            if snapshot is not None:
+                matches = tuple(
+                    program
+                    for program in getattr(snapshot, "programs", ())
+                    if (
+                        program.identity.project_id == str(context.project_id)
+                        and program.identity.document_id == str(context.document_id)
+                        and program.identity.source_id == str(context.source_id)
+                        and program.identity.source_generation == context.generation
+                        and context.setup_id is not None
+                        and program.identity.setup_id == str(context.setup_id)
+                    )
+                )
+                if len(matches) > 1:
+                    raise ValueError("Multiple persisted Lathe programs match one context")
+                if matches:
+                    service.restore_operations(matches[0].operations)
         facade = ActiveLathePresenterFacade(service)
         presenter = LatheQtPresenter(
             facade,
@@ -288,6 +341,8 @@ class LatheSessionController(QObject):
             self._selection_provider,
             self,
         )
+        if self._persistence_port is not None:
+            presenter.command_completed.connect(self._stage_presenter_change)
         toolpath = (
             LatheToolpathUiController(
                 service,
@@ -307,6 +362,24 @@ class LatheSessionController(QObject):
         self._workspace.bind_toolpath_controller(toolpath)
         self.availability_changed.emit(True, "")
 
+    def _stage_presenter_change(self, result: object) -> None:
+        """Stage accepted presenter mutations through one project service call."""
+
+        if not bool(getattr(result, "changed", False)):
+            return
+        context = self._context
+        service = self._service
+        port = self._persistence_port
+        if context is None or context.setup_id is None or service is None or port is None:
+            raise RuntimeError("Lathe persistence context changed during a command")
+        port.stage_lathe_operations(
+            document_id=context.document_id,
+            source_id=context.source_id,
+            generation=context.generation,
+            setup_id=context.setup_id,
+            operations=service.list_operations(),
+        )
+
 
 def _lathe_stock_snapshot(
     context: LatheUiContext,
@@ -324,5 +397,6 @@ def _lathe_stock_snapshot(
 __all__ = [
     "ActiveLathePresenterFacade",
     "LatheSessionController",
+    "LathePersistencePort",
     "LatheUiContext",
 ]

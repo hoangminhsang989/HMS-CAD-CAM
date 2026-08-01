@@ -21,6 +21,7 @@ from hms_cadcam.project.constants import (
     BACKUPS_DIRECTORY,
     CAM_WORKSPACE_MANIFEST_FILENAME,
     DATABASE_FILENAME,
+    DATABASE_SCHEMA_VERSION,
     INCOMING_GEOMETRY_APPLIED_DIRECTORY,
     INCOMING_GEOMETRY_DIRECTORY,
     INCOMING_GEOMETRY_FAILED_DIRECTORY,
@@ -632,10 +633,10 @@ class GeometryTransferInbox:
             self._database.validate(database_path)
             if (
                 self._database.current_schema_version(database_path)
-                != 4
+                != DATABASE_SCHEMA_VERSION
             ):
                 raise GeometryTransferTargetError(
-                    "project.db chưa ở schema v4 được hỗ trợ."
+                    "project.db chưa ở schema hiện hành được hỗ trợ."
                 )
             self._database.validate_project_identity(
                 database_path,

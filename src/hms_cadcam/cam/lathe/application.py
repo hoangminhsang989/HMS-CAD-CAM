@@ -12,6 +12,7 @@ from hms_cadcam.cam.lathe.capabilities import (
     FailClosedLatheToolCapabilityResolver,
     LatheToolCapabilityResolution,
     LatheToolCapabilityResolver,
+    LatheToolReference,
 )
 from hms_cadcam.cam.lathe.commands import (
     BindLatheGeometry,
@@ -43,6 +44,7 @@ from hms_cadcam.cam.lathe.strategies import lathe_strategy_definition
 from hms_cadcam.cam.lathe.types import (
     LatheDiagnostic,
     LatheDiagnosticCode,
+    LatheOperationReadiness,
     ordered_lathe_diagnostics,
 )
 
@@ -141,6 +143,7 @@ class LatheOperationService:
         if not callable(getattr(self._capability_resolver, "resolve", None)):
             raise TypeError("capability_resolver must implement resolve")
         self._operations: dict[OperationId, LatheOperationState] = {}
+        self._restored_geometry_ids: set[OperationId] = set()
 
     @property
     def session(self) -> LatheServiceSession:
@@ -175,6 +178,45 @@ class LatheOperationService:
     def list_operations(self) -> tuple[LatheOperationState, ...]:
         """Return operations in deterministic creation order."""
 
+        return tuple(self._operations.values())
+
+    def restore_operations(
+        self,
+        operations: tuple[LatheOperationState, ...],
+    ) -> tuple[LatheOperationState, ...]:
+        """Atomically hydrate one complete immutable authored tuple exactly once."""
+
+        if not isinstance(operations, tuple) or any(
+            not isinstance(item, LatheOperationState) for item in operations
+        ):
+            raise TypeError("operations must be an immutable Lathe tuple")
+        if self._session.closed:
+            raise ValueError("Cannot restore a closed Lathe session")
+        if self._operations:
+            raise ValueError("Lathe operations have already been hydrated")
+        if len({item.ownership.operation_id for item in operations}) != len(
+            operations
+        ):
+            raise ValueError("Restored Lathe operation identities must be unique")
+        if self._session.setup_id is None and operations:
+            raise ValueError("Cannot restore Lathe operations without an active setup")
+        for operation in operations:
+            ownership = operation.ownership
+            if (
+                ownership.project_id != self._session.project_id
+                or ownership.document_id != self._session.document_id
+                or ownership.source_id != self._session.source_id
+                or ownership.generation != self._session.generation
+                or ownership.setup_id != self._session.setup_id
+            ):
+                raise ValueError("Restored Lathe ownership tuple is stale")
+        restored = {item.ownership.operation_id: item for item in operations}
+        self._operations = restored
+        self._restored_geometry_ids = {
+            item.ownership.operation_id
+            for item in operations
+            if item.geometry_binding is not None
+        }
         return tuple(self._operations.values())
 
     def evaluate(self, operation_id: OperationId) -> LatheOperationEvaluation:
@@ -280,6 +322,7 @@ class LatheOperationService:
                 diagnostics=(),
                 revision=operation.revision.next(),
             )
+            self._restored_geometry_ids.discard(operation.ownership.operation_id)
         elif isinstance(command, ClearLatheGeometry):
             candidate = replace(
                 operation,
@@ -287,6 +330,7 @@ class LatheOperationService:
                 diagnostics=(),
                 revision=operation.revision.next(),
             )
+            self._restored_geometry_ids.discard(operation.ownership.operation_id)
         elif isinstance(command, BindLatheTool):
             resolution = self._capability_resolver.resolve(command.reference)
             if not isinstance(resolution, LatheToolCapabilityResolution):
@@ -329,6 +373,7 @@ class LatheOperationService:
         elif isinstance(command, DeleteLatheOperation):
             tombstone = replace(operation, revision=operation.revision.next())
             del self._operations[operation.ownership.operation_id]
+            self._restored_geometry_ids.discard(operation.ownership.operation_id)
             evaluation = self._evaluate(tombstone)
             return LatheCommandOutcome(
                 True,
@@ -441,7 +486,7 @@ class LatheOperationService:
         return ()
 
     def _evaluate(self, operation: LatheOperationState) -> LatheOperationEvaluation:
-        return evaluate_lathe_operation(
+        evaluation = evaluate_lathe_operation(
             operation,
             project_id=self._session.project_id,
             document_id=self._session.document_id,
@@ -451,6 +496,59 @@ class LatheOperationService:
             read_only=self._session.read_only,
             closed=self._session.closed,
         )
+        binding = operation.tool_binding
+        if operation.ownership.operation_id in self._restored_geometry_ids:
+            diagnostics = ordered_lathe_diagnostics(
+                (
+                    *evaluation.diagnostics,
+                    LatheDiagnostic(LatheDiagnosticCode.MISSING_GEOMETRY),
+                )
+            )
+            evaluation = LatheOperationEvaluation(
+                (
+                    LatheOperationReadiness.INVALID
+                    if evaluation.readiness is LatheOperationReadiness.INVALID
+                    else LatheOperationReadiness.INCOMPLETE
+                ),
+                diagnostics,
+            )
+        if binding is None:
+            return evaluation
+        reference = LatheToolReference(
+            binding.tool_id,
+            binding.profile_id,
+            binding.assembly_id,
+        )
+        resolution = self._capability_resolver.resolve(reference)
+        if not isinstance(resolution, LatheToolCapabilityResolution) or (
+            resolution.reference != reference or not resolution.exists
+        ):
+            diagnostics = ordered_lathe_diagnostics(
+                (*evaluation.diagnostics, LatheDiagnostic(LatheDiagnosticCode.MISSING_TOOL))
+            )
+            return LatheOperationEvaluation(
+                LatheOperationReadiness.INCOMPLETE,
+                diagnostics,
+            )
+        required = lathe_strategy_definition(
+            operation.strategy_id
+        ).required_tool_capabilities
+        current_binding = (
+            resolution.current
+            and resolution.tool_revision == binding.tool_revision
+            and resolution.profile_revision == binding.profile_revision
+            and resolution.assembly_revision == binding.assembly_revision
+            and required.issubset(resolution.capabilities)
+        )
+        if not current_binding:
+            diagnostics = ordered_lathe_diagnostics(
+                (
+                    *evaluation.diagnostics,
+                    LatheDiagnostic(LatheDiagnosticCode.INCOMPATIBLE_TOOL),
+                )
+            )
+            return LatheOperationEvaluation(LatheOperationReadiness.INVALID, diagnostics)
+        return evaluation
 
     def _rejected(
         self,

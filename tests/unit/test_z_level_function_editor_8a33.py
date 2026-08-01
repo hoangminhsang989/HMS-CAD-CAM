@@ -567,7 +567,7 @@ def test_workspace_apply_duplicate_save_open_keeps_sqlite_v4_contract(tmp_path) 
     service.save()
     service.close_project(discard_changes=True)
     service.open_project(root)
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert DATABASE_SCHEMA_VERSION == 5
     assert len(
         service.cam_snapshot.jobs[0].setups[0].operation_tree.operations
     ) == 2

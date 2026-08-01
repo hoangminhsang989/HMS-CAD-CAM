@@ -1863,5 +1863,10 @@
   "lathe.basic_post.conformance.sample_backed":"Sample-backed strategy",
   "lathe.basic_post.conformance.contract_derived":"Contract-derived strategy",
   "lathe.basic_post.conformance.strategy_coverage":"Strategy coverage",
-  "lathe.basic_post.conformance.behavior_revision":"Behavior revision"
+  "lathe.basic_post.conformance.behavior_revision":"Behavior revision",
+  "lathe.persistence.derived_corrupt":"A corrupt Lathe cache was ignored: {subject}",
+  "lathe.persistence.derived_stale":"A stale Lathe cache was not restored: {subject}",
+  "lathe.persistence.derived_ownership_mismatch":"Lathe cache ownership does not match: {subject}",
+  "lathe.persistence.derived_version_mismatch":"Lathe cache version is incompatible: {subject}",
+  "lathe.persistence.authoring_incompatible":"Lathe authoring data is incompatible: {subject}"
 }

@@ -200,4 +200,121 @@ MIGRATIONS: dict[int, Sequence[str]] = {
         CREATE INDEX idx_cam_operations_setup ON cam_operations(setup_id, position)
         """,
     ),
+    5: (
+        """
+        CREATE TABLE lathe_programs (
+            program_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL,
+            document_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            setup_id TEXT NOT NULL,
+            source_generation INTEGER NOT NULL CHECK (source_generation >= 0),
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            display_name TEXT NOT NULL,
+            operation_count INTEGER NOT NULL CHECK (
+                operation_count >= 0 AND operation_count <= 1000
+            ),
+            selected_post_profile_id TEXT,
+            post_config_json TEXT NOT NULL,
+            persistence_schema_version INTEGER NOT NULL CHECK (
+                persistence_schema_version = 1
+            )
+        )
+        """,
+        """
+        CREATE INDEX idx_lathe_programs_project_document
+        ON lathe_programs(project_id, document_id)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_lathe_programs_exact_owner
+        ON lathe_programs(project_id, document_id, source_id, setup_id)
+        """,
+        """
+        CREATE TABLE lathe_operations (
+            operation_id TEXT PRIMARY KEY NOT NULL,
+            program_id TEXT NOT NULL REFERENCES lathe_programs(program_id)
+                ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            strategy_id TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 0),
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            payload_json TEXT NOT NULL,
+            parameters_schema_version INTEGER NOT NULL CHECK (
+                parameters_schema_version = 1
+            ),
+            UNIQUE(program_id, position),
+            UNIQUE(program_id, operation_id)
+        )
+        """,
+        """
+        CREATE INDEX idx_lathe_operations_program_position
+        ON lathe_operations(program_id, position)
+        """,
+        """
+        CREATE TABLE lathe_tool_bindings (
+            operation_id TEXT PRIMARY KEY NOT NULL
+                REFERENCES lathe_operations(operation_id) ON DELETE CASCADE,
+            tool_id TEXT NOT NULL,
+            profile_id TEXT,
+            assembly_id TEXT,
+            capability_id TEXT,
+            binding_revision INTEGER NOT NULL CHECK (binding_revision >= 0)
+        )
+        """,
+        """
+        CREATE INDEX idx_lathe_tool_bindings_tool
+        ON lathe_tool_bindings(tool_id, profile_id, assembly_id)
+        """,
+        """
+        CREATE TABLE lathe_derived_snapshots (
+            snapshot_id TEXT PRIMARY KEY NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN (
+                'accepted_toolpath',
+                'accepted_program_ir',
+                'neutral_listing',
+                'basic_nc_preview',
+                'conformance_review'
+            )),
+            program_id TEXT REFERENCES lathe_programs(program_id)
+                ON DELETE CASCADE,
+            operation_id TEXT REFERENCES lathe_operations(operation_id)
+                ON DELETE CASCADE,
+            owner_revision INTEGER NOT NULL CHECK (owner_revision >= 0),
+            schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+            algorithm_version TEXT NOT NULL,
+            dependency_fingerprint TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            CHECK (
+                (kind = 'accepted_toolpath'
+                    AND operation_id IS NOT NULL AND program_id IS NULL)
+                OR
+                (kind IN (
+                    'accepted_program_ir',
+                    'neutral_listing',
+                    'basic_nc_preview',
+                    'conformance_review'
+                ) AND program_id IS NOT NULL AND operation_id IS NULL)
+            )
+        )
+        """,
+        """
+        CREATE INDEX idx_lathe_derived_program
+        ON lathe_derived_snapshots(program_id, kind)
+        """,
+        """
+        CREATE INDEX idx_lathe_derived_operation
+        ON lathe_derived_snapshots(operation_id, kind)
+        """,
+        """
+        CREATE UNIQUE INDEX idx_lathe_derived_program_kind
+        ON lathe_derived_snapshots(program_id, kind)
+        WHERE program_id IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX idx_lathe_derived_operation_kind
+        ON lathe_derived_snapshots(operation_id, kind)
+        WHERE operation_id IS NOT NULL
+        """,
+    ),
 }

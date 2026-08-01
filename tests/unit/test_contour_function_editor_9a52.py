@@ -645,7 +645,7 @@ def test_real_workspace_selection_validate_preview_apply_calculate_and_lifecycle
     service.open_project(root)
     restored = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert ContourParameters.from_operation_parameters(restored.parameters).stepdown.value == 0.5
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert DATABASE_SCHEMA_VERSION == 5
     workspace.deleteLater()
     application.processEvents()
 

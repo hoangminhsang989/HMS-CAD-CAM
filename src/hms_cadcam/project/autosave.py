@@ -57,6 +57,7 @@ from hms_cadcam.cam.cam3d.persistence import (
     Cam3DProjectStore,
     Cam3DPersistenceError,
 )
+from hms_cadcam.cam.lathe.persistence import LatheProjectPersistenceService
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SNAPSHOT_PREFIX = "snapshot-"
@@ -223,6 +224,7 @@ class AutosaveManager:
         cam_repository: CamSqliteRepository | None = None,
         nc_artifact_store: NCArtifactStore | None = None,
         cam3d_store: Cam3DProjectStore | None = None,
+        lathe_persistence: LatheProjectPersistenceService | None = None,
     ) -> None:
         self._manifest_store = manifest_store
         self._validator = validator
@@ -231,6 +233,9 @@ class AutosaveManager:
         self._cam_repository = cam_repository or CamSqliteRepository()
         self._nc_artifact_store = nc_artifact_store or NCArtifactStore()
         self._cam3d_store = cam3d_store or Cam3DProjectStore()
+        self._lathe_persistence = (
+            lathe_persistence or LatheProjectPersistenceService()
+        )
         self._operation_lock = threading.Lock()
 
     def create_snapshot(
@@ -239,6 +244,8 @@ class AutosaveManager:
         session_id: UUID,
     ) -> AutosaveSnapshot:
         """Create and atomically select a validated immutable snapshot."""
+        if session.read_only:
+            raise AutosaveSnapshotError("Read-only project cannot be autosaved")
         if not self._operation_lock.acquire(blocking=False):
             raise AutosaveBusyError("Another autosave operation is already running")
         try:
@@ -303,6 +310,11 @@ class AutosaveManager:
                         (record.source_id for record in session.manifest.source_files),
                     )
                     self._cam_repository.replace_all(connection, session.cam_snapshot)
+                    if session.lathe_snapshot is not None:
+                        self._lathe_persistence.replace_all(
+                            connection,
+                            session.lathe_snapshot,
+                        )
                 self._nc_artifact_store.copy_workspace(
                     session.root_path,
                     staging,

@@ -663,7 +663,7 @@ def test_real_workspace_select_validate_preview_apply_calculate_and_lifecycle(
     assert PocketStrategy.from_operation_parameters(
         restored.parameters, reference
     ).stepdown.value == 0.5
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert DATABASE_SCHEMA_VERSION == 5
     workspace.deleteLater()
     application.processEvents()
 

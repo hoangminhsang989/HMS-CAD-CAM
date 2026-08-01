@@ -95,7 +95,7 @@ def test_four_production_sessions_construct_with_shared_sections(
     validate_drilling_family_schema_contract(production.schema, kind)
     operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert isinstance(strategy_type.from_operation_parameters(operation.parameters), strategy_type)
-    assert DATABASE_SCHEMA_VERSION == 4
+    assert DATABASE_SCHEMA_VERSION == 5
     workspace.deleteLater()
 
 

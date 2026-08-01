@@ -62,7 +62,7 @@ def test_project_save_open_round_trip_preserves_optional_profiles(tmp_path) -> N
     }
     assert ProjectDatabase().current_schema_version(
         reopened.root_path / "project.db"
-    ) == 4
+    ) == 5
     service.close_project()
 
 
