@@ -10,17 +10,21 @@ import pytest
 
 from hms_cadcam.cam.lathe.lathe_post import (
     BasicFinalSafeTool,
+    BasicPostDiagnosticCode,
     ExternalSampleDiscoveryStatus,
     LatheBasicFanucPostRendererV1,
     LatheBasicNcService,
     LatheNcConformanceAnalyzerV1,
     LatheNcConformanceCategory,
     LatheNcConformanceStatus,
+    LatheProgramBlockKind,
+    OperationPayload,
     discover_external_samples,
     lathe_sample_contract_v1,
     basic_lathe_post_profile,
 )
 from hms_cadcam.cam.lathe.lathe_post.formatting import format_number, sanitize_comment
+from hms_cadcam.cam.lathe.types import LatheStrategyId
 from tests.unit._lathe_post_conformance_fixtures import (
     SCENARIO_A_STRATEGIES,
     SCENARIO_B_STRATEGIES,
@@ -52,6 +56,21 @@ EXPECTED_SAMPLES = (
         88,
     ),
 )
+
+EXPECTED_SCENARIO_IDENTITIES = {
+    "A": (
+        "0d4b63c7805bcaf137edac2692d159ffeb8fda7986274eafbada69b92125405d",
+        "7deb4f02c32b026dcccab6258d6a5b9ce5c154ffa859946c59f60768737316a9",
+    ),
+    "B": (
+        "063847d1cf33deb31adc68971650dbf2082faed6e645200ec790a18bc2c73386",
+        "c6b700cab76b6fe8b3f2bd4277d4ed74cca0c1753a40b7ac20c7e480cf0ca06a",
+    ),
+    "C": (
+        "9a66fc5925f6a1e8c291ddce57129376bfb17548899377ca7197668f48f86ac2",
+        "2bc31d661161dd87ccaade010d8118f817cb884e03bc9bb9f041560a8d5d4a9e",
+    ),
+}
 
 
 def _render(scenario: str):
@@ -286,6 +305,99 @@ def test_service_review_is_explicit_read_only_and_language_neutral() -> None:
     assert report.status is LatheNcConformanceStatus.CONFORMANT_WITH_INTENTIONAL_SAFE_DEVIATIONS
     service.clear()
     assert service.review_latest().status is LatheNcConformanceStatus.INVALID_INPUT
+
+
+@pytest.mark.parametrize(
+    ("scenario", "strategies"),
+    (
+        ("A", SCENARIO_A_STRATEGIES),
+        ("B", SCENARIO_B_STRATEGIES),
+        ("C", SCENARIO_C_STRATEGIES),
+    ),
+)
+def test_service_coverage_uses_only_ordered_operation_boundaries(
+    scenario: str,
+    strategies: tuple[LatheStrategyId, ...],
+) -> None:
+    program, mappings, metadata = representative_program(scenario)
+    service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
+    result = service.generate(program)
+    expected_ids = tuple(item.value for item in strategies)
+    assert result.snapshot is not None
+    assert service.state.strategy_ids == expected_ids
+    assert not {"PROGRAM", "OPERATION", "UNKNOWN", "NONE", ""} & set(service.state.strategy_ids)
+    direct = LatheNcConformanceAnalyzerV1().analyze(result.snapshot.text, strategy_ids=expected_ids)
+    reviewed = service.review_latest()
+    assert reviewed == direct
+    if scenario == "C":
+        assert reviewed.status is LatheNcConformanceStatus.NO_SAMPLE_COVERAGE
+        assert "CONTRACT_DERIVED_NO_OWNER_SAMPLE_COVERAGE" in {
+            item.code for item in reviewed.findings
+        }
+
+
+def test_representative_service_coverage_is_exactly_all_canonical_strategies() -> None:
+    combined: list[str] = []
+    for scenario in ("A", "B", "C"):
+        program, mappings, metadata = representative_program(scenario)
+        service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
+        assert service.generate(program).accepted
+        combined.extend(service.state.strategy_ids)
+    assert tuple(combined) == tuple(
+        item.value
+        for item in SCENARIO_A_STRATEGIES + SCENARIO_B_STRATEGIES + SCENARIO_C_STRATEGIES
+    )
+    assert len(combined) == len(set(combined)) == len(LatheStrategyId) == 11
+    assert set(combined) == {item.value for item in LatheStrategyId}
+
+
+def test_service_strategy_coverage_deduplicates_first_operation_occurrence() -> None:
+    program, mappings, metadata = representative_program("A")
+    operation_blocks = [
+        block for block in program.blocks if block.kind is LatheProgramBlockKind.OPERATION_BEGIN
+    ]
+    first_payload = operation_blocks[0].payload
+    second_block = operation_blocks[1]
+    assert isinstance(first_payload, OperationPayload)
+    assert isinstance(second_block.payload, OperationPayload)
+    duplicate_second = replace(
+        second_block,
+        payload=replace(second_block.payload, strategy_id=first_payload.strategy_id),
+    )
+    blocks = tuple(duplicate_second if block is second_block else block for block in program.blocks)
+    service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
+    service.generate(replace(program, blocks=blocks, fingerprint=""))
+    assert service.state.strategy_ids == (first_payload.strategy_id,)
+
+
+def test_invalid_operation_strategy_fails_closed_with_typed_diagnostic() -> None:
+    program, mappings, metadata = representative_program("C")
+    operation_block = next(
+        block for block in program.blocks if block.kind is LatheProgramBlockKind.OPERATION_BEGIN
+    )
+    assert isinstance(operation_block.payload, OperationPayload)
+    invalid_block = replace(
+        operation_block,
+        payload=replace(operation_block.payload, strategy_id="PROGRAM"),
+    )
+    blocks = tuple(invalid_block if block is operation_block else block for block in program.blocks)
+    service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
+    result = service.generate(replace(program, blocks=blocks, fingerprint=""))
+    assert not result.accepted
+    assert result.snapshot is None
+    assert service.state.strategy_ids == ()
+    assert tuple(item.code for item in result.diagnostics) == (
+        BasicPostDiagnosticCode.INVALID_PROGRAM.value,
+    )
+
+
+@pytest.mark.parametrize("scenario", ("A", "B", "C"))
+def test_corrective_service_keeps_nc_sha_and_program_ir_fingerprint(scenario: str) -> None:
+    program, mappings, metadata = representative_program(scenario)
+    service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
+    result = service.generate(program)
+    assert result.snapshot is not None
+    assert (result.snapshot.sha256, program.fingerprint) == EXPECTED_SCENARIO_IDENTITIES[scenario]
 
 
 def test_analyzer_and_renderer_repeat_deterministically() -> None:

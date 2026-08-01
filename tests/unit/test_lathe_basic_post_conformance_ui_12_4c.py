@@ -19,8 +19,8 @@ from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from tests.unit._lathe_post_conformance_fixtures import representative_program
 
 
-def _service() -> tuple[LatheBasicNcService, object]:
-    program, mappings, metadata = representative_program("A")
+def _service(scenario: str = "A") -> tuple[LatheBasicNcService, object]:
+    program, mappings, metadata = representative_program(scenario)
     service = LatheBasicNcService(tool_mappings=mappings, metadata=metadata)
     return service, program
 
@@ -87,6 +87,36 @@ def test_language_switch_changes_labels_not_nc_or_report(qtbot) -> None:
     finally:
         translations.set_language(original)
     assert len(set(labels)) == 3
+
+
+def test_thread_review_displays_no_sample_coverage_and_keeps_ids_across_languages(
+    qtbot,
+) -> None:
+    service, program = _service("C")
+    panel = BasicNcPreviewPanel(service)
+    qtbot.addWidget(panel)
+    generated = service.generate(program)  # type: ignore[arg-type]
+    assert generated.snapshot is not None
+    panel.show_result()
+    qtbot.mouseClick(panel.conformance_review_button, Qt.MouseButton.LeftButton)
+    expected_ids = ("lathe.od_thread.v1", "lathe.id_thread.v1")
+    report = service.state.conformance_report
+    assert report is not None
+    assert service.state.strategy_ids == expected_ids
+    assert report.status is LatheNcConformanceStatus.NO_SAMPLE_COVERAGE
+    assert "NO_SAMPLE_COVERAGE" in panel.conformance_status.text()
+    translations = translation_service()
+    original = translations.language
+    try:
+        for language in (UiLanguage.VI_VN, UiLanguage.EN_US, UiLanguage.KO_KR):
+            translations.set_language(language)
+            current = service.state.conformance_report
+            assert current is not None
+            assert service.state.strategy_ids == expected_ids
+            assert current.status is LatheNcConformanceStatus.NO_SAMPLE_COVERAGE
+            assert "NO_SAMPLE_COVERAGE" in panel.conformance_status.text()
+    finally:
+        translations.set_language(original)
 
 
 def test_stage12_4c_catalog_keys_have_exact_parity_and_vi_fallback() -> None:

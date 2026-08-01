@@ -6,14 +6,53 @@ from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 
 from hms_cadcam.cam.lathe.lathe_post.basic_profile import BasicLathePostProfile, basic_lathe_post_profile
-from hms_cadcam.cam.lathe.lathe_post.basic_types import BasicPostMetadata, BasicToolMapping
+from hms_cadcam.cam.lathe.lathe_post.basic_types import (
+    BasicPostDiagnostic,
+    BasicPostDiagnosticCode,
+    BasicPostMetadata,
+    BasicToolMapping,
+)
 from hms_cadcam.cam.lathe.lathe_post.export import BasicNcExportResult, BasicNcExportService
 from hms_cadcam.cam.lathe.lathe_post.conformance import (
     LatheNcConformanceAnalyzerV1,
     LatheNcConformanceReport,
 )
-from hms_cadcam.cam.lathe.lathe_post.ir import LatheProgramIRV1
+from hms_cadcam.cam.lathe.lathe_post.ir import (
+    LatheProgramBlockKind,
+    LatheProgramIRV1,
+    OperationPayload,
+)
 from hms_cadcam.cam.lathe.lathe_post.renderer import BasicNcOutputSnapshot, BasicNcRenderResult, LatheBasicFanucPostRendererV1
+from hms_cadcam.cam.lathe.types import LatheStrategyId
+
+
+def _operation_strategy_ids(program: LatheProgramIRV1) -> tuple[str, ...]:
+    """Extract ordered canonical coverage from operation-begin boundaries only."""
+
+    strategy_ids: list[str] = []
+    for block in program.blocks:
+        if block.kind is not LatheProgramBlockKind.OPERATION_BEGIN:
+            continue
+        if not isinstance(block.payload, OperationPayload):
+            raise ValueError("operation-begin block requires OperationPayload")
+        try:
+            strategy = LatheStrategyId(block.payload.strategy_id)
+        except ValueError as exc:
+            raise ValueError("operation strategy must be a canonical LatheStrategyId") from exc
+        if strategy.value not in strategy_ids:
+            strategy_ids.append(strategy.value)
+    if not strategy_ids:
+        raise ValueError("program requires at least one typed Lathe operation")
+    return tuple(strategy_ids)
+
+
+def _invalid_operation_strategy_result() -> BasicNcRenderResult:
+    diagnostic = BasicPostDiagnostic(
+        BasicPostDiagnosticCode.INVALID_PROGRAM.value,
+        "lathe.basic_post.diagnostic.invalid_program",
+        "operation_strategy",
+    )
+    return BasicNcRenderResult(None, (diagnostic,))
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,15 +92,17 @@ class LatheBasicNcService:
         if program is None:
             result = BasicNcRenderResult(None, ())
             strategy_ids: tuple[str, ...] = ()
-        else:
+        elif not isinstance(program, LatheProgramIRV1):
             result = self._renderer.render(program, self.tool_mappings, self.metadata)
-            strategy_ids = tuple(
-                dict.fromkeys(
-                    str(getattr(block.payload, "strategy_id"))
-                    for block in program.blocks
-                    if getattr(block.payload, "strategy_id", None)
-                )
-            )
+            strategy_ids = ()
+        else:
+            try:
+                strategy_ids = _operation_strategy_ids(program)
+            except ValueError:
+                result = _invalid_operation_strategy_result()
+                strategy_ids = ()
+            else:
+                result = self._renderer.render(program, self.tool_mappings, self.metadata)
         self._state = BasicNcServiceState(result.snapshot, result, strategy_ids)
         return result
 
