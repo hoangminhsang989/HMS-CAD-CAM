@@ -81,10 +81,14 @@ def test_review_package_manifest_and_semantic_audit_requires_r3_zip():
 
 def test_wp2_catalog_text_is_unicode_and_locale_specific():
     service = translation_service()
-    values = {}
-    for locale in UiLanguage:
-        service.set_language(locale)
-        values[locale.value] = service.translate_key("Operation table")
+    previous = service.language
+    try:
+        values = {}
+        for locale in UiLanguage:
+            service.set_language(locale)
+            values[locale.value] = service.translate_key("Operation table")
+    finally:
+        service.set_language(previous)
     assert len(set(values.values())) == 3
     for value in values.values():
         assert "?" not in value
@@ -94,18 +98,22 @@ def test_wp2_catalog_text_is_unicode_and_locale_specific():
 
 def test_wp2_required_labels_have_no_replacement_markers():
     service = translation_service()
+    previous = service.language
     keys = (
         "Post / Program Assembly",
         "Operation table",
         "Preview is not available in WP2.",
         "Diagnostics drawer is not available in WP2.",
     )
-    for locale in UiLanguage:
-        service.set_language(locale)
-        for key in keys:
-            text = service.translate_key(key)
-            assert "?" not in text
-            assert "\ufffd" not in text
+    try:
+        for locale in UiLanguage:
+            service.set_language(locale)
+            for key in keys:
+                text = service.translate_key(key)
+                assert "?" not in text
+                assert "\ufffd" not in text
+    finally:
+        service.set_language(previous)
 
 
 def test_r1_guard_deletes_only_valid_matching_hash(tmp_path: Path) -> None:
