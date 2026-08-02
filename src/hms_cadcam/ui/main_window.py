@@ -136,6 +136,9 @@ from hms_cadcam.ui.geometry_transfer_ui import (
 )
 from hms_cadcam.ui.cam_function_popup import CAMFunctionPopupHost
 from hms_cadcam.ui.feature_flags import UiFeatureFlag, UiFeatureFlags
+from hms_cadcam.ai_assist.controller import AiAssistController
+from hms_cadcam.ai_assist.resources import WindowsResourceProvider
+from hms_cadcam.ai_assist.settings import AiAssistSettingsService
 from hms_cadcam.ui.lathe_adapters import LatheSelectionContext
 from hms_cadcam.ui.lathe_session import (
     LatheSessionController,
@@ -299,6 +302,18 @@ class MainWindow(QMainWindow):
         )
         self._layout_store = layout_store or WorkspaceLayoutStore.for_config_directory(
             project_service.config_dir
+        )
+        self._ai_assist_capability = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A
+        )
+        self._ai_assist_controller = (
+            AiAssistController(
+                AiAssistSettingsService(self._layout_store.settings),
+                WindowsResourceProvider(),
+                capability_enabled=True,
+            )
+            if self._ai_assist_capability
+            else None
         )
         self._translation_service = translation_service()
         self._locale_settings = LocaleSettingsService(self._layout_store.settings)
@@ -1508,6 +1523,7 @@ class MainWindow(QMainWindow):
             self._general_settings_dialog = GeneralSettingsDialog(
                 self._ui_scale_manager,
                 service=self._translation_service,
+                ai_assist_controller=self._ai_assist_controller,
                 parent=self,
             )
             self._general_settings_dialog.destroyed.connect(
@@ -3927,6 +3943,8 @@ class MainWindow(QMainWindow):
                 self._teardown_cam3d_workflow(wait=True)
             if self._lathe_review_host:
                 self._lathe_session_controller.teardown()
+            if self._ai_assist_controller is not None:
+                self._ai_assist_controller.shutdown()
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()

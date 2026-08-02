@@ -22,6 +22,7 @@ class UiFeatureFlag(StrEnum):
     LATHE_BASIC_POST_12_4B = "lathe_basic_post_12_4b"
     LATHE_PERSISTENCE_12_5A = "lathe_persistence_12_5a"
     LATHE_SIMULATION_12_6A = "lathe_simulation_12_6a"
+    OFFLINE_CAM_AI_ASSIST_13A = "offline_cam_ai_assist_13a"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
                 UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
                 UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
+                UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
             }
         )
 
@@ -87,6 +89,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
                 UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
                 UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
+                UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
             }
         )
 
@@ -103,6 +106,9 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
                 UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
                 UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
+                # Stage 13A is a production UI capability.  Its separate
+                # QSettings master control remains OFF by default.
+                UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
             }
         )
 

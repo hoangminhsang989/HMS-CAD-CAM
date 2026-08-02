@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
 
 from hms_cadcam.ui.i18n import TranslationService, UiLanguage, translation_service
 from hms_cadcam.ui.localization import localize_widget_tree, ui_text
+from hms_cadcam.ui.ai_assist_settings import AiAssistSettingsPage
+from hms_cadcam.ai_assist.controller import AiAssistController
 from hms_cadcam.ui.settings.ui_scale import (
     DEFAULT_PERCENT,
     MAX_PERCENT,
@@ -78,6 +80,7 @@ _SETTINGS_CATEGORIES: tuple[SettingsCategory, ...] = (
 _SETTINGS_CATEGORY_BY_KEY = {
     category.key: category for category in _SETTINGS_CATEGORIES
 }
+_AI_ASSIST_CATEGORY = SettingsCategory("AI and Automation", "AI and Automation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,11 +191,19 @@ class GeneralSettingsDialog(QDialog):
         scale_manager: UiScaleManager,
         *,
         service: TranslationService | None = None,
+        ai_assist_controller: AiAssistController | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._scale_manager = scale_manager
         self._service = service or translation_service()
+        self._ai_assist_controller = ai_assist_controller
+        self._categories = (
+            (*_SETTINGS_CATEGORIES, _AI_ASSIST_CATEGORY)
+            if ai_assist_controller is not None
+            else _SETTINGS_CATEGORIES
+        )
+        self._category_by_key = {category.key: category for category in self._categories}
         self._preview_dirty = False
         self._setting_controls = False
         self._screen_fit_guard = False
@@ -253,8 +264,12 @@ class GeneralSettingsDialog(QDialog):
         self._interface_page = self._build_interface_page()
         self.page_stack.addWidget(self._interface_page)
         self._category_pages.append(self._interface_page)
-        for category in _SETTINGS_CATEGORIES[1:]:
-            page = self._build_placeholder_page(category.key)
+        for category in self._categories[1:]:
+            page = (
+                AiAssistSettingsPage(self._ai_assist_controller)
+                if category.key == _AI_ASSIST_CATEGORY.key and self._ai_assist_controller is not None
+                else self._build_placeholder_page(category.key)
+            )
             self.page_stack.addWidget(page)
             self._category_pages.append(page)
 
@@ -304,7 +319,7 @@ class GeneralSettingsDialog(QDialog):
         self._root_layout.addLayout(navigation, 1)
         self._root_layout.addLayout(footer)
 
-        for category in _SETTINGS_CATEGORIES:
+        for category in self._categories:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, category.key)
             item.setData(Qt.ItemDataRole.UserRole + 1, category.source)
@@ -506,7 +521,7 @@ class GeneralSettingsDialog(QDialog):
             self._update_reset_button(category)
 
     def _update_reset_button(self, category_key: str | None = None) -> None:
-        category = _SETTINGS_CATEGORY_BY_KEY.get(category_key or self.selected_category)
+        category = self._category_by_key.get(category_key or self.selected_category)
         enabled = category is not None and category.reset_scope == _UI_SCALE_RESET_SCOPE
         self.reset_button.setEnabled(enabled)
         self.reset_button.setText(ui_text("Reset to 100%" if enabled else "Reset"))
@@ -523,7 +538,7 @@ class GeneralSettingsDialog(QDialog):
         self.close()
 
     def _reset_default(self) -> None:
-        category = _SETTINGS_CATEGORY_BY_KEY.get(self.selected_category)
+        category = self._category_by_key.get(self.selected_category)
         if category is None or category.reset_scope != _UI_SCALE_RESET_SCOPE:
             return
         self._scale_manager.reset_default()
@@ -658,10 +673,13 @@ class GeneralSettingsDialog(QDialog):
         self.sample_tree.headerItem().setText(0, ui_text("Sample tree"))
         self.sample_tree.topLevelItem(0).setText(0, ui_text("Root"))
         self.sample_tree.topLevelItem(0).child(0).setText(0, ui_text("Child"))
-        for index, category in enumerate(_SETTINGS_CATEGORIES):
+        for index, category in enumerate(self._categories):
             self._category_items[index].setText(ui_text(category.key))
             if index > 0:
                 page = self._category_pages[index]
+                if isinstance(page, AiAssistSettingsPage):
+                    page.retranslate_ui()
+                    continue
                 heading = page.findChildren(QLabel)[0]
                 message = page.findChildren(QLabel)[1]
                 heading.setText(ui_text(category.key))
