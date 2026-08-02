@@ -65,6 +65,7 @@ from hms_cadcam.ui.lathe_toolpath import (
     LatheToolpathUiState,
     LatheToolpathUiStateCode,
 )
+from hms_cadcam.ui.lathe_simulation import LatheSimulationWindowManager
 from hms_cadcam.ui.localization import ui_text
 
 
@@ -402,6 +403,7 @@ class LatheWorkspace(QWidget):
         self._outcome_key: str | None = None
         self._outcome_diagnostic: LatheQtDiagnostic | None = None
         self._toolpath_controller: LatheToolpathUiController | None = None
+        self._simulation_manager: LatheSimulationWindowManager | None = None
         self._toolpath_state = LatheToolpathUiState(
             LatheToolpathUiStateCode.READY
         )
@@ -540,6 +542,37 @@ class LatheWorkspace(QWidget):
         self._toolpath_state = controller.state
         self.retranslate_ui()
 
+    def bind_simulation_manager(
+        self, manager: LatheSimulationWindowManager | None
+    ) -> None:
+        """Bind the optional Stage 12.6A view without owning simulation data."""
+
+        if manager is not None and not isinstance(manager, LatheSimulationWindowManager):
+            raise TypeError("Lathe workspace simulation manager is invalid")
+        if self._simulation_manager is manager:
+            return
+        self._simulation_manager = manager
+        existing = getattr(self, "simulation_action_bar", None)
+        if existing is not None:
+            self._root_layout.removeWidget(existing)
+            existing.deleteLater()
+            del self.simulation_action_bar
+            del self.simulation_button
+        if manager is None:
+            return
+        bar = QFrame(self)
+        bar.setObjectName("LatheSimulationActionBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(6, 3, 6, 3)
+        row.addStretch(1)
+        self.simulation_button = QPushButton(bar)
+        self.simulation_button.setObjectName("LatheOpenSimulation12_6A")
+        self.simulation_button.clicked.connect(lambda: manager.open())
+        row.addWidget(self.simulation_button)
+        self.simulation_action_bar = bar
+        self._root_layout.insertWidget(self._root_layout.count() - 1, bar)
+        self.retranslate_ui()
+
     def retranslate_ui(self, _language: object = None) -> None:
         """Retranslate presentation while stable IDs and values stay untouched."""
 
@@ -574,6 +607,8 @@ class LatheWorkspace(QWidget):
             self.cancel_toolpath_button.setText(
                 _tr("lathe.toolpath.cancel.action")
             )
+        if self._simulation_manager is not None:
+            self.simulation_button.setText(_tr("lathe.simulation.title"))
         self._parameter_editor.retranslate_ui()
         if self._presenter is None:
             self.unavailable_label.setText(_tr(self._unavailable_reason_key))

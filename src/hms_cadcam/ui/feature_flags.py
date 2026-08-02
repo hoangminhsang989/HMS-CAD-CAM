@@ -21,6 +21,7 @@ class UiFeatureFlag(StrEnum):
     LATHE_POST_FOUNDATION_12_4A = "lathe_post_foundation_12_4a"
     LATHE_BASIC_POST_12_4B = "lathe_basic_post_12_4b"
     LATHE_PERSISTENCE_12_5A = "lathe_persistence_12_5a"
+    LATHE_SIMULATION_12_6A = "lathe_simulation_12_6a"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,12 @@ class UiFeatureFlags:
             return enabled and self._values.get(UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A, False)
         if flag is UiFeatureFlag.LATHE_PERSISTENCE_12_5A:
             return enabled and self._values.get(UiFeatureFlag.LATHE_9A9, False)
+        if flag is UiFeatureFlag.LATHE_SIMULATION_12_6A:
+            return (
+                enabled
+                and self._values.get(UiFeatureFlag.LATHE_9A9, False)
+                and self._values.get(UiFeatureFlag.LATHE_TOOLPATH_12_1, False)
+            )
         return enabled
 
     @classmethod
@@ -64,10 +71,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
                 UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
+                UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
             }
         )
 
@@ -81,8 +85,8 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
+                UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
             }
         )
 
@@ -97,8 +101,8 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_TOOLPATH_12_1: False,
                 UiFeatureFlag.LATHE_POST_FOUNDATION_12_4A: False,
                 UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
-                UiFeatureFlag.LATHE_BASIC_POST_12_4B: False,
+                UiFeatureFlag.LATHE_PERSISTENCE_12_5A: False,
+                UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
             }
         )
 

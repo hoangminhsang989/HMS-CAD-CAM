@@ -179,6 +179,7 @@ def test_lathe_ui_exists_only_in_authorized_stage9a9_and_stage12_1_modules() -> 
     assert {path.name for path in lathe_ui_paths} == {
         "lathe_adapters.py",
         "lathe_presenter.py",
+        "lathe_simulation.py",
         "lathe_toolpath.py",
         "lathe_session.py",
         "lathe_workspace.py",

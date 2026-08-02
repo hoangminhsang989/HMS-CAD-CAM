@@ -142,6 +142,7 @@ from hms_cadcam.ui.lathe_session import (
     LatheUiContext,
 )
 from hms_cadcam.ui.lathe_toolpath import LatheViewportPreviewSink
+from hms_cadcam.ui.lathe_simulation import LatheSimulationWindowManager
 from hms_cadcam.ui.lathe_workspace import LatheWorkspace
 from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyProjectionAdapter,
@@ -289,6 +290,9 @@ class MainWindow(QMainWindow):
             and self._ui_feature_flags.is_enabled(
                 UiFeatureFlag.LATHE_PERSISTENCE_12_5A
             )
+        )
+        self._lathe_simulation_host = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.LATHE_SIMULATION_12_6A
         )
         self._project_service.configure_lathe_persistence(
             self._lathe_persistence_host
@@ -679,6 +683,13 @@ class MainWindow(QMainWindow):
             self.lathe_dock.setMinimumWidth(520)
             self.lathe_dock.setMaximumWidth(1000)
             self.lathe_dock.setWidget(self.lathe_workspace)
+            if self._lathe_simulation_host:
+                self._lathe_simulation_manager = LatheSimulationWindowManager(
+                    self, enabled=True
+                )
+                self.lathe_workspace.bind_simulation_manager(
+                    self._lathe_simulation_manager
+                )
             self._lathe_session_controller = LatheSessionController(
                 self.lathe_workspace,
                 self._current_lathe_selection_context,
