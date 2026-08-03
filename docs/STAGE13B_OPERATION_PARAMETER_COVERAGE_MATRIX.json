@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "units": "metric",
+  "entries": [
+    {
+      "operation_id": "facing_2_5d",
+      "family": "milling",
+      "operation_class": "Operation",
+      "subtype_or_strategy": "facing_2_5d",
+      "construction_route": "CamWorkspace.add_operation -> selected QTreeWidget node",
+      "session_route": "CamWorkspace.production_function_editor_session",
+      "editor_context": "FacingEditorContext",
+      "bridge_class": "FacingEditorDraftBridge",
+      "validator": "CamWorkspace._validate_facing_production -> prepare_facing_update",
+      "draft_setter": "FacingEditorDraftBridge.set_draft_field",
+      "normal_apply": "FunctionEditorHost Apply -> _apply_facing_production -> execute_cam_command",
+      "diameter_provenance": "ToolDefinition.cutting_geometry.diameter",
+      "feed_unit_mapping": "feed_rate metric mm/min",
+      "zero_persistence_test": "test_stage13b_facing_validation_selective_apply_and_normal_apply_have_separate_boundaries",
+      "exactly_once_test": "test_stage13b_facing_validation_selective_apply_and_normal_apply_have_separate_boundaries",
+      "cancel_test": "test_stage13b_facing_actual_editor_cancel_reconstructs_persisted_values",
+      "duplicate_handler_test": "test_stage13b_facing_reconstructed_hosts_do_not_duplicate_atomic_apply",
+      "selective_apply_test": "test_facing_selective_apply_and_undo_do_not_call_final_apply",
+      "lifecycle_test": "test_project_close_actual_service_transition_invalidates_owner",
+      "legacy_independence_test": "test_facing_legacy_apply_works_without_stage13b_runtime",
+      "support_state": "SUPPORTED",
+      "unsupported_reason": ""
+    },
+    {
+      "operation_id": "drilling_v1",
+      "family": "drilling",
+      "operation_class": "Operation",
+      "subtype_or_strategy": "drilling_v1",
+      "construction_route": "CamWorkspace.add_drilling_operation",
+      "session_route": "CamWorkspace.production_function_editor_session",
+      "editor_context": "DrillingFamilyEditorContext",
+      "bridge_class": "DrillingFamilyEditorDraftBridge",
+      "validator": "CamWorkspace._validate_drilling_family_production -> prepare_drilling_family_update",
+      "draft_setter": "DrillingFamilyEditorDraftBridge.set_draft_field",
+      "normal_apply": "FunctionEditorHost Apply -> _apply_drilling_family_production -> execute_cam_command",
+      "diameter_provenance": "ToolDefinition.cutting_geometry.diameter",
+      "feed_unit_mapping": "feed_rate metric mm/min",
+      "zero_persistence_test": "test_stage13b_drilling_selected_tree_normal_editor_apply_is_one_atomic_command",
+      "exactly_once_test": "test_stage13b_drilling_reconstructed_hosts_do_not_duplicate_atomic_apply",
+      "cancel_test": "test_stage13b_drilling_actual_editor_cancel_keeps_project_operation_and_reopens_session",
+      "duplicate_handler_test": "test_stage13b_drilling_reconstructed_hosts_do_not_duplicate_atomic_apply",
+      "selective_apply_test": "test_stage13b_drilling_selected_tree_normal_editor_apply_is_one_atomic_command",
+      "lifecycle_test": "test_document_unload_actual_service_transition_invalidates_owner",
+      "legacy_independence_test": "test_drilling_legacy_apply_works_without_stage13b_runtime",
+      "support_state": "SUPPORTED",
+      "unsupported_reason": ""
+    },
+    {
+      "operation_id": "FACE",
+      "family": "turning",
+      "operation_class": "LatheOperation",
+      "subtype_or_strategy": "FACE",
+      "construction_route": "workspace_for(FACE) -> LatheQtPresenter.create_operation",
+      "session_route": "LatheWorkspace.parameter_editor",
+      "editor_context": "LatheParameterEditor",
+      "bridge_class": "LatheParameterEditorDraftBridge",
+      "validator": "build_lathe_parameter_update_preview",
+      "draft_setter": "LatheParameterEditorDraftBridge.set_draft_field",
+      "normal_apply": "LatheWorkspace.parameters_apply_button -> presenter.apply_parameter_changes",
+      "diameter_provenance": "LatheParameterEditor.outer_diameter_mm",
+      "feed_unit_mapping": "feed_mm_per_rev metric",
+      "zero_persistence_test": "test_stage13b_lathe_face_apply_button_dispatches_one_preview_and_one_presenter_call",
+      "exactly_once_test": "test_stage13b_lathe_face_reconstructed_workspaces_do_not_duplicate_apply_signal",
+      "cancel_test": "test_stage13b_lathe_face_cancel_by_close_does_not_dispatch_presenter",
+      "duplicate_handler_test": "test_stage13b_lathe_face_reconstructed_workspaces_do_not_duplicate_apply_signal",
+      "selective_apply_test": "test_stage13b_lathe_face_apply_button_dispatches_one_preview_and_one_presenter_call",
+      "lifecycle_test": "test_application_owner_shutdown_is_idempotent_and_releases_broker",
+      "legacy_independence_test": "test_lathe_legacy_apply_works_without_stage13b_runtime",
+      "support_state": "SUPPORTED",
+      "unsupported_reason": ""
+    },
+    {
+      "operation_id": "other_milling",
+      "family": "milling",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "No independent exact runtime certification for another milling strategy."
+    },
+    {
+      "operation_id": "other_drilling",
+      "family": "drilling",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "Only drilling_v1 has complete selected-tree runtime certification."
+    },
+    {
+      "operation_id": "OD_ROUGH",
+      "family": "turning",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "Strategy-specific lifecycle and presenter certification is not complete."
+    },
+    {
+      "operation_id": "OD_FINISH",
+      "family": "turning",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "Strategy-specific lifecycle and presenter certification is not complete."
+    },
+    {
+      "operation_id": "ID_ROUGH",
+      "family": "turning",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "Strategy-specific lifecycle and presenter certification is not complete."
+    },
+    {
+      "operation_id": "ID_FINISH",
+      "family": "turning",
+      "support_state": "PARTIAL",
+      "unsupported_reason": "Strategy-specific lifecycle and presenter certification is not complete."
+    },
+    {
+      "operation_id": "threading",
+      "family": "threading",
+      "support_state": "UNSUPPORTED",
+      "unsupported_reason": "No complete production thread input, validator and draft setter chain."
+    }
+  ]
+}

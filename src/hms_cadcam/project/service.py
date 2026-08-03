@@ -157,6 +157,7 @@ class ProjectService:
         geometry_inbox: GeometryTransferInbox | None = None,
         lathe_persistence: LatheProjectPersistenceService | None = None,
         lathe_persistence_enabled: bool = False,
+        lifecycle_hook: Callable[[str], None] | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -193,6 +194,7 @@ class ProjectService:
         if type(lathe_persistence_enabled) is not bool:
             raise TypeError("lathe_persistence_enabled must be bool")
         self._lathe_persistence_enabled = lathe_persistence_enabled
+        self._lifecycle_hook = lifecycle_hook
         self._loader.set_lathe_enabled(lathe_persistence_enabled)
         self._lifecycle_generation = 0
         self._project_opened_at = None
@@ -206,6 +208,7 @@ class ProjectService:
         document_runtime_root: Path | None = None,
         default_document_directory: Path | None = None,
         lathe_persistence_enabled: bool = False,
+        lifecycle_hook: Callable[[str], None] | None = None,
     ) -> "ProjectService":
         """Build the default project service graph for the application."""
         manifest_store = ProjectManifestStore()
@@ -274,6 +277,7 @@ class ProjectService:
             ),
             lathe_persistence=lathe_persistence,
             lathe_persistence_enabled=lathe_persistence_enabled,
+            lifecycle_hook=lifecycle_hook,
         )
 
     @property
@@ -1983,6 +1987,11 @@ class ProjectService:
             return
         if self._current_project.is_dirty and not discard_changes:
             raise UnsavedChangesError("Current project contains unsaved changes")
+        if self._lifecycle_hook is not None:
+            try:
+                self._lifecycle_hook("PROJECT_CLOSED")
+            except (RuntimeError, TypeError, ValueError):
+                logger.warning("Stage 13B project lifecycle hook failed", exc_info=True)
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
         self._simulation_runs.bind_project(None, None)
         if not self._current_project.read_only:
@@ -2002,6 +2011,11 @@ class ProjectService:
                     "Current CAD document contains unsaved changes"
                 )
             document = self._current_document
+            if self._lifecycle_hook is not None:
+                try:
+                    self._lifecycle_hook("PROJECT_UNLOADED")
+                except (RuntimeError, TypeError, ValueError):
+                    logger.warning("Stage 13B document lifecycle hook failed", exc_info=True)
             self._current_document = None
             self._document_container.close(document)
             self._lifecycle_generation += 1

@@ -19,6 +19,8 @@ from hms_cadcam.ai_assist.controller import AiAssistController
 from hms_cadcam.ai_assist.lifecycle import AiRuntimeState
 from hms_cadcam.ai_assist.policy import AiMode, MIB
 from hms_cadcam.ai_assist.settings import AiAssistSettings
+from hms_cadcam.ai_assist.cutting_advisor import RecommendationProfile
+from hms_cadcam.ai_assist.stage13b_settings import AdvisorSettings, AdvisorSettingsService
 from hms_cadcam.ui.localization import ui_text
 
 
@@ -33,9 +35,10 @@ def _display_bytes(value: int | None) -> str:
 class AiAssistSettingsPage(QWidget):
     """Render and persist application-only AI resource preferences."""
 
-    def __init__(self, controller: AiAssistController, parent: QWidget | None = None) -> None:
+    def __init__(self, controller: AiAssistController, parent: QWidget | None = None, *, advisor_settings_service: AdvisorSettingsService | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
+        self._advisor_settings_service = advisor_settings_service
         self._updating = False
         self.setObjectName("AiAssistSettingsPage")
         self._build_ui()
@@ -79,6 +82,20 @@ class AiAssistSettingsPage(QWidget):
         form.addRow(self.vram_form_label, self.vram_spin)
         form.addRow(self.waiting_label)
         root.addWidget(preference_group)
+        if self._advisor_settings_service is not None:
+            advisor_group = QGroupBox()
+            advisor_group.setObjectName("Stage13BAdvisorSettingsGroup")
+            advisor_form = QFormLayout(advisor_group)
+            self.advisor_checkbox = QCheckBox()
+            self.advisor_checkbox.setObjectName("Stage13BAdvisorToggle")
+            self.advisor_profile_combo = QComboBox()
+            self.advisor_profile_combo.setObjectName("Stage13BAdvisorProfile")
+            for profile in RecommendationProfile: self.advisor_profile_combo.addItem(profile.value, profile)
+            self.advisor_timeout_spin = QSpinBox(); self.advisor_timeout_spin.setRange(1,30); self.advisor_timeout_spin.setObjectName("Stage13BAdvisorTimeout")
+            advisor_form.addRow(self.advisor_checkbox)
+            advisor_form.addRow("Profile", self.advisor_profile_combo)
+            advisor_form.addRow("Worker timeout (seconds)", self.advisor_timeout_spin)
+            root.addWidget(advisor_group)
 
         status_group = QGroupBox()
         self.status_group = status_group
@@ -121,6 +138,8 @@ class AiAssistSettingsPage(QWidget):
         self.ram_spin.valueChanged.connect(self._save_from_controls)
         self.vram_spin.valueChanged.connect(self._save_from_controls)
         self.refresh_button.clicked.connect(lambda: self._show_status(probe=True))
+        if self._advisor_settings_service is not None:
+            self.advisor_checkbox.toggled.connect(self._save_advisor_settings); self.advisor_profile_combo.currentIndexChanged.connect(self._save_advisor_settings); self.advisor_timeout_spin.valueChanged.connect(self._save_advisor_settings)
 
     def _load_settings(self) -> None:
         self._updating = True
@@ -130,6 +149,14 @@ class AiAssistSettingsPage(QWidget):
         self.ram_spin.setValue(values.ram_ratio_percent)
         self.vram_spin.setValue(values.vram_ratio_percent)
         self._updating = False
+        if self._advisor_settings_service is not None:
+            advisor=self._advisor_settings_service.load(); self._updating=True; self.advisor_checkbox.setChecked(advisor.enabled); self.advisor_profile_combo.setCurrentIndex(self.advisor_profile_combo.findData(advisor.profile)); self.advisor_timeout_spin.setValue(int(advisor.timeout_seconds)); self.advisor_checkbox.setEnabled(values.enabled); self._updating=False
+
+    def _save_advisor_settings(self) -> None:
+        if self._updating or self._advisor_settings_service is None: return
+        profile=self.advisor_profile_combo.currentData()
+        if not isinstance(profile, RecommendationProfile): return
+        self._advisor_settings_service.save(AdvisorSettings(self.advisor_checkbox.isChecked(),profile,float(self.advisor_timeout_spin.value())))
 
     def _save_from_controls(self) -> None:
         if self._updating:

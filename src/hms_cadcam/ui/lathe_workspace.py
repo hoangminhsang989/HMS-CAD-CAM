@@ -388,6 +388,18 @@ class LatheParameterEditor(QWidget):
                 widget.deleteLater()
 
 
+def build_lathe_parameter_update_preview(
+    editor: LatheParameterEditor,
+) -> tuple[LatheParameterUpdate, ...]:
+    """Pure production parser/validator boundary shared by Apply and advisor preview."""
+    if not isinstance(editor, LatheParameterEditor):
+        raise TypeError("editor must be LatheParameterEditor")
+    updates = editor.updates()
+    if not updates:
+        raise ValueError("LATHE_NO_PARAMETER_CHANGES")
+    return updates
+
+
 class LatheWorkspace(QWidget):
     """One coherent Lathe operation browser/editor surface."""
 
@@ -1075,8 +1087,9 @@ class LatheWorkspace(QWidget):
         active = self._active_operation(self._snapshot)
         if self._presenter is None or active is None:
             return
-        updates = self._parameter_editor.updates()
-        if not updates:
+        try:
+            updates = build_lathe_parameter_update_preview(self._parameter_editor)
+        except ValueError:
             self._set_outcome_key("lathe.parameters.no_changes")
             return
         self._presenter.apply_parameter_changes(
@@ -1339,4 +1352,4 @@ class LatheWorkspace(QWidget):
         )
 
 
-__all__ = ["LatheParameterEditor", "LatheWorkspace"]
+__all__ = ["LatheParameterEditor", "LatheWorkspace", "build_lathe_parameter_update_preview"]

@@ -1,1 +1,15 @@
 tests/golden/post/robodrill_fanuc_21i_worknc_expanded_v1/*.fn binary
+.gitattributes text eol=lf
+docs/STAGE13B_* text eol=lf
+src/hms_cadcam/ai_assist/** text eol=lf
+src/hms_cadcam/project/service.py binary
+src/hms_cadcam/ui/ai_assist_settings.py binary
+src/hms_cadcam/ui/cutting_advisor_panel.py text eol=lf
+src/hms_cadcam/ui/feature_flags.py binary
+src/hms_cadcam/ui/i18n.py binary
+src/hms_cadcam/ui/lathe_workspace.py binary
+src/hms_cadcam/ui/main_window.py binary
+src/hms_cadcam/ui/settings/general_settings.py binary
+tests/unit/test_cutting_advisor_13b.py text eol=lf
+tests/unit/test_cutting_worker_13b.py text eol=lf
+tests/unit/test_stage13b_*.py text eol=lf

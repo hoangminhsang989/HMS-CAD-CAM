@@ -1311,6 +1311,20 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         key: KOREAN_OVERRIDES.get(key, key)
         for key in UI_TRANSLATIONS
     }
+    stage13b_entries = (
+        ("stage13b.advisor.analyze", "Phan tich", "Analyze", "Analyze"),
+        ("stage13b.advisor.cancel", "Huy", "Cancel", "Cancel"),
+        ("stage13b.advisor.apply_selected", "Ap dung muc da chon", "Apply selected", "Apply selected"),
+        ("stage13b.advisor.reset_selection", "Dat lai lua chon", "Reset selection", "Reset selection"),
+        ("stage13b.advisor.undo", "Hoan tac thay doi da ap dung", "Undo applied changes", "Undo applied changes"),
+        ("stage13b.advisor.close", "Dong", "Close", "Close"),
+        ("stage13b.advisor.state.unavailable", "Khong san sang", "Unavailable", "Unavailable"),
+        ("stage13b.advisor.state.waiting", "Dang cho tai nguyen", "Waiting for resources", "Waiting for resources"),
+        ("stage13b.advisor.state.ready", "Ket qua san sang", "Result ready", "Result ready"),
+        ("stage13b.advisor.state.stale", "Ket qua da cu", "Stale result", "Stale result"),
+    )
+    for key, vietnamese, english, korean in stage13b_entries:
+        vi_entries[key] = vietnamese; en_entries[key] = english; ko_entries[key] = korean
     for english, vietnamese, korean in CORE_TRANSLATIONS:
         vi_entries[english] = vietnamese
         en_entries[english] = english
@@ -1367,6 +1381,12 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
     for locale, filename in filenames.items():
         try:
             pairs = _read_catalog_pairs(catalog_directory / filename)
+            existing_keys = {key for key, _value in pairs}
+            pairs = (*pairs, *(
+                (key, value)
+                for key, value in fallback_catalogs[locale].entries.items()
+                if key not in existing_keys
+            ))
             loaded[locale] = TranslationCatalog.from_pairs(locale, pairs)
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
             LOGGER.error(

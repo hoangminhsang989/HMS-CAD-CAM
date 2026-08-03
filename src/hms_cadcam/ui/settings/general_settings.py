@@ -38,6 +38,7 @@ from hms_cadcam.ui.i18n import TranslationService, UiLanguage, translation_servi
 from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 from hms_cadcam.ui.ai_assist_settings import AiAssistSettingsPage
 from hms_cadcam.ai_assist.controller import AiAssistController
+from hms_cadcam.ai_assist.stage13b_settings import AdvisorSettingsService
 from hms_cadcam.ui.settings.ui_scale import (
     DEFAULT_PERCENT,
     MAX_PERCENT,
@@ -192,12 +193,14 @@ class GeneralSettingsDialog(QDialog):
         *,
         service: TranslationService | None = None,
         ai_assist_controller: AiAssistController | None = None,
+        advisor_settings_service: AdvisorSettingsService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._scale_manager = scale_manager
         self._service = service or translation_service()
         self._ai_assist_controller = ai_assist_controller
+        self._advisor_settings_service = advisor_settings_service
         self._categories = (
             (*_SETTINGS_CATEGORIES, _AI_ASSIST_CATEGORY)
             if ai_assist_controller is not None
@@ -266,7 +269,7 @@ class GeneralSettingsDialog(QDialog):
         self._category_pages.append(self._interface_page)
         for category in self._categories[1:]:
             page = (
-                AiAssistSettingsPage(self._ai_assist_controller)
+                AiAssistSettingsPage(self._ai_assist_controller, advisor_settings_service=self._advisor_settings_service)
                 if category.key == _AI_ASSIST_CATEGORY.key and self._ai_assist_controller is not None
                 else self._build_placeholder_page(category.key)
             )

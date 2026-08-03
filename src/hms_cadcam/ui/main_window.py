@@ -139,6 +139,7 @@ from hms_cadcam.ui.feature_flags import UiFeatureFlag, UiFeatureFlags
 from hms_cadcam.ai_assist.controller import AiAssistController
 from hms_cadcam.ai_assist.resources import WindowsResourceProvider
 from hms_cadcam.ai_assist.settings import AiAssistSettingsService
+from hms_cadcam.ai_assist.stage13b_settings import AdvisorSettingsService
 from hms_cadcam.ui.lathe_adapters import LatheSelectionContext
 from hms_cadcam.ui.lathe_session import (
     LatheSessionController,
@@ -305,6 +306,13 @@ class MainWindow(QMainWindow):
         )
         self._ai_assist_capability = self._ui_feature_flags.is_enabled(
             UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A
+        )
+        self._advisor_capability = self._ui_feature_flags.is_enabled(
+            UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B
+        )
+        self._advisor_settings_service = (
+            AdvisorSettingsService(self._layout_store.settings)
+            if self._advisor_capability else None
         )
         self._ai_assist_controller = (
             AiAssistController(
@@ -1524,6 +1532,7 @@ class MainWindow(QMainWindow):
                 self._ui_scale_manager,
                 service=self._translation_service,
                 ai_assist_controller=self._ai_assist_controller,
+                advisor_settings_service=self._advisor_settings_service,
                 parent=self,
             )
             self._general_settings_dialog.destroyed.connect(
@@ -3945,6 +3954,13 @@ class MainWindow(QMainWindow):
                 self._lathe_session_controller.teardown()
             if self._ai_assist_controller is not None:
                 self._ai_assist_controller.shutdown()
+            stage13b_owner = getattr(self, "_stage13b_coordinator", None)
+            if stage13b_owner is not None:
+                try:
+                    stage13b_owner.shutdown("APPLICATION_SHUTDOWN")
+                except (RuntimeError, TypeError, ValueError):
+                    # Stage 13B must never block the established application close.
+                    logger.warning("Stage 13B owner shutdown failed", exc_info=True)
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()
