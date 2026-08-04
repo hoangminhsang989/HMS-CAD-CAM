@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "HMS CAD/CAM",
+    "repository_root": ".",
+    "default_branch": "main"
+  },
+  "ai_sync": {
+    "root": ".ai",
+    "current_status": ".ai/CURRENT_STATUS.md",
+    "next_task": ".ai/NEXT_TASK.md",
+    "session": ".ai/SESSION.json",
+    "metrics": ".ai/METRICS.json",
+    "handoff_to_chatgpt": ".ai/HANDOFF/TO_CHATGPT.md",
+    "handoff_to_codex": ".ai/HANDOFF/TO_CODEX.md",
+    "checkpoints": ".ai/CHECKPOINTS"
+  },
+  "git": {
+    "collect_branch": true,
+    "collect_head": true,
+    "collect_remote": true,
+    "collect_working_tree": true,
+    "collect_diff_stat": true,
+    "allow_stage": false,
+    "allow_commit": false,
+    "allow_push": false
+  },
+  "tests": {
+    "result_file": ".ai/TEST_RESULTS.json",
+    "accept_manual_results": true,
+    "run_tests_automatically": false
+  },
+  "checkpoint": {
+    "create_automatically": true,
+    "timestamp_format": "%Y-%m-%d_%H%M%S",
+    "overwrite_existing": false
+  },
+  "safety": {
+    "preserve_uncommitted_work": true,
+    "reject_unrelated_staging": true,
+    "never_modify_source_files": true,
+    "never_invent_test_results": true,
+    "never_invent_progress": true
+  }
+}
