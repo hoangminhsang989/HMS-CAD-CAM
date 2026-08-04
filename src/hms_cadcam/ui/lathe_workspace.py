@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 import math
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -66,7 +68,12 @@ from hms_cadcam.ui.lathe_toolpath import (
     LatheToolpathUiStateCode,
 )
 from hms_cadcam.ui.lathe_simulation import LatheSimulationWindowManager
+from hms_cadcam.ui.cutting_advisor_panel import CuttingAdvisorPanel
 from hms_cadcam.ui.localization import ui_text
+
+if TYPE_CHECKING:
+    from hms_cadcam.ai_assist.turning_production_adapter import TurningRuntimeBridge
+    from hms_cadcam.ui.turning_advisor_session import TurningAdvisorUiSession
 
 
 _IDENTITY_ROLE = int(Qt.ItemDataRole.UserRole) + 101
@@ -416,6 +423,7 @@ class LatheWorkspace(QWidget):
         self._outcome_diagnostic: LatheQtDiagnostic | None = None
         self._toolpath_controller: LatheToolpathUiController | None = None
         self._simulation_manager: LatheSimulationWindowManager | None = None
+        self._turning_advisor_session: TurningAdvisorUiSession | None = None
         self._toolpath_state = LatheToolpathUiState(
             LatheToolpathUiStateCode.READY
         )
@@ -455,6 +463,54 @@ class LatheWorkspace(QWidget):
     def toolpath_controller(self) -> LatheToolpathUiController | None:
         return self._toolpath_controller
 
+    @property
+    def advisor_panel(self) -> CuttingAdvisorPanel:
+        return self._advisor_panel
+
+    @property
+    def turning_advisor_session(self) -> TurningAdvisorUiSession | None:
+        return self._turning_advisor_session
+
+    def bind_turning_advisor(self, runtime: TurningRuntimeBridge | None) -> bool:
+        """Bind one exact Stage 13C runtime to this production workspace owner."""
+
+        from hms_cadcam.ai_assist.production_bridge_registry import (
+            resolve_production_bridge,
+        )
+        from hms_cadcam.ai_assist.turning_production_adapter import (
+            TurningRuntimeBridge,
+        )
+        from hms_cadcam.ui.turning_advisor_session import TurningAdvisorUiSession
+
+        previous = self._turning_advisor_session
+        if previous is not None:
+            previous.invalidate_owner("ADVISOR_REBOUND")
+            previous.deleteLater()
+            self._turning_advisor_session = None
+        self._advisor_panel.hide()
+        if runtime is None:
+            return False
+        if not isinstance(runtime, TurningRuntimeBridge):
+            raise TypeError("Turning advisor runtime is invalid")
+        active = self._active_operation(self._snapshot)
+        context = runtime.adapter.context
+        bridge = context.draft_bridge
+        resolution = resolve_production_bridge(bridge, flags=runtime.flags)
+        if (
+            resolution.bridge is not bridge
+            or resolution.status
+            not in {"RUNTIME_BRIDGE_INTEGRATED_NOT_CERTIFIED", "SUPPORTED"}
+            or active is None
+            or str(active.ownership.operation_id) != context.operation_id
+            or active.strategy_id is not context.parameter_state.strategy_id
+            or bridge.editor is not self._parameter_editor
+        ):
+            return False
+        session = TurningAdvisorUiSession(self._advisor_panel, runtime, self)
+        self._turning_advisor_session = session
+        session.sync_operation(active)
+        return True
+
     def bind_presenter(
         self,
         presenter: LatheQtPresenter | None,
@@ -473,6 +529,10 @@ class LatheWorkspace(QWidget):
             else:
                 self._render(presenter.snapshot)
             return
+        if self._turning_advisor_session is not None:
+            self._turning_advisor_session.invalidate_owner("PRESENTER_REBOUND")
+            self._turning_advisor_session.deleteLater()
+            self._turning_advisor_session = None
         self._outcome_key = None
         self._outcome_diagnostic = None
         if previous is not None:
@@ -622,6 +682,7 @@ class LatheWorkspace(QWidget):
         if self._simulation_manager is not None:
             self.simulation_button.setText(_tr("lathe.simulation.title"))
         self._parameter_editor.retranslate_ui()
+        self._advisor_panel.retranslate_ui()
         if self._presenter is None:
             self.unavailable_label.setText(_tr(self._unavailable_reason_key))
         self._set_accessibility()
@@ -695,6 +756,9 @@ class LatheWorkspace(QWidget):
         self.tabs.addTab(self._build_geometry_tab(), "")
         self.tabs.addTab(self._build_diagnostics_tab(), "")
         layout.addWidget(self.tabs, 1)
+        self._advisor_panel = CuttingAdvisorPanel(parent=panel)
+        self._advisor_panel.hide()
+        layout.addWidget(self._advisor_panel)
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         self.validate_button = QPushButton()
@@ -820,6 +884,8 @@ class LatheWorkspace(QWidget):
                 snapshot, None if active is None else active.strategy_id
             )
             self._parameter_editor.set_operation(active, descriptor)
+            if self._turning_advisor_session is not None:
+                self._turning_advisor_session.sync_operation(active)
             self._render_tool(active, descriptor)
             self._render_geometry(active, descriptor)
             self._render_diagnostics(active)
@@ -838,6 +904,10 @@ class LatheWorkspace(QWidget):
             self.geometry_selector.clear()
             self.diagnostics_list.clear()
             self._parameter_editor.set_operation(None, None)
+            if self._turning_advisor_session is not None:
+                self._turning_advisor_session.invalidate_owner("WORKSPACE_EMPTY")
+                self._turning_advisor_session.deleteLater()
+                self._turning_advisor_session = None
             self.readiness_label.setText(_tr("lathe.readiness.unavailable"))
             self._render_outcome()
             self._apply_mutation_state(None, None)
@@ -1095,6 +1165,15 @@ class LatheWorkspace(QWidget):
         self._presenter.apply_parameter_changes(
             active.ownership.operation_id, updates, active.revision
         )
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        """Invalidate the owner-local advisor before Qt destroys its editor."""
+
+        if self._turning_advisor_session is not None:
+            self._turning_advisor_session.invalidate_owner("WORKSPACE_CLOSED")
+            self._turning_advisor_session.deleteLater()
+            self._turning_advisor_session = None
+        super().closeEvent(event)
 
     def _bind_tool(self) -> None:
         active = self._active_operation(self._snapshot)

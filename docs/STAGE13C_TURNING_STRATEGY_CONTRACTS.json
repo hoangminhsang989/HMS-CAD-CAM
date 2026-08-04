@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "stage": "13C",
+  "work_package": "WP1",
+  "status": "CONTRACT_LOCKED_NOT_SUPPORTED",
+  "approved_strategy_ids": ["lathe.od_rough.v1","lathe.od_finish.v1","lathe.id_rough.v1","lathe.id_finish.v1"],
+  "contracts": [
+    {"strategy_id":"lathe.od_rough.v1","status":"CONTRACT_LOCKED","diameter_source":"LatheStockSnapshotV1.outer_diameter_mm","required_tool_capability":"OD_TURNING","feed_unit":"mm/rev","depth_of_cut":{"descriptor":"max_depth_of_cut_mm","semantics":"RADIAL"},"allowed_advisor_fields":["depth_of_cut_mm","feed_per_revolution_mm","spindle_rpm"]},
+    {"strategy_id":"lathe.od_finish.v1","status":"CONTRACT_LOCKED","diameter_source":"LatheParameterState.target_diameter_mm","required_tool_capability":"OD_TURNING","feed_unit":"mm/rev","depth_of_cut":null,"allowed_advisor_fields":["feed_per_revolution_mm","spindle_rpm"]},
+    {"strategy_id":"lathe.id_rough.v1","status":"CONTRACT_LOCKED","diameter_source":"LatheStockSnapshotV1.inner_diameter_mm","required_tool_capability":"ID_TURNING","feed_unit":"mm/rev","depth_of_cut":{"descriptor":"max_depth_of_cut_mm","semantics":"RADIAL"},"allowed_advisor_fields":["depth_of_cut_mm","feed_per_revolution_mm","spindle_rpm"]},
+    {"strategy_id":"lathe.id_finish.v1","status":"CONTRACT_LOCKED","diameter_source":"LatheParameterState.target_diameter_mm","required_tool_capability":"ID_TURNING","feed_unit":"mm/rev","depth_of_cut":null,"allowed_advisor_fields":["feed_per_revolution_mm","spindle_rpm"]}
+  ],
+  "unsupported": ["FACE","lathe.od_thread.v1","lathe.id_thread.v1","unknown"],
+  "stage13b_certified_ids_unchanged": ["facing_2_5d","drilling_v1","FACE"],
+  "runtime_certified": false,
+  "project_schema_version": 5,
+  "model_change": false
+}

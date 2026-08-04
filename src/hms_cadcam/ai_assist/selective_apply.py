@@ -14,6 +14,9 @@ class SelectiveApplyResult:
 class SelectiveApplyService:
     """Apply selected values to a draft only and provide one-step stale-safe undo."""
     def __init__(self)->None:self._undo:tuple[ProductionEditorDraftBridge,ApplyOwnership,Mapping[str,object],str]|None=None
+    def invalidate(self)->None:
+        """Drop owner-bound Undo state without touching the production draft."""
+        self._undo=None
     def apply(self,bridge:ProductionEditorDraftBridge,ownership:ApplyOwnership,values:Mapping[str,object],selected:frozenset[str])->SelectiveApplyResult:
         if not self._matches(bridge,ownership): return SelectiveApplyResult("STALE_RESULT_DISCARDED")
         before=bridge.capture_snapshot(); applied=[]; rejected=[]
@@ -28,7 +31,12 @@ class SelectiveApplyService:
         if self._undo is None:return SelectiveApplyResult("UNDO_NOT_AVAILABLE")
         target,original_owner,values,applied_digest=self._undo
         if target is not bridge or original_owner.project_id!=ownership.project_id or original_owner.editor_id!=ownership.editor_id or original_owner.operation_id!=ownership.operation_id or original_owner.bridge_type!=ownership.bridge_type or bridge.current_revision_or_digest()!=applied_digest or not bridge.is_editor_alive() or not bridge.is_project_alive():return SelectiveApplyResult("STALE_UNDO_REFUSED")
-        for field,value in values.items(): bridge.set_draft_field(field,value)
+        # Restore the captured pre-Apply values directly through the draft
+        # boundary.  Re-validating against the editor's original production
+        # state would reject a legitimate reversal as "no parameter changes";
+        # the ownership/digest checks above are the safety gate for this
+        # already-validated snapshot.
+        bridge.restore_snapshot(values)
         self._undo=None;return SelectiveApplyResult("UNDONE",tuple(values))
     @staticmethod
     def _matches(bridge:ProductionEditorDraftBridge,owner:ApplyOwnership)->bool:

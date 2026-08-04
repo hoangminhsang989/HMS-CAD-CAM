@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "stage": "13C",
+  "work_package": "WP3",
+  "status": "PRODUCTION_UI_AND_LIFECYCLE_CERTIFIED",
+  "stage13b_certified_authority": ["facing_2_5d", "drilling_v1", "FACE"],
+  "stage13c_certified_authority": ["OD_ROUGH", "OD_FINISH", "ID_ROUGH", "ID_FINISH"],
+  "entries": [
+    {"operation_id":"facing_2_5d","authority":"Stage 13B","support_state":"SUPPORTED","route":"FunctionEditorHost production facing route"},
+    {"operation_id":"drilling_v1","authority":"Stage 13B","support_state":"SUPPORTED","route":"FunctionEditorHost production drilling route"},
+    {"operation_id":"FACE","authority":"Stage 13B","support_state":"SUPPORTED","route":"LatheWorkspace FACE route"},
+    {"operation_id":"OD_ROUGH","authority":"Stage 13C WP3","support_state":"SUPPORTED","route":"LatheWorkspace -> TurningAdvisorUiSession -> TurningRuntimeBridge","diameter":"LatheStockSnapshotV1.outer_diameter_mm","tool_capability":"OD_TURNING"},
+    {"operation_id":"OD_FINISH","authority":"Stage 13C WP3","support_state":"SUPPORTED","route":"LatheWorkspace -> TurningAdvisorUiSession -> TurningRuntimeBridge","diameter":"LatheParameterState.target_diameter_mm","tool_capability":"OD_TURNING"},
+    {"operation_id":"ID_ROUGH","authority":"Stage 13C WP3","support_state":"SUPPORTED","route":"LatheWorkspace -> TurningAdvisorUiSession -> TurningRuntimeBridge","diameter":"LatheStockSnapshotV1.inner_diameter_mm","tool_capability":"ID_TURNING"},
+    {"operation_id":"ID_FINISH","authority":"Stage 13C WP3","support_state":"SUPPORTED","route":"LatheWorkspace -> TurningAdvisorUiSession -> TurningRuntimeBridge","diameter":"LatheParameterState.target_diameter_mm","tool_capability":"ID_TURNING"},
+    {"operation_id":"other_milling","authority":"Stage 13B boundary","support_state":"PARTIAL","unsupported_reason":"No exact certified production identity expansion in Stage 13C"},
+    {"operation_id":"other_drilling","authority":"Stage 13B boundary","support_state":"PARTIAL","unsupported_reason":"No exact certified production identity expansion in Stage 13C"}
+  ],
+  "unsupported": ["OD_THREAD", "ID_THREAD", "threading"],
+  "material_input": {"workpiece":"explicit session-only exact TURNING V1 token","tool":["HSS","CARBIDE"],"persistence":false,"inference":false},
+  "certified_routes": ["Analyze button through broker/supervisor/worker","Selective Apply to draft only","normal Apply exactly once","workspace close discard and reconstruction","duplicate owner lifecycle","owner invalidation and shutdown"],
+  "schema_version_unchanged": 5,
+  "model_manifest_unchanged": true,
+  "package_or_network_change": false
+}

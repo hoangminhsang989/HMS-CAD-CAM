@@ -132,7 +132,7 @@ class DrillingFamilyEditorDraftBridge(FunctionEditorDraftBridge):
 @dataclass(slots=True)
 class LatheParameterEditorDraftBridge:
     """Concrete draft-only wrapper over the production LatheParameterEditor."""
-    editor: LatheParameterEditor
+    editor: LatheParameterEditor | None
     editor_id: str
     operation_id: str
     project_id: str
@@ -143,9 +143,14 @@ class LatheParameterEditorDraftBridge:
     def project_identity(self)->str: return self.project_id
     def is_editor_alive(self)->bool: return self._alive
     def is_project_alive(self)->bool: return self._alive
-    def invalidate(self)->None: self._alive=False
-    def supported_fields(self)->frozenset[str]: return frozenset(self.editor.editors)
+    def invalidate(self)->None:
+        self._alive=False
+        self.editor=None
+    def supported_fields(self)->frozenset[str]:
+        return frozenset() if self.editor is None else frozenset(self.editor.editors)
     def capture_snapshot(self)->Mapping[str, PresentationValue]:
+        if not self._alive or self.editor is None:
+            raise RuntimeError("LATHE_EDITOR_INVALIDATED")
         return {key:self._read_widget(key) for key in self.editor.editors}
     def current_revision_or_digest(self)->str:
         payload=json.dumps(self.capture_snapshot(),sort_keys=True,default=str,separators=(",",":"));return sha256(payload.encode()).hexdigest()
@@ -164,21 +169,27 @@ class LatheParameterEditorDraftBridge:
         values["workpiece_diameter_mm"]=workpiece
         return values
     def _read_widget(self,key:str)->PresentationValue:
+        if self.editor is None: raise RuntimeError("LATHE_EDITOR_INVALIDATED")
         descriptor=next(item for item in self.editor.descriptors if item.parameter_id==key)
         return self.editor._editor_value(descriptor)
     def _write_widget(self,key:str,value:PresentationValue)->None:
+        if self.editor is None: raise RuntimeError("LATHE_EDITOR_INVALIDATED")
         descriptor=next(item for item in self.editor.descriptors if item.parameter_id==key)
         self.editor._set_editor_value(descriptor,value)
     def validate_proposed_field(self,field:str,value:PresentationValue)->bool:
         if not self._alive or field not in self.supported_fields():return False
         before=self.capture_snapshot()
-        try:self._write_widget(field,value);build_lathe_parameter_update_preview(self.editor);return True
+        try:
+            if self.editor is None:return False
+            self._write_widget(field,value);build_lathe_parameter_update_preview(self.editor);return True
         except (KeyError,TypeError,ValueError,RuntimeError):return False
         finally:self.restore_snapshot(before)
     def set_draft_field(self,field:str,value:PresentationValue)->None:
         if not self.validate_proposed_field(field,value):raise ValueError("LATHE_DRAFT_VALIDATION_FAILED")
         self._write_widget(field,value)
     def restore_snapshot(self,snapshot:Mapping[str,PresentationValue])->None:
+        if not self._alive or self.editor is None:
+            raise RuntimeError("LATHE_EDITOR_INVALIDATED")
         for key,value in snapshot.items():self._write_widget(key,value)
 
 

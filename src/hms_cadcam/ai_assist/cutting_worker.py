@@ -28,7 +28,7 @@ def _main() -> int:
             payload=message["payload"]
             request=CuttingRequest(correlation_id=correlation,family=OperationFamily(payload["family"]),material_group=payload["material_group"],tool_material=payload["tool_material"],diameter_mm=float(payload["diameter_mm"]),flute_count=payload.get("flute_count"),profile=RecommendationProfile(payload.get("profile","BALANCED")),rigidity=payload.get("rigidity","NORMAL"),machine_max_rpm=payload.get("machine_max_rpm"),machine_max_feed_mm_min=payload.get("machine_max_feed_mm_min"),requested_axial_depth_mm=payload.get("requested_axial_depth_mm"),requested_radial_engagement_mm=payload.get("requested_radial_engagement_mm"),requested_peck_depth_mm=payload.get("requested_peck_depth_mm"),requested_depth_of_cut_mm=payload.get("requested_depth_of_cut_mm"))
             result=recommend(model,request)
-            _send("RECOMMEND_RESULT",correlation,{"input_digest":result.input_digest,"values":dict(result.values),"clamps":result.clamps,"confidence":result.confidence})
+            _send("RECOMMEND_RESULT",correlation,{"input_digest":result.input_digest,"raw":dict(result.raw),"values":dict(result.values),"clamps":result.clamps,"confidence":result.confidence})
         except (KeyError,TypeError,ValueError) as error: _send("ERROR",correlation,str(error))
     return 0
 if __name__=="__main__": raise SystemExit(_main())

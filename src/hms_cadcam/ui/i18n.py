@@ -1312,18 +1312,48 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         for key in UI_TRANSLATIONS
     }
     stage13b_entries = (
-        ("stage13b.advisor.analyze", "Phan tich", "Analyze", "Analyze"),
-        ("stage13b.advisor.cancel", "Huy", "Cancel", "Cancel"),
-        ("stage13b.advisor.apply_selected", "Ap dung muc da chon", "Apply selected", "Apply selected"),
-        ("stage13b.advisor.reset_selection", "Dat lai lua chon", "Reset selection", "Reset selection"),
-        ("stage13b.advisor.undo", "Hoan tac thay doi da ap dung", "Undo applied changes", "Undo applied changes"),
-        ("stage13b.advisor.close", "Dong", "Close", "Close"),
-        ("stage13b.advisor.state.unavailable", "Khong san sang", "Unavailable", "Unavailable"),
-        ("stage13b.advisor.state.waiting", "Dang cho tai nguyen", "Waiting for resources", "Waiting for resources"),
-        ("stage13b.advisor.state.ready", "Ket qua san sang", "Result ready", "Result ready"),
-        ("stage13b.advisor.state.stale", "Ket qua da cu", "Stale result", "Stale result"),
+        ("stage13b.advisor.analyze", "Phân tích", "Analyze", "분석"),
+        ("stage13b.advisor.cancel", "Hủy", "Cancel", "취소"),
+        ("stage13b.advisor.apply_selected", "Áp dụng mục đã chọn", "Apply selected", "선택 항목 적용"),
+        ("stage13b.advisor.reset_selection", "Đặt lại lựa chọn", "Reset selection", "선택 초기화"),
+        ("stage13b.advisor.undo", "Hoàn tác thay đổi đã áp dụng", "Undo applied changes", "적용한 변경 실행 취소"),
+        ("stage13b.advisor.close", "Đóng", "Close", "닫기"),
+        ("stage13b.advisor.state.unavailable", "Không sẵn sàng", "Unavailable", "사용할 수 없음"),
+        ("stage13b.advisor.state.waiting", "Đang chờ tài nguyên", "Waiting for resources", "리소스 대기 중"),
+        ("stage13b.advisor.state.ready", "Kết quả sẵn sàng", "Result ready", "결과 준비됨"),
+        ("stage13b.advisor.state.stale", "Kết quả đã cũ", "Stale result", "오래된 결과"),
     )
-    for key, vietnamese, english, korean in stage13b_entries:
+    stage13c_entries = (
+        ("stage13c.advisor.strategy", "Chiến lược", "Strategy", "전략"),
+        ("stage13c.advisor.workpiece_material", "Vật liệu phôi", "Workpiece material", "공작물 재질"),
+        ("stage13c.advisor.tool_material", "Vật liệu dao", "Tool material", "공구 재질"),
+        ("stage13c.advisor.not_selected", "Chưa chọn", "Not selected", "선택 안 함"),
+        ("stage13c.advisor.hss", "Thép gió (HSS)", "High-speed steel (HSS)", "고속도강 (HSS)"),
+        ("stage13c.advisor.carbide", "Hợp kim cứng (Carbide)", "Carbide", "초경합금"),
+        ("stage13c.advisor.material.iso_p", "ISO P — Thép", "ISO P — Steel", "ISO P — 강"),
+        ("stage13c.advisor.material.iso_m", "ISO M — Thép không gỉ", "ISO M — Stainless steel", "ISO M — 스테인리스강"),
+        ("stage13c.advisor.material.iso_k", "ISO K — Gang", "ISO K — Cast iron", "ISO K — 주철"),
+        ("stage13c.advisor.material.iso_n", "ISO N — Kim loại màu", "ISO N — Non-ferrous", "ISO N — 비철금속"),
+        ("stage13c.advisor.material.iso_s", "ISO S — Siêu hợp kim", "ISO S — Superalloy", "ISO S — 내열합금"),
+        ("stage13c.advisor.material.iso_h", "ISO H — Vật liệu tôi cứng", "ISO H — Hardened material", "ISO H — 경화재"),
+        ("stage13c.advisor.active_diameter", "Đường kính đang dùng", "Active diameter", "사용 직경"),
+        ("stage13c.advisor.current_values", "Giá trị hiện tại", "Current values", "현재 값"),
+        ("stage13c.advisor.field.spindle", "Tốc độ trục chính", "Spindle speed", "주축 속도"),
+        ("stage13c.advisor.field.feed", "Lượng chạy dao", "Feed per revolution", "회전당 이송"),
+        ("stage13c.advisor.field.depth", "Chiều sâu cắt tối đa", "Maximum depth of cut", "최대 절입 깊이"),
+        ("stage13c.advisor.state.material_required", "Cần chọn đủ vật liệu phôi và dao", "Workpiece and tool materials are required", "공작물 및 공구 재질을 선택해야 합니다"),
+        ("stage13c.advisor.state.ready_to_analyze", "Sẵn sàng phân tích", "Ready to analyze", "분석 준비됨"),
+        ("stage13c.advisor.state.ready", "Khuyến nghị sẵn sàng", "Recommendation ready", "권장값 준비됨"),
+        ("stage13c.advisor.state.unavailable", "Không thể tạo khuyến nghị", "Recommendation unavailable", "권장값을 사용할 수 없음"),
+        ("stage13c.advisor.state.stale", "Kết quả đã cũ; hãy phân tích lại", "Result is stale; analyze again", "결과가 오래되었습니다. 다시 분석하십시오"),
+        ("stage13c.advisor.state.no_selection", "Chưa chọn trường để áp dụng", "No recommendation field selected", "적용할 권장 필드가 선택되지 않음"),
+        ("stage13c.advisor.state.draft_applied", "Đã áp dụng vào bản nháp", "Applied to draft", "초안에 적용됨"),
+        ("stage13c.advisor.state.undo_complete", "Đã hoàn tác bản nháp", "Draft changes undone", "초안 변경 실행 취소됨"),
+        ("stage13c.advisor.state.undo_refused", "Không thể hoàn tác kết quả đã cũ", "Undo unavailable or refused", "실행 취소를 사용할 수 없거나 거부됨"),
+        ("stage13c.advisor.state.cancelled", "Đã hủy kết quả khuyến nghị", "Recommendation cancelled", "권장 결과 취소됨"),
+        ("stage13c.advisor.state.owner_invalidated", "Phiên biên tập đã đóng", "Editor session closed", "편집기 세션 닫힘"),
+    )
+    for key, vietnamese, english, korean in stage13b_entries + stage13c_entries:
         vi_entries[key] = vietnamese; en_entries[key] = english; ko_entries[key] = korean
     for english, vietnamese, korean in CORE_TRANSLATIONS:
         vi_entries[english] = vietnamese

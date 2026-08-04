@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "stage": "13C",
+  "work_package": "WP1",
+  "common_route": {
+    "operation_class": "LatheOperationState/LatheOperationSnapshot",
+    "editor_construction": "LatheWorkspace.parameter_editor -> LatheParameterEditor.set_operation",
+    "persisted_construction": "LatheOperationService/CreateLatheOperation -> build_lathe_v1_defaults",
+    "apply": "LatheWorkspace._apply_parameters -> LatheQtPresenter.apply_parameter_changes -> LatheApplicationFacade.apply_parameter_changes",
+    "validation": "build_lathe_parameter_update_preview -> LatheParameterEditor.updates -> LatheParameterState.with_updates",
+    "draft_setter": "LatheParameterEditorDraftBridge._write_widget/set_draft_field",
+    "reconstruction": "presenter snapshot and strategy descriptor rebuild LatheParameterEditor controls",
+    "lifecycle": "LatheWorkspace Qt ownership; project close/unload handled by existing ProjectService and owner coordinator"
+  },
+  "production_audit": [
+    {"strategy_id":"lathe.od_rough.v1","descriptors":["spindle_speed_rpm:rpm","feed_mm_per_rev:mm/rev","clearance_mm:mm","retract_mm:mm","spindle_direction:none","start_z_mm:mm","end_z_mm:mm","target_diameter_mm:mm","max_depth_of_cut_mm:mm","radial_stock_to_leave_mm:mm","axial_stock_to_leave_mm:mm"],"diameter_source":"stock outer diameter","tool_provenance":"current LatheToolCapabilityResolution with OD_TURNING and exact tool/profile/assembly revisions","depth_semantics":"radial; diameter decrement is 2x DOC","status":"CONTRACT_LOCKED"},
+    {"strategy_id":"lathe.od_finish.v1","descriptors":["spindle_speed_rpm:rpm","feed_mm_per_rev:mm/rev","clearance_mm:mm","retract_mm:mm","spindle_direction:none","start_z_mm:mm","end_z_mm:mm","target_diameter_mm:mm","finish_passes:none","spring_passes:none"],"diameter_source":"target_diameter_mm","tool_provenance":"current LatheToolCapabilityResolution with OD_TURNING and exact revisions","depth_semantics":"no production DOC descriptor; excluded","status":"CONTRACT_LOCKED"},
+    {"strategy_id":"lathe.id_rough.v1","descriptors":["spindle_speed_rpm:rpm","feed_mm_per_rev:mm/rev","clearance_mm:mm","retract_mm:mm","spindle_direction:none","start_z_mm:mm","end_z_mm:mm","target_diameter_mm:mm","max_depth_of_cut_mm:mm","radial_stock_to_leave_mm:mm","axial_stock_to_leave_mm:mm"],"diameter_source":"explicit positive stock inner diameter; target must be above bore","tool_provenance":"current LatheToolCapabilityResolution with ID_TURNING and exact revisions","depth_semantics":"radial","status":"CONTRACT_LOCKED"},
+    {"strategy_id":"lathe.id_finish.v1","descriptors":["spindle_speed_rpm:rpm","feed_mm_per_rev:mm/rev","clearance_mm:mm","retract_mm:mm","spindle_direction:none","start_z_mm:mm","end_z_mm:mm","target_diameter_mm:mm","finish_passes:none","spring_passes:none"],"diameter_source":"target_diameter_mm with explicit positive bore below target","tool_provenance":"current LatheToolCapabilityResolution with ID_TURNING and exact revisions","depth_semantics":"no production DOC descriptor; excluded","status":"CONTRACT_LOCKED"}
+  ],
+  "unresolved_for_later_runtime": ["authoritative HSS/CARBIDE tool material token","insert/tool diameter not exposed","runtime bridge certification"],
+  "stage13b_registry_unchanged": true
+}

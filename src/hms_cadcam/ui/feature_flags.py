@@ -24,6 +24,7 @@ class UiFeatureFlag(StrEnum):
     LATHE_SIMULATION_12_6A = "lathe_simulation_12_6a"
     OFFLINE_CAM_AI_ASSIST_13A = "offline_cam_ai_assist_13a"
     OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B = "offline_cam_ai_parameter_advisor_13b"
+    OFFLINE_CAM_AI_TURNING_COVERAGE_13C = "offline_cam_ai_turning_coverage_13c"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,14 @@ class UiFeatureFlags:
             )
         if flag is UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B:
             return enabled and self._values.get(UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A, False)
+        if flag is UiFeatureFlag.OFFLINE_CAM_AI_TURNING_COVERAGE_13C:
+            return (
+                enabled
+                and self._values.get(UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A, False)
+                and self._values.get(
+                    UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B, False
+                )
+            )
         return enabled
 
     @classmethod
@@ -78,6 +87,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
                 UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
                 UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B: True,
+                UiFeatureFlag.OFFLINE_CAM_AI_TURNING_COVERAGE_13C: False,
             }
         )
 
@@ -95,6 +105,7 @@ class UiFeatureFlags:
                 UiFeatureFlag.LATHE_SIMULATION_12_6A: False,
                 UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
                 UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B: True,
+                UiFeatureFlag.OFFLINE_CAM_AI_TURNING_COVERAGE_13C: False,
             }
         )
 
@@ -115,6 +126,7 @@ class UiFeatureFlags:
                 # QSettings master control remains OFF by default.
                 UiFeatureFlag.OFFLINE_CAM_AI_ASSIST_13A: True,
                 UiFeatureFlag.OFFLINE_CAM_AI_PARAMETER_ADVISOR_13B: True,
+                UiFeatureFlag.OFFLINE_CAM_AI_TURNING_COVERAGE_13C: False,
             }
         )
 
