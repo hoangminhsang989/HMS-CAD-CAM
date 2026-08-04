@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "project": "HMS CAD/CAM",
+  "stage": "Stage 13C",
+  "stage_progress_percent": null,
+  "overall_progress_percent": null,
+  "test_counts": {
+    "passed": null,
+    "failed": null,
+    "skipped": null,
+    "deselected": null
+  },
+  "last_updated_utc": null,
+  "source": "Pending verified Codex checkpoint"
+}

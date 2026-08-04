@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "project": "HMS CAD/CAM",
+  "branch": "main",
+  "committed_head": "6bce140",
+  "stage": "Stage 13C",
+  "status": "work_in_progress",
+  "current_task": "Turning Advisor runtime and production bridge",
+  "last_verified_checkpoint": null,
+  "latest_commit": "6bce140",
+  "tests": {
+    "focused": null,
+    "regression": null,
+    "full": null
+  },
+  "blocking_issues": [],
+  "next_action": "Codex must update this file at the next verified checkpoint."
+}
