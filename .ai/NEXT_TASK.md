@@ -1,7 +1,7 @@
 # NEXT TASK
 
-Run ID: `71ee2fe2-8603-4049-9f62-e6a72774011b`
-Generated: `2026-08-05T02:10:34.920379Z`
+Run ID: `f583e56b-51b4-4dec-a681-8db3ce3fee06`
+Generated: `2026-08-05T04:49:06.408515Z`
 
 ## Project
 
@@ -9,12 +9,12 @@ HMS CAD/CAM
 
 ## Current task
 
-unknown
+R84A semantic Git-index and R82 invocation reconciliation handoff state
 
 ## Next action
 
-unknown
+Review the R82A/R83/R84A handoff and authorize a fresh launcher-continuation approach without retrying R82.
 
 ## Remaining work
 
-- unknown
+- Obtain a separate explicit authority for the next launcher-continuation design; R84A cannot reconstruct the immutable R82 invocation.
