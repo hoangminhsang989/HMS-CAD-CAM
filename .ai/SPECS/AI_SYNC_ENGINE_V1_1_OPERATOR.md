@@ -102,12 +102,28 @@ Exact command lấy từ `command.argv`, không lấy từ display string. Verif
 
 ## 7. Metadata input
 
-`sync` hỗ trợ một trong hai cách:
+Validate, show-plan, and sync accept exactly one metadata form:
 
-- `--metadata <repo-relative-json>`; hoặc
-- inline `--stage <text>` và/hoặc `--task <text>`.
+- --metadata <json>; or
+- inline --stage <text> and/or --task <text>.
 
-Không được kết hợp file metadata với inline metadata. Schema metadata hỗ trợ `schema_version`, `project`, `stage`, `status`, `current_task`, `remaining_work`, `blockers`, `blockers_state`, `next_action`, progress nullable, `provenance` và optional commit claim. Giá trị thiếu giữ `null`/`unknown`; engine không tự phát minh.
+Inspect rejects metadata, stage, task, and expected-metadata-sha256 arguments with CLI_ERROR. File metadata cannot be combined with inline metadata. The metadata schema supports schema_version, project, stage, status, current_task, remaining_work, blockers, blockers_state, next_action, nullable progress, provenance, and an optional commit claim. Omitted values remain null or unknown; the engine does not invent them.
+
+A relative metadata path is resolved from the canonical repository root and must remain contained by it. An absolute path is an explicitly operator-supplied, read-only external authority. An external file must be a regular file; it must not be a symlink, junction, reparse point, device path, UNC path, alternate data stream, or Git metadata. It is limited to 1 MiB and parsed as strict UTF-8 without BOM. The engine reads bytes once, hashes the exact parsed bytes with SHA-256, and fails closed if the file changes while it is read. It never copies external metadata into the repository.
+
+JSON payloads for validate, show-plan, and sync include metadata_present, metadata_sha256, and metadata_mode (none, inline, repository_file, or external_file), never the metadata path. An external path is never written to public STATE, MANIFEST, checkpoint, Markdown artifacts, stdout, stderr, or structured logs. Path failures use a sanitized message.
+
+Use --expected-metadata-sha256 with a 64-lowercase-hex digest on validate, show-plan, and sync to bind the authority bytes from preflight to publication. A malformed or mismatching value is VALIDATION_FAILED and sync does not publish. The SHA is a binding, not a value inferred from display output.
+
+R84A external-authority example:
+
+`powershell
+Get-FileHash -Algorithm SHA256 -LiteralPath E:\FILE\HMS_CAD_CAM_AI_SYNC_METADATA_R84A.json
+.\.venv\Scripts\python.exe -B tools\update_ai_sync.py validate --repo E:\CAD_CAM_Project --metadata E:\FILE\HMS_CAD_CAM_AI_SYNC_METADATA_R84A.json --expected-metadata-sha256 <exact-sha256> --format json
+.\.venv\Scripts\python.exe -B tools\update_ai_sync.py show-plan --repo E:\CAD_CAM_Project --metadata E:\FILE\HMS_CAD_CAM_AI_SYNC_METADATA_R84A.json --expected-metadata-sha256 <exact-sha256> --format json
+# Only after separate authority and a passing review:
+.\.venv\Scripts\python.exe -B tools\update_ai_sync.py sync --repo E:\CAD_CAM_Project --metadata E:\FILE\HMS_CAD_CAM_AI_SYNC_METADATA_R84A.json --expected-metadata-sha256 <exact-sha256> --format json
+`
 
 ## 8. Các lệnh read-only
 

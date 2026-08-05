@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 from typing import Any
 from uuid import uuid4
 
@@ -41,6 +44,9 @@ SAFETY_BOUNDARY_VIOLATION = 9
 COMMANDS = ("inspect", "validate", "show-plan", "sync")
 _SECRET_RE = re.compile(r"(?i)(token|password|secret|api[_-]?key)=([^&\s]+)")
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^/@\s]+@", re.IGNORECASE)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_METADATA_MAX_BYTES = 1024 * 1024
+_WINDOWS_REPARSE_POINT = 0x0400
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +73,17 @@ class PreparedRun:
     run_id: str
     evidence_present: bool
     evidence_run_count: int
+    metadata_sha256: str | None = None
+    metadata_mode: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataBinding:
+    """Parsed metadata together with a non-path-bearing content binding."""
+
+    metadata: Any
+    sha256: str | None
+    mode: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +125,79 @@ def _checkpoint_path(generated_at: datetime) -> str:
     return f".ai/CHECKPOINTS/{generated_at.strftime('%Y-%m-%d_%H%M%S')}.md"
 
 
+def _has_reparse_ancestor(path: Path) -> bool:
+    """Reject a symlink, junction, or other Windows reparse point in ``path``."""
+
+    for candidate in (path, *path.parents):
+        try:
+            information = candidate.lstat()
+        except OSError:
+            return True
+        attributes = getattr(information, "st_file_attributes", 0)
+        if stat.S_ISLNK(information.st_mode) or attributes & _WINDOWS_REPARSE_POINT:
+            return True
+    return False
+
+
+def _is_unsafe_external_metadata_spelling(path: Path) -> bool:
+    """Reject Windows names that cannot denote an explicit regular authority file."""
+
+    raw = os.fspath(path)
+    if raw.startswith(("\\\\?\\", "\\\\.\\", "\\\\", "//")):
+        return True
+    drive, _ = os.path.splitdrive(raw)
+    return ":" in raw[len(drive):]
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _read_metadata_file(config: AiSyncConfig, metadata_path: Path | str) -> MetadataBinding:
+    """Read one safe metadata file once and bind the exact parsed bytes by SHA-256."""
+
+    candidate = Path(metadata_path)
+    external = candidate.is_absolute()
+    if not external:
+        candidate = config.repository_root / candidate
+    try:
+        if external and _is_unsafe_external_metadata_spelling(candidate):
+            raise OSError("unsafe metadata spelling")
+        if _has_reparse_ancestor(candidate):
+            raise OSError("metadata path contains a reparse point")
+        resolved = candidate.resolve(strict=True)
+        if not external and not _is_within(resolved, config.repository_root):
+            raise OSError("metadata path escapes repository")
+        if _is_within(resolved, config.repository_root / ".git"):
+            raise OSError("metadata path is Git metadata")
+        before = resolved.stat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _METADATA_MAX_BYTES:
+            raise OSError("unsafe metadata file")
+        data = resolved.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        after = resolved.stat()
+        identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        if identity_before != identity_after:
+            raise OSError("metadata changed while reading")
+    except (OSError, ValueError) as error:
+        raise MetadataError("metadata path is unavailable or unsafe") from error
+    return MetadataBinding(
+        metadata=parse_metadata_bytes(data, expected_project=config.project.name),
+        sha256=digest,
+        mode="external_file" if external else "repository_file",
+    )
+
+
+def _validate_expected_metadata_sha256(value: str | None) -> None:
+    if value is not None and _SHA256_RE.fullmatch(value) is None:
+        raise MetadataError("expected metadata SHA-256 must be 64 lowercase hexadecimal characters")
+
+
 def _optimistic_fingerprint(snapshot: GitSnapshot) -> str:
     """Exclude only the publisher's private transaction namespace."""
 
@@ -129,30 +219,23 @@ def _metadata(
     metadata_path: Path | str | None,
     stage: str | None,
     task: str | None,
-):
+) -> MetadataBinding:
     if metadata_path is not None and (stage is not None or task is not None):
         raise MetadataError("metadata file conflicts with inline metadata")
     if metadata_path is not None:
-        candidate = Path(metadata_path)
-        if not candidate.is_absolute():
-            candidate = config.repository_root / candidate
-        try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(config.repository_root)
-            data = resolved.read_bytes()
-        except (OSError, ValueError) as error:
-            raise MetadataError("metadata path is unavailable or unsafe") from error
-        return parse_metadata_bytes(data, expected_project=config.project.name)
+        return _read_metadata_file(config, metadata_path)
     if stage is None and task is None:
-        return empty_metadata(config.project.name)
+        return MetadataBinding(empty_metadata(config.project.name), None, "none")
     payload = {"schema_version": 1, "project": config.project.name}
     if stage is not None:
         payload["stage"] = stage
     if task is not None:
         payload["current_task"] = task
-    return parse_metadata_bytes(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-        expected_project=config.project.name,
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return MetadataBinding(
+        parse_metadata_bytes(data, expected_project=config.project.name),
+        hashlib.sha256(data).hexdigest(),
+        "inline",
     )
 
 
@@ -222,7 +305,8 @@ def _prepare_from_inspection(
         expected_project=config.project.name,
         required=False,
     )
-    metadata = _metadata(config, metadata_path=metadata_path, stage=stage, task=task)
+    metadata_binding = _metadata(config, metadata_path=metadata_path, stage=stage, task=task)
+    metadata = metadata_binding.metadata
     verified: set[str] = set()
     if metadata.commit_claim_oid is not None:
         verification = verify_commit(
@@ -256,7 +340,7 @@ def _prepare_from_inspection(
         generated_at,
         run_id,
         evidence.evidence_present,
-        len(evidence.runs),
+        len(evidence.runs), metadata_binding.sha256, metadata_binding.mode,
     )
 
 
@@ -348,14 +432,20 @@ def execute(
     stage: str | None = None,
     task: str | None = None,
     expected_head: str | None = None,
+    expected_metadata_sha256: str | None = None,
     dependencies: EngineDependencies = EngineDependencies(),
 ) -> EngineResult:
     """Execute one of four fixed commands and return a structured result."""
 
     if command not in COMMANDS:
         return EngineResult(CLI_ERROR, {"ok": False, "error": {"code": "CLI_COMMAND_UNSUPPORTED", "message": "unsupported command"}})
+    if command == "inspect" and any(
+        value is not None for value in (metadata_path, stage, task, expected_metadata_sha256)
+    ):
+        return EngineResult(CLI_ERROR, {"ok": False, "error": {"code": "CLI_ARGUMENT_UNSUPPORTED", "message": "inspect does not accept metadata arguments"}, "writes_performed": False})
     run_id = "unavailable"
     try:
+        _validate_expected_metadata_sha256(expected_metadata_sha256)
         generated_at = dependencies.clock()
         validate_utc_datetime(generated_at, "clock")
         run_id = dependencies.run_id()
@@ -413,7 +503,14 @@ def execute(
                 "artifact_count": len(prepared.outputs.artifacts),
             },
         )
+        if expected_metadata_sha256 is not None and prepared.metadata_sha256 != expected_metadata_sha256:
+            raise MetadataError("expected metadata SHA-256 does not match")
         payload = _base_payload(command, prepared)
+        payload.update({
+            "metadata_present": prepared.metadata_mode != "none",
+            "metadata_sha256": prepared.metadata_sha256,
+            "metadata_mode": prepared.metadata_mode,
+        })
         if recovery_outcome is not None:
             payload["recovery"] = {
                 "outcome": recovery_outcome,

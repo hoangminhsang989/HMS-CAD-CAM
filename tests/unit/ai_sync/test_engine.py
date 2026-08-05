@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ import subprocess
 import pytest
 
 from tools.ai_sync.engine import (
+    CLI_ERROR,
     CONFIG_INVALID,
     GIT_READ_FAILED,
     NOT_GIT_REPOSITORY,
@@ -207,3 +209,207 @@ def test_structured_log_is_json_and_secret_redacted(tmp_path: Path) -> None:
 def test_unsupported_engine_command_is_cli_error(tmp_path: Path) -> None:
     result = execute("run-tests", make_engine_repo(tmp_path), dependencies=deps())
     assert result.exit_code == 2
+
+
+
+def _write_metadata(path: Path, *, current_task: str = "External authority") -> bytes:
+    payload = {
+        "schema_version": 1,
+        "project": "HMS CAD/CAM",
+        "stage": "Stage 13C",
+        "status": "blocked",
+        "current_task": current_task,
+        "remaining_work": ["Obtain separate authority"],
+        "blockers": ["Immutable reconciliation remains blocked"],
+        "blockers_state": "present",
+        "next_action": "Review handoff",
+        "stage_progress_percent": None,
+        "overall_progress_percent": None,
+        "provenance": {"authority": "external"},
+    }
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    path.write_bytes(data)
+    return data
+
+
+def _git_control_hashes(root: Path) -> dict[str, str]:
+    paths = [root / ".git/HEAD", root / ".git/index", root / ".git/config"]
+    paths.extend(path for path in (root / ".git/refs").rglob("*") if path.is_file())
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in paths
+    }
+
+
+@pytest.mark.parametrize("command", ("validate", "show-plan"))
+def test_external_metadata_dry_commands_are_bound_and_zero_write(tmp_path: Path, command: str) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    data = _write_metadata(external)
+    before_tree = tree_hashes(root)
+    before_git = _git_control_hashes(root)
+
+    result = execute(command, root, metadata_path=external, dependencies=deps())
+
+    assert result.exit_code == SUCCESS
+    assert result.payload["writes_performed"] is False
+    assert result.payload["metadata_present"] is True
+    assert result.payload["metadata_mode"] == "external_file"
+    assert result.payload["metadata_sha256"] == hashlib.sha256(data).hexdigest()
+    assert result.payload["project_state"]["stage"] == "Stage 13C"
+    assert result.payload["project_state"]["status"] == "blocked"
+    assert result.payload["project_state"]["blockers_state"] == "present"
+    assert str(external) not in json.dumps(result.payload)
+    assert tree_hashes(root) == before_tree
+    assert _git_control_hashes(root) == before_git
+    assert not (root / ".ai/STATE.json").exists()
+
+
+def test_external_metadata_sync_is_bound_and_never_publishes_input_path(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    data = _write_metadata(external)
+    digest = hashlib.sha256(data).hexdigest()
+    records: list[str] = []
+
+    result = execute(
+        "sync", root, metadata_path=external, expected_metadata_sha256=digest,
+        dependencies=deps(log_sink=records.append),
+    )
+
+    assert result.exit_code == SUCCESS and result.payload["writes_performed"] is True
+    assert result.payload["metadata_sha256"] == digest
+    assert result.payload["metadata_mode"] == "external_file"
+    assert str(external) not in json.dumps(result.payload)
+    assert all(str(external) not in line for line in records)
+    for artifact in result.payload["publication"]["published_paths"]:
+        assert str(external) not in (root / artifact).read_text(encoding="utf-8")
+
+
+def test_repository_relative_metadata_remains_supported(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    data = _write_metadata(root / "metadata.json")
+
+    result = execute("validate", root, metadata_path=Path("metadata.json"), dependencies=deps())
+
+    assert result.exit_code == SUCCESS
+    assert result.payload["metadata_mode"] == "repository_file"
+    assert result.payload["metadata_sha256"] == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("command", ("validate", "show-plan", "sync"))
+def test_metadata_file_conflicts_with_inline_metadata_for_all_supported_commands(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    _write_metadata(external)
+
+    result = execute(command, root, metadata_path=external, stage="Stage 13C", dependencies=deps())
+
+    assert result.exit_code == VALIDATION_FAILED
+    assert result.payload["writes_performed"] is False
+
+
+def test_inline_metadata_is_hashed_and_inspect_rejects_metadata_arguments(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    validate = execute("validate", root, stage="Stage 13C", task="Inline authority", dependencies=deps())
+    plan = execute("show-plan", root, stage="Stage 13C", task="Inline authority", dependencies=deps())
+    rejected = execute("inspect", root, stage="Stage 13C", dependencies=deps())
+
+    assert validate.exit_code == plan.exit_code == SUCCESS
+    assert validate.payload["metadata_mode"] == plan.payload["metadata_mode"] == "inline"
+    assert validate.payload["metadata_sha256"] == plan.payload["metadata_sha256"]
+    assert rejected.exit_code == CLI_ERROR
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ("missing", "directory", "malformed_utf8", "bom", "duplicate_key", "oversized"),
+)
+def test_unsafe_or_invalid_external_metadata_is_rejected_without_path_disclosure(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / f"{kind}.json"
+    if kind == "directory":
+        external.mkdir()
+    elif kind == "malformed_utf8":
+        external.write_bytes(b"{\xff}")
+    elif kind == "bom":
+        external.write_bytes(b"\xef\xbb\xbf{}")
+    elif kind == "duplicate_key":
+        external.write_bytes(b'{"project":"HMS CAD/CAM","project":"HMS CAD/CAM"}')
+    elif kind == "oversized":
+        external.write_bytes(b" " * (1024 * 1024 + 1))
+
+    result = execute("validate", root, metadata_path=external, dependencies=deps())
+
+    assert result.exit_code == VALIDATION_FAILED
+    assert result.payload["writes_performed"] is False
+    assert str(external) not in json.dumps(result.payload)
+    assert not (root / ".ai/STATE.json").exists()
+
+
+def test_reparse_and_unsafe_device_metadata_paths_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tools.ai_sync.engine as module
+
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    _write_metadata(external)
+    monkeypatch.setattr(module, "_has_reparse_ancestor", lambda _path: True)
+
+    reparse = execute("validate", root, metadata_path=external, dependencies=deps())
+    monkeypatch.undo()
+    device = execute("validate", root, metadata_path=Path(r"\\.\NUL"), dependencies=deps())
+
+    assert reparse.exit_code == device.exit_code == VALIDATION_FAILED
+    assert str(external) not in json.dumps(reparse.payload)
+
+
+def test_expected_metadata_sha_binds_plan_to_sync_and_detects_change(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    original = _write_metadata(external, current_task="Original authority")
+    original_digest = hashlib.sha256(original).hexdigest()
+
+    validate = execute(
+        "validate", root, metadata_path=external, expected_metadata_sha256=original_digest, dependencies=deps(),
+    )
+    plan = execute(
+        "show-plan", root, metadata_path=external, expected_metadata_sha256=original_digest, dependencies=deps(),
+    )
+    _write_metadata(external, current_task="Changed authority")
+    sync = execute(
+        "sync", root, metadata_path=external, expected_metadata_sha256=original_digest, dependencies=deps(),
+    )
+
+    assert validate.exit_code == plan.exit_code == SUCCESS
+    assert validate.payload["metadata_sha256"] == plan.payload["metadata_sha256"] == original_digest
+    assert sync.exit_code == VALIDATION_FAILED
+    assert sync.payload["writes_performed"] is False
+    assert not (root / ".ai/STATE.json").exists()
+
+
+@pytest.mark.parametrize("expected", ("A" * 64, "a" * 63, "a" * 65, "not-a-hash"))
+def test_invalid_expected_metadata_sha_fails_closed_before_sync_recovery(tmp_path: Path, expected: str) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    _write_metadata(external)
+    calls = 0
+
+    def forbidden_recovery(_root: Path) -> str | None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    result = execute(
+        "sync", root, metadata_path=external, expected_metadata_sha256=expected,
+        dependencies=deps(recovery=forbidden_recovery),
+    )
+
+    assert result.exit_code == VALIDATION_FAILED
+    assert calls == 0
+    assert not (root / ".ai/STATE.json").exists()

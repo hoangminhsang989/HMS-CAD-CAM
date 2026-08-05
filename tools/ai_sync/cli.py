@@ -26,10 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--format", choices=("human", "json"), default="human")
         child.add_argument("--expected-head")
         child.add_argument("--verbose", action="store_true")
-        if command == "sync":
+        if command != "inspect":
             child.add_argument("--stage")
             child.add_argument("--task")
             child.add_argument("--metadata", type=Path)
+            child.add_argument("--expected-metadata-sha256")
     return parser
 
 
@@ -75,6 +76,7 @@ def main(
         arguments.command, arguments.repo, config_path=arguments.config,
         metadata_path=getattr(arguments, "metadata", None),
         stage=getattr(arguments, "stage", None), task=getattr(arguments, "task", None),
+        expected_metadata_sha256=getattr(arguments, "expected_metadata_sha256", None),
         expected_head=arguments.expected_head, dependencies=deps,
     )
     if arguments.format == "json":

@@ -10,7 +10,7 @@ import pytest
 
 from tools.ai_sync.cli import main
 from tools.ai_sync.engine import CLI_ERROR, SUCCESS
-from tests.unit.ai_sync.test_engine import deps, make_engine_repo
+from tests.unit.ai_sync.test_engine import _write_metadata, deps, make_engine_repo
 
 
 def test_cli_help_lists_only_four_commands() -> None:
@@ -61,3 +61,28 @@ def test_verbose_structured_log_uses_stderr(tmp_path: Path) -> None:
     ) == SUCCESS
     assert json.loads(stdout.getvalue())["ok"] is True
     assert json.loads(stderr.getvalue())["event"] == "engine_prepared"
+
+
+
+def test_validate_and_show_plan_accept_external_metadata_but_inspect_rejects_it(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    _write_metadata(external)
+
+    for command in ("validate", "show-plan"):
+        stdout = StringIO(); stderr = StringIO()
+        code = main(
+            [command, "--repo", str(root), "--metadata", str(external), "--format", "json"],
+            stdout=stdout, stderr=stderr, dependencies=deps(),
+        )
+        payload = json.loads(stdout.getvalue())
+        assert code == SUCCESS and stderr.getvalue() == ""
+        assert payload["metadata_mode"] == "external_file"
+        assert payload["writes_performed"] is False
+
+    stderr = StringIO()
+    code = main(
+        ["inspect", "--repo", str(root), "--metadata", str(external)],
+        stdout=StringIO(), stderr=stderr, dependencies=deps(),
+    )
+    assert code == CLI_ERROR and "CLI_ERROR" in stderr.getvalue()

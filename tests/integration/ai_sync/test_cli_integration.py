@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 
-from tests.unit.ai_sync.test_engine import make_engine_repo
+from tests.unit.ai_sync.test_engine import _write_metadata, make_engine_repo
 
 
 def test_executable_inspect_json_is_read_only(tmp_path: Path) -> None:
@@ -55,3 +56,33 @@ def test_executable_sync_existing_lock_exits_nine_without_breaking_lock(tmp_path
     assert payload["writes_performed"] is False
     assert lock.read_bytes() == b"operator-owned-lock\n"
     assert result.stderr == ""
+
+
+
+def test_executable_external_metadata_preflight_and_sync_are_bound(tmp_path: Path) -> None:
+    root = make_engine_repo(tmp_path)
+    external = tmp_path / "authority.json"
+    metadata = _write_metadata(external)
+    digest = hashlib.sha256(metadata).hexdigest()
+    script = Path(__file__).parents[3] / "tools/update_ai_sync.py"
+
+    payloads = []
+    for command in ("validate", "show-plan", "sync"):
+        result = subprocess.run(
+            [
+                sys.executable, str(script), command, "--repo", str(root),
+                "--metadata", str(external), "--expected-metadata-sha256", digest, "--format", "json",
+            ],
+            cwd=Path(__file__).parents[3], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", shell=False,
+        )
+        payload = json.loads(result.stdout)
+        assert result.returncode == 0 and result.stderr == ""
+        assert payload["metadata_sha256"] == digest and payload["metadata_mode"] == "external_file"
+        assert str(external) not in result.stdout and str(external) not in result.stderr
+        payloads.append(payload)
+
+    assert payloads[0]["writes_performed"] is False
+    assert payloads[1]["writes_performed"] is False
+    assert payloads[2]["writes_performed"] is True
+    assert len(payloads[2]["publication"]["published_paths"]) == 8
