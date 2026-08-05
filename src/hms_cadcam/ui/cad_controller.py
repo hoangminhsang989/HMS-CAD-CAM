@@ -41,6 +41,16 @@ from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import PreparedDocumentOpen
 from hms_cadcam.ui.cad_worker import CadImportTask
+from hms_cadcam.ui.cad_loading import (
+    CadLoadError,
+    CadLoadErrorCode,
+    CadLoadEvent,
+    CadLoadOrigin,
+    CadLoadState,
+    CadLoadingCoordinator,
+    cad_format_for_path,
+    normalize_import_error,
+)
 from hms_cadcam.viewer.models import (
     DisplayMode,
     ObjectAppearance,
@@ -71,6 +81,7 @@ class CadUiController(QObject):
     appearance_context_changed = Signal(object, object)
     project_state_changed = Signal()
     workspace_changed = Signal(object)
+    loading_state_changed = Signal(object)
 
     def __init__(
         self,
@@ -93,6 +104,9 @@ class CadUiController(QObject):
         self._active_task: CadImportTask | None = None
         self._active_task_source_id: UUID | None = None
         self._active_task_prepared: PreparedDocumentOpen | None = None
+        self._pending_request_origin: CadLoadOrigin | None = None
+        self._loading_coordinator = CadLoadingCoordinator(self._publish_loading_event)
+        self._last_loading_event: CadLoadEvent | None = None
         self._open_command: Callable[[Path], bool] | None = None
         self._request_generation = 0
         self._active_document_id: CadDocumentId | None = None
@@ -278,23 +292,41 @@ class CadUiController(QObject):
         """Use one application Open command for dialogs and drag/drop."""
         self._open_command = command
 
-    def open_path(self, path: Path) -> bool:
+    def open_path(
+        self,
+        path: Path,
+        *,
+        origin: CadLoadOrigin = CadLoadOrigin.OPEN_DIALOG,
+    ) -> bool:
         """Route a selected path through the shared command when configured."""
         if self._open_command is not None:
-            return bool(self._open_command(path))
-        cad_format = _format_for_path(path)
+            self._pending_request_origin = origin
+            accepted = bool(self._open_command(path))
+            if not accepted:
+                self._pending_request_origin = None
+            return accepted
+        cad_format = cad_format_for_path(path)
         if cad_format is None:
+            self._loading_coordinator.reject_unsupported(path)
             return False
-        self.start_import(path, cad_format)
+        self.start_import(path, cad_format, origin=origin)
         return True
+
+    def open_dropped_path(self, path: Path) -> bool:
+        """Use the same Open command as dialogs while retaining drag/drop origin."""
+
+        return self.open_path(path, origin=CadLoadOrigin.DRAG_DROP)
 
     @Slot(object)
     def open_prepared_document(self, prepared: object) -> None:
         """Start the existing importer for a validated standalone open request."""
         if not isinstance(prepared, PreparedDocumentOpen):
             return
-        cad_format = _format_for_path(prepared.session.geometry_path)
+        origin = self._pending_request_origin or CadLoadOrigin.OPEN_DIALOG
+        self._pending_request_origin = None
+        cad_format = cad_format_for_path(prepared.session.geometry_path)
         if cad_format is None:
+            self._loading_coordinator.reject_unsupported(prepared.session.geometry_path)
             self.message.emit("Định dạng hình học trong tài liệu HMS chưa được hỗ trợ.")
             return
         self.start_import(
@@ -302,6 +334,7 @@ class CadUiController(QObject):
             cad_format,
             source_id=prepared.session.state.identity,
             prepared=prepared,
+            origin=origin,
         )
 
     def start_import(
@@ -311,19 +344,29 @@ class CadUiController(QObject):
         *,
         source_id: UUID | None = None,
         prepared: PreparedDocumentOpen | None = None,
+        origin: CadLoadOrigin = CadLoadOrigin.OPEN_DIALOG,
     ) -> None:
         """Start or supersede one background CAD import request."""
-        if self._closing or not self._kernel.is_available():
+        if self._closing:
             return
-        self._invalidate_active_task()
-        self._request_generation += 1
-        request_id = self._request_generation
-        task = CadImportTask(
-            self._kernel,
-            request_id,
-            source_path,
-            cad_format,
+        source = Path(source_path)
+        if not self._kernel.is_available():
+            self._loading_coordinator.reject_backend_unavailable(
+                source, origin, cad_format,
+                owner_identity=str(source_id) if source_id is not None else "transient",
+            )
+            self._invalidate_active_task()
+            self._update_action_states()
+            self.progress_changed.emit("Lỗi")
+            self.message.emit("Backend CAD hiện không khả dụng.")
+            return
+        request, _superseded = self._loading_coordinator.begin(
+            source, origin, cad_format,
+            owner_identity=str(source_id) if source_id is not None else "transient",
         )
+        self._invalidate_active_task()
+        self._request_generation = request.request_id
+        task = CadImportTask(self._kernel, request.request_id, source, cad_format)
         task.signals.progress.connect(self._show_progress)
         task.signals.completed.connect(self._finish_import)
         task.signals.failed.connect(self._import_failed)
@@ -331,7 +374,7 @@ class CadUiController(QObject):
         self._active_task_source_id = source_id
         self._active_task_prepared = prepared
         self.progress_changed.emit("Đang đọc")
-        self.message.emit(f"Đang nhập CAD: {Path(source_path)}")
+        self.message.emit(f"Đang nhập CAD: {source}")
         self._update_action_states()
         self.busy_changed.emit(True)
         self._thread_pool.start(task)
@@ -346,10 +389,11 @@ class CadUiController(QObject):
         if self._closing:
             return
         self._request_generation += 1
+        self._loading_coordinator.abandon_active()
         self._invalidate_active_task()
         self._clear_active_document()
         if source_path is not None:
-            cad_format = _format_for_path(source_path)
+            cad_format = cad_format_for_path(source_path)
             if cad_format is not None:
                 self.start_import(source_path, cad_format, source_id=source_id)
 
@@ -359,6 +403,7 @@ class CadUiController(QObject):
             return
         self._closing = True
         self._request_generation += 1
+        self._loading_coordinator.abandon_active()
         self._invalidate_active_task()
         self._thread_pool.clear()
         self._clear_active_document()
@@ -378,7 +423,7 @@ class CadUiController(QObject):
             return
         if not task.acknowledge(result):
             return
-        if self._closing or request_id != self._request_generation:
+        if self._closing or not self._loading_coordinator.is_active(request_id):
             self._release_result(result)
             return
         candidate_source_id = self._active_task_source_id
@@ -393,6 +438,7 @@ class CadUiController(QObject):
             error = "; ".join(result.errors) or "Không thể đọc file CAD"
             self.progress_changed.emit("Lỗi")
             self.message.emit(f"Lỗi nhập CAD: {error}")
+            self._fail_active_request(request_id, error)
             return
         old_document_id = self._active_document_id
         try:
@@ -403,12 +449,14 @@ class CadUiController(QObject):
             self._discard_prepared(prepared)
             self.progress_changed.emit("Lỗi")
             self.message.emit("Lỗi cây cấu trúc hình học; giữ nguyên tài liệu hiện tại.")
+            self._fail_active_request(request_id, "topology tree creation failed")
             return
         if not self._viewport.display_document(result.document_id):
             self._release_result(result)
             self._discard_prepared(prepared)
             self.progress_changed.emit("Lỗi")
             self.message.emit("Lỗi hiển thị CAD; giữ nguyên tài liệu hiện tại.")
+            self._fail_active_request(request_id, "viewport display failed")
             return
         committed_workspace = None
         if prepared is not None:
@@ -419,6 +467,7 @@ class CadUiController(QObject):
                 self.message.emit(
                     "Không có application service để hoàn tất mở tài liệu."
                 )
+                self._fail_active_request(request_id, "project service unavailable")
                 return
             try:
                 committed_workspace = self._project_service.commit_document_open(
@@ -437,6 +486,7 @@ class CadUiController(QObject):
                 self.message.emit(
                     "Mở tài liệu thất bại; giữ nguyên tài liệu hiện tại."
                 )
+                self._fail_active_request(request_id, "project document commit failed")
                 return
         self._active_document_id = result.document_id
         self._active_metadata = result.metadata
@@ -480,6 +530,8 @@ class CadUiController(QObject):
         self._emit_measurements(())
         if old_document_id is not None and old_document_id != result.document_id:
             self._release_document(old_document_id)
+        if not self._loading_coordinator.succeed(request_id):
+            return
         self.progress_changed.emit("Hoàn thành")
         self.message.emit(f"Đã hiển thị CAD: {result.source_path}")
         self.document_changed.emit(result.metadata)
@@ -492,7 +544,13 @@ class CadUiController(QObject):
 
     @Slot(int, object)
     def _import_failed(self, request_id: int, error: object) -> None:
-        if self._closing or request_id != self._request_generation:
+        task = self._active_task
+        request = self._loading_coordinator.active_request
+        if (
+            self._closing or task is None or request is None
+            or task.request_id != request_id or request.request_id != request_id
+            or not self._loading_coordinator.fail(request, normalize_import_error(error))
+        ):
             return
         prepared = self._active_task_prepared
         self._active_task = None
@@ -509,6 +567,37 @@ class CadUiController(QObject):
         )
         self.progress_changed.emit("Lỗi")
         self.message.emit("Lỗi nhập CAD: tác vụ nền không thể hoàn thành.")
+
+    def cancel_active_import(self) -> bool:
+        """Cancel public ownership once and abandon non-cooperative native work."""
+        request = self._loading_coordinator.cancel_active()
+        if request is None:
+            return False
+        self._invalidate_active_task()
+        self._update_action_states()
+        return True
+
+    def _publish_loading_event(self, event: CadLoadEvent) -> None:
+        """Expose request-owned lifecycle state without native geometry."""
+        self._last_loading_event = event
+        self.loading_state_changed.emit(event)
+        if event.state is CadLoadState.LOADING:
+            self.progress_changed.emit("Đang đọc")
+        elif event.state is CadLoadState.CANCELLED:
+            self.progress_changed.emit("Đã hủy")
+        elif event.state is CadLoadState.FAILED:
+            self.progress_changed.emit("Lỗi")
+            if isinstance(event.error, CadLoadError):
+                logger.info("CAD loading failure category: %s", event.error.code.value)
+
+    def _fail_active_request(self, request_id: int, cause: str) -> None:
+        request = self._loading_coordinator.active_request
+        if request is None or request.request_id != request_id:
+            return
+        self._loading_coordinator.fail(
+            request,
+            CadLoadError(CadLoadErrorCode.IMPORTER_FAILURE, "Trình nhập CAD không thể hoàn thành yêu cầu.", cause),
+        )
 
     def _create_actions(self) -> dict[str, QAction]:
         definitions = {
@@ -1377,18 +1466,6 @@ def _transfer_metadata(metadata: CadDocumentMetadata) -> dict[str, object]:
         ),
     }
 
-
-def _format_for_path(path: Path) -> CadFormat | None:
-    suffix = path.suffix.lower()
-    if suffix in {".step", ".stp"}:
-        return CadFormat.STEP
-    if suffix in {".brep", ".brp"}:
-        return CadFormat.BREP
-    if suffix in {".iges", ".igs"}:
-        return CadFormat.IGES
-    if suffix == ".stl":
-        return CadFormat.STL
-    return None
 
 
 def _display_label(mode: DisplayMode) -> str:

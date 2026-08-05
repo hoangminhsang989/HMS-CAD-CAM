@@ -3757,8 +3757,8 @@ class MainWindow(QMainWindow):
         """Route one dropped file to exactly the same Open application command."""
         paths = self._drop_paths(event)
         self.set_drop_overlay_visible(False)
-        if paths and all(_is_supported_open_path(path) for path in paths):
-            if self.project_controller.request_open_paths(paths):
+        if len(paths) == 1 and _is_supported_open_path(paths[0]):
+            if self.cad_controller.open_dropped_path(paths[0]):
                 event.acceptProposedAction()
                 return
         event.ignore()
