@@ -1,34 +1,18 @@
 # CURRENT STATUS
 
+Run ID: `71ee2fe2-8603-4049-9f62-e6a72774011b`
+Generated: `2026-08-05T02:10:34.920379Z`
+
 ## Project
 
 HMS CAD/CAM
 
-## Current stage
+## Status
 
-Stage 13C — Turning Advisor
+unknown
 
-## Current state
+## Git
 
-WORK IN PROGRESS
-
-## Current task
-
-Codex is implementing and validating the Stage 13C turning advisor runtime and production bridge.
-
-## Latest committed baseline
-
-Commit: 6bce140
-Branch: main
-
-## Working tree
-
-There are modified and newly created files that have not yet been committed.
-
-## Test status
-
-To be updated by Codex at the next verified checkpoint.
-
-## Last updated
-
-Pending first Codex synchronization.
+- Branch: `main`
+- HEAD: `8910bfebf59d419f023f9d256fb9663422f77640`
+- Dirty: `true`

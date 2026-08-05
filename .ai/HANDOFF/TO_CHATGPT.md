@@ -1,35 +1,20 @@
 # HANDOFF TO CHATGPT WEB
 
+Run ID: `71ee2fe2-8603-4049-9f62-e6a72774011b`
+Generated: `2026-08-05T02:10:34.920379Z`
+
 ## Project
 
 HMS CAD/CAM
 
-## Current stage
+## Status
 
-Stage 13C — Turning Advisor
+unknown
 
-## Current status
+## Test evidence
 
-Work is in progress in the local working tree.
+- Recorded runs: 0
 
-## Latest committed baseline
+## Blockers
 
-- Branch: `main`
-- Commit before AI Sync: `6bce140`
-- AI Sync foundation commit: `19612e4`
-
-## Uncommitted work
-
-There are modified and newly created Stage 13C files. They have not yet been included in a verified project checkpoint.
-
-## Verified tests
-
-Not yet recorded in AI Sync.
-
-## Blocking issues
-
-Unknown until Codex performs the first verified synchronization.
-
-## Requested action from ChatGPT Web
-
-Read the latest AI Sync files and repository evidence before proposing the next bounded Codex task.
+- State: `unknown`

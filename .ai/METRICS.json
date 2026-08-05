@@ -1,15 +1,1 @@
-{
-  "schema_version": 1,
-  "project": "HMS CAD/CAM",
-  "stage": "Stage 13C",
-  "stage_progress_percent": null,
-  "overall_progress_percent": null,
-  "test_counts": {
-    "passed": null,
-    "failed": null,
-    "skipped": null,
-    "deselected": null
-  },
-  "last_updated_utc": null,
-  "source": "Pending verified Codex checkpoint"
-}
+{"created_by":"hms_ai_sync_engine","engine_version":"1.1.0","generated_at_utc":"2026-08-05T02:10:34.920379Z","overall_progress_percent":null,"project":"HMS CAD/CAM","run_id":"71ee2fe2-8603-4049-9f62-e6a72774011b","schema_version":1,"stage_progress_percent":null,"state_schema_version":1,"test_run_count":0}

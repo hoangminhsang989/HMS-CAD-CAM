@@ -1,22 +1,20 @@
 # NEXT TASK
 
-## Immediate objective
+Run ID: `71ee2fe2-8603-4049-9f62-e6a72774011b`
+Generated: `2026-08-05T02:10:34.920379Z`
 
-Complete the current bounded Stage 13C work package.
+## Project
 
-## Required checkpoint information
+HMS CAD/CAM
 
-Codex must record:
+## Current task
 
-- Work completed
-- Files changed
-- Tests executed
-- Exact test results
-- Remaining work
-- Blocking issues
-- Commit hash, when committed
-- Recommended next command
+unknown
 
-## Rule
+## Next action
 
-Do not claim completion unless the relevant tests and repository state have been verified.
+unknown
+
+## Remaining work
+
+- unknown
