@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+import hms_cadcam.ui.cad_controller as cad_controller_module
 from hms_cadcam.cad.models import CadFormat
 from hms_cadcam.project.workspace import DocumentOpenOrigin, PreparedDocumentOpen
 from hms_cadcam.ui.cad_controller import CadUiController
@@ -34,6 +35,59 @@ class FakeWorker:
         self.released += 1
 
 
+class FakeSignal:
+    def __init__(self) -> None:
+        self._slots: list[object] = []
+
+    def connect(self, slot: object) -> None:
+        self._slots.append(slot)
+
+    def disconnect(self, slot: object) -> None:
+        if slot not in self._slots:
+            raise RuntimeError("slot is not connected")
+        self._slots.remove(slot)
+
+
+class FakeImportTask:
+    def __init__(
+        self,
+        _kernel: object,
+        request_id: int,
+        _source: Path,
+        _cad_format: CadFormat,
+    ) -> None:
+        self.request_id = request_id
+        self.abandoned = 0
+        self.signals = SimpleNamespace(
+            progress=FakeSignal(),
+            completed=FakeSignal(),
+            failed=FakeSignal(),
+        )
+
+    def abandon(self) -> None:
+        self.abandoned += 1
+
+
+class FakeThreadPool:
+    def __init__(self) -> None:
+        self.started: list[FakeImportTask] = []
+        self.cleared = 0
+
+    def start(self, task: FakeImportTask) -> None:
+        self.started.append(task)
+
+    def clear(self) -> None:
+        self.cleared += 1
+
+
+class FakeCadKernel:
+    def __init__(self, available: bool) -> None:
+        self.available = available
+
+    def is_available(self) -> bool:
+        return self.available
+
+
 class SignalRecorder:
     def __init__(self) -> None:
         self.values: list[object] = []
@@ -43,12 +97,19 @@ class SignalRecorder:
 
 
 class FakeProjectService:
+    def __init__(self) -> None:
+        self.discarded: list[PreparedDocumentOpen] = []
+
     def prepare_document_open(self, path: Path) -> PreparedDocumentOpen:
         session = SimpleNamespace(
             geometry_path=path,
             state=SimpleNamespace(identity=uuid4()),
+            extraction_root=Path("runtime") / uuid4().hex,
         )
         return PreparedDocumentOpen.for_session(session)
+
+    def discard_document_open(self, prepared: PreparedDocumentOpen) -> None:
+        self.discarded.append(prepared)
 
 
 class FakeProjectControllerHarness:
@@ -115,6 +176,51 @@ class FakeProgressControllerHarness:
 
     def _update_action_states(self) -> None:
         return None
+
+
+class FakeLifecycleCadControllerHarness:
+    def __init__(self, project_service: FakeProjectService, *, backend_available: bool) -> None:
+        self._closing = False
+        self._kernel = FakeCadKernel(backend_available)
+        self._project_service = project_service
+        self._thread_pool = FakeThreadPool()
+        self._loading_coordinator = CadLoadingCoordinator(lambda _event: None)
+        self._active_task = None
+        self._active_task_source_id = None
+        self._active_task_prepared = None
+        self._request_generation = 0
+        self._active_document_id = None
+        self.progress_changed = SignalRecorder()
+        self.message = SignalRecorder()
+        self.busy_changed = SignalRecorder()
+
+    def _update_action_states(self) -> None:
+        return None
+
+    def _clear_active_document(self) -> None:
+        return None
+
+    def _publish_loading_event(self, _event: object) -> None:
+        return None
+
+    def _discard_prepared(self, prepared: PreparedDocumentOpen | None) -> None:
+        CadUiController._discard_prepared(self, prepared)
+
+    def _invalidate_active_task(self) -> None:
+        CadUiController._invalidate_active_task(self)
+
+    def _show_progress(self, _request_id: int, _status: str) -> None:
+        return None
+
+    def _finish_import(self, _request_id: int, _result: object) -> None:
+        return None
+
+    def _import_failed(self, _request_id: int, _error: object) -> None:
+        return None
+
+
+def _prepared(service: FakeProjectService, name: str) -> PreparedDocumentOpen:
+    return service.prepare_document_open(Path(name))
 
 
 def _coordinator():
@@ -238,6 +344,135 @@ def test_prepared_open_carries_each_origin_immutably_for_same_path() -> None:
     assert drop_request.origin is CadLoadOrigin.DRAG_DROP
     assert open_request.origin is CadLoadOrigin.OPEN_DIALOG
     assert drop_request.source_path == open_request.source_path == source
+
+
+def test_cancel_active_prepared_document_is_discarded_once_and_late_failure_is_ignored() -> None:
+    service = FakeProjectService()
+    controller = FakeLifecycleCadControllerHarness(service, backend_available=True)
+    prepared = _prepared(service, "cancelled.HMS/geometry.step")
+    request, _ = controller._loading_coordinator.begin(
+        prepared.session.geometry_path,
+        CadLoadOrigin.OPEN_DIALOG,
+        CadFormat.STEP,
+        owner_identity="cancelled",
+    )
+    task = FakeImportTask(
+        controller._kernel,
+        request.request_id,
+        prepared.session.geometry_path,
+        CadFormat.STEP,
+    )
+    controller._active_task = task
+    controller._active_task_prepared = prepared
+
+    assert CadUiController.cancel_active_import(controller)
+    CadUiController._import_failed(controller, request.request_id, RuntimeError("late"))
+
+    assert task.abandoned == 1
+    assert service.discarded == [prepared]
+    assert prepared.session.extraction_root is not None
+
+
+def test_superseding_import_discards_old_prepared_but_retains_new_until_terminal_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cad_controller_module, "CadImportTask", FakeImportTask)
+    service = FakeProjectService()
+    controller = FakeLifecycleCadControllerHarness(service, backend_available=True)
+    first = _prepared(service, "first.HMS/geometry.step")
+    second = _prepared(service, "second.HMS/geometry.step")
+
+    CadUiController.start_import(
+        controller,
+        first.session.geometry_path,
+        CadFormat.STEP,
+        prepared=first,
+    )
+    first_task = controller._thread_pool.started[0]
+    CadUiController.start_import(
+        controller,
+        second.session.geometry_path,
+        CadFormat.STEP,
+        prepared=second,
+    )
+
+    assert first_task.abandoned == 1
+    assert service.discarded == [first]
+    assert controller._active_task_prepared is second
+
+    CadUiController._invalidate_active_task(controller)
+    assert service.discarded == [first, second]
+
+
+def test_bind_project_invalidation_discards_active_prepared_document() -> None:
+    service = FakeProjectService()
+    controller = FakeLifecycleCadControllerHarness(service, backend_available=True)
+    prepared = _prepared(service, "bound.HMS/geometry.step")
+    request, _ = controller._loading_coordinator.begin(
+        prepared.session.geometry_path,
+        CadLoadOrigin.OPEN_DIALOG,
+        CadFormat.STEP,
+        owner_identity="bound",
+    )
+    task = FakeImportTask(
+        controller._kernel,
+        request.request_id,
+        prepared.session.geometry_path,
+        CadFormat.STEP,
+    )
+    controller._active_task = task
+    controller._active_task_prepared = prepared
+
+    CadUiController.bind_project(controller, None)
+
+    assert task.abandoned == 1
+    assert service.discarded == [prepared]
+    assert controller._active_task_prepared is None
+
+
+def test_shutdown_discards_active_prepared_document_without_waiting_for_worker() -> None:
+    service = FakeProjectService()
+    controller = FakeLifecycleCadControllerHarness(service, backend_available=True)
+    prepared = _prepared(service, "shutdown.HMS/geometry.step")
+    request, _ = controller._loading_coordinator.begin(
+        prepared.session.geometry_path,
+        CadLoadOrigin.DRAG_DROP,
+        CadFormat.STEP,
+        owner_identity="shutdown",
+    )
+    task = FakeImportTask(
+        controller._kernel,
+        request.request_id,
+        prepared.session.geometry_path,
+        CadFormat.STEP,
+    )
+    controller._active_task = task
+    controller._active_task_prepared = prepared
+
+    CadUiController.shutdown(controller)
+
+    assert task.abandoned == 1
+    assert controller._thread_pool.cleared == 1
+    assert service.discarded == [prepared]
+    assert controller._active_task_prepared is None
+
+
+def test_backend_unavailable_discards_prepared_before_worker_start() -> None:
+    service = FakeProjectService()
+    controller = FakeLifecycleCadControllerHarness(service, backend_available=False)
+    prepared = _prepared(service, "offline.HMS/geometry.step")
+
+    CadUiController.start_import(
+        controller,
+        prepared.session.geometry_path,
+        CadFormat.STEP,
+        prepared=prepared,
+    )
+
+    assert service.discarded == [prepared]
+    assert controller._thread_pool.started == []
+    assert controller._active_task is None
+    assert controller._active_task_prepared is None
 
 
 def test_many_terminal_requests_do_not_accumulate_terminal_identity_registry() -> None:

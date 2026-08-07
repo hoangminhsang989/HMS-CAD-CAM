@@ -321,6 +321,7 @@ class CadUiController(QObject):
         cad_format = cad_format_for_path(prepared.session.geometry_path)
         if cad_format is None:
             self._loading_coordinator.reject_unsupported(prepared.session.geometry_path)
+            self._discard_prepared(prepared)
             self.message.emit("Định dạng hình học trong tài liệu HMS chưa được hỗ trợ.")
             return
         self.start_import(
@@ -342,6 +343,7 @@ class CadUiController(QObject):
     ) -> None:
         """Start or supersede one background CAD import request."""
         if self._closing:
+            self._discard_prepared(prepared)
             return
         source = Path(source_path)
         if not self._kernel.is_available():
@@ -349,7 +351,10 @@ class CadUiController(QObject):
                 source, origin, cad_format,
                 owner_identity=str(source_id) if source_id is not None else "transient",
             )
+            active_prepared = self._active_task_prepared
             self._invalidate_active_task()
+            if prepared is not active_prepared:
+                self._discard_prepared(prepared)
             self._update_action_states()
             self.progress_changed.emit("Lỗi")
             self.message.emit("Backend CAD hiện không khả dụng.")
@@ -684,9 +689,11 @@ class CadUiController(QObject):
 
     def _invalidate_active_task(self) -> None:
         task = self._active_task
+        prepared = self._active_task_prepared
         self._active_task = None
         self._active_task_source_id = None
         self._active_task_prepared = None
+        self._discard_prepared(prepared)
         if task is None:
             return
         task.abandon()
