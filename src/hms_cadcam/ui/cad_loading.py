@@ -105,7 +105,6 @@ class CadLoadingCoordinator:
         self._publish = publish
         self._next_request_id = 0
         self._active: CadLoadRequest | None = None
-        self._terminal_request_ids: set[int] = set()
 
     @property
     def active_request(self) -> CadLoadRequest | None:
@@ -141,7 +140,7 @@ class CadLoadingCoordinator:
 
         error = CadLoadError(
             CadLoadErrorCode.UNSUPPORTED_FORMAT,
-            "??nh d?ng CAD ch?a ???c h? tr?.",
+            "Định dạng CAD chưa được hỗ trợ.",
             str(source_path),
         )
         self._publish(CadLoadEvent(None, CadLoadState.FAILED, error))
@@ -164,7 +163,7 @@ class CadLoadingCoordinator:
             request,
             CadLoadError(
                 CadLoadErrorCode.BACKEND_UNAVAILABLE,
-                "Backend CAD hi?n kh?ng kh? d?ng.",
+                "Backend CAD hiện không khả dụng.",
                 "CadKernel.is_available returned false",
             ),
         )
@@ -194,7 +193,7 @@ class CadLoadingCoordinator:
         self._terminal(
             request.request_id,
             CadLoadState.CANCELLED,
-            CadLoadError(CadLoadErrorCode.CANCELLED, "?? h?y t?i CAD."),
+            CadLoadError(CadLoadErrorCode.CANCELLED, "Đã hủy tải CAD."),
         )
         return request
 
@@ -213,13 +212,8 @@ class CadLoadingCoordinator:
         error: CadLoadError | None = None,
     ) -> bool:
         request = self._active
-        if (
-            request is None
-            or request.request_id != request_id
-            or request_id in self._terminal_request_ids
-        ):
+        if request is None or request.request_id != request_id:
             return False
         self._active = None
-        self._terminal_request_ids.add(request_id)
         self._publish(CadLoadEvent(request, state, error))
         return True

@@ -64,6 +64,7 @@ from hms_cadcam.project.path_policy import ensure_hms_suffix
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import (
     DocumentMode,
+    DocumentOpenOrigin,
     PreparedDocumentOpen,
     WorkspaceState,
 )
@@ -294,9 +295,13 @@ class ProjectUiController(QObject):
             ),
         )
         if selected:
-            self.request_open_path(Path(selected))
+            self.request_open_path(Path(selected), DocumentOpenOrigin.OPEN_DIALOG)
 
-    def request_open_paths(self, paths: tuple[Path, ...]) -> bool:
+    def request_open_paths(
+        self,
+        paths: tuple[Path, ...],
+        origin: DocumentOpenOrigin = DocumentOpenOrigin.DRAG_DROP,
+    ) -> bool:
         """Apply the explicit single-file policy used by drag/drop."""
         if len(paths) != 1:
             QMessageBox.information(
@@ -305,15 +310,27 @@ class ProjectUiController(QObject):
                 "Mỗi lần chỉ mở một tệp; HMS không tự trộn nhiều mô hình.",
             )
             return False
-        return self.request_open_path(paths[0])
+        return self.request_open_path(paths[0], origin)
 
-    def request_open_path(self, path: Path) -> bool:
+    def request_open_path(
+        self,
+        path: Path,
+        origin: DocumentOpenOrigin = DocumentOpenOrigin.OPEN_DIALOG,
+    ) -> bool:
         """Route dialog/drop to the same lifecycle and application command."""
+        if not isinstance(origin, DocumentOpenOrigin):
+            raise TypeError("Document open origin must be DocumentOpenOrigin")
         if self.is_busy or self.is_autosaving or not self._can_change_project():
             return False
         if not self._prepare_workspace_replacement():
             return False
-        self._start_operation(lambda: self._service.prepare_document_open(path))
+        self._start_operation(
+            lambda requested_path=path, requested_origin=origin: (
+                self._service.prepare_document_open(requested_path).with_origin(
+                    requested_origin
+                )
+            )
+        )
         return True
 
     def document_open_succeeded(self, state: object) -> None:

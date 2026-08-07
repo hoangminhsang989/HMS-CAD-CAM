@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 from hms_cadcam.cad.models import CadFormat
+from hms_cadcam.project.workspace import DocumentOpenOrigin, PreparedDocumentOpen
+from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cad_loading import (
     CadLoadErrorCode,
     CadLoadOrigin,
@@ -14,6 +20,7 @@ from hms_cadcam.ui.cad_loading import (
     cad_format_for_path,
     normalize_import_error,
 )
+from hms_cadcam.ui.project_controller import ProjectUiController
 
 
 @dataclass
@@ -25,6 +32,89 @@ class FakeWorker:
 
     def abandon(self) -> None:
         self.released += 1
+
+
+class SignalRecorder:
+    def __init__(self) -> None:
+        self.values: list[object] = []
+
+    def emit(self, value: object) -> None:
+        self.values.append(value)
+
+
+class FakeProjectService:
+    def prepare_document_open(self, path: Path) -> PreparedDocumentOpen:
+        session = SimpleNamespace(
+            geometry_path=path,
+            state=SimpleNamespace(identity=uuid4()),
+        )
+        return PreparedDocumentOpen.for_session(session)
+
+
+class FakeProjectControllerHarness:
+    def __init__(self) -> None:
+        self.is_busy = False
+        self.is_autosaving = False
+        self._service = FakeProjectService()
+        self.operations = []
+
+    def _can_change_project(self) -> bool:
+        return True
+
+    def _prepare_workspace_replacement(self) -> bool:
+        return True
+
+    def _start_operation(self, operation) -> None:
+        self.operations.append(operation)
+
+
+class FakeCadControllerHarness:
+    def __init__(self, project: FakeProjectControllerHarness) -> None:
+        self._open_command = lambda path, origin: ProjectUiController.request_open_path(
+            project, path, origin
+        )
+        self._loading_coordinator = CadLoadingCoordinator(lambda _event: None)
+        self.message = SignalRecorder()
+        self.import_requests = []
+
+    def open_path(
+        self,
+        path: Path,
+        *,
+        origin: CadLoadOrigin = CadLoadOrigin.OPEN_DIALOG,
+    ) -> bool:
+        return CadUiController.open_path(self, path, origin=origin)
+
+    def start_import(
+        self,
+        source_path: Path,
+        cad_format: CadFormat,
+        *,
+        source_id,
+        prepared: PreparedDocumentOpen,
+        origin: CadLoadOrigin,
+    ) -> None:
+        request, _superseded = self._loading_coordinator.begin(
+            source_path,
+            origin,
+            cad_format,
+            owner_identity=str(source_id),
+        )
+        self.import_requests.append((request, prepared))
+
+
+class FakeProgressControllerHarness:
+    def __init__(self, coordinator: CadLoadingCoordinator) -> None:
+        self._closing = False
+        self._loading_coordinator = coordinator
+        self.progress_changed = SignalRecorder()
+        self.invalidations = 0
+
+    def _invalidate_active_task(self) -> None:
+        self.invalidations += 1
+
+    def _update_action_states(self) -> None:
+        return None
 
 
 def _coordinator():
@@ -89,6 +179,7 @@ def test_superseded_worker_progress_success_and_failure_are_stale_and_result_is_
     assert not coordinator.fail(first, normalize_import_error(RuntimeError("late")))
     assert stale_worker.released == 1
     assert coordinator.active_request == second
+    assert coordinator.active_request.origin is CadLoadOrigin.DRAG_DROP
     assert [event.request for event in events] == [first, second]
 
 
@@ -102,6 +193,67 @@ def test_active_success_is_published_exactly_once() -> None:
     assert coordinator.succeed(request.request_id)
     assert not coordinator.succeed(request.request_id)
     assert [event.state for event in events] == [CadLoadState.LOADING, CadLoadState.SUCCEEDED]
+
+
+def test_cancelled_controller_ignores_progress_already_queued_for_request() -> None:
+    coordinator, _events = _coordinator()
+    request, _ = coordinator.begin(
+        Path("queued.step"),
+        CadLoadOrigin.OPEN_DIALOG,
+        CadFormat.STEP,
+        owner_identity="queued",
+    )
+    controller = FakeProgressControllerHarness(coordinator)
+
+    CadUiController._show_progress(controller, request.request_id, "before cancel")
+    assert CadUiController.cancel_active_import(controller)
+    CadUiController._show_progress(controller, request.request_id, "late progress")
+
+    assert controller.progress_changed.values == ["before cancel"]
+    assert controller.invalidations == 1
+
+
+def test_prepared_open_carries_each_origin_immutably_for_same_path() -> None:
+    project = FakeProjectControllerHarness()
+    cad = FakeCadControllerHarness(project)
+    source = Path("same.step")
+
+    assert cad.open_path(source, origin=CadLoadOrigin.OPEN_DIALOG)
+    assert CadUiController.open_dropped_path(cad, source)
+    assert len(project.operations) == 2
+
+    open_prepared = project.operations[0]()
+    drop_prepared = project.operations[1]()
+    assert open_prepared.request_id != drop_prepared.request_id
+    assert open_prepared.origin is DocumentOpenOrigin.OPEN_DIALOG
+    assert drop_prepared.origin is DocumentOpenOrigin.DRAG_DROP
+    with pytest.raises(FrozenInstanceError):
+        drop_prepared.origin = DocumentOpenOrigin.OPEN_DIALOG
+
+    CadUiController.open_prepared_document(cad, drop_prepared)
+    drop_request = cad.import_requests[-1][0]
+    CadUiController.open_prepared_document(cad, open_prepared)
+    open_request = cad.import_requests[-1][0]
+
+    assert drop_request.origin is CadLoadOrigin.DRAG_DROP
+    assert open_request.origin is CadLoadOrigin.OPEN_DIALOG
+    assert drop_request.source_path == open_request.source_path == source
+
+
+def test_many_terminal_requests_do_not_accumulate_terminal_identity_registry() -> None:
+    coordinator = CadLoadingCoordinator(lambda _event: None)
+
+    for index in range(1_000):
+        request, _ = coordinator.begin(
+            Path(f"part-{index}.step"),
+            CadLoadOrigin.OPEN_DIALOG,
+            CadFormat.STEP,
+            owner_identity=str(index),
+        )
+        assert coordinator.succeed(request.request_id)
+
+    assert coordinator.active_request is None
+    assert vars(coordinator).keys() == {"_publish", "_next_request_id", "_active"}
 
 
 def test_cancellation_publishes_once_and_late_completion_is_ignored_and_released() -> None:
@@ -120,6 +272,7 @@ def test_cancellation_publishes_once_and_late_completion_is_ignored_and_released
     assert [event.state for event in events] == [CadLoadState.LOADING, CadLoadState.CANCELLED]
     assert events[-1].error is not None
     assert events[-1].error.code is CadLoadErrorCode.CANCELLED
+    assert events[-1].error.message == "Đã hủy tải CAD."
 
 
 def test_shutdown_abandons_public_ownership_without_waiting_for_fake_worker() -> None:
@@ -145,6 +298,7 @@ def test_unsupported_extension_fails_before_any_fake_worker_launch() -> None:
 
     assert coordinator.active_request is None
     assert error.code is CadLoadErrorCode.UNSUPPORTED_FORMAT
+    assert error.message == "Định dạng CAD chưa được hỗ trợ."
     assert events[-1].state is CadLoadState.FAILED
     assert events[-1].request is None
     assert events[-1].error == error
@@ -163,6 +317,7 @@ def test_backend_unavailable_is_a_typed_recoverable_failure() -> None:
     assert [event.state for event in events] == [CadLoadState.LOADING, CadLoadState.FAILED]
     assert events[-1].error is not None
     assert events[-1].error.code is CadLoadErrorCode.BACKEND_UNAVAILABLE
+    assert events[-1].error.message == "Backend CAD hiện không khả dụng."
 
 
 def test_import_errors_are_normalized_to_unreadable_cancelled_or_unexpected() -> None:

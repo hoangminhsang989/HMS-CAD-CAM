@@ -27,6 +27,13 @@ class DocumentMode(StrEnum):
         }[self]
 
 
+class DocumentOpenOrigin(StrEnum):
+    """Immutable request origin crossing the asynchronous project-open boundary."""
+
+    OPEN_DIALOG = "open_dialog"
+    DRAG_DROP = "drag_drop"
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceState:
     """Mode-aware identity and lifecycle state consumed by application/UI code."""
@@ -186,8 +193,23 @@ class PreparedDocumentOpen:
 
     request_id: UUID
     session: CadDocumentSession
+    origin: DocumentOpenOrigin = DocumentOpenOrigin.OPEN_DIALOG
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.origin, DocumentOpenOrigin):
+            raise TypeError("Document open origin must be DocumentOpenOrigin")
 
     @classmethod
-    def for_session(cls, session: CadDocumentSession) -> "PreparedDocumentOpen":
+    def for_session(
+        cls,
+        session: CadDocumentSession,
+        *,
+        origin: DocumentOpenOrigin = DocumentOpenOrigin.OPEN_DIALOG,
+    ) -> "PreparedDocumentOpen":
         """Create a unique prepared-open token."""
-        return cls(request_id=uuid4(), session=session)
+        return cls(request_id=uuid4(), session=session, origin=origin)
+
+    def with_origin(self, origin: DocumentOpenOrigin) -> "PreparedDocumentOpen":
+        """Bind the explicit UI request origin without mutating prepared state."""
+
+        return replace(self, origin=origin)

@@ -39,7 +39,7 @@ from hms_cadcam.project.cad_state import (
 )
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
-from hms_cadcam.project.workspace import PreparedDocumentOpen
+from hms_cadcam.project.workspace import DocumentOpenOrigin, PreparedDocumentOpen
 from hms_cadcam.ui.cad_worker import CadImportTask
 from hms_cadcam.ui.cad_loading import (
     CadLoadError,
@@ -104,10 +104,9 @@ class CadUiController(QObject):
         self._active_task: CadImportTask | None = None
         self._active_task_source_id: UUID | None = None
         self._active_task_prepared: PreparedDocumentOpen | None = None
-        self._pending_request_origin: CadLoadOrigin | None = None
         self._loading_coordinator = CadLoadingCoordinator(self._publish_loading_event)
         self._last_loading_event: CadLoadEvent | None = None
-        self._open_command: Callable[[Path], bool] | None = None
+        self._open_command: Callable[[Path, DocumentOpenOrigin], bool] | None = None
         self._request_generation = 0
         self._active_document_id: CadDocumentId | None = None
         self._active_metadata: CadDocumentMetadata | None = None
@@ -287,7 +286,7 @@ class CadUiController(QObject):
 
     def set_open_command(
         self,
-        command: Callable[[Path], bool] | None,
+        command: Callable[[Path, DocumentOpenOrigin], bool] | None,
     ) -> None:
         """Use one application Open command for dialogs and drag/drop."""
         self._open_command = command
@@ -300,11 +299,7 @@ class CadUiController(QObject):
     ) -> bool:
         """Route a selected path through the shared command when configured."""
         if self._open_command is not None:
-            self._pending_request_origin = origin
-            accepted = bool(self._open_command(path))
-            if not accepted:
-                self._pending_request_origin = None
-            return accepted
+            return bool(self._open_command(path, _document_open_origin(origin)))
         cad_format = cad_format_for_path(path)
         if cad_format is None:
             self._loading_coordinator.reject_unsupported(path)
@@ -322,8 +317,7 @@ class CadUiController(QObject):
         """Start the existing importer for a validated standalone open request."""
         if not isinstance(prepared, PreparedDocumentOpen):
             return
-        origin = self._pending_request_origin or CadLoadOrigin.OPEN_DIALOG
-        self._pending_request_origin = None
+        origin = _cad_load_origin(prepared.origin)
         cad_format = cad_format_for_path(prepared.session.geometry_path)
         if cad_format is None:
             self._loading_coordinator.reject_unsupported(prepared.session.geometry_path)
@@ -411,7 +405,7 @@ class CadUiController(QObject):
 
     @Slot(int, str)
     def _show_progress(self, request_id: int, status: str) -> None:
-        if not self._closing and request_id == self._request_generation:
+        if not self._closing and self._loading_coordinator.is_active(request_id):
             self.progress_changed.emit(status)
 
     @Slot(int, object)
@@ -1466,6 +1460,18 @@ def _transfer_metadata(metadata: CadDocumentMetadata) -> dict[str, object]:
         ),
     }
 
+
+
+def _document_open_origin(origin: CadLoadOrigin) -> DocumentOpenOrigin:
+    """Convert UI origin once at the project/application boundary."""
+
+    return DocumentOpenOrigin(origin.value)
+
+
+def _cad_load_origin(origin: DocumentOpenOrigin) -> CadLoadOrigin:
+    """Convert immutable prepared-open origin once for WP1 orchestration."""
+
+    return CadLoadOrigin(origin.value)
 
 
 def _display_label(mode: DisplayMode) -> str:
