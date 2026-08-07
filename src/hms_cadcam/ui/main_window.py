@@ -115,6 +115,7 @@ from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
+from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam3d_function_panel import Cam3DFunctionPanel
 from hms_cadcam.cam.application.cam3d_editor import (
@@ -2778,9 +2779,15 @@ class MainWindow(QMainWindow):
         self._profile_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._profile_status)
         self._update_active_profile_status()
-        self._import_status = QLabel("CAD: Sẵn sàng")
-        self._import_status.setObjectName("StatusLabel")
-        status.addPermanentWidget(self._import_status, 1)
+        self._cad_loading_status = CadLoadingStatusSurface(
+            self.cad_controller.cancel_active_import,
+            self,
+        )
+        self._import_status = self._cad_loading_status.status_label
+        status.addPermanentWidget(self._cad_loading_status, 1)
+        self.cad_controller.loading_state_changed.connect(
+            self._cad_loading_status.handle_loading_event
+        )
         self._notification_center_button = QPushButton(
             ui_text("NOTIFICATIONS: 0")
         )
@@ -3684,7 +3691,6 @@ class MainWindow(QMainWindow):
             self.lathe_dock.hide()
 
     def _update_import_status(self, status: str) -> None:
-        self._import_status.setText(f"CAD: {ui_text(status)}")
         severity = "error" if "lỗi" in status.casefold() else "info"
         if hasattr(self, "diagnostics_host"):
             self.diagnostics_host.set_activity(f"CAD: {status}", severity=severity)
