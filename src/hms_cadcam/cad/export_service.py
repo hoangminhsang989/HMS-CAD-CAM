@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
@@ -46,6 +47,62 @@ class ExportErrorCode(StrEnum):
     ATOMIC_REPLACE_FAILED = "export3d.atomic_replace_failed"
     ATOMIC_PUBLICATION_FAILED = "export3d.atomic_publication_failed"
     TEMP_CLEANUP_FAILED = "export3d.temp_cleanup_failed"
+    CANCELLED = "export3d.cancelled"
+
+
+class ExportCancellationState(StrEnum):
+    """Total-order states for cancellation versus atomic publication."""
+
+    ACTIVE = "active"
+    CANCEL_REQUESTED = "cancel_requested"
+    COMMITTING = "committing"
+    TERMINAL = "terminal"
+
+
+class ExportCancellation:
+    """Thread-safe cooperative cancellation and publication commit gate.
+
+    The native writer is intentionally not interrupted.  The lock establishes
+    a total order between an accepted cancellation and publication entering its
+    atomic commit section.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._state = ExportCancellationState.ACTIVE
+
+    @property
+    def state(self) -> ExportCancellationState:
+        with self._lock:
+            return self._state
+
+    @property
+    def cancellation_requested(self) -> bool:
+        return self.state is ExportCancellationState.CANCEL_REQUESTED
+
+    def request_cancel(self) -> bool:
+        """Accept cancellation only while publication has not begun."""
+
+        with self._lock:
+            if self._state is ExportCancellationState.ACTIVE:
+                self._state = ExportCancellationState.CANCEL_REQUESTED
+                return True
+            return self._state is ExportCancellationState.CANCEL_REQUESTED
+
+    def begin_commit(self) -> bool:
+        """Atomically claim publication, or reject it after accepted cancel."""
+
+        with self._lock:
+            if self._state is not ExportCancellationState.ACTIVE:
+                return False
+            self._state = ExportCancellationState.COMMITTING
+            return True
+
+    def mark_terminal(self) -> None:
+        """Close the request lifecycle after all publication/cleanup work."""
+
+        with self._lock:
+            self._state = ExportCancellationState.TERMINAL
 
 
 class CadExportDocumentError(ValueError):
@@ -73,6 +130,7 @@ class ExportRequest:
     profile: ExportProfile
     selections: tuple[ExportSelectionRef, ...] = ()
     overwrite_policy: ExportOverwritePolicy = ExportOverwritePolicy.FAIL_IF_EXISTS
+    cancellation: ExportCancellation = field(default_factory=ExportCancellation)
 
     def __post_init__(self) -> None:
         if not isinstance(self.target_path, Path):
@@ -81,6 +139,8 @@ class ExportRequest:
             raise TypeError("CAD export profile must be ExportProfile")
         if not isinstance(self.overwrite_policy, ExportOverwritePolicy):
             raise TypeError("CAD export overwrite policy is invalid")
+        if not isinstance(self.cancellation, ExportCancellation):
+            raise TypeError("CAD export cancellation gate is invalid")
         if self.overwrite_policy is not self.profile.overwrite_policy:
             raise ValueError(
                 "CAD export request policy must match the serialized profile policy"
@@ -209,8 +269,17 @@ class CadExportService:
 
     def export(self, request: ExportRequest) -> ExportResult:
         """Execute one validated request without ever publishing a partial final file."""
+        try:
+            return self._export_active(request)
+        finally:
+            request.cancellation.mark_terminal()
+
+    def _export_active(self, request: ExportRequest) -> ExportResult:
+        """Run cooperative checkpoints around the opaque native writer."""
         started = perf_counter()
         target = request.target_path.resolve(strict=False)
+        if request.cancellation.cancellation_requested:
+            return self._cancelled(request, target, started)
         capability = capability_for_path(target)
         if capability is None:
             return self._failure(
@@ -280,8 +349,14 @@ class CadExportService:
         temporary = parent / (
             f".{target.stem}.{uuid4().hex}{target.suffix}.hms-exporting"
         )
+        if request.cancellation.cancellation_requested:
+            return self._cancelled(request, target, started)
         try:
             metadata = self._backend.write(request, temporary)
+            if request.cancellation.cancellation_requested:
+                return self._cancelled_with_cleanup(
+                    request, target, temporary, started
+                )
             if not temporary.is_file() or temporary.stat().st_size <= 0:
                 return self._failure_with_cleanup(
                     request,
@@ -292,6 +367,10 @@ class CadExportService:
                     "Native writer produced no export data.",
                 )
             size = temporary.stat().st_size
+            if request.cancellation.cancellation_requested:
+                return self._cancelled_with_cleanup(
+                    request, target, temporary, started
+                )
             digest = _sha256(temporary)
         except CadExportSelectionError as error:
             return self._failure_with_cleanup(
@@ -331,6 +410,10 @@ class CadExportService:
                 f"Native writer failed: {error}",
             )
 
+        if not request.cancellation.begin_commit():
+            return self._cancelled_with_cleanup(
+                request, target, temporary, started
+            )
         if request.overwrite_policy is ExportOverwritePolicy.FAIL_IF_EXISTS:
             if os.name != "nt":
                 return self._failure_with_cleanup(
@@ -386,6 +469,38 @@ class CadExportService:
             backend=metadata.backend,
             entity_count=metadata.entity_count,
             replaced_existing=existed,
+        )
+
+    @classmethod
+    def _cancelled_with_cleanup(
+        cls,
+        request: ExportRequest,
+        target: Path,
+        temporary: Path,
+        started: float,
+    ) -> ExportResult:
+        return cls._failure_with_cleanup(
+            request,
+            target,
+            temporary,
+            started,
+            ExportErrorCode.CANCELLED,
+            "3D export was cancelled before publication.",
+        )
+
+    @classmethod
+    def _cancelled(
+        cls,
+        request: ExportRequest,
+        target: Path,
+        started: float,
+    ) -> ExportResult:
+        return cls._failure(
+            request,
+            target,
+            started,
+            ExportErrorCode.CANCELLED,
+            "3D export was cancelled before publication.",
         )
 
     @classmethod
