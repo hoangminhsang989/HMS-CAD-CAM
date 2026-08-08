@@ -1,16 +1,21 @@
 # Trạng thái dự án HMS CAD/CAM
 
-## CANONICAL CURRENT PROGRAMME SUMMARY — R165 CLOSURE
+## CANONICAL CURRENT PROGRAMME SUMMARY — R166 IMPLEMENTATION
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
 - **Stage15A: 100% COMPLETE**
 - **Stage15A WP1/WP2/WP3: DELIVERED**
 - Remote Stage15A delivered baseline:
-  `f30bc28c36b0126e1e2b0f945df5462f7aec875c`
+  `630b950ae1109ff927f85559ed6fbfc7a94007c9`
 - Protected local `main` intentionally remains behind remote.
-- **Stage16: NOT_STARTED**
-- Overall HMS: **~85% provisional roadmap estimate**; this is not a
+- **Stage16A: IN_PROGRESS**
+- Selected Stage16A programme:
+  **STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_AND_PRODUCTION_TOOL_LIBRARY_FOUNDATION**.
+- Mega-WP1 implementation: **100% / DIRECT_REVIEW_PENDING**.
+- SQLite schema remains **v5**; Stage16A migration count is **0** for SQLite and
+  `.HMS`. CAM algorithms, Simulation and Post remain unchanged.
+- Overall HMS: **~86% provisional roadmap estimate**; this is not a
   mathematically certified project-completion metric.
 
 The historical stage sections below are retained for provenance and do not

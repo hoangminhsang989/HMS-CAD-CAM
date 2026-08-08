@@ -1,14 +1,20 @@
-# Nhiệm vụ hiện tại — Chờ Stage được phê duyệt tiếp theo
+# Nhiệm vụ hiện tại — Stage16A Mega-WP1 chờ direct review
 
-## CANONICAL CURRENT PROGRAMME STATE — R165 CLOSURE
+## CANONICAL CURRENT PROGRAMME STATE — R166 IMPLEMENTATION
 
 - **Stage13C: COMPLETE**
 - **Stage14A: COMPLETE**
 - **Stage15A: COMPLETE**
-- **Stage16: NOT_STARTED**
-- Current project state: **WAITING_FOR_NEXT_APPROVED_PRODUCT_STAGE**
-- The next action requires explicit stage-selection authority. Stage16 is not
-  selected or started by this document.
+- **Stage16A: IN_PROGRESS**
+- Selected programme:
+  **STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_AND_PRODUCTION_TOOL_LIBRARY_FOUNDATION**.
+- Mega-WP1: **IMPLEMENTATION_COMPLETE / DIRECT_REVIEW_PENDING**.
+- No SQLite schema change, `.HMS` migration, CAM algorithm fork, automatic
+  Calculate, Simulation or Post action.
+- Canonical next authority:
+  **STAGE16A_3STEP_CAM_WORKFLOW_MEGA_WP1_DIRECT_REVIEW_AUTHORITY**.
+- Implementation details and evidence map:
+  `docs/STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_FOUNDATION.md`.
 
 The Stage 9A.7 and Stage 8A.x material below is retained as historical
 provenance and is not the current programme state.
