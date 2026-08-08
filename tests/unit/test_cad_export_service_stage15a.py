@@ -197,10 +197,10 @@ def test_no_replace_publication_primitive_failure_is_typed_and_cleans_temp(
 ) -> None:
     target = tmp_path / "unavailable.step"
 
-    def deny_link(_source, _target):
-        raise PermissionError("hard-link publication unavailable")
+    def deny_rename(_source, _target):
+        raise PermissionError("no-replace rename publication unavailable")
 
-    monkeypatch.setattr("hms_cadcam.cad.export_service.os.link", deny_link)
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.rename", deny_rename)
     result = CadExportService(_Backend()).export(_request(target))
     assert result.failure is not None
     assert result.failure.code is ExportErrorCode.ATOMIC_PUBLICATION_FAILED
@@ -216,6 +216,90 @@ def test_no_replace_publication_supports_unicode_windows_path_and_final_hash(
     assert result.success
     assert result.sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
     assert result.bytes_written == len(target.read_bytes())
+    _assert_no_temp(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "overwrite",
+    (
+        ExportOverwritePolicy.FAIL_IF_EXISTS,
+        ExportOverwritePolicy.REPLACE_EXISTING,
+    ),
+)
+def test_metadata_failure_happens_before_publication_and_preserves_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overwrite: ExportOverwritePolicy,
+) -> None:
+    target = tmp_path / "metadata.step"
+    if overwrite is ExportOverwritePolicy.REPLACE_EXISTING:
+        target.write_bytes(b"known-good")
+    publications: list[tuple[Path, Path]] = []
+
+    def fail_hash(_path: Path) -> str:
+        raise OSError("controlled metadata failure")
+
+    def record_publication(source: Path, destination: Path) -> None:
+        publications.append((source, destination))
+
+    monkeypatch.setattr("hms_cadcam.cad.export_service._sha256", fail_hash)
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.rename", record_publication)
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.replace", record_publication)
+    result = CadExportService(_Backend()).export(
+        _request(target, overwrite=overwrite)
+    )
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.WRITE_FAILED
+    assert publications == []
+    if overwrite is ExportOverwritePolicy.REPLACE_EXISTING:
+        assert target.read_bytes() == b"known-good"
+    else:
+        assert not target.exists()
+    _assert_no_temp(tmp_path)
+
+
+def test_cleanup_failure_is_explicitly_typed_and_preserves_original_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "cleanup.step"
+    real_unlink = Path.unlink
+
+    def deny_rename(_source: Path, _target: Path) -> None:
+        raise PermissionError("controlled publication failure")
+
+    def deny_temporary_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path.name.endswith(".hms-exporting"):
+            raise PermissionError("controlled cleanup failure")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.rename", deny_rename)
+    monkeypatch.setattr(Path, "unlink", deny_temporary_unlink)
+    result = CadExportService(_Backend()).export(_request(target))
+    residue = tuple(tmp_path.glob("*.hms-exporting"))
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.TEMP_CLEANUP_FAILED
+    assert ExportErrorCode.ATOMIC_PUBLICATION_FAILED.value in result.failure.message
+    assert not target.exists()
+    assert len(residue) == 1
+    for path in residue:
+        real_unlink(path)
+
+
+def test_fail_if_exists_fails_closed_off_verified_windows_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "unsupported-platform.step"
+    publications: list[tuple[Path, Path]] = []
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.name", "posix")
+    monkeypatch.setattr(
+        "hms_cadcam.cad.export_service.os.rename",
+        lambda source, destination: publications.append((source, destination)),
+    )
+    result = CadExportService(_Backend()).export(_request(target))
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.ATOMIC_PUBLICATION_FAILED
+    assert publications == []
+    assert not target.exists()
     _assert_no_temp(tmp_path)
 
 

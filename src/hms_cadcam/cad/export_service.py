@@ -45,6 +45,7 @@ class ExportErrorCode(StrEnum):
     EMPTY_OUTPUT = "export3d.empty_output"
     ATOMIC_REPLACE_FAILED = "export3d.atomic_replace_failed"
     ATOMIC_PUBLICATION_FAILED = "export3d.atomic_publication_failed"
+    TEMP_CLEANUP_FAILED = "export3d.temp_cleanup_failed"
 
 
 class CadExportDocumentError(ValueError):
@@ -282,103 +283,137 @@ class CadExportService:
         try:
             metadata = self._backend.write(request, temporary)
             if not temporary.is_file() or temporary.stat().st_size <= 0:
-                return self._failure(
+                return self._failure_with_cleanup(
                     request,
                     target,
+                    temporary,
                     started,
                     ExportErrorCode.EMPTY_OUTPUT,
                     "Native writer produced no export data.",
                 )
-            if request.overwrite_policy is ExportOverwritePolicy.FAIL_IF_EXISTS:
-                try:
-                    os.link(temporary, target)
-                except FileExistsError:
-                    return self._failure(
-                        request,
-                        target,
-                        started,
-                        ExportErrorCode.FILE_EXISTS,
-                        "Export destination appeared before no-overwrite publication.",
-                    )
-                except OSError as error:
-                    LOGGER.error("No-overwrite CAD export publication failed: %s", error)
-                    return self._failure(
-                        request,
-                        target,
-                        started,
-                        ExportErrorCode.ATOMIC_PUBLICATION_FAILED,
-                        f"No safe create-if-absent publication is available: {error}",
-                    )
-                try:
-                    temporary.unlink()
-                except OSError as error:
-                    LOGGER.warning(
-                        "Published CAD export but temporary link cleanup needs retry: %s",
-                        error,
-                    )
-            else:
-                try:
-                    os.replace(temporary, target)
-                except OSError as error:
-                    LOGGER.error("Atomic CAD export replacement failed: %s", error)
-                    return self._failure(
-                        request,
-                        target,
-                        started,
-                        ExportErrorCode.ATOMIC_REPLACE_FAILED,
-                        f"Could not replace the completed export: {error}",
-                    )
-            size = target.stat().st_size
-            digest = _sha256(target)
-            return ExportResult(
-                True,
-                target,
-                request.profile.format_id,
-                perf_counter() - started,
-                bytes_written=size,
-                sha256=digest,
-                backend=metadata.backend,
-                entity_count=metadata.entity_count,
-                replaced_existing=existed,
-            )
+            size = temporary.stat().st_size
+            digest = _sha256(temporary)
         except CadExportSelectionError as error:
-            return self._failure(
+            return self._failure_with_cleanup(
                 request,
                 target,
+                temporary,
                 started,
                 ExportErrorCode.INVALID_SELECTION,
                 str(error),
             )
         except CadExportDocumentError as error:
-            return self._failure(
+            return self._failure_with_cleanup(
                 request,
                 target,
+                temporary,
                 started,
                 ExportErrorCode.INVALID_DOCUMENT,
                 str(error),
             )
         except CadExportProfileError as error:
-            return self._failure(
+            return self._failure_with_cleanup(
                 request,
                 target,
+                temporary,
                 started,
                 ExportErrorCode.INVALID_PROFILE,
                 str(error),
             )
         except Exception as error:
             LOGGER.exception("Native CAD export writer failed for %s", target)
-            return self._failure(
+            return self._failure_with_cleanup(
                 request,
                 target,
+                temporary,
                 started,
                 ExportErrorCode.WRITE_FAILED,
                 f"Native writer failed: {error}",
             )
-        finally:
+
+        if request.overwrite_policy is ExportOverwritePolicy.FAIL_IF_EXISTS:
+            if os.name != "nt":
+                return self._failure_with_cleanup(
+                    request,
+                    target,
+                    temporary,
+                    started,
+                    ExportErrorCode.ATOMIC_PUBLICATION_FAILED,
+                    "Atomic no-overwrite publication is unsupported on this platform.",
+                )
             try:
-                temporary.unlink(missing_ok=True)
+                os.rename(temporary, target)
+            except FileExistsError:
+                return self._failure_with_cleanup(
+                    request,
+                    target,
+                    temporary,
+                    started,
+                    ExportErrorCode.FILE_EXISTS,
+                    "Export destination appeared before no-overwrite publication.",
+                )
             except OSError as error:
-                LOGGER.warning("Could not remove CAD export temporary file %s: %s", temporary, error)
+                LOGGER.error("No-overwrite CAD export publication failed: %s", error)
+                return self._failure_with_cleanup(
+                    request,
+                    target,
+                    temporary,
+                    started,
+                    ExportErrorCode.ATOMIC_PUBLICATION_FAILED,
+                    f"No safe create-if-absent publication is available: {error}",
+                )
+        else:
+            try:
+                os.replace(temporary, target)
+            except OSError as error:
+                LOGGER.error("Atomic CAD export replacement failed: %s", error)
+                return self._failure_with_cleanup(
+                    request,
+                    target,
+                    temporary,
+                    started,
+                    ExportErrorCode.ATOMIC_REPLACE_FAILED,
+                    f"Could not replace the completed export: {error}",
+                )
+
+        return ExportResult(
+            True,
+            target,
+            request.profile.format_id,
+            perf_counter() - started,
+            bytes_written=size,
+            sha256=digest,
+            backend=metadata.backend,
+            entity_count=metadata.entity_count,
+            replaced_existing=existed,
+        )
+
+    @classmethod
+    def _failure_with_cleanup(
+        cls,
+        request: ExportRequest,
+        target: Path,
+        temporary: Path,
+        started: float,
+        code: ExportErrorCode,
+        message: str,
+    ) -> ExportResult:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            LOGGER.error(
+                "CAD export temporary cleanup failed for %s: %s",
+                temporary,
+                cleanup_error,
+            )
+            return cls._failure(
+                request,
+                target,
+                started,
+                ExportErrorCode.TEMP_CLEANUP_FAILED,
+                f"{code.value}: {message} Temporary cleanup failed: {cleanup_error}",
+            )
+        return cls._failure(request, target, started, code, message)
 
     @staticmethod
     def _failure(
