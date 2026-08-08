@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -60,10 +62,14 @@ def _request(
     overwrite: ExportOverwritePolicy = ExportOverwritePolicy.FAIL_IF_EXISTS,
     selections: tuple[ExportSelectionRef, ...] = (),
 ) -> ExportRequest:
+    profile = replace(
+        ExportProfile.default_for(format_id),
+        overwrite_policy=overwrite,
+    )
     return ExportRequest(
         DOCUMENT_ID,
         target,
-        ExportProfile.default_for(format_id),
+        profile,
         selections,
         overwrite,
     )
@@ -79,7 +85,7 @@ def test_success_publishes_nonempty_metadata_and_leaves_no_temp(tmp_path: Path) 
     assert result.success
     assert target.read_bytes() == b"step:0"
     assert result.bytes_written == target.stat().st_size
-    assert len(result.sha256 or "") == 64
+    assert result.sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
     assert not result.replaced_existing
     _assert_no_temp(tmp_path)
 
@@ -163,6 +169,53 @@ def test_atomic_replace_failure_preserves_final_and_cleans_temp(
     )
     assert result.failure.code is ExportErrorCode.ATOMIC_REPLACE_FAILED
     assert target.read_bytes() == b"known-good"
+    _assert_no_temp(tmp_path)
+
+
+def test_fail_if_exists_concurrent_create_is_atomic_and_preserves_competing_bytes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "race.step"
+
+    class _ConcurrentCreator(_Backend):
+        def write(
+            self, request: ExportRequest, temporary_path: Path
+        ) -> BackendWriteMetadata:
+            request.target_path.write_bytes(b"concurrent-known-good")
+            temporary_path.write_bytes(b"candidate-output")
+            return BackendWriteMetadata("race writer", 1)
+
+    result = CadExportService(_ConcurrentCreator()).export(_request(target))
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.FILE_EXISTS
+    assert target.read_bytes() == b"concurrent-known-good"
+    _assert_no_temp(tmp_path)
+
+
+def test_no_replace_publication_primitive_failure_is_typed_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "unavailable.step"
+
+    def deny_link(_source, _target):
+        raise PermissionError("hard-link publication unavailable")
+
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.link", deny_link)
+    result = CadExportService(_Backend()).export(_request(target))
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.ATOMIC_PUBLICATION_FAILED
+    assert not target.exists()
+    _assert_no_temp(tmp_path)
+
+
+def test_no_replace_publication_supports_unicode_windows_path_and_final_hash(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "chi-tiết-한글.step"
+    result = CadExportService(_Backend()).export(_request(target))
+    assert result.success
+    assert result.sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert result.bytes_written == len(target.read_bytes())
     _assert_no_temp(tmp_path)
 
 

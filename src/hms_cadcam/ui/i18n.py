@@ -358,6 +358,11 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Linear deflection", "Sai lệch tuyến tính", "선형 편차"),
     ("Angular deflection", "Sai lệch góc", "각도 편차"),
     ("Relative mesh tolerance", "Dung sai lưới tương đối", "상대 메시 공차"),
+    (
+        "Existing mesh is re-encoded without remeshing; tessellation settings are not applicable.",
+        "Lưới hiện có chỉ được mã hóa lại, không chia lưới lại; các thiết lập tessellation không áp dụng.",
+        "기존 메시는 재메시 없이 다시 인코딩되며 테셀레이션 설정은 적용되지 않습니다.",
+    ),
     ("Export 3D file", "Xuất file 3D", "3D 파일 내보내기"),
     ("Validation error", "Lỗi xác thực", "검증 오류"),
     ("Export failed", "Xuất thất bại", "내보내기 실패"),

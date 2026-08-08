@@ -433,6 +433,11 @@ class MainWindow(QMainWindow):
                 if self._active_document_metadata is None
                 else self._active_document_metadata.document_id
             ),
+            lambda: (
+                None
+                if self._active_document_metadata is None
+                else self._active_document_metadata.geometry_kind
+            ),
             lambda: self._active_selection,
         )
         self.project_controller.set_save_as_export_router(

@@ -35,6 +35,7 @@ from hms_cadcam.cad.export_models import (
 from hms_cadcam.cad.export_service import (
     BackendWriteMetadata,
     CadExportDocumentError,
+    CadExportProfileError,
     CadExportSelectionError,
     ExportRequest,
 )
@@ -128,6 +129,14 @@ class OcpCadExportBackend:
                 backend = "OCP BRepTools"
             elif request.profile.format_id is ExportFormatId.STL:
                 if triangulation is not None:
+                    if (
+                        request.profile.mesh_options is not None
+                        or request.profile.tolerance is not None
+                    ):
+                        raise CadExportProfileError(
+                            "STL tessellation settings are not applicable to an "
+                            "existing triangle mesh"
+                        )
                     self._write_mesh_stl(
                         triangulation,
                         temporary_path,
@@ -136,6 +145,10 @@ class OcpCadExportBackend:
                     backend = "OCP RWStl"
                 else:
                     assert shape is not None
+                    if request.profile.mesh_options is None:
+                        raise CadExportProfileError(
+                            "BREP-to-STL export requires active tessellation settings"
+                        )
                     self._write_brep_stl(shape, temporary_path, request)
                     backend = "OCP StlAPI_Writer"
             else:

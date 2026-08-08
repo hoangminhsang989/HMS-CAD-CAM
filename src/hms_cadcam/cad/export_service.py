@@ -18,6 +18,7 @@ from hms_cadcam.cad.export_models import (
     ExportCapabilityClass,
     ExportEntityKind,
     ExportFormatId,
+    ExportOverwritePolicy,
     ExportProfile,
     ExportSelectionRef,
     capability_for_path,
@@ -27,11 +28,6 @@ from hms_cadcam.cad.models import CadDocumentId
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-class ExportOverwritePolicy(StrEnum):
-    FAIL_IF_EXISTS = "fail_if_exists"
-    REPLACE_EXISTING = "replace_existing"
 
 
 class ExportErrorCode(StrEnum):
@@ -48,6 +44,7 @@ class ExportErrorCode(StrEnum):
     WRITE_FAILED = "export3d.write_failed"
     EMPTY_OUTPUT = "export3d.empty_output"
     ATOMIC_REPLACE_FAILED = "export3d.atomic_replace_failed"
+    ATOMIC_PUBLICATION_FAILED = "export3d.atomic_publication_failed"
 
 
 class CadExportDocumentError(ValueError):
@@ -56,6 +53,10 @@ class CadExportDocumentError(ValueError):
 
 class CadExportSelectionError(ValueError):
     """The request selection is stale, malformed, or not resolvable."""
+
+
+class CadExportProfileError(ValueError):
+    """The typed profile is incompatible with the resolved source geometry."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,10 @@ class ExportRequest:
             raise TypeError("CAD export profile must be ExportProfile")
         if not isinstance(self.overwrite_policy, ExportOverwritePolicy):
             raise TypeError("CAD export overwrite policy is invalid")
+        if self.overwrite_policy is not self.profile.overwrite_policy:
+            raise ValueError(
+                "CAD export request policy must match the serialized profile policy"
+            )
         if any(item.document_id != self.document_id for item in self.selections):
             raise ValueError("Every export selection must belong to the document")
         identities = tuple(item.selection_id for item in self.selections)
@@ -284,19 +289,47 @@ class CadExportService:
                     ExportErrorCode.EMPTY_OUTPUT,
                     "Native writer produced no export data.",
                 )
-            size = temporary.stat().st_size
-            digest = _sha256(temporary)
-            try:
-                os.replace(temporary, target)
-            except OSError as error:
-                LOGGER.error("Atomic CAD export publication failed: %s", error)
-                return self._failure(
-                    request,
-                    target,
-                    started,
-                    ExportErrorCode.ATOMIC_REPLACE_FAILED,
-                    f"Could not publish completed export: {error}",
-                )
+            if request.overwrite_policy is ExportOverwritePolicy.FAIL_IF_EXISTS:
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    return self._failure(
+                        request,
+                        target,
+                        started,
+                        ExportErrorCode.FILE_EXISTS,
+                        "Export destination appeared before no-overwrite publication.",
+                    )
+                except OSError as error:
+                    LOGGER.error("No-overwrite CAD export publication failed: %s", error)
+                    return self._failure(
+                        request,
+                        target,
+                        started,
+                        ExportErrorCode.ATOMIC_PUBLICATION_FAILED,
+                        f"No safe create-if-absent publication is available: {error}",
+                    )
+                try:
+                    temporary.unlink()
+                except OSError as error:
+                    LOGGER.warning(
+                        "Published CAD export but temporary link cleanup needs retry: %s",
+                        error,
+                    )
+            else:
+                try:
+                    os.replace(temporary, target)
+                except OSError as error:
+                    LOGGER.error("Atomic CAD export replacement failed: %s", error)
+                    return self._failure(
+                        request,
+                        target,
+                        started,
+                        ExportErrorCode.ATOMIC_REPLACE_FAILED,
+                        f"Could not replace the completed export: {error}",
+                    )
+            size = target.stat().st_size
+            digest = _sha256(target)
             return ExportResult(
                 True,
                 target,
@@ -322,6 +355,14 @@ class CadExportService:
                 target,
                 started,
                 ExportErrorCode.INVALID_DOCUMENT,
+                str(error),
+            )
+        except CadExportProfileError as error:
+            return self._failure(
+                request,
+                target,
+                started,
+                ExportErrorCode.INVALID_PROFILE,
                 str(error),
             )
         except Exception as error:

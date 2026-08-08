@@ -19,6 +19,7 @@ from hms_cadcam.cad.export_service import (
     ExportErrorCode,
     ExportRequest,
 )
+from hms_cadcam.cad.ocp import exporter as exporter_module
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
 
 
@@ -180,17 +181,90 @@ def test_imported_mesh_reexports_through_rwstl_without_brep_fabrication(
     ).success
     mesh = kernel.import_stl(source)
     assert mesh.success and mesh.document_id is not None
-    options = StlMeshOptions()
     profile = ExportProfile(
         ExportFormatId.STL,
-        tolerance=options.linear_deflection,
         stl_encoding=encoding,
-        mesh_options=options,
     )
     target = tmp_path / f"mesh-{encoding.value}.stl"
     exported = service.export(ExportRequest(mesh.document_id, target, profile))
     assert exported.success, exported.failure
     read_back = _read_back(kernel, ExportFormatId.STL, target)
+    assert mesh.metadata is not None
+    assert mesh.metadata.mesh_statistics is not None
+    assert read_back.metadata is not None
+    assert read_back.metadata.mesh_statistics is not None
+    assert (
+        read_back.metadata.mesh_statistics.triangles
+        == mesh.metadata.mesh_statistics.triangles
+    )
     kernel.release_document(read_back.document_id)
     kernel.release_document(mesh.document_id)
     kernel.release_document(box_id)
+
+
+def test_existing_mesh_rejects_active_tessellation_profile_without_output(
+    tmp_path: Path,
+) -> None:
+    kernel = OcpCadKernel()
+    service = CadExportService.create_for_kernel(kernel)
+    box_id = kernel.create_box(5.0, 4.0, 3.0)
+    source = tmp_path / "mesh-source.stl"
+    assert service.export(
+        ExportRequest(
+            box_id,
+            source,
+            ExportProfile.default_for(ExportFormatId.STL),
+        )
+    ).success
+    mesh = kernel.import_stl(source)
+    assert mesh.success and mesh.document_id is not None
+    target = tmp_path / "must-not-silently-ignore.stl"
+    result = service.export(
+        ExportRequest(
+            mesh.document_id,
+            target,
+            ExportProfile.default_for(ExportFormatId.STL),
+        )
+    )
+    assert result.failure is not None
+    assert result.failure.code is ExportErrorCode.INVALID_PROFILE
+    assert "not applicable" in result.failure.message
+    assert not target.exists()
+    assert not tuple(tmp_path.glob("*.hms-exporting"))
+    kernel.release_document(mesh.document_id)
+    kernel.release_document(box_id)
+
+
+def test_brep_stl_passes_all_tessellation_values_to_real_mesher_and_reads_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: list[tuple[float, bool, float, bool]] = []
+    real_mesher = exporter_module.BRepMesh_IncrementalMesh
+
+    def recording_mesher(shape, linear, relative, angular, parallel):
+        observed.append((linear, relative, angular, parallel))
+        return real_mesher(shape, linear, relative, angular, parallel)
+
+    monkeypatch.setattr(
+        exporter_module,
+        "BRepMesh_IncrementalMesh",
+        recording_mesher,
+    )
+    kernel = OcpCadKernel()
+    document_id = kernel.create_box(7.0, 6.0, 5.0)
+    options = StlMeshOptions(0.037, 0.23, True)
+    profile = ExportProfile(
+        ExportFormatId.STL,
+        tolerance=options.linear_deflection,
+        stl_encoding=StlEncoding.ASCII,
+        mesh_options=options,
+    )
+    target = tmp_path / "brep-options-ascii.stl"
+    result = CadExportService.create_for_kernel(kernel).export(
+        ExportRequest(document_id, target, profile)
+    )
+    assert result.success, result.failure
+    assert observed == [(0.037, True, 0.23, True)]
+    imported = _read_back(kernel, ExportFormatId.STL, target)
+    kernel.release_document(imported.document_id)
+    kernel.release_document(document_id)

@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | STEP | `NATIVE_SUPPORTED_NOW` | OCP `STEPControl_Writer` | `.step`, `.stp` | BREP document and selected solid/face/wire/edge; AP203/AP214/AP242 |
 | IGES | `NATIVE_SUPPORTED_NOW` | OCP `IGESControl_Writer` | `.iges`, `.igs` | BREP document and selected solid/face/wire/edge |
-| STL | `NATIVE_SUPPORTED_NOW` | OCP `StlAPI_Writer` / `RWStl` | `.stl` | BREP document, selected solid/face, or whole triangle mesh; binary/ASCII and tessellation options |
+| STL | `NATIVE_SUPPORTED_NOW` | OCP `StlAPI_Writer` / `RWStl` | `.stl` | BREP document or selected solid/face uses binary/ASCII plus active tessellation settings; a whole existing triangle mesh is binary/ASCII re-encoding with tessellation explicitly not applicable |
 | BREP | `NATIVE_SUPPORTED_NOW` | OCP `BRepTools` | `.brep`, `.brp` | BREP document and selected solid/face/wire/edge; format versions 1/2/3 |
 | Parasolid | `ARCHITECTURE_SUPPORTED_BUT_BACKEND_UNAVAILABLE` | none | `.x_t`, `.x_b` | Fail-closed; proprietary SDK is not present |
 | ACIS | `ARCHITECTURE_SUPPORTED_BUT_BACKEND_UNAVAILABLE` | none | `.sat`, `.sab` | Fail-closed; proprietary SDK is not present |
@@ -25,14 +25,19 @@ file or substitutes another format.
   persistence. Unknown extensions fail before filesystem publication.
 - **3D Export** uses a compact Basic-first profile dialog. Advanced controls are
   displayed only for STL because only the STL writer consumes them.
-- Profiles are typed, versioned (`format_version = 1`), deterministic JSON
-  contracts. They are session state only; no SQLite or `.HMS` schema changed.
+- Profiles are typed, versioned deterministic JSON contracts with strict
+  `from_dict` / `from_json` inverse decoding. `format_version = 1` is the export
+  **profile schema version**, not the STEP standard or BREP file-format version.
+  Overwrite policy is serialized in the same contract. Profiles remain session
+  state only; no SQLite or `.HMS` schema changed.
 - Native writes run through the existing request-owned Qt worker pattern. Project
   lifecycle actions are blocked while the worker owns the active CAD document.
-- The service writes to a unique temporary file in the destination directory,
-  verifies non-empty data, hashes it, and publishes with `os.replace`. Writer or
-  publication failures clean the temporary path and preserve an existing final
-  file.
+- The service writes to a unique temporary file in the destination directory and
+  verifies non-empty data before publication. `FAIL_IF_EXISTS` uses same-directory
+  `os.link(temp, final)` create-if-absent semantics and never falls back to an
+  overwriting primitive; `REPLACE_EXISTING` uses `os.replace`. Metadata is read
+  from the published final path. Writer or publication failures clean the
+  temporary path and preserve an existing or concurrently created final file.
 - Selected-object export resolves the stable topology index against the current
   kernel-owned document and validates the selected managed object still exists.
   Empty, vertex, stale, mesh-selection, and format-incompatible selections fail
@@ -45,6 +50,13 @@ non-empty output plus supported reader read-back. The evidence proves readable
 geometry and reasonable topology/mesh metadata; it does not claim exact semantic,
 assembly-name, color, or tolerance round-trip equivalence. Current STEP export is
 geometry-oriented and does not promise XCAF product metadata preservation.
+
+BREP-to-STL export copies the source shape and tessellates that copy using the
+profile's linear deflection, angular deflection, and relative flag before writing.
+Existing-mesh-to-STL export preserves the already imported triangulation and only
+changes binary/ASCII encoding. Its tessellation values are `NOT_APPLICABLE`; the
+UI hides those controls for mesh context, and the backend rejects a mesh request
+that supplies active tessellation settings rather than silently ignoring them.
 
 The existing `ProjectTask` worker has no cancellation contract, so Stage15A WP1
 does not expose a fake cancel control. Unit conversion and compatibility overrides

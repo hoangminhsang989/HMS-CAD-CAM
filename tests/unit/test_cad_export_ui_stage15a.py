@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QDialogButtonBox, QMainWindow
 
 from hms_cadcam.cad.export_models import ExportFormatId, ExportProfile
 from hms_cadcam.cad.export_service import CadExportService
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_export import CadExportProfileDialog, CadExportUiController
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
@@ -94,6 +94,37 @@ def test_profile_dialog_layout_expands_at_two_hundred_percent_font(qtbot) -> Non
     assert dialog.buttons.geometry().bottom() <= dialog.contentsRect().bottom()
 
 
+def test_existing_mesh_context_hides_tessellation_and_preserves_encoding_on_i18n(
+    qtbot,
+) -> None:
+    service = CadExportService(_Backend())
+    translator = translation_service()
+    previous = translator.language
+    dialog = CadExportProfileDialog(
+        service.capabilities(),
+        _profiles(service),
+        initial_format=ExportFormatId.STL,
+        stl_tessellation_applicable=False,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.encoding_combo.setCurrentIndex(1)
+    try:
+        assert not dialog._advanced_layout.isRowVisible(dialog.linear_deflection)
+        assert not dialog._advanced_layout.isRowVisible(dialog.angular_deflection)
+        assert not dialog._advanced_layout.isRowVisible(dialog.relative_mesh)
+        assert dialog._advanced_layout.isRowVisible(dialog.mesh_applicability_label)
+        translator.set_language(UiLanguage.EN_US)
+        assert "not applicable" in dialog.mesh_applicability_label.text()
+        translator.set_language(UiLanguage.KO_KR)
+        profile = dialog.profile()
+        assert profile.stl_encoding.value == "ascii"
+        assert profile.mesh_options is None
+        assert profile.tolerance is None
+    finally:
+        translator.set_language(previous)
+
+
 def test_save_as_hms_is_preserved_and_3d_extension_uses_export_router(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
@@ -172,6 +203,7 @@ def test_interactive_export_never_silently_changes_mismatched_format(
         CadExportService(_Backend()),
         project_service,
         lambda: CadDocumentId("active-document"),
+        lambda: CadGeometryKind.BREP,
         lambda: (),
     )
     started = []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
@@ -25,18 +26,14 @@ from hms_cadcam.cad.export_models import (
     ExportCapability,
     ExportEntityKind,
     ExportFormatId,
+    ExportOverwritePolicy,
     ExportProfile,
     ExportSelectionRef,
     StlEncoding,
     StlMeshOptions,
 )
-from hms_cadcam.cad.export_service import (
-    CadExportService,
-    ExportOverwritePolicy,
-    ExportRequest,
-    ExportResult,
-)
-from hms_cadcam.cad.models import CadDocumentId
+from hms_cadcam.cad.export_service import CadExportService, ExportRequest, ExportResult
+from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localized_dialogs import QFileDialog
@@ -65,6 +62,7 @@ class CadExportProfileDialog(QDialog):
         profiles: dict[ExportFormatId, ExportProfile],
         *,
         initial_format: ExportFormatId = ExportFormatId.STEP,
+        stl_tessellation_applicable: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -72,6 +70,7 @@ class CadExportProfileDialog(QDialog):
         self._capabilities = {item.format_id: item for item in capabilities}
         self._profiles = dict(profiles)
         self._current_format: ExportFormatId | None = None
+        self._stl_tessellation_applicable = stl_tessellation_applicable
 
         self.format_combo = QComboBox(self)
         self.format_combo.setObjectName("CadExportFormatCombo")
@@ -96,6 +95,7 @@ class CadExportProfileDialog(QDialog):
 
         self.advanced_group = QGroupBox(_tr("Advanced"), self)
         advanced = QFormLayout(self.advanced_group)
+        self._advanced_layout = advanced
         self.encoding_combo = QComboBox(self.advanced_group)
         self.encoding_combo.addItem(_tr("Binary"), StlEncoding.BINARY.value)
         self.encoding_combo.addItem(_tr("ASCII"), StlEncoding.ASCII.value)
@@ -108,6 +108,8 @@ class CadExportProfileDialog(QDialog):
         self.angular_deflection.setRange(0.000001, 3.141592)
         self.angular_deflection.setSingleStep(0.1)
         self.relative_mesh = QCheckBox(_tr("Relative mesh tolerance"), self.advanced_group)
+        self.mesh_applicability_label = QLabel(self.advanced_group)
+        self.mesh_applicability_label.setWordWrap(True)
         self.encoding_label = QLabel(self.advanced_group)
         self.linear_label = QLabel(self.advanced_group)
         self.angular_label = QLabel(self.advanced_group)
@@ -115,6 +117,7 @@ class CadExportProfileDialog(QDialog):
         advanced.addRow(self.linear_label, self.linear_deflection)
         advanced.addRow(self.angular_label, self.angular_deflection)
         advanced.addRow("", self.relative_mesh)
+        advanced.addRow(self.mesh_applicability_label)
 
         self.validation_label = QLabel(self)
         self.validation_label.setObjectName("CadExportValidation")
@@ -146,7 +149,11 @@ class CadExportProfileDialog(QDialog):
     def profile(self) -> ExportProfile:
         """Return the currently visible, typed profile or raise validation error."""
         profile = self._profile_from_controls(self.selected_format)
-        self._profiles[self.selected_format] = profile
+        if not (
+            self.selected_format is ExportFormatId.STL
+            and not self._stl_tessellation_applicable
+        ):
+            self._profiles[self.selected_format] = profile
         return profile
 
     @property
@@ -164,6 +171,12 @@ class CadExportProfileDialog(QDialog):
         self.linear_label.setText(_tr("Linear deflection"))
         self.angular_label.setText(_tr("Angular deflection"))
         self.relative_mesh.setText(_tr("Relative mesh tolerance"))
+        self.mesh_applicability_label.setText(
+            _tr(
+                "Existing mesh is re-encoded without remeshing; tessellation "
+                "settings are not applicable."
+            )
+        )
         self.encoding_combo.setItemText(0, _tr("Binary"))
         self.encoding_combo.setItemText(1, _tr("ASCII"))
         for index in range(self.format_combo.count()):
@@ -209,6 +222,20 @@ class CadExportProfileDialog(QDialog):
                 max(self.encoding_combo.findData(profile.stl_encoding.value), 0)
             )
         self.advanced_group.setVisible(selected is ExportFormatId.STL)
+        tessellation_visible = (
+            selected is ExportFormatId.STL and self._stl_tessellation_applicable
+        )
+        self._advanced_layout.setRowVisible(
+            self.linear_deflection, tessellation_visible
+        )
+        self._advanced_layout.setRowVisible(
+            self.angular_deflection, tessellation_visible
+        )
+        self._advanced_layout.setRowVisible(self.relative_mesh, tessellation_visible)
+        self._advanced_layout.setRowVisible(
+            self.mesh_applicability_label,
+            selected is ExportFormatId.STL and not tessellation_visible,
+        )
         self.standard_combo.setEnabled(bool(capability.standards))
         self._refresh_capability_state()
 
@@ -227,12 +254,20 @@ class CadExportProfileDialog(QDialog):
 
     def _profile_from_controls(self, format_id: ExportFormatId) -> ExportProfile:
         capability = self._capabilities[format_id]
+        stored = self._profiles.get(format_id, ExportProfile.default_for(format_id))
         standard = (
             str(self.standard_combo.currentData())
             if capability.standards and self.standard_combo.currentData() is not None
             else None
         )
         if format_id is ExportFormatId.STL:
+            encoding = StlEncoding(str(self.encoding_combo.currentData()))
+            if not self._stl_tessellation_applicable:
+                return ExportProfile(
+                    format_id,
+                    stl_encoding=encoding,
+                    overwrite_policy=stored.overwrite_policy,
+                )
             mesh = StlMeshOptions(
                 self.linear_deflection.value(),
                 self.angular_deflection.value(),
@@ -241,10 +276,15 @@ class CadExportProfileDialog(QDialog):
             return ExportProfile(
                 format_id,
                 tolerance=mesh.linear_deflection,
-                stl_encoding=StlEncoding(str(self.encoding_combo.currentData())),
+                stl_encoding=encoding,
                 mesh_options=mesh,
+                overwrite_policy=stored.overwrite_policy,
             )
-        return ExportProfile(format_id, standard=standard)
+        return ExportProfile(
+            format_id,
+            standard=standard,
+            overwrite_policy=stored.overwrite_policy,
+        )
 
     @Slot()
     def _accept_validated(self) -> None:
@@ -269,6 +309,7 @@ class CadExportUiController(QObject):
         service: CadExportService,
         project_service: ProjectService,
         document_id: Callable[[], CadDocumentId | None],
+        geometry_kind: Callable[[], CadGeometryKind | None],
         selection: Callable[[], tuple[SelectionMetadata, ...]],
     ) -> None:
         super().__init__(window)
@@ -276,6 +317,7 @@ class CadExportUiController(QObject):
         self._service = service
         self._project_service = project_service
         self._document_id = document_id
+        self._geometry_kind = geometry_kind
         self._selection = selection
         self._profiles = {
             item.format_id: ExportProfile.default_for(item.format_id)
@@ -385,6 +427,9 @@ class CadExportUiController(QObject):
             self._service.capabilities(),
             self._profiles,
             initial_format=initial_format,
+            stl_tessellation_applicable=(
+                self._geometry_kind() is not CadGeometryKind.MESH
+            ),
             parent=self._window,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -408,10 +453,14 @@ class CadExportUiController(QObject):
         except ValueError as error:
             self._show_failure(str(error))
             return False
+        request_profile = replace(
+            profile,
+            overwrite_policy=ExportOverwritePolicy.REPLACE_EXISTING,
+        )
         request = ExportRequest(
             document_id,
             target,
-            profile,
+            request_profile,
             selections,
             ExportOverwritePolicy.REPLACE_EXISTING,
         )
