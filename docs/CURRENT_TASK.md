@@ -1,5 +1,20 @@
 # Nhiệm vụ hiện tại — Chờ Stage được phê duyệt tiếp theo
 
+## CANONICAL CURRENT PROGRAMME STATE — R165 CLOSURE
+
+- **Stage13C: COMPLETE**
+- **Stage14A: COMPLETE**
+- **Stage15A: COMPLETE**
+- **Stage16: NOT_STARTED**
+- Current project state: **WAITING_FOR_NEXT_APPROVED_PRODUCT_STAGE**
+- The next action requires explicit stage-selection authority. Stage16 is not
+  selected or started by this document.
+
+The Stage 9A.7 and Stage 8A.x material below is retained as historical
+provenance and is not the current programme state.
+
+## HISTORICAL TASK RECORD
+
 ## Trạng thái ưu tiên
 
 - **Stage 9A.7 — Post/Program Assembly UI Cleanup — FINALIZED / COMPLETE.**

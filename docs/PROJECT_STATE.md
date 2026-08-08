@@ -1,5 +1,23 @@
 # Trạng thái dự án HMS CAD/CAM
 
+## CANONICAL CURRENT PROGRAMME SUMMARY — R165 CLOSURE
+
+- **Stage13C: 100% COMPLETE**
+- **Stage14A: 100% COMPLETE**
+- **Stage15A: 100% COMPLETE**
+- **Stage15A WP1/WP2/WP3: DELIVERED**
+- Remote Stage15A delivered baseline:
+  `f30bc28c36b0126e1e2b0f945df5462f7aec875c`
+- Protected local `main` intentionally remains behind remote.
+- **Stage16: NOT_STARTED**
+- Overall HMS: **~85% provisional roadmap estimate**; this is not a
+  mathematically certified project-completion metric.
+
+The historical stage sections below are retained for provenance and do not
+override this canonical current summary.
+
+## HISTORICAL STAGE RECORD
+
 ## Stage 9A.7 — Post/Program Assembly UI Cleanup
 
 - Stage 9A.7 đã **FINALIZED / COMPLETE**. Final immutable R4 nằm tại

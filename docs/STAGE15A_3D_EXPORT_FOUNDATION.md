@@ -1,5 +1,20 @@
 # Stage 15A — 3D Export, Format Versioning and Export Profile Foundation
 
+> **CANONICAL CLOSURE — STAGE15A: COMPLETE**
+>
+> Programme: **3D Export, Format Versioning and Export Profile Foundation**
+>
+> Closure remote baseline before closure: `f30bc28c36b0126e1e2b0f945df5462f7aec875c`
+>
+> WP1: **DELIVERED**
+> WP2: **DELIVERED**
+> WP3: **DELIVERED**
+>
+> Final acceptance: **PASS**
+>
+> This closure records the delivered capability truthfully; it does not add
+> capability or promote unavailable backends.
+
 ## Capability matrix
 
 | Format | Audit classification | Native writer | Extensions | Current scope |
