@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.cad.kernel import CadKernel
+from hms_cadcam.cad.export_service import CadExportService
 from hms_cadcam.core.paths import ApplicationPathsService
 from hms_cadcam.core.hms_backup import HmsBackupService, HmsRestoreService
 from hms_cadcam.core.storage_layout import StorageBootstrapService
@@ -115,6 +116,7 @@ from hms_cadcam.project.models import ProjectSession
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
+from hms_cadcam.ui.cad_export import CadExportUiController
 from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam3d_function_panel import Cam3DFunctionPanel
@@ -422,6 +424,20 @@ class MainWindow(QMainWindow):
         self._object_items: dict[CadObjectId, QTreeWidgetItem] = {}
         self._tree_sync_guard = False
         self._active_measurements: tuple[MeasurementResult, ...] = ()
+        self.export_controller = CadExportUiController(
+            self,
+            CadExportService.create_for_kernel(cad_kernel),
+            project_service,
+            lambda: (
+                None
+                if self._active_document_metadata is None
+                else self._active_document_metadata.document_id
+            ),
+            lambda: self._active_selection,
+        )
+        self.project_controller.set_save_as_export_router(
+            self.export_controller.route_save_as
+        )
         self._build_menu_bar()
         self._build_quick_access_toolbar()
         self._build_cad_toolbar()
@@ -866,13 +882,23 @@ class MainWindow(QMainWindow):
         )
         self.project_controller.message.connect(self._append_output)
         self.cad_controller.message.connect(self._append_output)
+        self.export_controller.message.connect(self._append_output)
+        self.export_controller.busy_changed.connect(
+            self.project_controller.set_external_busy
+        )
         self.cad_controller.progress_changed.connect(self._update_import_status)
         self.cad_controller.document_changed.connect(self._update_cad_document)
+        self.cad_controller.document_changed.connect(
+            lambda _value: self.export_controller.refresh_action_states()
+        )
         self.cad_controller.topology_tree_changed.connect(self._update_topology_tree)
         self.viewport.selection_context_changed.connect(
             self.cad_controller.handle_selection_event
         )
         self.cad_controller.selection_context_changed.connect(self._update_selection)
+        self.cad_controller.selection_context_changed.connect(
+            lambda _document_id, _items: self.export_controller.refresh_action_states()
+        )
         if self._lathe_review_host:
             self.cad_controller.selection_context_changed.connect(
                 self._lathe_selection_changed
@@ -1081,6 +1107,9 @@ class MainWindow(QMainWindow):
             "measurement",
         ):
             cad_viewer_menu.addAction(self.cad_controller.actions[key])
+        cad_viewer_menu.addSeparator()
+        cad_viewer_menu.addAction(self.export_controller.actions["export_3d"])
+        cad_viewer_menu.addAction(self.export_controller.actions["export_selected"])
         directions_menu = cad_viewer_menu.addMenu("Hướng nhìn")
         for direction in ("top", "bottom", "front", "back", "left", "right"):
             directions_menu.addAction(

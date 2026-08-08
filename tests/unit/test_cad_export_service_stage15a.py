@@ -1,0 +1,180 @@
+"""Stage15A filesystem, failure, and atomic-publication matrix."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from hms_cadcam.cad.export_models import (
+    ExportEntityKind,
+    ExportFormatId,
+    ExportProfile,
+    ExportSelectionRef,
+)
+from hms_cadcam.cad.export_service import (
+    BackendWriteMetadata,
+    CadExportService,
+    ExportErrorCode,
+    ExportOverwritePolicy,
+    ExportRequest,
+    UnavailableCadExportBackend,
+)
+from hms_cadcam.cad.models import CadDocumentId
+
+
+DOCUMENT_ID = CadDocumentId("cad-document-stage15a")
+
+
+class _Backend:
+    supported_formats = frozenset(
+        {
+            ExportFormatId.STEP,
+            ExportFormatId.IGES,
+            ExportFormatId.STL,
+            ExportFormatId.BREP,
+        }
+    )
+    unavailable_reason = None
+
+    def __init__(self, mode: str = "write") -> None:
+        self.mode = mode
+
+    def write(self, request: ExportRequest, temporary_path: Path) -> BackendWriteMetadata:
+        if self.mode == "raise":
+            temporary_path.write_bytes(b"partial")
+            raise RuntimeError("writer exploded")
+        if self.mode == "empty":
+            temporary_path.touch()
+        else:
+            temporary_path.write_bytes(
+                f"{request.profile.format_id.value}:{len(request.selections)}".encode()
+            )
+        return BackendWriteMetadata("test writer", max(1, len(request.selections)))
+
+
+def _request(
+    target: Path,
+    format_id: ExportFormatId = ExportFormatId.STEP,
+    *,
+    overwrite: ExportOverwritePolicy = ExportOverwritePolicy.FAIL_IF_EXISTS,
+    selections: tuple[ExportSelectionRef, ...] = (),
+) -> ExportRequest:
+    return ExportRequest(
+        DOCUMENT_ID,
+        target,
+        ExportProfile.default_for(format_id),
+        selections,
+        overwrite,
+    )
+
+
+def _assert_no_temp(parent: Path) -> None:
+    assert not tuple(parent.glob("*.hms-exporting"))
+
+
+def test_success_publishes_nonempty_metadata_and_leaves_no_temp(tmp_path: Path) -> None:
+    target = tmp_path / "part.step"
+    result = CadExportService(_Backend()).export(_request(target))
+    assert result.success
+    assert target.read_bytes() == b"step:0"
+    assert result.bytes_written == target.stat().st_size
+    assert len(result.sha256 or "") == 64
+    assert not result.replaced_existing
+    _assert_no_temp(tmp_path)
+
+
+def test_unsupported_and_profile_mismatch_create_nothing(tmp_path: Path) -> None:
+    unsupported = tmp_path / "part.unknown"
+    result = CadExportService(_Backend()).export(_request(unsupported))
+    assert result.failure.code is ExportErrorCode.UNSUPPORTED_EXTENSION
+    mismatch = tmp_path / "part.iges"
+    result = CadExportService(_Backend()).export(_request(mismatch))
+    assert result.failure.code is ExportErrorCode.PROFILE_EXTENSION_MISMATCH
+    assert not unsupported.exists() and not mismatch.exists()
+    _assert_no_temp(tmp_path)
+
+
+def test_backend_unavailable_is_fail_closed(tmp_path: Path) -> None:
+    target = tmp_path / "part.step"
+    result = CadExportService(
+        UnavailableCadExportBackend("OCP missing")
+    ).export(_request(target))
+    assert result.failure.code is ExportErrorCode.BACKEND_UNAVAILABLE
+    assert not target.exists()
+
+
+def test_missing_parent_and_directory_destination_are_typed(tmp_path: Path) -> None:
+    missing = tmp_path / "missing" / "part.step"
+    result = CadExportService(_Backend()).export(_request(missing))
+    assert result.failure.code is ExportErrorCode.PARENT_MISSING
+    directory = tmp_path / "part.step"
+    directory.mkdir()
+    result = CadExportService(_Backend()).export(_request(directory))
+    assert result.failure.code is ExportErrorCode.DESTINATION_INVALID
+
+
+def test_existing_output_policy_is_explicit_and_replace_is_atomic(tmp_path: Path) -> None:
+    target = tmp_path / "part.step"
+    target.write_bytes(b"old")
+    denied = CadExportService(_Backend()).export(_request(target))
+    assert denied.failure.code is ExportErrorCode.FILE_EXISTS
+    assert target.read_bytes() == b"old"
+    replaced = CadExportService(_Backend()).export(
+        _request(target, overwrite=ExportOverwritePolicy.REPLACE_EXISTING)
+    )
+    assert replaced.success and replaced.replaced_existing
+    assert target.read_bytes() == b"step:0"
+    _assert_no_temp(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        ("raise", ExportErrorCode.WRITE_FAILED),
+        ("empty", ExportErrorCode.EMPTY_OUTPUT),
+    ],
+)
+def test_writer_failure_or_empty_output_preserves_final_and_cleans_temp(
+    tmp_path: Path, mode: str, code: ExportErrorCode
+) -> None:
+    target = tmp_path / "part.step"
+    target.write_bytes(b"known-good")
+    result = CadExportService(_Backend(mode)).export(
+        _request(target, overwrite=ExportOverwritePolicy.REPLACE_EXISTING)
+    )
+    assert result.failure.code is code
+    assert target.read_bytes() == b"known-good"
+    _assert_no_temp(tmp_path)
+
+
+def test_atomic_replace_failure_preserves_final_and_cleans_temp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = tmp_path / "part.step"
+    target.write_bytes(b"known-good")
+
+    def deny_replace(_source, _target):
+        raise PermissionError("destination is unwritable")
+
+    monkeypatch.setattr("hms_cadcam.cad.export_service.os.replace", deny_replace)
+    result = CadExportService(_Backend()).export(
+        _request(target, overwrite=ExportOverwritePolicy.REPLACE_EXISTING)
+    )
+    assert result.failure.code is ExportErrorCode.ATOMIC_REPLACE_FAILED
+    assert target.read_bytes() == b"known-good"
+    _assert_no_temp(tmp_path)
+
+
+def test_unsupported_selected_kind_never_falls_back_to_document(tmp_path: Path) -> None:
+    selection = ExportSelectionRef(
+        DOCUMENT_ID,
+        f"{DOCUMENT_ID}:wire:1",
+        ExportEntityKind.WIRE,
+    )
+    target = tmp_path / "part.stl"
+    result = CadExportService(_Backend()).export(
+        _request(target, ExportFormatId.STL, selections=(selection,))
+    )
+    assert result.failure.code is ExportErrorCode.SELECTION_EXPORT_UNAVAILABLE
+    assert not target.exists()

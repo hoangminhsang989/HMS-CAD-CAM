@@ -62,6 +62,7 @@ from hms_cadcam.project.geometry_transfer import (
 from hms_cadcam.project.models import ProjectSession, UnitSystem
 from hms_cadcam.project.path_policy import ensure_hms_suffix
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.cad.export_models import capability_for_path, export_file_filter
 from hms_cadcam.project.workspace import (
     DocumentMode,
     DocumentOpenOrigin,
@@ -69,6 +70,7 @@ from hms_cadcam.project.workspace import (
     WorkspaceState,
 )
 from hms_cadcam.ui.project_worker import ProjectTask
+from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.geometry_transfer_ui import CamProjectTargetDialog
 from hms_cadcam.ui.localized_dialogs import QFileDialog, QMessageBox
 from hms_cadcam.ui.workspace_dialog import CamProjectDialog
@@ -95,8 +97,10 @@ class ProjectUiController(QObject):
         self._service = service
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
+        self._external_busy = False
         self._pending_operation: Callable[[], object] | None = None
         self._project_change_guard: Callable[[], bool] | None = None
+        self._save_as_export_router: Callable[[Path], bool] | None = None
         self._autosave_task: ProjectTask | None = None
         self._autosave_pending = False
         self._autosave_generation = 0
@@ -130,7 +134,7 @@ class ProjectUiController(QObject):
     @property
     def is_busy(self) -> bool:
         """Return whether a project filesystem operation is running."""
-        return self._active_task is not None
+        return self._active_task is not None or self._external_busy
 
     @property
     def is_autosaving(self) -> bool:
@@ -164,6 +168,21 @@ class ProjectUiController(QObject):
     def set_project_change_guard(self, guard: Callable[[], bool] | None) -> None:
         """Install a UI-only guard for transient drafts outside project payloads."""
         self._project_change_guard = guard
+
+    def set_save_as_export_router(
+        self,
+        router: Callable[[Path], bool] | None,
+    ) -> None:
+        """Install the bounded 3D-export route without coupling project persistence."""
+        self._save_as_export_router = router
+
+    @Slot(bool)
+    def set_external_busy(self, busy: bool) -> None:
+        """Protect document lifetime while another bounded worker owns its data."""
+        self._external_busy = bool(busy)
+        self._set_busy(self.is_busy)
+        if not self.is_busy:
+            self._update_action_states()
 
     def _can_change_project(self) -> bool:
         return self._project_change_guard is None or self._project_change_guard()
@@ -360,24 +379,34 @@ class ProjectUiController(QObject):
 
     @Slot()
     def save_project_as(self) -> None:
-        """Save As a standalone HMS document; CAM Save remains in project root."""
+        """Route .HMS to persistence and registered CAD extensions to export."""
         workspace = self._service.current_workspace
         if workspace is None or workspace.mode is not DocumentMode.CAD_DOCUMENT:
             return
         suggestion = self._service.suggested_document_path()
         selected, _ = QFileDialog.getSaveFileName(
             self._window,
-            "Lưu thành tài liệu HMS",
+            "Lưu thành / Xuất 3D",
             str(suggestion),
-            "Tài liệu HMS (*.HMS)",
+            f"Tài liệu HMS (*.HMS);;{export_file_filter()}",
         )
         if not selected:
             return
         target = Path(selected)
-        target = target.with_name(ensure_hms_suffix(target.name))
-        self._start_operation(
-            lambda: self._service.save_document(target)
-        )
+        if not target.suffix or target.suffix.casefold() == ".hms":
+            target = target.with_name(ensure_hms_suffix(target.name))
+            self._start_operation(lambda: self._service.save_document(target))
+            return
+        if capability_for_path(target) is None or self._save_as_export_router is None:
+            QMessageBox.critical(
+                self._window,
+                "HMS CAD/CAM",
+                translation_service().translate(
+                    "Unsupported Save As extension; no file was created."
+                ),
+            )
+            return
+        self._save_as_export_router(target)
 
     @Slot()
     def send_geometry_to_cam(self) -> None:
