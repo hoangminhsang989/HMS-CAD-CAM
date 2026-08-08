@@ -32,12 +32,19 @@ file or substitutes another format.
   state only; no SQLite or `.HMS` schema changed.
 - Native writes run through the existing request-owned Qt worker pattern. Project
   lifecycle actions are blocked while the worker owns the active CAD document.
-- The service writes to a unique temporary file in the destination directory and
-  verifies non-empty data before publication. `FAIL_IF_EXISTS` uses same-directory
-  `os.link(temp, final)` create-if-absent semantics and never falls back to an
-  overwriting primitive; `REPLACE_EXISTING` uses `os.replace`. Metadata is read
-  from the published final path. Writer or publication failures clean the
-  temporary path and preserve an existing or concurrently created final file.
+- The service writes to a unique, validated temporary file in the destination
+  directory. It verifies non-empty output and computes size/SHA-256 from those
+  validated **temporary bytes before publication**. Publication is the explicit
+  commit point. On supported Windows systems, `FAIL_IF_EXISTS` publishes with
+  same-directory `os.rename(temp, final)` after validating Windows no-replace
+  behavior; a destination that already exists or appears concurrently is never
+  replaced. `REPLACE_EXISTING` publishes the validated temporary file with
+  `os.replace(temp, final)`. Unsupported platforms fail closed for
+  `FAIL_IF_EXISTS` instead of substituting a weaker primitive. No final-path
+  metadata operation occurs after the commit point that could turn a successful
+  publication into an ordinary write failure. Writer or pre-commit publication
+  failures clean the temporary path and preserve an existing or concurrently
+  created final file.
 - Selected-object export resolves the stable topology index against the current
   kernel-owned document and validates the selected managed object still exists.
   Empty, vertex, stale, mesh-selection, and format-incompatible selections fail
