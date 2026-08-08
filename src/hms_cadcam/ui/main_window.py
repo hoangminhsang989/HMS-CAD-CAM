@@ -3967,6 +3967,7 @@ class MainWindow(QMainWindow):
                 except (RuntimeError, TypeError, ValueError):
                     # Stage 13B must never block the established application close.
                     logger.warning("Stage 13B owner shutdown failed", exc_info=True)
+            self._cad_loading_status.reset_for_shutdown()
             self.cad_controller.shutdown()
             self.viewport.shutdown()
             event.accept()

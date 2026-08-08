@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.ui.cad_loading import CadLoadEvent, CadLoadState
+from hms_cadcam.ui.i18n import translation_service
+from hms_cadcam.ui.localization import ui_text
 
 
 class CadLoadingStatusSurface(QWidget):
@@ -30,6 +32,7 @@ class CadLoadingStatusSurface(QWidget):
         self._cancel_request = cancel_request
         self._latest_request_id = 0
         self._active_request_id: int | None = None
+        self._last_event: CadLoadEvent | None = None
 
         self.setObjectName("CadLoadingStatusSurface")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -45,14 +48,13 @@ class CadLoadingStatusSurface(QWidget):
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.icon_label)
 
-        self.status_label = QLabel("CAD: Sẵn sàng", self)
+        self.status_label = QLabel(self)
         self.status_label.setObjectName("CadLoadingStatusLabel")
         self.status_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
         )
         self.status_label.setMinimumWidth(86)
-        self.status_label.setAccessibleName("Trạng thái tải CAD")
         layout.addWidget(self.status_label)
 
         self.progress_bar = QProgressBar(self)
@@ -62,14 +64,11 @@ class CadLoadingStatusSurface(QWidget):
         self.progress_bar.setFixedHeight(12)
         self.progress_bar.setMinimumWidth(48)
         self.progress_bar.setMaximumWidth(72)
-        self.progress_bar.setAccessibleName("Tiến trình tải CAD đang chạy")
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
 
-        self.cancel_button = QPushButton("Hủy", self)
+        self.cancel_button = QPushButton(self)
         self.cancel_button.setObjectName("CadLoadingCancelButton")
-        self.cancel_button.setAccessibleName("Hủy tải CAD")
-        self.cancel_button.setToolTip("Hủy tải CAD")
         self.cancel_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cancel_button.setMinimumHeight(20)
         self.cancel_button.setMaximumWidth(54)
@@ -77,6 +76,8 @@ class CadLoadingStatusSurface(QWidget):
         self.cancel_button.hide()
         layout.addWidget(self.cancel_button)
 
+        translation_service().language_changed.connect(self.retranslate_ui)
+        self.retranslate_ui()
         self._set_icon(QStyle.StandardPixmap.SP_ComputerIcon)
 
     @property
@@ -97,7 +98,8 @@ class CadLoadingStatusSurface(QWidget):
                 return
             self._latest_request_id = request.request_id
             self._active_request_id = request.request_id
-            self.status_label.setText("Đang tải CAD…")
+            self._last_event = event
+            self.status_label.setText(ui_text("Loading CAD…"))
             self._set_icon(QStyle.StandardPixmap.SP_BrowserReload)
             self.progress_bar.setRange(0, 0)
             self.progress_bar.setTextVisible(False)
@@ -115,14 +117,8 @@ class CadLoadingStatusSurface(QWidget):
         self._show_terminal(event)
 
     def _show_terminal(self, event: CadLoadEvent) -> None:
-        if event.error is not None:
-            message = event.error.message
-        elif event.state is CadLoadState.SUCCEEDED:
-            message = "Đã tải CAD."
-        elif event.state is CadLoadState.CANCELLED:
-            message = "Đã hủy tải CAD."
-        else:
-            message = "Không thể tải CAD."
+        self._last_event = event
+        message = self._terminal_message(event)
         self.status_label.setText(message)
         if event.state is CadLoadState.SUCCEEDED:
             self._set_icon(QStyle.StandardPixmap.SP_DialogApplyButton)
@@ -134,6 +130,40 @@ class CadLoadingStatusSurface(QWidget):
         self.progress_bar.hide()
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
+
+    def reset_for_shutdown(self) -> None:
+        """Clear transient loading controls before the window is torn down."""
+        self._active_request_id = None
+        self._last_event = None
+        self.progress_bar.hide()
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.hide()
+        self.status_label.setText(f"CAD: {ui_text('Ready')}")
+
+    def retranslate_ui(self, _language: object = None) -> None:
+        """Refresh presentation text without changing request ownership."""
+        self.status_label.setAccessibleName(ui_text("CAD loading status"))
+        self.progress_bar.setAccessibleName(ui_text("CAD loading progress"))
+        self.cancel_button.setText(ui_text("Cancel"))
+        self.cancel_button.setAccessibleName(ui_text("Cancel CAD loading"))
+        self.cancel_button.setToolTip(ui_text("Cancel CAD loading"))
+        event = self._last_event
+        if event is None:
+            self.status_label.setText(f"CAD: {ui_text('Ready')}")
+        elif event.state is CadLoadState.LOADING:
+            self.status_label.setText(ui_text("Loading CAD…"))
+        elif event.error is None:
+            self.status_label.setText(self._terminal_message(event))
+
+    @staticmethod
+    def _terminal_message(event: CadLoadEvent) -> str:
+        if event.error is not None:
+            return event.error.message
+        if event.state is CadLoadState.SUCCEEDED:
+            return ui_text("CAD loaded.")
+        if event.state is CadLoadState.CANCELLED:
+            return ui_text("CAD loading cancelled.")
+        return ui_text("CAD loading failed.")
 
     @Slot()
     def _cancel_clicked(self) -> None:
