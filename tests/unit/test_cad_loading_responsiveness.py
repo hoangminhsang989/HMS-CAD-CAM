@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 import hms_cadcam.ui.cad_controller as cad_controller_module
@@ -28,6 +29,7 @@ from hms_cadcam.ui.cad_loading import (
     cad_format_for_path,
 )
 from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
+from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from hms_cadcam.ui.main_window import MainWindow
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.workspace_layout import WorkspaceLayoutStore
@@ -539,3 +541,101 @@ def test_main_window_status_surface_stays_responsive_during_pending_import(
     window.viewport.shutdown()
     window.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_main_window_status_bar_accepts_runtime_locale_scale_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        cad_controller_module,
+        "CadImportTask",
+        FakeDelayedImportTask,
+    )
+    application = _application()
+    original_font = QFont(application.font())
+    service = translation_service()
+    original_language = service.language
+    window: MainWindow | None = None
+    try:
+        baseline_font = QFont(original_font)
+        baseline_font.setPointSizeF(9.0)
+        application.setFont(baseline_font)
+        service.set_language(UiLanguage.VI_VN)
+        window = MainWindow(
+            ProjectService.create_default(tmp_path / "config"),
+            FakeAvailableKernel(),
+            UnavailableCadViewportBackend("R139 acceptance"),
+            layout_store=WorkspaceLayoutStore(
+                QSettings(
+                    str(tmp_path / "layout.ini"),
+                    QSettings.Format.IniFormat,
+                )
+            ),
+        )
+        pool = FakeNonBlockingThreadPool()
+        window.cad_controller._thread_pool = pool
+        window.resize(2600, 1200)
+        window.show()
+        application.processEvents()
+        window.cad_controller.start_import(Path("scaled.step"), CadFormat.STEP)
+
+        loading_surface = window._cad_loading_status
+        heights: dict[int, int] = {}
+        for language, percent in (
+            (UiLanguage.VI_VN, 100),
+            (UiLanguage.EN_US, 150),
+            (UiLanguage.KO_KR, 200),
+            (UiLanguage.EN_US, 100),
+        ):
+            service.set_language(language)
+            window._ui_scale_manager.set_preview_percent(percent)
+            application.processEvents()
+            application.processEvents()
+            heights[percent] = loading_surface.height()
+
+            assert loading_surface.active_request_id == 1
+            assert loading_surface.progress_bar.isVisible()
+            assert loading_surface.cancel_button.isVisible()
+            assert (
+                loading_surface.cancel_button.width()
+                >= loading_surface.cancel_button.sizeHint().width()
+            )
+            assert loading_surface.height() == loading_surface.sizeHint().height()
+            assert loading_surface.height() <= window.statusBar().height()
+            assert window.statusBar().contentsRect().contains(
+                loading_surface.geometry()
+            )
+            for neighbor in (
+                window._project_status,
+                window._profile_status,
+                window._notification_center_button,
+            ):
+                if neighbor.isVisible():
+                    assert not loading_surface.geometry().intersects(
+                        neighbor.geometry()
+                    )
+
+        assert heights[200] > heights[100]
+        assert loading_surface.height() == heights[100]
+        loading_surface.cancel_button.click()
+        assert window.cad_controller._loading_coordinator.active_request is None
+        assert loading_surface.active_request_id is None
+
+        window.cad_controller.start_import(
+            Path("scaled-reopen.step"),
+            CadFormat.STEP,
+            origin=CadLoadOrigin.DRAG_DROP,
+        )
+        assert loading_surface.active_request_id == 2
+        window.close()
+        assert window.cad_controller._closing
+        assert loading_surface.active_request_id is None
+    finally:
+        if window is not None:
+            window.viewport.shutdown()
+            window.close()
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        service.set_language(original_language)
+        application.setFont(original_font)
