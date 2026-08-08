@@ -8,7 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QAbstractItemModel, QByteArray, QRect, QSize, QTimer, Qt
+from PySide6.QtCore import (
+    QAbstractItemModel,
+    QByteArray,
+    QRect,
+    QSize,
+    QTimer,
+    Qt,
+    Slot,
+)
 from shiboken6 import isValid
 from PySide6.QtGui import (
     QAction,
@@ -2830,9 +2838,16 @@ class MainWindow(QMainWindow):
         self._profile_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._profile_status)
         self._update_active_profile_status()
+        self._cad_export_compact_context_widgets = [
+            self._project_status,
+            self._profile_status,
+        ]
         self._cad_export_status = CadExportStatusSurface(
             self.export_controller.cancel_active_export,
             self,
+        )
+        self._cad_export_status.geometry_requirement_changed.connect(
+            self._update_cad_export_status_allocation
         )
         status.addPermanentWidget(self._cad_export_status, 1)
         self.export_controller.operation_state_changed.connect(
@@ -2844,6 +2859,9 @@ class MainWindow(QMainWindow):
         )
         self._import_status = self._cad_loading_status.status_label
         status.addPermanentWidget(self._cad_loading_status, 1)
+        self._cad_export_compact_context_widgets.append(
+            self._cad_loading_status
+        )
         self.cad_controller.loading_state_changed.connect(
             self._cad_loading_status.handle_loading_event
         )
@@ -2864,6 +2882,9 @@ class MainWindow(QMainWindow):
             self._open_incoming_notification_center
         )
         status.addPermanentWidget(self._notification_center_button)
+        self._cad_export_compact_context_widgets.append(
+            self._notification_center_button
+        )
         for text in (
             "ĐỐI TƯỢNG: 0",
             "X: 0.000",
@@ -2876,6 +2897,41 @@ class MainWindow(QMainWindow):
             label = QLabel(text)
             label.setObjectName("StatusLabel")
             status.addPermanentWidget(label)
+            self._cad_export_compact_context_widgets.append(label)
+
+    @Slot(int)
+    def _update_cad_export_status_allocation(self, required_width: int) -> None:
+        """Prioritize complete export status text when QStatusBar is constrained."""
+
+        if not hasattr(self, "_cad_export_compact_context_widgets"):
+            return
+        status = self.statusBar()
+        surface = self._cad_export_status
+        direct_children = status.findChildren(
+            QWidget,
+            options=Qt.FindChildOption.FindDirectChildrenOnly,
+        )
+        compact_widgets = tuple(self._cad_export_compact_context_widgets)
+        neighbors = tuple(
+            widget
+            for widget in direct_children
+            if widget is not surface
+            and (widget.isVisible() or widget in compact_widgets)
+        )
+        layout = status.layout()
+        spacing = 0 if layout is None else max(0, layout.spacing())
+        total_required = required_width + sum(
+            widget.sizeHint().width() for widget in neighbors
+        ) + spacing * (len(neighbors) + 1)
+        compact = (
+            required_width > 0
+            and total_required > status.contentsRect().width()
+        )
+        for widget in compact_widgets:
+            widget.setVisible(not compact)
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
 
     def _current_display_state(self) -> ProjectSession | WorkspaceState | None:
         """Return rich project data or typed standalone-document state."""
@@ -3843,6 +3899,10 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "_drop_overlay"):
             self._drop_overlay.setGeometry(self.viewport.rect())
+        if hasattr(self, "_cad_export_compact_context_widgets"):
+            self._update_cad_export_status_allocation(
+                self._cad_export_status.required_width
+            )
         if not hasattr(self, "operation_manager_dock"):
             return
         width = event.size().width()

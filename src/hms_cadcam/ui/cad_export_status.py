@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from PySide6.QtCore import QEvent, QSize, QTimer, Qt, Slot
+from PySide6.QtCore import QEvent, QSize, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -51,6 +51,8 @@ class ExportOperationEvent:
 class CadExportStatusSurface(QWidget):
     """Render only the current export request without modal waiting."""
 
+    geometry_requirement_changed = Signal(int)
+
     def __init__(
         self,
         cancel_request: Callable[[], bool],
@@ -62,12 +64,16 @@ class CadExportStatusSurface(QWidget):
         self._latest_request_id = 0
         self._active_request_id: int | None = None
         self._last_event: ExportOperationEvent | None = None
+        self._required_width = 0
         self._geometry_refresh_timer = QTimer(self)
         self._geometry_refresh_timer.setSingleShot(True)
         self._geometry_refresh_timer.timeout.connect(self._refresh_geometry)
 
         self.setObjectName("CadExportStatusSurface")
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
@@ -81,9 +87,8 @@ class CadExportStatusSurface(QWidget):
 
         self.status_label = QLabel(self)
         self.status_label.setObjectName("CadExportStatusLabel")
-        self.status_label.setMinimumWidth(108)
         self.status_label.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.MinimumExpanding,
             QSizePolicy.Policy.Fixed,
         )
         layout.addWidget(self.status_label)
@@ -122,6 +127,12 @@ class CadExportStatusSurface(QWidget):
     def last_event(self) -> ExportOperationEvent | None:
         return self._last_event
 
+    @property
+    def required_width(self) -> int:
+        """Return the content-derived width required by the current state."""
+
+        return self._required_width
+
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt API name
         super().changeEvent(event)
         if (
@@ -157,6 +168,7 @@ class CadExportStatusSurface(QWidget):
             self._active_request_id = None
             self._last_event = None
             self.hide()
+            self._refresh_geometry()
             return
 
         self._last_event = event
@@ -186,6 +198,7 @@ class CadExportStatusSurface(QWidget):
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.hide()
+        self._refresh_geometry()
 
     def retranslate_ui(self, _language: object = None) -> None:
         """Retranslate without changing request identity or cancellation state."""
@@ -221,22 +234,41 @@ class CadExportStatusSurface(QWidget):
         self._cancel_request()
 
     def _refresh_geometry(self) -> None:
+        has_status = self._last_event is not None
         self.setMinimumHeight(0)
         self.setMaximumHeight(self._unbounded_maximum_height)
+        self.status_label.setMinimumWidth(0)
+        self.status_label.ensurePolished()
+        if has_status:
+            self.status_label.setMinimumWidth(
+                self.status_label.sizeHint().width()
+            )
         self.cancel_button.setMinimumWidth(0)
         self.cancel_button.ensurePolished()
-        self.cancel_button.setMinimumWidth(self.cancel_button.sizeHint().width())
+        if not self.cancel_button.isHidden():
+            self.cancel_button.setMinimumWidth(
+                self.cancel_button.sizeHint().width()
+            )
         layout = self.layout()
         if layout is not None:
             layout.invalidate()
             layout.activate()
+            required_width = (
+                layout.minimumSize().width() if has_status else 0
+            )
+            self._required_width = required_width
+            self.setMinimumWidth(required_width)
             self.setFixedHeight(
                 max(layout.minimumSize().height(), layout.sizeHint().height())
             )
+        else:
+            self._required_width = 0
+            self.setMinimumWidth(0)
         self.cancel_button.updateGeometry()
         self.status_label.updateGeometry()
         self.progress_bar.updateGeometry()
         self.updateGeometry()
+        self.geometry_requirement_changed.emit(self._required_width)
 
     def _set_icon(self, pixmap: QStyle.StandardPixmap) -> None:
         icon = self.style().standardIcon(pixmap)
