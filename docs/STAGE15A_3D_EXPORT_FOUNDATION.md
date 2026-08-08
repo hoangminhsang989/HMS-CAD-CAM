@@ -28,10 +28,19 @@ file or substitutes another format.
 - Profiles are typed, versioned deterministic JSON contracts with strict
   `from_dict` / `from_json` inverse decoding. `format_version = 1` is the export
   **profile schema version**, not the STEP standard or BREP file-format version.
-  Overwrite policy is serialized in the same contract. Profiles remain session
-  state only; no SQLite or `.HMS` schema changed.
+  Overwrite policy is serialized in the same contract. General Settings → 3D
+  Export persists the STEP, IGES, STL, and BREP defaults through the shared
+  `QSettings` service. The same defaults seed 3D Export, Export Selected Objects,
+  and 3D Save As. This user-preference persistence adds no SQLite migration and
+  changes neither the `.HMS` schema nor its project manifest format.
 - Native writes run through the existing request-owned Qt worker pattern. Project
   lifecycle actions are blocked while the worker owns the active CAD document.
+- Every accepted operation immediately owns a compact, non-modal status surface
+  with indeterminate activity and cooperative Cancel. Cancellation is ordered
+  against the atomic publication gate: an accepted cancellation can never publish
+  this request's final output. A cancellation requested during an opaque native
+  writer waits for that writer to return, removes its unpublished temporary data,
+  and terminates as typed `CANCELLED`; the GUI thread is never joined or polled.
 - The service writes to a unique, validated temporary file in the destination
   directory. It verifies non-empty output and computes size/SHA-256 from those
   validated **temporary bytes before publication**. Publication is the explicit
@@ -65,7 +74,10 @@ changes binary/ASCII encoding. Its tessellation values are `NOT_APPLICABLE`; the
 UI hides those controls for mesh context, and the backend rejects a mesh request
 that supplies active tessellation settings rather than silently ignoring them.
 
-The existing `ProjectTask` worker has no cancellation contract, so Stage15A WP1
-does not expose a fake cancel control. Unit conversion and compatibility overrides
-also remain unavailable: the safe `model_units` policy preserves current model
+The Open CASCADE writers are not claimed to be interruptible. Cancellation is
+cooperative at safe service boundaries and publication-safe; it never terminates
+or kills a native thread. Real OCP evidence separately proves off-GUI-thread normal
+completion/read-back, while deterministic held-backend tests prove the
+cancel-versus-commit ordering. Unit conversion and compatibility overrides also
+remain unavailable: the safe `model_units` policy preserves current model
 coordinates without inventing unsupported writer options.

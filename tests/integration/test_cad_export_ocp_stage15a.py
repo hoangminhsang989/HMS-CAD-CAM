@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import get_ident
 
 import pytest
+from OCP.BRep import BRep_Builder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.gp import gp_Trsf, gp_Vec
+from OCP.TopLoc import TopLoc_Location
+from OCP.TopoDS import TopoDS_Compound
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QMainWindow
 
 from hms_cadcam.cad.export_models import (
     ExportEntityKind,
@@ -19,8 +27,15 @@ from hms_cadcam.cad.export_service import (
     ExportErrorCode,
     ExportRequest,
 )
+from hms_cadcam.cad.models import CadFormat, CadGeometryKind
 from hms_cadcam.cad.ocp import exporter as exporter_module
 from hms_cadcam.cad.ocp.kernel import OcpCadKernel
+from hms_cadcam.project.service import ProjectService
+from hms_cadcam.ui.cad_export import CadExportUiController
+from hms_cadcam.ui.cad_export_status import (
+    CadExportStatusSurface,
+    ExportOperationState,
+)
 
 
 pytestmark = [pytest.mark.ocp, pytest.mark.filesystem]
@@ -268,3 +283,77 @@ def test_brep_stl_passes_all_tessellation_values_to_real_mesher_and_reads_back(
     imported = _read_back(kernel, ExportFormatId.STL, target)
     kernel.release_document(imported.document_id)
     kernel.release_document(document_id)
+
+
+def test_moderate_real_step_export_runs_off_gui_thread_with_live_heartbeat(
+    qtbot, tmp_path: Path
+) -> None:
+    kernel = OcpCadKernel()
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    for row in range(5):
+        for column in range(5):
+            shape = BRepPrimAPI_MakeBox(8.0, 6.0, 4.0).Shape()
+            transform = gp_Trsf()
+            transform.SetTranslation(gp_Vec(column * 12.0, row * 10.0, 0.0))
+            shape.Location(TopLoc_Location(transform))
+            builder.Add(compound, shape)
+    document_id = kernel._documents.add_brep(
+        compound, CadFormat.GENERATED
+    ).document_id
+
+    native_service = CadExportService.create_for_kernel(kernel)
+    native_backend = native_service._backend
+    writer_thread_ids: list[int] = []
+
+    class _RecordingRealBackend:
+        supported_formats = native_backend.supported_formats
+        unavailable_reason = native_backend.unavailable_reason
+
+        def write(self, request: ExportRequest, temporary_path: Path):
+            writer_thread_ids.append(get_ident())
+            return native_backend.write(request, temporary_path)
+
+    source = tmp_path / "moderate-source.step"
+    source.write_bytes(b"workspace identity only")
+    project_service = ProjectService.create_default(tmp_path / "config")
+    project_service.commit_document_open(project_service.prepare_document_open(source))
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    controller = CadExportUiController(
+        window,
+        CadExportService(_RecordingRealBackend()),
+        project_service,
+        lambda: document_id,
+        lambda: CadGeometryKind.BREP,
+        lambda: (),
+        lambda: True,
+    )
+    surface = CadExportStatusSurface(controller.cancel_active_export, window)
+    controller.operation_state_changed.connect(surface.handle_export_event)
+    heartbeat = [0]
+    timer = QTimer()
+    timer.setInterval(0)
+    timer.timeout.connect(lambda: heartbeat.__setitem__(0, heartbeat[0] + 1))
+    timer.start()
+    gui_thread_id = get_ident()
+    target = tmp_path / "moderate-real.step"
+    try:
+        assert controller._start_export(
+            target,
+            ExportProfile.default_for(ExportFormatId.STEP),
+            selected=False,
+        )
+        qtbot.waitUntil(lambda: controller._active_task is None, timeout=15000)
+        assert writer_thread_ids and writer_thread_ids[0] != gui_thread_id
+        assert heartbeat[0] > 0
+        assert surface.last_event is not None
+        assert surface.last_event.state is ExportOperationState.SUCCEEDED
+        assert target.stat().st_size > 0
+        imported = _read_back(kernel, ExportFormatId.STEP, target)
+        assert not tuple(tmp_path.glob("*.hms-exporting"))
+        kernel.release_document(imported.document_id)
+    finally:
+        timer.stop()
+        kernel.release_document(document_id)
