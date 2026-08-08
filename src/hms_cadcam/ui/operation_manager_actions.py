@@ -394,7 +394,9 @@ class OperationManagerActions(QObject):
 
     def _add_default(self) -> None:
         self._ensure_selection()
-        action = self._source.get("operation")
+        action = self._source.get("create_operation") or self._source.get(
+            "operation"
+        )
         if action is not None:
             action.trigger()
 

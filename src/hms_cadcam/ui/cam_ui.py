@@ -151,6 +151,12 @@ from hms_cadcam.cam.cam3d import (
     Cam3DGeometryService,
     Cam3DProjectConfig,
 )
+from hms_cadcam.cam.operation_creation import (
+    OperationCreationSession,
+    default_drilling_creation_strategy,
+)
+from hms_cadcam.ui.operation_creation_adapter import Stage16AOperationCreationAdapter
+from hms_cadcam.ui.operation_creation_wizard import OperationCreationWizard
 from hms_cadcam.cam.cam3d.parallel import (
     PARALLEL_FINISHING_ALGORITHM_VERSION,
     ParallelGeometryEvidence,
@@ -238,6 +244,7 @@ class CamWorkspace(QWidget):
         self._parallel_surface_provider = parallel_surface_provider
         self._parallel_adapter_provider = parallel_adapter_provider
         self._parallel_geometry_bounds_provider = parallel_geometry_bounds_provider
+        self._operation_creation_wizard: OperationCreationWizard | None = None
         self._parallel_drafts: dict[OperationId, tuple[object, ...]] = {}
         self._parallel_draft_evidence: dict[
             OperationId, ParallelGeometryEvidence
@@ -341,8 +348,15 @@ class CamWorkspace(QWidget):
         )
         self.post_panel.message.connect(self.message.emit)
         self.program_assembly_panel.message.connect(self.message.emit)
-        for key in ("job", "setup", "resources", "parallel_resources", "tapping_resources", "reaming_resources", "boring_resources", "group", "operation", "contour_operation", "pocket_operation", "parallel_operation", "z_level_operation", "drilling_operation", "tapping_operation", "reaming_operation", "boring_operation", "generate", "visibility",
-                    "pick", "clear_pick", "up", "down", "delete"):
+        for key in (
+            "job", "setup", "resources", "parallel_resources",
+            "tapping_resources", "reaming_resources", "boring_resources",
+            "group", "create_operation", "operation", "contour_operation",
+            "pocket_operation", "parallel_operation", "z_level_operation",
+            "drilling_operation", "tapping_operation", "reaming_operation",
+            "boring_operation", "generate", "visibility", "pick", "clear_pick",
+            "up", "down", "delete",
+        ):
             self.toolbar.addAction(self.actions[key])
         self.bind_project(service.current_project)
         localize_widget_tree(self)
@@ -368,6 +382,7 @@ class CamWorkspace(QWidget):
                 self.create_basic_boring_resources,
             ),
             "group": ("Thêm nhóm", self.add_group),
+            "create_operation": (ui_text("Create operation"), self.open_operation_creation),
             "operation": ("Thêm Phay mặt 2.5D", self.add_operation),
             "contour_operation": ("Thêm Phay biên dạng 2D", self.add_contour_operation),
             "pocket_operation": ("Thêm Phay hốc 2.5D", self.add_pocket_operation),
@@ -398,6 +413,9 @@ class CamWorkspace(QWidget):
 
     def bind_project(self, session: object) -> None:
         """Clear old identities before rendering a new project snapshot."""
+        if self._operation_creation_wizard is not None:
+            self._operation_creation_wizard.close()
+            self._operation_creation_wizard = None
         if self._parallel_task is not None:
             self._parallel_task.abandon()
             self._parallel_task = None
@@ -453,6 +471,68 @@ class CamWorkspace(QWidget):
         self._generation = self._service.cam_generation
         self._simulation_project_id = session.manifest.project_id
         self._render(None)
+
+    def open_operation_creation(self) -> bool:
+        """Open the bounded Stage16A wizard without mutating the CAM snapshot."""
+        if not self._service.has_project or self._generation is None:
+            self._error("Hãy mở một dự án CAM trước khi tạo nguyên công.")
+            return False
+        context = self._tree_context()
+        project = self._service.current_project
+        if context is None or project is None:
+            self._error(
+                "Hãy chọn công việc CAM, thiết lập hoặc nhóm đích trước khi "
+                "tạo nguyên công."
+            )
+            return False
+        job_id, setup_id, _tree, parent_id = context
+        adapter = Stage16AOperationCreationAdapter(
+            self._service,
+            surface_provider=self._parallel_surface_provider,
+            geometry_bounds_provider=self._parallel_geometry_bounds_provider,
+            drilling_pick_provider=self._drilling_pick_provider,
+            drilling_resolver=self._drilling_resolver,
+        )
+        session = OperationCreationSession.start(
+            project_id=project.manifest.project_id,
+            project_generation=self._generation,
+            job_id=job_id,
+            setup_id=setup_id,
+            parent_node_id=parent_id,
+        )
+        wizard = OperationCreationWizard(session, adapter, self)
+        wizard.operation_created.connect(self._operation_creation_finished)
+        wizard.session_changed.connect(
+            lambda _session: self._operation_creation_live_update()
+        )
+        self.projection_changed.connect(wizard.refresh_live_state)
+        wizard.finished.connect(
+            lambda _result, owned=wizard: self._dispose_operation_creation_wizard(owned)
+        )
+        self._operation_creation_wizard = wizard
+        wizard.show()
+        wizard.raise_()
+        wizard.activateWindow()
+        return True
+
+    def _operation_creation_finished(self, operation_id: str) -> None:
+        self.refresh(("operation", operation_id))
+        self.projection_changed.emit()
+        self.operation_created.emit(operation_id)
+
+    def _operation_creation_live_update(self) -> None:
+        if self._operation_creation_wizard is not None:
+            self._operation_creation_wizard.refresh_live_state()
+
+    def _dispose_operation_creation_wizard(
+        self, wizard: OperationCreationWizard
+    ) -> None:
+        try:
+            self.projection_changed.disconnect(wizard.refresh_live_state)
+        except (RuntimeError, TypeError):
+            pass
+        if self._operation_creation_wizard is wizard:
+            self._operation_creation_wizard = None
 
     def refresh(self, preserve: tuple[str, str] | None = None) -> None:
         if self._generation is None or self._generation != self._service.cam_generation:
@@ -8181,42 +8261,8 @@ def _default_drilling_strategy(
     setup: Setup,
     hole_source: HoleReference | HolePattern,
 ) -> DrillingStrategy:
-    """Create a conservative bound DRILL draft at the selected drilling plane."""
-    unit = setup.wcs.origin.unit
-    if hole_source.unit is not unit:
-        raise ValueError("Drilling geometry unit does not match Setup WCS.")
-    plane_origin = (
-        hole_source.plane_origin
-        if isinstance(hole_source, HoleReference)
-        else hole_source.locations[0].plane_origin
-    )
-    delta = Vector3(
-        plane_origin.x - setup.wcs.origin.x,
-        plane_origin.y - setup.wcs.origin.y,
-        plane_origin.z - setup.wcs.origin.z,
-    )
-    top_z = delta.dot(setup.wcs.z_axis)
-    scale = 1.0 if unit is LengthUnit.MM else 1.0 / 25.4
-    feed_unit = (
-        FeedUnit.MM_PER_MINUTE
-        if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
-    )
-    return DrillingStrategy(
-        unit=unit,
-        geometry=DrillGeometryInput(hole_source, unit),
-        depth=DrillDepthDefinition(
-            unit, Length(top_z, unit), Length(top_z - 5.0 * scale, unit),
-        ),
-        cycle=DrillingCycle.DRILL,
-        clearance_height=Length(top_z + 8.0 * scale, unit),
-        retract_height=Length(top_z + 3.0 * scale, unit),
-        feed_rate=FeedRate(120.0 * scale, feed_unit),
-        spindle_speed=SpindleSpeed(1500.0),
-        dwell_seconds=0.0,
-        retract_policy=DrillRetractPolicy.RETRACT_HEIGHT,
-        approach_policy=DrillApproachPolicy.RAPID_CLEARANCE_FEED_RETRACT,
-        tolerance=Length(1.0e-7 * scale, unit),
-    )
+    """Compatibility wrapper over the canonical Stage16A working-copy defaults."""
+    return default_drilling_creation_strategy(setup, hole_source)
 
 
 def _default_tapping_strategy(
