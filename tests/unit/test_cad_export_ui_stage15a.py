@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QDialogButtonBox, QMainWindow
 
-from hms_cadcam.cad.export_models import ExportFormatId, ExportProfile
-from hms_cadcam.cad.export_service import CadExportService
+from hms_cadcam.cad.export_models import (
+    ExportFormatId,
+    ExportProfile,
+    StlEncoding,
+    StlMeshOptions,
+)
+from hms_cadcam.cad.export_service import BackendWriteMetadata, CadExportService
 from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_export import CadExportProfileDialog, CadExportUiController
@@ -29,6 +35,20 @@ class _Backend:
 
     def write(self, request, temporary_path):  # pragma: no cover - UI does not write
         raise AssertionError("writer must not run in profile UI tests")
+
+
+class _WritingBackend(_Backend):
+    def write(self, request, temporary_path):
+        temporary_path.write_bytes(b"stage15a-ui-export")
+        return BackendWriteMetadata("UI lifecycle writer", 1)
+
+
+class _HoldingThreadPool:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    def start(self, task) -> None:
+        self.tasks.append(task)
 
 
 def _profiles(service: CadExportService) -> dict[ExportFormatId, ExportProfile]:
@@ -121,6 +141,98 @@ def test_existing_mesh_context_hides_tessellation_and_preserves_encoding_on_i18n
         assert profile.stl_encoding.value == "ascii"
         assert profile.mesh_options is None
         assert profile.tolerance is None
+        assert dialog.profiles[ExportFormatId.STL].mesh_options is not None
+    finally:
+        translator.set_language(previous)
+
+
+@pytest.mark.parametrize("encoding", tuple(StlEncoding))
+def test_stl_brep_mesh_brep_round_trip_preserves_exact_tessellation_profile(
+    qtbot, encoding: StlEncoding
+) -> None:
+    service = CadExportService(_Backend())
+    options = StlMeshOptions(0.037, 0.23, True)
+    profiles = _profiles(service)
+    profiles[ExportFormatId.STL] = ExportProfile(
+        ExportFormatId.STL,
+        tolerance=options.linear_deflection,
+        stl_encoding=encoding,
+        mesh_options=options,
+    )
+    translator = translation_service()
+    previous = translator.language
+    try:
+        for language in (UiLanguage.VI_VN, UiLanguage.EN_US, UiLanguage.KO_KR):
+            mesh_dialog = CadExportProfileDialog(
+                service.capabilities(),
+                profiles,
+                initial_format=ExportFormatId.STL,
+                stl_tessellation_applicable=False,
+            )
+            qtbot.addWidget(mesh_dialog)
+            translator.set_language(language)
+            iges_index = mesh_dialog.format_combo.findData(ExportFormatId.IGES.value)
+            stl_index = mesh_dialog.format_combo.findData(ExportFormatId.STL.value)
+            mesh_dialog.format_combo.setCurrentIndex(iges_index)
+            mesh_dialog.format_combo.setCurrentIndex(stl_index)
+            effective = mesh_dialog.profile()
+            mesh_dialog._accept_validated()
+            assert effective.mesh_options is None
+            assert effective.tolerance is None
+            assert effective.stl_encoding is encoding
+            stored = mesh_dialog.profiles[ExportFormatId.STL]
+            assert stored.mesh_options == options
+            assert stored.tolerance == 0.037
+            assert stored.stl_encoding is encoding
+            profiles = mesh_dialog.profiles
+
+            brep_dialog = CadExportProfileDialog(
+                service.capabilities(),
+                profiles,
+                initial_format=ExportFormatId.STL,
+                stl_tessellation_applicable=True,
+            )
+            qtbot.addWidget(brep_dialog)
+            restored = brep_dialog.profile()
+            assert restored.mesh_options == options
+            assert restored.tolerance == 0.037
+            assert restored.stl_encoding is encoding
+            profiles = brep_dialog.profiles
+    finally:
+        translator.set_language(previous)
+
+
+@pytest.mark.parametrize("language", tuple(UiLanguage))
+@pytest.mark.parametrize("scale", (1.0, 1.5, 2.0))
+def test_mesh_not_applicable_context_has_no_clipping_at_runtime_locale_and_scale(
+    qtbot, language: UiLanguage, scale: float
+) -> None:
+    service = CadExportService(_Backend())
+    translator = translation_service()
+    previous = translator.language
+    dialog = CadExportProfileDialog(
+        service.capabilities(),
+        _profiles(service),
+        initial_format=ExportFormatId.STL,
+        stl_tessellation_applicable=False,
+    )
+    qtbot.addWidget(dialog)
+    try:
+        translator.set_language(language)
+        font = QFont(dialog.font())
+        point_size = font.pointSizeF() if font.pointSizeF() > 0 else 9.0
+        font.setPointSizeF(point_size * scale)
+        dialog.setFont(font)
+        dialog.adjustSize()
+        dialog.show()
+        qtbot.waitUntil(dialog.isVisible)
+        assert not dialog._advanced_layout.isRowVisible(dialog.linear_deflection)
+        assert not dialog._advanced_layout.isRowVisible(dialog.angular_deflection)
+        assert not dialog._advanced_layout.isRowVisible(dialog.relative_mesh)
+        assert dialog._advanced_layout.isRowVisible(dialog.mesh_applicability_label)
+        assert dialog.size().width() >= dialog.minimumSizeHint().width()
+        assert dialog.size().height() >= dialog.minimumSizeHint().height()
+        assert dialog.buttons.geometry().bottom() <= dialog.contentsRect().bottom()
     finally:
         translator.set_language(previous)
 
@@ -205,6 +317,7 @@ def test_interactive_export_never_silently_changes_mismatched_format(
         lambda: CadDocumentId("active-document"),
         lambda: CadGeometryKind.BREP,
         lambda: (),
+        lambda: True,
     )
     started = []
     warnings = []
@@ -226,3 +339,115 @@ def test_interactive_export_never_silently_changes_mismatched_format(
     assert started == []
     assert warnings == [True]
     assert not (tmp_path / "wrong.iges").exists()
+
+
+def _lifecycle_controller(qtbot, tmp_path: Path):
+    source = tmp_path / "part.step"
+    source.write_bytes(b"source")
+    project_service = ProjectService.create_default(tmp_path / "config")
+    project_service.commit_document_open(project_service.prepare_document_open(source))
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    document = [CadDocumentId("active-document")]
+    operation_available = [True]
+    controller = CadExportUiController(
+        window,
+        CadExportService(_WritingBackend()),
+        project_service,
+        lambda: document[0],
+        lambda: CadGeometryKind.BREP,
+        lambda: (),
+        lambda: operation_available[0],
+    )
+    pool = _HoldingThreadPool()
+    controller._thread_pool = pool
+    return controller, project_service, document, operation_available, pool
+
+
+def test_export_admission_is_symmetric_and_repeated_start_cannot_overlap(
+    qtbot, tmp_path: Path
+) -> None:
+    controller, _service, _document, available, pool = _lifecycle_controller(
+        qtbot, tmp_path
+    )
+    target = tmp_path / "blocked.step"
+    available[0] = False
+    controller.refresh_action_states()
+    assert not controller.actions["export_3d"].isEnabled()
+    assert not controller._start_export(
+        target,
+        ExportProfile.default_for(ExportFormatId.STEP),
+        selected=False,
+    )
+    available[0] = True
+    assert controller._start_export(
+        target,
+        ExportProfile.default_for(ExportFormatId.STEP),
+        selected=False,
+    )
+    assert not controller._start_export(
+        tmp_path / "overlap.step",
+        ExportProfile.default_for(ExportFormatId.STEP),
+        selected=False,
+    )
+    assert len(pool.tasks) == 1
+
+
+@pytest.mark.parametrize("worker_failure", (False, True))
+def test_stale_export_completion_is_suppressed_and_lock_released_once(
+    qtbot, tmp_path: Path, monkeypatch, worker_failure: bool
+) -> None:
+    controller, _service, document, _available, pool = _lifecycle_controller(
+        qtbot, tmp_path
+    )
+    if worker_failure:
+        monkeypatch.setattr(
+            controller._service,
+            "export",
+            lambda _request: (_ for _ in ()).throw(RuntimeError("worker failed")),
+        )
+    messages: list[str] = []
+    busy: list[bool] = []
+    controller.message.connect(messages.append)
+    controller.busy_changed.connect(busy.append)
+    assert controller._start_export(
+        tmp_path / "stale.step",
+        ExportProfile.default_for(ExportFormatId.STEP),
+        selected=False,
+    )
+    assert len(messages) == 1
+    messages.clear()
+    document[0] = CadDocumentId("replacement-document")
+    pool.tasks[0].run()
+    pool.tasks[0].signals.finished.emit()
+    assert messages == []
+    assert busy == [True, False]
+    assert controller._active_task is None
+
+
+def test_export_busy_blocks_project_lifecycle_until_owner_finishes(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    controller, service, _document, _available, pool = _lifecycle_controller(
+        qtbot, tmp_path
+    )
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    project_controller = ProjectUiController(window, service)
+    controller.busy_changed.connect(project_controller.set_external_busy)
+    notices: list[bool] = []
+    monkeypatch.setattr(
+        "hms_cadcam.ui.project_controller.QMessageBox.information",
+        lambda *_args, **_kwargs: notices.append(True),
+    )
+    assert controller._start_export(
+        tmp_path / "owned.step",
+        ExportProfile.default_for(ExportFormatId.STEP),
+        selected=False,
+    )
+    assert project_controller.is_busy
+    assert not project_controller.request_open_path(tmp_path / "other.step")
+    assert not project_controller.request_application_close()
+    assert notices == [True]
+    pool.tasks[0].run()
+    assert not project_controller.is_busy

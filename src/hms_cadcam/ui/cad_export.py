@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThreadPool, Signal, Slot
@@ -51,6 +51,12 @@ _SELECTION_KINDS = {
     SelectionMode.WIRE: ExportEntityKind.WIRE,
     SelectionMode.EDGE: ExportEntityKind.EDGE,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ExportOwnership:
+    project_identity: object | None
+    document_id: CadDocumentId
 
 
 class CadExportProfileDialog(QDialog):
@@ -138,7 +144,9 @@ class CadExportProfileDialog(QDialog):
         layout.addWidget(self.buttons)
         self.format_combo.currentIndexChanged.connect(self._format_changed)
         index = self.format_combo.findData(initial_format.value)
+        self.format_combo.blockSignals(True)
         self.format_combo.setCurrentIndex(max(index, 0))
+        self.format_combo.blockSignals(False)
         self._format_changed()
         self.retranslate()
 
@@ -149,11 +157,7 @@ class CadExportProfileDialog(QDialog):
     def profile(self) -> ExportProfile:
         """Return the currently visible, typed profile or raise validation error."""
         profile = self._profile_from_controls(self.selected_format)
-        if not (
-            self.selected_format is ExportFormatId.STL
-            and not self._stl_tessellation_applicable
-        ):
-            self._profiles[self.selected_format] = profile
+        self._remember_profile(self.selected_format, profile)
         return profile
 
     @property
@@ -197,8 +201,9 @@ class CadExportProfileDialog(QDialog):
     def _format_changed(self) -> None:
         if self._current_format is not None:
             try:
-                self._profiles[self._current_format] = self._profile_from_controls(
-                    self._current_format
+                self._remember_profile(
+                    self._current_format,
+                    self._profile_from_controls(self._current_format),
                 )
             except (TypeError, ValueError):
                 pass
@@ -286,6 +291,31 @@ class CadExportProfileDialog(QDialog):
             overwrite_policy=stored.overwrite_policy,
         )
 
+    def _remember_profile(
+        self,
+        format_id: ExportFormatId,
+        effective: ExportProfile,
+    ) -> None:
+        if (
+            format_id is ExportFormatId.STL
+            and not self._stl_tessellation_applicable
+        ):
+            stored = self._profiles.get(
+                format_id,
+                ExportProfile.default_for(format_id),
+            )
+            if stored.mesh_options is None:
+                stored = ExportProfile.default_for(
+                    format_id,
+                    overwrite_policy=stored.overwrite_policy,
+                )
+            self._profiles[format_id] = replace(
+                stored,
+                stl_encoding=effective.stl_encoding,
+            )
+            return
+        self._profiles[format_id] = effective
+
     @Slot()
     def _accept_validated(self) -> None:
         try:
@@ -311,6 +341,7 @@ class CadExportUiController(QObject):
         document_id: Callable[[], CadDocumentId | None],
         geometry_kind: Callable[[], CadGeometryKind | None],
         selection: Callable[[], tuple[SelectionMetadata, ...]],
+        operation_available: Callable[[], bool],
     ) -> None:
         super().__init__(window)
         self._window = window
@@ -319,6 +350,7 @@ class CadExportUiController(QObject):
         self._document_id = document_id
         self._geometry_kind = geometry_kind
         self._selection = selection
+        self._operation_available = operation_available
         self._profiles = {
             item.format_id: ExportProfile.default_for(item.format_id)
             for item in service.capabilities()
@@ -351,7 +383,7 @@ class CadExportUiController(QObject):
     @Slot()
     def refresh_action_states(self) -> None:
         has_document = self._document_id() is not None
-        idle = self._active_task is None
+        idle = self._active_task is None and self._operation_available()
         self.actions["export_3d"].setEnabled(has_document and idle)
         self.actions["export_selected"].setEnabled(
             has_document and bool(self._selection()) and idle
@@ -446,7 +478,11 @@ class CadExportUiController(QObject):
         selected: bool,
     ) -> bool:
         document_id = self._document_id()
-        if document_id is None or self._active_task is not None:
+        if (
+            document_id is None
+            or self._active_task is not None
+            or not self._operation_available()
+        ):
             return False
         try:
             selections = self._selection_refs(document_id) if selected else ()
@@ -464,11 +500,16 @@ class CadExportUiController(QObject):
             selections,
             ExportOverwritePolicy.REPLACE_EXISTING,
         )
+        ownership = self._capture_ownership(document_id)
+        if not self._operation_available() or not self._ownership_matches(ownership):
+            return False
         task = ProjectTask(lambda: self._service.export(request))
         self._active_task = task
-        task.signals.succeeded.connect(self._export_succeeded)
+        task.signals.succeeded.connect(
+            lambda value: self._export_succeeded(task, ownership, value)
+        )
         task.signals.failed.connect(
-            lambda error: self._show_failure(f"{_tr('Export failed')}: {error}")
+            lambda error: self._export_failed(task, ownership, error)
         )
         task.signals.finished.connect(lambda: self._export_finished(task))
         self.busy_changed.emit(True)
@@ -500,8 +541,29 @@ class CadExportUiController(QObject):
             )
         return tuple(refs)
 
-    @Slot(object)
-    def _export_succeeded(self, value: object) -> None:
+    def _capture_ownership(self, document_id: CadDocumentId) -> _ExportOwnership:
+        workspace = self._project_service.current_workspace
+        return _ExportOwnership(
+            None if workspace is None else workspace.identity,
+            document_id,
+        )
+
+    def _ownership_matches(self, ownership: _ExportOwnership) -> bool:
+        workspace = self._project_service.current_workspace
+        project_identity = None if workspace is None else workspace.identity
+        return (
+            project_identity == ownership.project_identity
+            and self._document_id() == ownership.document_id
+        )
+
+    def _export_succeeded(
+        self,
+        task: ProjectTask,
+        ownership: _ExportOwnership,
+        value: object,
+    ) -> None:
+        if self._active_task is not task or not self._ownership_matches(ownership):
+            return
         if not isinstance(value, ExportResult):
             self._show_failure(_tr("Export failed"))
             return
@@ -517,9 +579,20 @@ class CadExportUiController(QObject):
             f"{_tr(value.failure.message)}"
         )
 
+    def _export_failed(
+        self,
+        task: ProjectTask,
+        ownership: _ExportOwnership,
+        error: object,
+    ) -> None:
+        if self._active_task is not task or not self._ownership_matches(ownership):
+            return
+        self._show_failure(f"{_tr('Export failed')}: {error}")
+
     def _export_finished(self, task: ProjectTask) -> None:
-        if self._active_task is task:
-            self._active_task = None
+        if self._active_task is not task:
+            return
+        self._active_task = None
         self.busy_changed.emit(False)
         self.refresh_action_states()
 

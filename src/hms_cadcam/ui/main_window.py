@@ -439,6 +439,10 @@ class MainWindow(QMainWindow):
                 else self._active_document_metadata.geometry_kind
             ),
             lambda: self._active_selection,
+            lambda: (
+                not self.project_controller.is_busy
+                and not self.cad_controller.is_busy
+            ),
         )
         self.project_controller.set_save_as_export_router(
             self.export_controller.route_save_as
@@ -890,6 +894,12 @@ class MainWindow(QMainWindow):
         self.export_controller.message.connect(self._append_output)
         self.export_controller.busy_changed.connect(
             self.project_controller.set_external_busy
+        )
+        self.project_controller.busy_changed.connect(
+            lambda _busy: self.export_controller.refresh_action_states()
+        )
+        self.cad_controller.busy_changed.connect(
+            lambda _busy: self.export_controller.refresh_action_states()
         )
         self.cad_controller.progress_changed.connect(self._update_import_status)
         self.cad_controller.document_changed.connect(self._update_cad_document)
