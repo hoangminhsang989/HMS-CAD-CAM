@@ -11,7 +11,7 @@ from uuid import uuid4
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings, QTimer
 from PySide6.QtWidgets import QApplication
 
 import hms_cadcam.ui.cad_controller as cad_controller_module
@@ -28,6 +28,10 @@ from hms_cadcam.ui.cad_loading import (
     cad_format_for_path,
 )
 from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
+from hms_cadcam.ui.main_window import MainWindow
+from hms_cadcam.project.service import ProjectService
+from hms_cadcam.ui.workspace_layout import WorkspaceLayoutStore
+from hms_cadcam.viewer.unavailable_backend import UnavailableCadViewportBackend
 
 
 class FakeSignal:
@@ -365,6 +369,58 @@ def test_rapid_supersession_retains_only_latest_controller_ownership(
     _dispose(controller, application)
 
 
+def test_one_hundred_mixed_rapid_requests_keep_bounded_latest_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cad_controller_module,
+        "CadImportTask",
+        FakeDelayedImportTask,
+    )
+    application = _application()
+    service = FakeProjectService()
+    controller = ControllerHarness(service)
+    prepared = [
+        _prepared(f"stress-{index}.HMS/part.step")
+        for index in range(100)
+    ]
+
+    for index, item in enumerate(prepared):
+        controller.start_import(
+            item.session.geometry_path,
+            CadFormat.STEP,
+            prepared=item,
+            origin=(
+                CadLoadOrigin.OPEN_DIALOG
+                if index % 2 == 0
+                else CadLoadOrigin.DRAG_DROP
+            ),
+        )
+
+    active_request = controller._loading_coordinator.active_request
+    assert active_request is not None
+    assert active_request.request_id == 100
+    assert controller._active_task is controller._thread_pool.submitted[-1]
+    assert controller._active_task_prepared is prepared[-1]
+    assert controller.surface.active_request_id == 100
+    assert service.discarded == prepared[:-1]
+    assert len(controller._thread_pool.running) == 1
+    assert controller._thread_pool.queued == [controller._active_task]
+    assert controller._thread_pool.cleared_tasks == controller._thread_pool.submitted[1:-1]
+    assert all(task.abandoned == 1 for task in controller._thread_pool.submitted[:-1])
+    assert controller._thread_pool.submitted[-1].abandoned == 0
+    assert vars(controller._loading_coordinator).keys() == {
+        "_publish",
+        "_next_request_id",
+        "_active",
+    }
+
+    assert controller.cancel_active_import()
+    assert service.discarded == prepared
+    assert controller._thread_pool.queued == []
+    _dispose(controller, application)
+
+
 def test_shutdown_returns_with_pending_task_and_suppresses_late_callbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -430,3 +486,56 @@ def test_dialog_drop_and_supported_formats_keep_one_orchestration_contract() -> 
     assert cad_format_for_path(Path("part.iges")) is CadFormat.IGES
     assert cad_format_for_path(Path("part.stl")) is CadFormat.STL
     assert cad_format_for_path(Path("part.dwg")) is None
+
+
+def test_main_window_status_surface_stays_responsive_during_pending_import(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        cad_controller_module,
+        "CadImportTask",
+        FakeDelayedImportTask,
+    )
+    application = _application()
+    window = MainWindow(
+        ProjectService.create_default(tmp_path / "config"),
+        FakeAvailableKernel(),
+        UnavailableCadViewportBackend("WP4 acceptance"),
+        layout_store=WorkspaceLayoutStore(
+            QSettings(str(tmp_path / "layout.ini"), QSettings.Format.IniFormat)
+        ),
+    )
+    pool = FakeNonBlockingThreadPool()
+    window.cad_controller._thread_pool = pool
+    ticks: list[str] = []
+    QTimer.singleShot(0, lambda: ticks.append("event-loop"))
+
+    window.cad_controller.start_import(Path("main.step"), CadFormat.STEP)
+    first_task = pool.submitted[0]
+    assert window._cad_loading_status.active_request_id == 1
+    assert window._cad_loading_status.status_label.text() == "Đang tải CAD…"
+    assert first_task.started and not first_task.finished
+
+    application.processEvents()
+    assert ticks == ["event-loop"]
+
+    window._cad_loading_status.cancel_button.click()
+    assert window._cad_loading_status.active_request_id is None
+    assert window._cad_loading_status.status_label.text() == "Đã hủy tải CAD."
+
+    window.cad_controller.start_import(
+        Path("reopen.step"),
+        CadFormat.STEP,
+        origin=CadLoadOrigin.DRAG_DROP,
+    )
+    assert window._cad_loading_status.active_request_id == 2
+    assert window._cad_loading_status.cancel_button.isEnabled()
+    assert pool.submitted[-1] is window.cad_controller._active_task
+
+    window.close()
+    assert window.cad_controller._closing
+    assert window._cad_loading_status.active_request_id is None
+    window.viewport.shutdown()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

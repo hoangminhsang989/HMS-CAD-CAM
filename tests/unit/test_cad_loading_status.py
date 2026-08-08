@@ -22,6 +22,7 @@ from hms_cadcam.ui.cad_loading import (
     CadLoadState,
 )
 from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
+from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from hms_cadcam.ui.main_window import MainWindow
 from hms_cadcam.cad.unavailable import UnavailableCadKernel
 from hms_cadcam.project.service import ProjectService
@@ -172,40 +173,69 @@ def test_dialog_and_drop_requests_share_one_bound_surface() -> None:
     _dispose(surface, application)
 
 
+def test_loading_surface_retranslates_active_and_terminal_states_accessibly() -> None:
+    application = _application()
+    service = translation_service()
+    with service.using(UiLanguage.VI_VN):
+        surface = CadLoadingStatusSurface(lambda: True)
+        surface.handle_loading_event(_loading(1, CadLoadOrigin.OPEN_DIALOG))
+        with service.using(UiLanguage.EN_US):
+            assert surface.status_label.text() == "Loading CAD…"
+            assert surface.cancel_button.text() == "Cancel"
+            assert surface.status_label.accessibleName() == "CAD loading status"
+            assert surface.progress_bar.accessibleName() == "CAD loading progress"
+            assert surface.cancel_button.accessibleName() == "Cancel CAD loading"
+            assert surface.cancel_button.toolTip() == "Cancel CAD loading"
+
+            surface.handle_loading_event(
+                _terminal(1, CadLoadState.SUCCEEDED)
+            )
+            assert surface.status_label.text() == "CAD loaded."
+            assert surface.cancel_button.isHidden()
+            assert not surface.cancel_button.isEnabled()
+        assert surface.status_label.text() == "Đã tải CAD."
+        _dispose(surface, application)
+
+
 def test_main_window_binds_loading_signal_and_cancel_controller_without_modal_wait(
     tmp_path: Path,
 ) -> None:
     application = _application()
-    window = MainWindow(
-        ProjectService.create_default(tmp_path / "config"),
-        UnavailableCadKernel("WP2 test"),
-        UnavailableCadViewportBackend("WP2 test"),
-        layout_store=WorkspaceLayoutStore(
-            QSettings(str(tmp_path / "layout.ini"), QSettings.Format.IniFormat)
-        ),
-    )
-    events: list[CadLoadEvent] = []
-    window.cad_controller.loading_state_changed.connect(events.append)
-    request, _ = window.cad_controller._loading_coordinator.begin(
-        Path("dialog.step"),
-        CadLoadOrigin.OPEN_DIALOG,
-        CadFormat.STEP,
-        owner_identity="wp2",
-    )
-    application.processEvents()
+    service = translation_service()
+    with service.using(UiLanguage.VI_VN):
+        window = MainWindow(
+            ProjectService.create_default(tmp_path / "config"),
+            UnavailableCadKernel("WP2 test"),
+            UnavailableCadViewportBackend("WP2 test"),
+            layout_store=WorkspaceLayoutStore(
+                QSettings(str(tmp_path / "layout.ini"), QSettings.Format.IniFormat)
+            ),
+        )
+        events: list[CadLoadEvent] = []
+        window.cad_controller.loading_state_changed.connect(events.append)
+        request, _ = window.cad_controller._loading_coordinator.begin(
+            Path("dialog.step"),
+            CadLoadOrigin.OPEN_DIALOG,
+            CadFormat.STEP,
+            owner_identity="wp2",
+        )
+        application.processEvents()
 
-    assert window._cad_loading_status.active_request_id == request.request_id
-    assert not window._cad_loading_status.cancel_button.isHidden()
-    QTest.mouseClick(window._cad_loading_status.cancel_button, Qt.MouseButton.LeftButton)
-    QTest.mouseClick(window._cad_loading_status.cancel_button, Qt.MouseButton.LeftButton)
-    application.processEvents()
+        assert window._cad_loading_status.active_request_id == request.request_id
+        assert not window._cad_loading_status.cancel_button.isHidden()
+        with service.using(UiLanguage.EN_US):
+            assert window._cad_loading_status.status_label.text() == "Loading CAD…"
+            assert window._cad_loading_status.cancel_button.text() == "Cancel"
+        QTest.mouseClick(window._cad_loading_status.cancel_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(window._cad_loading_status.cancel_button, Qt.MouseButton.LeftButton)
+        application.processEvents()
 
-    assert [event.state for event in events] == [
-        CadLoadState.LOADING,
-        CadLoadState.CANCELLED,
-    ]
-    assert window._cad_loading_status.status_label.text() == "Đã hủy tải CAD."
-    source = inspect.getsource(CadLoadingStatusSurface)
-    assert "QMessageBox" not in source
-    assert ".wait(" not in source
-    _dispose(window, application)
+        assert [event.state for event in events] == [
+            CadLoadState.LOADING,
+            CadLoadState.CANCELLED,
+        ]
+        assert window._cad_loading_status.status_label.text() == "Đã hủy tải CAD."
+        source = inspect.getsource(CadLoadingStatusSurface)
+        assert "QMessageBox" not in source
+        assert ".wait(" not in source
+        _dispose(window, application)
