@@ -120,7 +120,11 @@ class ExportDefaultsSettingsService:
             except (TypeError, ValueError, RecursionError) as error:
                 issue = ExportDefaultsIssue(format_id, key, str(error))
                 issues.append(issue)
-                LOGGER.warning("Invalid persistent 3D export default at %s: %s", key, error)
+                LOGGER.warning(
+                    "Mặc định Xuất 3D lưu trữ tại %s không hợp lệ: %s",
+                    key,
+                    error,
+                )
                 continue
             profiles[format_id] = profile
         return ExportDefaultsSnapshot(

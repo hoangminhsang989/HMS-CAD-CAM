@@ -159,6 +159,7 @@ def test_corrupt_value_is_reported_falls_back_and_is_not_self_healed(
     tmp_path: Path,
     format_id: ExportFormatId,
     raw: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = _settings(tmp_path / f"corrupt-{format_id.value}.ini")
     key = export_default_key(format_id)
@@ -170,6 +171,15 @@ def test_corrupt_value_is_reported_falls_back_and_is_not_self_healed(
     assert len(snapshot.issues) == 1
     assert snapshot.issues[0].format_id is format_id
     assert settings.value(key) == raw
+    diagnostic = (
+        f"Mặc định Xuất 3D lưu trữ tại {key} không hợp lệ: "
+        f"{snapshot.issues[0].reason}"
+    )
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "hms_cadcam.ui.settings.export_defaults"
+    ] == [diagnostic]
 
 
 def test_valid_but_unsafe_persistent_overwrite_policy_fails_closed(
