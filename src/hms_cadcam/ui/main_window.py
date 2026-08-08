@@ -117,6 +117,7 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.project.workspace import DocumentMode, WorkspaceState
 from hms_cadcam.ui.cad_controller import CadUiController
 from hms_cadcam.ui.cad_export import CadExportUiController
+from hms_cadcam.ui.cad_export_status import CadExportStatusSurface
 from hms_cadcam.ui.cad_loading_status import CadLoadingStatusSurface
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from hms_cadcam.ui.cam3d_function_panel import Cam3DFunctionPanel
@@ -2829,6 +2830,14 @@ class MainWindow(QMainWindow):
         self._profile_status.setObjectName("StatusLabel")
         status.addPermanentWidget(self._profile_status)
         self._update_active_profile_status()
+        self._cad_export_status = CadExportStatusSurface(
+            self.export_controller.cancel_active_export,
+            self,
+        )
+        status.addPermanentWidget(self._cad_export_status, 1)
+        self.export_controller.operation_state_changed.connect(
+            self._cad_export_status.handle_export_event
+        )
         self._cad_loading_status = CadLoadingStatusSurface(
             self.cad_controller.cancel_active_import,
             self,
@@ -4017,6 +4026,7 @@ class MainWindow(QMainWindow):
                 except (RuntimeError, TypeError, ValueError):
                     # Stage 13B must never block the established application close.
                     logger.warning("Stage 13B owner shutdown failed", exc_info=True)
+            self._cad_export_status.reset_for_shutdown()
             self._cad_loading_status.reset_for_shutdown()
             self.cad_controller.shutdown()
             self.viewport.shutdown()

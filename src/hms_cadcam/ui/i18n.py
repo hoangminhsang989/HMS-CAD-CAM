@@ -432,6 +432,21 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Export failed", "Xuất thất bại", "내보내기 실패"),
     ("3D export completed", "Đã xuất 3D", "3D 내보내기 완료"),
     ("Exporting 3D data…", "Đang xuất dữ liệu 3D…", "3D 데이터 내보내는 중…"),
+    ("Cancelling 3D export…", "Đang hủy xuất 3D…", "3D 내보내기 취소 중…"),
+    (
+        "Cannot cancel because the file is being finalized",
+        "Không thể hủy vì tệp đang được hoàn tất",
+        "파일 마무리가 시작되어 취소할 수 없습니다",
+    ),
+    ("3D export cancelled", "Đã hủy xuất 3D", "3D 내보내기 취소됨"),
+    ("3D export failed", "Xuất 3D thất bại", "3D 내보내기 실패"),
+    (
+        "3D export operation status",
+        "Trạng thái tác vụ xuất 3D",
+        "3D 내보내기 작업 상태",
+    ),
+    ("3D export activity", "Hoạt động xuất 3D", "3D 내보내기 작업"),
+    ("Cancel 3D export", "Hủy xuất 3D", "3D 내보내기 취소"),
     (
         "Unsupported CAD export extension.",
         "Phần mở rộng xuất CAD không được hỗ trợ.",

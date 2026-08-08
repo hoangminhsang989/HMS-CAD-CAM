@@ -32,9 +32,19 @@ from hms_cadcam.cad.export_models import (
     StlEncoding,
     StlMeshOptions,
 )
-from hms_cadcam.cad.export_service import CadExportService, ExportRequest, ExportResult
+from hms_cadcam.cad.export_service import (
+    CadExportService,
+    ExportCancellationState,
+    ExportErrorCode,
+    ExportRequest,
+    ExportResult,
+)
 from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.project.service import ProjectService
+from hms_cadcam.ui.cad_export_status import (
+    ExportOperationEvent,
+    ExportOperationState,
+)
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localized_dialogs import QFileDialog
 from hms_cadcam.ui.project_worker import ProjectTask
@@ -337,6 +347,7 @@ class CadExportUiController(QObject):
 
     message = Signal(str)
     busy_changed = Signal(bool)
+    operation_state_changed = Signal(object)
 
     def __init__(
         self,
@@ -364,6 +375,10 @@ class CadExportUiController(QObject):
         self._reload_persistent_profiles()
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
+        self._active_request: ExportRequest | None = None
+        self._active_request_id: int | None = None
+        self._next_request_id = 0
+        self._terminal_event_emitted = False
         self.actions = {
             "export_3d": QAction(_tr("3D Export"), self),
             "export_selected": QAction(_tr("Export Selected Objects"), self),
@@ -411,6 +426,33 @@ class CadExportUiController(QObject):
         self.actions["export_selected"].setEnabled(
             has_document and bool(self._selection()) and idle
         )
+
+    @Slot(result=bool)
+    def cancel_active_export(self) -> bool:
+        """Cooperatively cancel before commit without waiting for native code."""
+
+        request = self._active_request
+        request_id = self._active_request_id
+        if request is None or request_id is None:
+            return False
+        previous = request.cancellation.state
+        accepted = request.cancellation.request_cancel()
+        if accepted:
+            if previous is ExportCancellationState.ACTIVE:
+                self._emit_operation_state(
+                    request_id,
+                    ExportOperationState.CANCELLING,
+                    request.profile.format_id,
+                )
+                self.message.emit(_tr("Cancelling 3D export…"))
+            return True
+        self._emit_operation_state(
+            request_id,
+            ExportOperationState.COMMITTING,
+            request.profile.format_id,
+        )
+        self.message.emit(_tr("Cannot cancel because the file is being finalized"))
+        return False
 
     @Slot()
     def export_document(self) -> None:
@@ -562,16 +604,34 @@ class CadExportUiController(QObject):
         if not self._operation_available() or not self._ownership_matches(ownership):
             return False
         task = ProjectTask(lambda: self._service.export(request))
+        self._next_request_id += 1
+        request_id = self._next_request_id
         self._active_task = task
+        self._active_request = request
+        self._active_request_id = request_id
+        self._terminal_event_emitted = False
         task.signals.succeeded.connect(
-            lambda value: self._export_succeeded(task, ownership, value)
+            lambda value: self._export_succeeded(
+                task, ownership, request_id, value
+            )
         )
         task.signals.failed.connect(
-            lambda error: self._export_failed(task, ownership, error)
+            lambda error: self._export_failed(
+                task, ownership, request_id, request.profile.format_id, error
+            )
         )
-        task.signals.finished.connect(lambda: self._export_finished(task))
+        task.signals.finished.connect(
+            lambda: self._export_finished(
+                task, request_id, request.profile.format_id
+            )
+        )
         self.busy_changed.emit(True)
         self.refresh_action_states()
+        self._emit_operation_state(
+            request_id,
+            ExportOperationState.ACTIVE,
+            request.profile.format_id,
+        )
         self.message.emit(_tr("Exporting 3D data…"))
         self._thread_pool.start(task)
         return True
@@ -618,20 +678,50 @@ class CadExportUiController(QObject):
         self,
         task: ProjectTask,
         ownership: _ExportOwnership,
+        request_id: int,
         value: object,
     ) -> None:
-        if self._active_task is not task or not self._ownership_matches(ownership):
+        if (
+            self._active_task is not task
+            or self._active_request_id != request_id
+            or not self._ownership_matches(ownership)
+        ):
             return
         if not isinstance(value, ExportResult):
+            active_request = self._active_request
+            assert active_request is not None
+            self._emit_operation_state(
+                request_id,
+                ExportOperationState.FAILED,
+                active_request.profile.format_id,
+            )
             self._show_failure(_tr("Export failed"))
             return
         if value.success:
+            self._emit_operation_state(
+                request_id,
+                ExportOperationState.SUCCEEDED,
+                value.format_id,
+            )
             self.message.emit(
                 f"{_tr('3D export completed')}: {value.target_path} "
                 f"({value.bytes_written} bytes, SHA-256 {value.sha256})"
             )
             return
         assert value.failure is not None
+        if value.failure.code is ExportErrorCode.CANCELLED:
+            self._emit_operation_state(
+                request_id,
+                ExportOperationState.CANCELLED,
+                value.format_id,
+            )
+            self.message.emit(_tr("3D export cancelled"))
+            return
+        self._emit_operation_state(
+            request_id,
+            ExportOperationState.FAILED,
+            value.format_id,
+        )
         self._show_failure(
             f"{_tr('Export failed')} [{value.failure.code.value}]: "
             f"{_tr(value.failure.message)}"
@@ -641,18 +731,59 @@ class CadExportUiController(QObject):
         self,
         task: ProjectTask,
         ownership: _ExportOwnership,
+        request_id: int,
+        format_id: ExportFormatId,
         error: object,
     ) -> None:
-        if self._active_task is not task or not self._ownership_matches(ownership):
+        if (
+            self._active_task is not task
+            or self._active_request_id != request_id
+            or not self._ownership_matches(ownership)
+        ):
             return
+        self._emit_operation_state(
+            request_id,
+            ExportOperationState.FAILED,
+            format_id,
+        )
         self._show_failure(f"{_tr('Export failed')}: {error}")
 
-    def _export_finished(self, task: ProjectTask) -> None:
-        if self._active_task is not task:
+    def _export_finished(
+        self,
+        task: ProjectTask,
+        request_id: int,
+        format_id: ExportFormatId,
+    ) -> None:
+        if self._active_task is not task or self._active_request_id != request_id:
             return
+        if not self._terminal_event_emitted:
+            self._emit_operation_state(
+                request_id,
+                ExportOperationState.ABANDONED,
+                format_id,
+            )
         self._active_task = None
+        self._active_request = None
+        self._active_request_id = None
         self.busy_changed.emit(False)
         self.refresh_action_states()
+
+    def _emit_operation_state(
+        self,
+        request_id: int,
+        state: ExportOperationState,
+        format_id: ExportFormatId,
+    ) -> None:
+        if state in {
+            ExportOperationState.SUCCEEDED,
+            ExportOperationState.CANCELLED,
+            ExportOperationState.FAILED,
+            ExportOperationState.ABANDONED,
+        }:
+            self._terminal_event_emitted = True
+        self.operation_state_changed.emit(
+            ExportOperationEvent(request_id, state, format_id)
+        )
 
     def _show_failure(self, text: str) -> None:
         self.message.emit(text)
