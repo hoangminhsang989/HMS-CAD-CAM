@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Slot
+from PySide6.QtCore import QEvent, QSize, QTimer, Qt, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -29,14 +29,17 @@ class CadLoadingStatusSurface(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._unbounded_maximum_height = self.maximumHeight()
         self._cancel_request = cancel_request
         self._latest_request_id = 0
         self._active_request_id: int | None = None
         self._last_event: CadLoadEvent | None = None
+        self._geometry_refresh_timer = QTimer(self)
+        self._geometry_refresh_timer.setSingleShot(True)
+        self._geometry_refresh_timer.timeout.connect(self._refresh_geometry)
 
         self.setObjectName("CadLoadingStatusSurface")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.setMaximumHeight(24)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
@@ -71,7 +74,10 @@ class CadLoadingStatusSurface(QWidget):
         self.cancel_button.setObjectName("CadLoadingCancelButton")
         self.cancel_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.cancel_button.setMinimumHeight(20)
-        self.cancel_button.setMaximumWidth(54)
+        self.cancel_button.setSizePolicy(
+            QSizePolicy.Policy.Minimum,
+            QSizePolicy.Policy.Fixed,
+        )
         self.cancel_button.clicked.connect(self._cancel_clicked)
         self.cancel_button.hide()
         layout.addWidget(self.cancel_button)
@@ -79,12 +85,27 @@ class CadLoadingStatusSurface(QWidget):
         translation_service().language_changed.connect(self.retranslate_ui)
         self.retranslate_ui()
         self._set_icon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self._refresh_geometry()
 
     @property
     def active_request_id(self) -> int | None:
         """Return the request currently allowed to update this surface."""
 
         return self._active_request_id
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt API name
+        """Refresh content-derived bounds after runtime font/style changes."""
+        super().changeEvent(event)
+        if (
+            event.type()
+            in {
+                QEvent.Type.FontChange,
+                QEvent.Type.StyleChange,
+            }
+            and hasattr(self, "cancel_button")
+        ):
+            self._refresh_geometry()
+            self._geometry_refresh_timer.start(0)
 
     @Slot(object)
     def handle_loading_event(self, event: object) -> None:
@@ -106,6 +127,7 @@ class CadLoadingStatusSurface(QWidget):
             self.progress_bar.show()
             self.cancel_button.setEnabled(True)
             self.cancel_button.show()
+            self._refresh_geometry()
             return
 
         if request is None:
@@ -130,6 +152,7 @@ class CadLoadingStatusSurface(QWidget):
         self.progress_bar.hide()
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
+        self._refresh_geometry()
 
     def reset_for_shutdown(self) -> None:
         """Clear transient loading controls before the window is torn down."""
@@ -139,6 +162,7 @@ class CadLoadingStatusSurface(QWidget):
         self.cancel_button.setEnabled(False)
         self.cancel_button.hide()
         self.status_label.setText(f"CAD: {ui_text('Ready')}")
+        self._refresh_geometry()
 
     def retranslate_ui(self, _language: object = None) -> None:
         """Refresh presentation text without changing request ownership."""
@@ -154,6 +178,28 @@ class CadLoadingStatusSurface(QWidget):
             self.status_label.setText(ui_text("Loading CAD…"))
         elif event.error is None:
             self.status_label.setText(self._terminal_message(event))
+        self._refresh_geometry()
+
+    def _refresh_geometry(self) -> None:
+        """Recompute compact bounds from the active font, style, and text."""
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(self._unbounded_maximum_height)
+        self.cancel_button.setMinimumWidth(0)
+        self.cancel_button.ensurePolished()
+        self.cancel_button.setMinimumWidth(self.cancel_button.sizeHint().width())
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+            required_height = max(
+                layout.minimumSize().height(),
+                layout.sizeHint().height(),
+            )
+            self.setFixedHeight(required_height)
+        self.cancel_button.updateGeometry()
+        self.status_label.updateGeometry()
+        self.progress_bar.updateGeometry()
+        self.updateGeometry()
 
     @staticmethod
     def _terminal_message(event: CadLoadEvent) -> str:
