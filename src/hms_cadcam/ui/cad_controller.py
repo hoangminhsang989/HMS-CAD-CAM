@@ -404,7 +404,6 @@ class CadUiController(QObject):
         self._request_generation += 1
         self._loading_coordinator.abandon_active()
         self._invalidate_active_task()
-        self._thread_pool.clear()
         self._clear_active_document()
         self._update_action_states()
 
@@ -695,6 +694,7 @@ class CadUiController(QObject):
         self._active_task_prepared = None
         self._discard_prepared(prepared)
         if task is None:
+            self._thread_pool.clear()
             return
         task.abandon()
         for signal, slot in (
@@ -706,6 +706,7 @@ class CadUiController(QObject):
                 signal.disconnect(slot)
             except RuntimeError:
                 logger.debug("CAD worker signal was already disconnected")
+        self._thread_pool.clear()
         self.busy_changed.emit(False)
 
     def _clear_active_document(self) -> None:
