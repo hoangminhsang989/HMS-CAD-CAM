@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPlainTextEdit,
     QPushButton,
+    QSizeGrip,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -2898,40 +2899,124 @@ class MainWindow(QMainWindow):
             label.setObjectName("StatusLabel")
             status.addPermanentWidget(label)
             self._cad_export_compact_context_widgets.append(label)
+        self._cad_export_context_maximum_widths = {
+            widget: widget.maximumWidth()
+            for widget in self._cad_export_compact_context_widgets
+        }
+        self._cad_export_context_compacted = False
+        self._cad_export_allocation_runs = 0
+        self._cad_export_requested_width = 0
+        self._cad_export_allocation_timer = QTimer(self)
+        self._cad_export_allocation_timer.setSingleShot(True)
+        self._cad_export_allocation_timer.timeout.connect(
+            self._apply_cad_export_status_allocation
+        )
 
     @Slot(int)
     def _update_cad_export_status_allocation(self, required_width: int) -> None:
-        """Prioritize complete export status text when QStatusBar is constrained."""
+        """Schedule one coalesced status allocation after Qt geometry changes."""
 
         if not hasattr(self, "_cad_export_compact_context_widgets"):
             return
+        self._cad_export_requested_width = max(0, int(required_width))
+        timer = getattr(self, "_cad_export_allocation_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start(0)
+
+    @Slot()
+    def _apply_cad_export_status_allocation(self) -> None:
+        """Allocate adaptive export geometry without changing semantic visibility."""
+
         status = self.statusBar()
         surface = self._cad_export_status
+        layout = status.layout()
+        if layout is None:
+            return
+        self._cad_export_allocation_runs += 1
+
+        contents = status.contentsRect()
+        margins = layout.contentsMargins()
+        spacing = max(0, layout.spacing())
+        available_left = contents.left() + margins.left()
+        available_right = contents.right() - margins.right()
         direct_children = status.findChildren(
             QWidget,
             options=Qt.FindChildOption.FindDirectChildrenOnly,
         )
-        compact_widgets = tuple(self._cad_export_compact_context_widgets)
-        neighbors = tuple(
-            widget
-            for widget in direct_children
-            if widget is not surface
-            and (widget.isVisible() or widget in compact_widgets)
-        )
-        layout = status.layout()
-        spacing = 0 if layout is None else max(0, layout.spacing())
-        total_required = required_width + sum(
-            widget.sizeHint().width() for widget in neighbors
-        ) + spacing * (len(neighbors) + 1)
-        compact = (
-            required_width > 0
-            and total_required > status.contentsRect().width()
-        )
-        for widget in compact_widgets:
-            widget.setVisible(not compact)
-        if layout is not None:
+        for widget in direct_children:
+            if (
+                isinstance(widget, QSizeGrip)
+                and widget.isVisible()
+                and widget.geometry().width() > 0
+            ):
+                available_right = min(
+                    available_right,
+                    widget.geometry().left() - max(1, spacing),
+                )
+        available_width = max(0, available_right - available_left + 1)
+
+        if surface.required_width <= 0:
+            for widget, intrinsic_maximum in (
+                self._cad_export_context_maximum_widths.items()
+            ):
+                widget.setMaximumWidth(intrinsic_maximum)
+            self._cad_export_context_compacted = False
+            surface.set_available_width(None)
             layout.invalidate()
             layout.activate()
+            return
+
+        compact = (
+            surface.required_width > available_width
+        )
+        intrinsic_widgets = tuple(
+            widget
+            for widget in self._cad_export_compact_context_widgets
+            if not widget.isHidden()
+        )
+        if compact:
+            context_maximum = 0
+        elif intrinsic_widgets:
+            surface_target = min(
+                surface.required_width,
+                max(surface.minimum_content_width, surface.wrapped_width),
+            )
+            spacing_budget = spacing * (len(intrinsic_widgets) + 1)
+            context_maximum = max(
+                0,
+                (
+                    available_width
+                    - surface_target
+                    - spacing_budget
+                )
+                // len(intrinsic_widgets),
+            )
+        else:
+            context_maximum = 0
+        for widget, intrinsic_maximum in (
+            self._cad_export_context_maximum_widths.items()
+        ):
+            widget.setMaximumWidth(
+                min(intrinsic_maximum, context_maximum)
+                if widget in intrinsic_widgets
+                else intrinsic_maximum
+            )
+        self._cad_export_context_compacted = compact
+
+        surface.set_available_width(available_width)
+        layout.invalidate()
+        layout.activate()
+
+        surface_left = max(available_left, surface.geometry().left())
+        allocated_width = max(
+            0,
+            min(surface.geometry().right(), available_right)
+            - surface_left
+            + 1,
+        )
+        surface.set_available_width(allocated_width)
+        layout.invalidate()
+        layout.activate()
 
     def _current_display_state(self) -> ProjectSession | WorkspaceState | None:
         """Return rich project data or typed standalone-document state."""

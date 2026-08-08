@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QRect, QSettings, QTimer, Qt
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QSizeGrip, QWidget
 
-from hms_cadcam.cad.export_models import ExportFormatId
+from hms_cadcam.cad.export_models import ExportFormatId, ExportProfile
+from hms_cadcam.cad.export_service import (
+    BackendWriteMetadata,
+    CadExportService,
+    ExportCancellationState,
+    ExportRequest,
+)
 from hms_cadcam.cad.unavailable import UnavailableCadKernel
+from hms_cadcam.cad.models import CadDocumentId, CadGeometryKind
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cad_export_status import (
     CadExportStatusSurface,
@@ -30,6 +40,23 @@ def _event(
     format_id: ExportFormatId = ExportFormatId.STEP,
 ) -> ExportOperationEvent:
     return ExportOperationEvent(request_id, state, format_id)
+
+
+class _HeldStatusBackend:
+    supported_formats = frozenset({ExportFormatId.STEP})
+    unavailable_reason = None
+
+    def __init__(self, entered: Event, release: Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    def write(
+        self, request: ExportRequest, temporary_path: Path
+    ) -> BackendWriteMetadata:
+        self.entered.set()
+        assert self.release.wait(5), "test did not release held export"
+        temporary_path.write_bytes(b"r160-held-status-writer")
+        return BackendWriteMetadata("R160 held status writer", 1)
 
 
 def _show_active(qtbot, cancel=lambda: True) -> CadExportStatusSurface:
@@ -89,6 +116,40 @@ def _visible_status_neighbors(window: MainWindow) -> tuple[QWidget, ...]:
         )
         if widget is not surface and widget.isVisible()
     )
+
+
+def _assert_full_text_layout(surface: CadExportStatusSurface) -> None:
+    label = surface.status_label
+    contents = label.contentsRect()
+    assert contents.width() > 0
+    assert contents.height() > 0
+    metrics = QFontMetrics(label.font())
+    if label.wordWrap():
+        rendered = metrics.boundingRect(
+            QRect(0, 0, contents.width(), 16_777_215),
+            int(Qt.TextFlag.TextWordWrap),
+            label.text(),
+        )
+        assert rendered.width() <= contents.width()
+        assert rendered.height() <= contents.height()
+    else:
+        assert metrics.horizontalAdvance(label.text()) <= contents.width()
+
+
+def _available_status_right(window: MainWindow) -> int:
+    status = window.statusBar()
+    layout = status.layout()
+    assert layout is not None
+    margins = layout.contentsMargins()
+    right = status.contentsRect().right() - margins.right()
+    spacing = max(1, layout.spacing())
+    for grip in status.findChildren(
+        QSizeGrip,
+        options=Qt.FindChildOption.FindDirectChildrenOnly,
+    ):
+        if grip.isVisible():
+            right = min(right, grip.geometry().left() - spacing)
+    return right
 
 
 def test_active_surface_is_immediate_indeterminate_and_format_specific(qtbot) -> None:
@@ -265,7 +326,7 @@ def test_main_window_binds_export_surface_without_status_bar_collision(
 def test_production_main_window_export_status_geometry_matrix(
     qtbot, tmp_path
 ) -> None:
-    """Cover 3 locales x 4 scales x 6 states in the real status bar."""
+    """Cover 3 locales x 4 scales x 6 states x 3 production sizes."""
 
     window = _production_window(qtbot, tmp_path)
     translator = translation_service()
@@ -296,70 +357,95 @@ def test_production_main_window_export_status_geometry_matrix(
             translator.set_language(language)
             for scale_percent in (100, 125, 150, 200):
                 window._ui_scale_manager.set_preview_percent(scale_percent)
-                window.resize(1500, 900)
-                for state in states:
-                    request_id += 1
-                    active = _event(
-                        request_id,
-                        ExportOperationState.ACTIVE,
-                    )
-                    window.export_controller.operation_state_changed.emit(active)
-                    if state is not ExportOperationState.ACTIVE:
+                for window_width, window_height in (
+                    (1500, 900),
+                    (1366, 768),
+                    (1280, 720),
+                ):
+                    window.resize(window_width, window_height)
+                    for state in states:
+                        request_id += 1
+                        active = _event(
+                            request_id,
+                            ExportOperationState.ACTIVE,
+                        )
                         window.export_controller.operation_state_changed.emit(
-                            _event(request_id, state)
+                            active
                         )
-                    _process_geometry_events()
+                        if state is not ExportOperationState.ACTIVE:
+                            window.export_controller.operation_state_changed.emit(
+                                _event(request_id, state)
+                            )
+                        _process_geometry_events()
 
-                    surface = window._cad_export_status
-                    status_bar = window.statusBar()
-                    assert window.size().width() == 1500
-                    assert window.size().height() == 900
-                    assert surface.isVisible()
-                    assert surface.status_label.width() >= (
-                        surface.status_label.sizeHint().width()
-                    )
-                    assert surface.contentsRect().contains(
-                        surface.status_label.geometry()
-                    )
-                    assert status_bar.contentsRect().contains(surface.geometry()), (
-                        language,
-                        scale_percent,
-                        state,
-                        status_bar.contentsRect(),
-                        surface.geometry(),
-                    )
-                    for neighbor in _visible_status_neighbors(window):
-                        assert not surface.geometry().intersects(
-                            neighbor.geometry()
+                        surface = window._cad_export_status
+                        status_bar = window.statusBar()
+                        assert window.size().width() == window_width
+                        assert window.size().height() == window_height
+                        assert surface.isVisible()
+                        _assert_full_text_layout(surface)
+                        assert surface.contentsRect().contains(
+                            surface.status_label.geometry()
                         )
-
-                    progress_expected = state in active_states
-                    cancel_visible = state in {
-                        ExportOperationState.ACTIVE,
-                        ExportOperationState.CANCELLING,
-                    }
-                    assert surface.progress_bar.isVisible() is progress_expected
-                    assert surface.cancel_button.isVisible() is cancel_visible
-                    assert surface.cancel_button.isEnabled() is (
-                        state is ExportOperationState.ACTIVE
-                    )
-                    if state in active_states:
-                        assert surface.active_request_id == request_id
-                    else:
-                        assert surface.active_request_id is None
-                    assert surface.last_event == _event(request_id, state)
-
-                    if (
-                        language is UiLanguage.EN_US
-                        and scale_percent == 200
-                        and state is ExportOperationState.COMMITTING
-                    ):
-                        assert surface.status_label.text().endswith(
-                            "Cannot cancel because the file is being finalized"
+                        assert status_bar.contentsRect().contains(
+                            surface.geometry()
+                        ), (
+                            language,
+                            scale_percent,
+                            state,
+                            (window_width, window_height),
+                            status_bar.contentsRect(),
+                            surface.geometry(),
                         )
-                        mandatory_committing_checked = True
-                    matrix_cases += 1
-        assert matrix_cases == 72
+                        assert (
+                            surface.geometry().right()
+                            <= _available_status_right(window)
+                        )
+                        for neighbor in _visible_status_neighbors(window):
+                            assert not surface.geometry().intersects(
+                                neighbor.geometry()
+                            )
+
+                        assert surface.status_label.wordWrap() is (
+                            surface.width() < surface.required_width
+                        )
+                        assert surface.height() >= surface.heightForWidth(
+                            surface.width()
+                        )
+                        progress_expected = state in active_states
+                        cancel_visible = state in {
+                            ExportOperationState.ACTIVE,
+                            ExportOperationState.CANCELLING,
+                        }
+                        assert (
+                            surface.progress_bar.isVisible()
+                            is progress_expected
+                        )
+                        assert (
+                            surface.cancel_button.isVisible()
+                            is cancel_visible
+                        )
+                        assert surface.cancel_button.isEnabled() is (
+                            state is ExportOperationState.ACTIVE
+                        )
+                        if state in active_states:
+                            assert surface.active_request_id == request_id
+                        else:
+                            assert surface.active_request_id is None
+                        assert surface.last_event == _event(request_id, state)
+
+                        if (
+                            language is UiLanguage.EN_US
+                            and scale_percent == 200
+                            and state is ExportOperationState.COMMITTING
+                        ):
+                            assert surface.status_label.text() == (
+                                "STEP — Cannot cancel because the file is "
+                                "being finalized"
+                            )
+                            mandatory_committing_checked = True
+                        matrix_cases += 1
+        assert matrix_cases == 216
         assert mandatory_committing_checked
     finally:
         window._ui_scale_manager.set_preview_percent(previous_scale)
@@ -395,22 +481,236 @@ def test_production_status_preserves_state_through_locale_and_scale(
             ):
                 translator.set_language(language)
                 window._ui_scale_manager.set_preview_percent(scale_percent)
-                window.resize(1500, 900)
-                _process_geometry_events()
-                surface = window._cad_export_status
-                assert surface.active_request_id == request_id
-                assert surface.last_event == _event(request_id, state)
-                assert surface.status_label.width() >= (
-                    surface.status_label.sizeHint().width()
-                )
-                if state is ExportOperationState.ACTIVE:
-                    assert surface.cancel_button.isEnabled()
-                elif state is ExportOperationState.CANCELLING:
-                    assert surface.cancel_button.isVisible()
-                    assert not surface.cancel_button.isEnabled()
-                else:
-                    assert surface.cancel_button.isHidden()
-                    assert not surface.cancel_button.isEnabled()
+                for window_width, window_height in (
+                    (1280, 720),
+                    (1500, 900),
+                ):
+                    window.resize(window_width, window_height)
+                    _process_geometry_events()
+                    surface = window._cad_export_status
+                    assert surface.active_request_id == request_id
+                    assert surface.last_event == _event(request_id, state)
+                    _assert_full_text_layout(surface)
+                    assert (
+                        surface.geometry().right()
+                        <= _available_status_right(window)
+                    )
+                    if state is ExportOperationState.ACTIVE:
+                        assert surface.cancel_button.isEnabled()
+                    elif state is ExportOperationState.CANCELLING:
+                        assert surface.cancel_button.isVisible()
+                        assert not surface.cancel_button.isEnabled()
+                    else:
+                        assert surface.cancel_button.isHidden()
+                        assert not surface.cancel_button.isEnabled()
     finally:
+        window._ui_scale_manager.set_preview_percent(previous_scale)
+        translator.set_language(previous_language)
+
+
+def test_critical_committing_sizes_reserve_grip_and_restore_contexts(
+    qtbot, tmp_path
+) -> None:
+    window = _production_window(qtbot, tmp_path)
+    translator = translation_service()
+    previous_language = translator.language
+    previous_scale = window._ui_scale_manager.current_percent
+    request_id = 301
+    try:
+        translator.set_language(UiLanguage.EN_US)
+        window._ui_scale_manager.set_preview_percent(200)
+        window.export_controller.operation_state_changed.emit(
+            _event(request_id, ExportOperationState.ACTIVE)
+        )
+        window.export_controller.operation_state_changed.emit(
+            _event(request_id, ExportOperationState.COMMITTING)
+        )
+        intrinsic_hidden = {
+            widget: widget.isHidden()
+            for widget in window._cad_export_compact_context_widgets
+        }
+
+        expected_compaction = (False, True, True, False)
+        for (width, height), compacted in zip(
+            ((1500, 900), (1366, 768), (1280, 720), (1500, 900)),
+            expected_compaction,
+            strict=True,
+        ):
+            window.resize(width, height)
+            _process_geometry_events()
+            surface = window._cad_export_status
+            assert window._cad_export_context_compacted is compacted
+            assert surface.active_request_id == request_id
+            assert surface.last_event == _event(
+                request_id, ExportOperationState.COMMITTING
+            )
+            assert surface.status_label.text() == (
+                "STEP — Cannot cancel because the file is being finalized"
+            )
+            _assert_full_text_layout(surface)
+            assert surface.geometry().right() <= _available_status_right(window)
+            for neighbor in _visible_status_neighbors(window):
+                assert not surface.geometry().intersects(neighbor.geometry())
+
+        for widget, was_hidden in intrinsic_hidden.items():
+            assert widget.isHidden() is was_hidden
+            if not was_hidden:
+                assert widget.isVisible()
+                assert widget.width() > 0
+                assert widget.maximumWidth() > 0
+    finally:
+        window._ui_scale_manager.set_preview_percent(previous_scale)
+        translator.set_language(previous_language)
+
+
+def test_compaction_restores_current_intrinsic_visibility_without_oscillation(
+    qtbot, tmp_path
+) -> None:
+    window = _production_window(qtbot, tmp_path)
+    translator = translation_service()
+    previous_language = translator.language
+    previous_scale = window._ui_scale_manager.current_percent
+    try:
+        translator.set_language(UiLanguage.EN_US)
+        window._ui_scale_manager.set_preview_percent(200)
+        window.export_controller.operation_state_changed.emit(
+            _event(401, ExportOperationState.ACTIVE)
+        )
+        window.export_controller.operation_state_changed.emit(
+            _event(401, ExportOperationState.COMMITTING)
+        )
+        window.resize(1280, 720)
+        _process_geometry_events()
+        assert window._cad_export_context_compacted
+
+        remains_visible = window._project_status
+        becomes_hidden = window._notification_center_button
+        becomes_visible = window._profile_status
+        assert not remains_visible.isHidden()
+        assert not becomes_hidden.isHidden()
+        assert becomes_visible.isHidden()
+        preserved_text = remains_visible.text()
+
+        becomes_hidden.hide()
+        becomes_visible.show()
+        _process_geometry_events()
+        assert remains_visible.text() == preserved_text
+        assert window._cad_export_status.active_request_id == 401
+        assert window._cad_export_status.last_event == _event(
+            401, ExportOperationState.COMMITTING
+        )
+
+        before_expand_runs = window._cad_export_allocation_runs
+        window.resize(1500, 900)
+        _process_geometry_events()
+        stabilized_runs = window._cad_export_allocation_runs
+        assert stabilized_runs - before_expand_runs <= 2
+        assert not window._cad_export_context_compacted
+        assert remains_visible.isVisible()
+        assert remains_visible.width() > 0
+        assert becomes_hidden.isHidden()
+        assert becomes_visible.isVisible()
+        assert becomes_visible.width() > 0
+        assert window._cad_export_status.active_request_id == 401
+
+        for _index in range(20):
+            QApplication.sendPostedEvents()
+            QApplication.processEvents()
+        assert window._cad_export_allocation_runs == stabilized_runs
+        assert remains_visible.text() == preserved_text
+    finally:
+        window._ui_scale_manager.set_preview_percent(previous_scale)
+        translator.set_language(previous_language)
+
+
+def test_constrained_held_writer_stays_responsive_and_cancels_cleanly(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    window = _production_window(qtbot, tmp_path)
+    translator = translation_service()
+    previous_language = translator.language
+    previous_scale = window._ui_scale_manager.current_percent
+    entered = Event()
+    release = Event()
+    controller = window.export_controller
+    controller._service = CadExportService(_HeldStatusBackend(entered, release))
+    document_id = CadDocumentId("r160-held-status-document")
+    window._active_document_metadata = SimpleNamespace(
+        document_id=document_id,
+        geometry_kind=CadGeometryKind.BREP,
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: warnings.append("warning"),
+    )
+    heartbeat = [0]
+    timer = QTimer()
+    timer.setInterval(0)
+    timer.timeout.connect(lambda: heartbeat.__setitem__(0, heartbeat[0] + 1))
+    busy: list[bool] = []
+    controller.busy_changed.connect(busy.append)
+    target = tmp_path / "r160-cancelled.step"
+    try:
+        translator.set_language(UiLanguage.EN_US)
+        window._ui_scale_manager.set_preview_percent(200)
+        window.resize(1280, 720)
+        _process_geometry_events()
+        timer.start()
+        assert controller._start_export(
+            target,
+            ExportProfile.default_for(ExportFormatId.STEP),
+            selected=False,
+        )
+        qtbot.waitUntil(entered.is_set, timeout=5000)
+        initial_heartbeat = heartbeat[0]
+        qtbot.waitUntil(
+            lambda: heartbeat[0] >= initial_heartbeat + 5,
+            timeout=2000,
+        )
+
+        surface = window._cad_export_status
+        assert surface.isVisible()
+        assert surface.progress_bar.isVisible()
+        _assert_full_text_layout(surface)
+        assert surface.geometry().right() <= _available_status_right(window)
+        for neighbor in _visible_status_neighbors(window):
+            assert not surface.geometry().intersects(neighbor.geometry())
+        assert not controller._start_export(
+            tmp_path / "blocked-second.step",
+            ExportProfile.default_for(ExportFormatId.STEP),
+            selected=False,
+        )
+        for action_name in ("new", "open", "open_project", "import"):
+            assert not window.project_controller.actions[action_name].isEnabled()
+
+        QTest.mouseClick(surface.cancel_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(surface.cancel_button, Qt.MouseButton.LeftButton)
+        assert surface.last_event is not None
+        assert surface.last_event.state is ExportOperationState.CANCELLING
+        assert not surface.cancel_button.isEnabled()
+        assert controller._active_request is not None
+        assert controller._active_request.cancellation.state is (
+            ExportCancellationState.CANCEL_REQUESTED
+        )
+        assert controller._active_task is not None
+        assert busy == [True]
+        _assert_full_text_layout(surface)
+        assert surface.geometry().right() <= _available_status_right(window)
+
+        release.set()
+        qtbot.waitUntil(lambda: controller._active_task is None, timeout=5000)
+        assert surface.last_event is not None
+        assert surface.last_event.state is ExportOperationState.CANCELLED
+        assert busy == [True, False]
+        assert warnings == []
+        assert not target.exists()
+        assert not tuple(tmp_path.glob("*.hms-exporting"))
+        assert heartbeat[0] > initial_heartbeat
+        print(f"R160_HELD_WRITER_HEARTBEAT_TICKS={heartbeat[0]}")
+    finally:
+        release.set()
+        timer.stop()
         window._ui_scale_manager.set_preview_percent(previous_scale)
         translator.set_language(previous_language)

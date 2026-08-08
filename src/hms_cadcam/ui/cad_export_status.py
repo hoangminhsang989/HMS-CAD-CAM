@@ -6,7 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from PySide6.QtCore import QEvent, QSize, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QEvent, QRect, QSize, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -59,21 +60,28 @@ class CadExportStatusSurface(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._unbounded_maximum_width = self.maximumWidth()
         self._unbounded_maximum_height = self.maximumHeight()
         self._cancel_request = cancel_request
         self._latest_request_id = 0
         self._active_request_id: int | None = None
         self._last_event: ExportOperationEvent | None = None
         self._required_width = 0
+        self._minimum_content_width = 0
+        self._wrapped_width = 0
+        self._available_width: int | None = None
+        self._constrained = False
         self._geometry_refresh_timer = QTimer(self)
         self._geometry_refresh_timer.setSingleShot(True)
         self._geometry_refresh_timer.timeout.connect(self._refresh_geometry)
 
         self.setObjectName("CadExportStatusSurface")
-        self.setSizePolicy(
+        surface_policy = QSizePolicy(
             QSizePolicy.Policy.MinimumExpanding,
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
         )
+        surface_policy.setHeightForWidth(True)
+        self.setSizePolicy(surface_policy)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
@@ -87,10 +95,13 @@ class CadExportStatusSurface(QWidget):
 
         self.status_label = QLabel(self)
         self.status_label.setObjectName("CadExportStatusLabel")
-        self.status_label.setSizePolicy(
+        label_policy = QSizePolicy(
             QSizePolicy.Policy.MinimumExpanding,
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
         )
+        label_policy.setHeightForWidth(True)
+        self.status_label.setSizePolicy(label_policy)
+        self.status_label.setWordWrap(False)
         layout.addWidget(self.status_label)
 
         self.progress_bar = QProgressBar(self)
@@ -129,9 +140,27 @@ class CadExportStatusSurface(QWidget):
 
     @property
     def required_width(self) -> int:
-        """Return the content-derived width required by the current state."""
+        """Return the single-line width preferred by the current state."""
 
         return self._required_width
+
+    @property
+    def minimum_content_width(self) -> int:
+        """Return the narrowest width that preserves every semantic token."""
+
+        return self._minimum_content_width
+
+    @property
+    def wrapped_width(self) -> int:
+        """Return a metric-derived target for a readable two-line layout."""
+
+        return self._wrapped_width
+
+    @property
+    def is_constrained(self) -> bool:
+        """Return whether the current allocation requires wrapped text."""
+
+        return self._constrained
 
     def changeEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt API name
         super().changeEvent(event)
@@ -239,10 +268,6 @@ class CadExportStatusSurface(QWidget):
         self.setMaximumHeight(self._unbounded_maximum_height)
         self.status_label.setMinimumWidth(0)
         self.status_label.ensurePolished()
-        if has_status:
-            self.status_label.setMinimumWidth(
-                self.status_label.sizeHint().width()
-            )
         self.cancel_button.setMinimumWidth(0)
         self.cancel_button.ensurePolished()
         if not self.cancel_button.isHidden():
@@ -253,22 +278,155 @@ class CadExportStatusSurface(QWidget):
         if layout is not None:
             layout.invalidate()
             layout.activate()
-            required_width = (
-                layout.minimumSize().width() if has_status else 0
-            )
-            self._required_width = required_width
-            self.setMinimumWidth(required_width)
-            self.setFixedHeight(
-                max(layout.minimumSize().height(), layout.sizeHint().height())
-            )
+            if has_status:
+                self._required_width = self._content_width(
+                    minimum_text=False
+                )
+                self._minimum_content_width = self._content_width(
+                    minimum_text=True
+                )
+                label_width = QFontMetrics(
+                    self.status_label.font()
+                ).horizontalAdvance(self.status_label.text())
+                self._wrapped_width = max(
+                    self._minimum_content_width,
+                    self._non_label_width(include_margins=True)
+                    + (label_width + 1) // 2,
+                )
+            else:
+                self._required_width = 0
+                self._minimum_content_width = 0
+                self._wrapped_width = 0
         else:
             self._required_width = 0
+            self._minimum_content_width = 0
+            self._wrapped_width = 0
             self.setMinimumWidth(0)
+        self.set_available_width(self._available_width)
         self.cancel_button.updateGeometry()
         self.status_label.updateGeometry()
         self.progress_bar.updateGeometry()
         self.updateGeometry()
         self.geometry_requirement_changed.emit(self._required_width)
+
+    def set_available_width(self, width: int | None) -> None:
+        """Apply a physical allocation without imposing an oversized minimum."""
+
+        has_status = self._last_event is not None
+        if not has_status or width is None or width <= 0:
+            self._available_width = None if width is None else max(0, width)
+            self._constrained = False
+            self.status_label.setWordWrap(False)
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(self._unbounded_maximum_width)
+            self.setMinimumHeight(0)
+            self.updateGeometry()
+            return
+
+        bounded_width = max(1, int(width))
+        self._available_width = bounded_width
+        self._constrained = bounded_width < self._required_width
+        self.status_label.setWordWrap(self._constrained)
+        self.setMinimumWidth(min(self._minimum_content_width, bounded_width))
+        self.setMaximumWidth(bounded_width)
+        self.setMinimumHeight(self.heightForWidth(bounded_width))
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        self.status_label.updateGeometry()
+        self.updateGeometry()
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 - Qt API name
+        """Expose the wrapped-label height contract to Qt layouts."""
+
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 - Qt API name
+        """Return enough height to render the complete status text."""
+
+        layout = self.layout()
+        if layout is None:
+            return self.fontMetrics().height()
+        margins = layout.contentsMargins()
+        visible_controls = self._visible_controls()
+        control_height = max(
+            (widget.sizeHint().height() for widget in visible_controls),
+            default=self.status_label.fontMetrics().height(),
+        )
+        label_width = max(
+            1,
+            int(width) - self._non_label_width(include_margins=True),
+        )
+        metrics = QFontMetrics(self.status_label.font())
+        if self._last_event is None or not self.status_label.text():
+            label_height = metrics.height()
+        elif int(width) >= self._required_width:
+            label_height = metrics.height()
+        else:
+            bounds = metrics.boundingRect(
+                QRect(0, 0, label_width, self._unbounded_maximum_height),
+                int(Qt.TextFlag.TextWordWrap),
+                self.status_label.text(),
+            )
+            label_height = max(metrics.height(), bounds.height())
+        return margins.top() + max(control_height, label_height) + margins.bottom()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+        """Return a width that can wrap without losing semantic tokens."""
+
+        width = max(0, self._minimum_content_width)
+        return QSize(width, self.heightForWidth(max(1, width)))
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+        """Prefer one line while allowing MainWindow to allocate less width."""
+
+        width = max(0, self._required_width)
+        return QSize(width, self.heightForWidth(max(1, width)))
+
+    def _visible_controls(self) -> tuple[QWidget, ...]:
+        return tuple(
+            widget
+            for widget in (
+                self.icon_label,
+                self.progress_bar,
+                self.cancel_button,
+            )
+            if not widget.isHidden()
+        )
+
+    @staticmethod
+    def _bounded_hint_width(widget: QWidget) -> int:
+        return min(
+            widget.maximumWidth(),
+            max(widget.minimumWidth(), widget.sizeHint().width()),
+        )
+
+    def _non_label_width(self, *, include_margins: bool) -> int:
+        layout = self.layout()
+        if layout is None:
+            return 0
+        controls = self._visible_controls()
+        visible_count = len(controls) + 1
+        width = sum(self._bounded_hint_width(widget) for widget in controls)
+        width += max(0, layout.spacing()) * max(0, visible_count - 1)
+        if include_margins:
+            margins = layout.contentsMargins()
+            width += margins.left() + margins.right()
+        return width
+
+    def _content_width(self, *, minimum_text: bool) -> int:
+        metrics = QFontMetrics(self.status_label.font())
+        text = self.status_label.text()
+        if minimum_text:
+            words = text.split()
+            text_width = max(
+                (metrics.horizontalAdvance(word) for word in words),
+                default=0,
+            )
+        else:
+            text_width = metrics.horizontalAdvance(text)
+        return self._non_label_width(include_margins=True) + text_width
 
     def _set_icon(self, pixmap: QStyle.StandardPixmap) -> None:
         icon = self.style().standardIcon(pixmap)
