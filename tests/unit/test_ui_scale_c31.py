@@ -260,21 +260,22 @@ def test_dialog_shell_scale_controls_preview_and_i18n(tmp_path: Path) -> None:
     dialog = GeneralSettingsDialog(manager)
     dialog.show()
     QApplication.processEvents()
-    assert dialog.category_list.count() == 8
+    assert dialog.category_list.count() == 9
     assert tuple(
         dialog.category_list.item(i).data(Qt.ItemDataRole.UserRole)
-        for i in range(8)
+        for i in range(9)
     ) == (
         "Interface",
         "Keyboard shortcuts",
         "Language",
         "Storage & projects",
         "CAD/Viewer",
+        "3D Export",
         "CAM",
         "Performance",
         "Advanced",
     )
-    for row in range(8):
+    for row in range(9):
         dialog.category_list.setCurrentRow(row)
         assert dialog.page_stack.currentIndex() == row
     dialog.category_list.setCurrentRow(0)
@@ -298,8 +299,8 @@ def test_dialog_shell_scale_controls_preview_and_i18n(tmp_path: Path) -> None:
             service.set_language(language)
             QApplication.processEvents()
             assert manager.current_percent == 53
-            assert dialog.category_list.count() == 8
-            assert all(dialog.category_list.item(i).text() for i in range(8))
+            assert dialog.category_list.count() == 9
+            assert all(dialog.category_list.item(i).text() for i in range(9))
             assert dialog.preview_status.text()
     finally:
         service.set_language(original)
@@ -901,7 +902,7 @@ def _catalog_pairs(locale: UiLanguage) -> tuple[tuple[str, str], ...]:
 
 def test_c31_core_and_catalog_key_coverage_is_source_derived() -> None:
     required = _c31_production_keys()
-    assert len(required) == 36
+    assert len(required) == 38
     core_counts = Counter(row[0] for row in CORE_TRANSLATIONS)
     assert not {key: count for key, count in core_counts.items() if count > 1}
     assert required <= core_counts.keys()
@@ -1001,7 +1002,7 @@ def test_general_settings_locale_cycle_preserves_runtime_state(tmp_path: Path) -
     QApplication.processEvents()
     manager.set_preview_percent(125)
     dialog.category_list.setCurrentRow(2)
-    page_ids = tuple(id(dialog.page_stack.widget(i)) for i in range(8))
+    page_ids = tuple(id(dialog.page_stack.widget(i)) for i in range(9))
     emissions: list[UiLanguage] = []
     slot = emissions.append
     service.language_changed.connect(slot)
@@ -1010,7 +1011,7 @@ def test_general_settings_locale_cycle_preserves_runtime_state(tmp_path: Path) -
     def assert_locale(locale: UiLanguage) -> None:
         expected = catalogs[locale].entries
         assert dialog.windowTitle() == expected["General settings"]
-        assert tuple(dialog.category_list.item(i).text() for i in range(8)) == tuple(
+        assert tuple(dialog.category_list.item(i).text() for i in range(9)) == tuple(
             expected[key]
             for key in (
                 "Interface",
@@ -1018,6 +1019,7 @@ def test_general_settings_locale_cycle_preserves_runtime_state(tmp_path: Path) -
                 "Language",
                 "Storage & projects",
                 "CAD/Viewer",
+                "3D Export",
                 "CAM",
                 "Performance",
                 "Advanced",
@@ -1036,7 +1038,7 @@ def test_general_settings_locale_cycle_preserves_runtime_state(tmp_path: Path) -
         ]
         resolved = (
             dialog.windowTitle(),
-            *(dialog.category_list.item(i).text() for i in range(8)),
+            *(dialog.category_list.item(i).text() for i in range(9)),
             dialog.interface_heading.text(),
             dialog.scale_label.text(),
             dialog.apply_button.text(),
@@ -1051,7 +1053,7 @@ def test_general_settings_locale_cycle_preserves_runtime_state(tmp_path: Path) -
         assert manager.current_percent == 125
         assert manager.persisted_percent == 100
         assert settings.value(UI_SCALE_SETTINGS_KEY) == 100
-        assert tuple(id(dialog.page_stack.widget(i)) for i in range(8)) == page_ids
+        assert tuple(id(dialog.page_stack.widget(i)) for i in range(9)) == page_ids
 
     try:
         assert_locale(UiLanguage.VI_VN)
