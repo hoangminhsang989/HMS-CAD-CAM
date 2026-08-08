@@ -1188,6 +1188,47 @@ class ProjectService:
             self._reconcile_nc_artifacts(session, changed)
         return changed
 
+    def execute_cam_creation(
+        self,
+        command: Callable[[CamApplicationService], CamProjectSnapshot],
+        *,
+        expected_project_id: UUID,
+        expected_generation: int,
+        cam3d_config: Cam3DProjectConfig | None = None,
+    ) -> CamProjectSnapshot:
+        """Create one operation through a project-owned all-or-nothing boundary.
+
+        The optional CAM 3D zone is prevalidated and published only after the
+        in-memory operation command succeeds.  Validation failures therefore
+        leave both the operation tree and CAM 3D configuration untouched.
+        """
+        session = self._require_current()
+        self._require_writable(session)
+        if session.manifest.project_id != expected_project_id:
+            raise RuntimeError("Operation creation belongs to another project")
+        if self._cam_application.generation != expected_generation:
+            raise RuntimeError(
+                "Operation creation belongs to an inactive project generation"
+            )
+        if cam3d_config is not None:
+            if not isinstance(cam3d_config, Cam3DProjectConfig):
+                raise TypeError("CAM 3D creation configuration is invalid")
+            if cam3d_config.project_id != expected_project_id:
+                raise ValueError(
+                    "CAM 3D creation configuration belongs to another project"
+                )
+        before = self._cam_application.snapshot
+        changed = self._cam_application.execute(command)
+        session.cam_snapshot = changed
+        if cam3d_config is not None:
+            session.cam3d_config = cam3d_config
+        if changed != before:
+            session.is_dirty = True
+            self._mark_changed_operation_simulations(before, changed)
+            self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
+        return changed
+
     @property
     def cam_generation(self) -> int:
         """Return the active CAM project generation for stale-signal guards."""
