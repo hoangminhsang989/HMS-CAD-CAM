@@ -347,6 +347,70 @@ class TranslationService(QObject):
 # geometry transfer and accessibility surfaces exercised by the Stage package.
 CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("3D Export", "Xuất 3D", "3D 내보내기"),
+    (
+        "Persistent 3D Export Defaults",
+        "Mặc định Xuất 3D bền vững",
+        "영구 3D 내보내기 기본값",
+    ),
+    (
+        "These profiles seed 3D Export, Export Selected Objects, and 3D Save As.",
+        "Các hồ sơ này được dùng làm mặc định cho Xuất 3D, Xuất đối tượng được chọn và Lưu thành định dạng 3D.",
+        "이 프로필은 3D 내보내기, 선택한 객체 내보내기 및 3D 다른 이름으로 저장의 기본값입니다.",
+    ),
+    ("Unit policy", "Chính sách đơn vị", "단위 정책"),
+    ("Model units (fixed)", "Đơn vị mô hình (cố định)", "모델 단위 (고정)"),
+    ("Reset current format", "Khôi phục định dạng hiện tại", "현재 형식 초기화"),
+    (
+        "Reset all export defaults",
+        "Khôi phục toàn bộ mặc định xuất",
+        "모든 내보내기 기본값 초기화",
+    ),
+    (
+        "Factory default restored for this format",
+        "Đã khôi phục mặc định gốc cho định dạng này",
+        "이 형식의 초기 기본값을 복원했습니다",
+    ),
+    (
+        "Factory defaults restored for all formats",
+        "Đã khôi phục mặc định gốc cho mọi định dạng",
+        "모든 형식의 초기 기본값을 복원했습니다",
+    ),
+    (
+        "3D Export settings applied",
+        "Đã áp dụng thiết lập Xuất 3D",
+        "3D 내보내기 설정을 적용했습니다",
+    ),
+    (
+        "3D Export settings could not be saved",
+        "Không thể lưu thiết lập Xuất 3D",
+        "3D 내보내기 설정을 저장할 수 없습니다",
+    ),
+    (
+        "3D Export settings are corrupted",
+        "Thiết lập Xuất 3D bị lỗi",
+        "3D 내보내기 설정이 손상되었습니다",
+    ),
+    (
+        "Safe factory defaults are shown; Apply to replace the invalid values.",
+        "Đang hiển thị mặc định gốc an toàn; chọn Áp dụng để thay thế các giá trị không hợp lệ.",
+        "안전한 초기 기본값을 표시합니다. 잘못된 값을 바꾸려면 적용을 선택하십시오.",
+    ),
+    (
+        "This format is not available",
+        "Định dạng này chưa khả dụng",
+        "이 형식은 사용할 수 없습니다",
+    ),
+    (
+        "Interactive export defaults must use safe no-overwrite policy.",
+        "Mặc định xuất tương tác phải dùng chính sách an toàn không ghi đè.",
+        "대화형 내보내기 기본값은 안전한 덮어쓰기 금지 정책을 사용해야 합니다.",
+    ),
+    ("Confirm replacement", "Xác nhận thay thế", "바꾸기 확인"),
+    (
+        "The export destination already exists. Replace it?",
+        "Đích xuất đã tồn tại. Bạn có muốn thay thế không?",
+        "내보내기 대상이 이미 있습니다. 바꾸시겠습니까?",
+    ),
     ("Export Selected Objects", "Xuất đối tượng được chọn", "선택한 객체 내보내기"),
     ("3D Export Profile", "Hồ sơ xuất 3D", "3D 내보내기 프로필"),
     ("Format", "Định dạng", "형식"),

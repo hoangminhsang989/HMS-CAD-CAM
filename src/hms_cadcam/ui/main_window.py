@@ -199,6 +199,7 @@ from hms_cadcam.ui.i18n import (
 )
 from hms_cadcam.ui.language_settings import LanguageSettingsDialog
 from hms_cadcam.ui.settings import GeneralSettingsDialog, UiScaleManager
+from hms_cadcam.ui.settings.export_defaults import ExportDefaultsSettingsService
 from hms_cadcam.ui.data_locations import (
     DataLocationsDialog,
     StorageNotificationBar,
@@ -346,6 +347,9 @@ class MainWindow(QMainWindow):
         self._ui_scale_manager = UiScaleManager(
             self._layout_store.settings, parent=self
         )
+        self._export_defaults_service = ExportDefaultsSettingsService(
+            self._layout_store.settings
+        )
         self._ui_scale_manager.preview_changed.connect(self._apply_ui_scale)
         self._ui_scale_manager.scale_changed.connect(self._apply_ui_scale)
         self._ui_scale_manager.apply_runtime()
@@ -443,6 +447,7 @@ class MainWindow(QMainWindow):
                 not self.project_controller.is_busy
                 and not self.cad_controller.is_busy
             ),
+            defaults_service=self._export_defaults_service,
         )
         self.project_controller.set_save_as_export_router(
             self.export_controller.route_save_as
@@ -1578,6 +1583,7 @@ class MainWindow(QMainWindow):
                 service=self._translation_service,
                 ai_assist_controller=self._ai_assist_controller,
                 advisor_settings_service=self._advisor_settings_service,
+                export_defaults_service=self._export_defaults_service,
                 parent=self,
             )
             self._general_settings_dialog.destroyed.connect(

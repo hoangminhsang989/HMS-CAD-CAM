@@ -46,6 +46,8 @@ from hms_cadcam.ui.settings.ui_scale import (
     UI_SCALE_PRESETS,
     UiScaleManager,
 )
+from hms_cadcam.ui.settings.export_3d_settings import Export3dSettingsPage
+from hms_cadcam.ui.settings.export_defaults import ExportDefaultsSettingsService
 
 
 _DIALOG_BASE_SIZE = QSize(820, 600)
@@ -54,6 +56,7 @@ _DIALOG_MINIMUM_FLOOR = QSize(520, 360)
 _DIALOG_SCREEN_MARGIN = 12
 _NAVIGATION_BASE_WIDTH = 190
 _UI_SCALE_RESET_SCOPE = "ui_scale"
+_EXPORT_DEFAULTS_RESET_SCOPE = "export_defaults_current"
 _SHELL_EMPTY_MESSAGE = (
     "This settings category has no available options in the current version."
 )
@@ -74,6 +77,7 @@ _SETTINGS_CATEGORIES: tuple[SettingsCategory, ...] = (
     SettingsCategory("Language", "Language"),
     SettingsCategory("Storage & projects", "Storage & projects"),
     SettingsCategory("CAD/Viewer", "CAD/Viewer"),
+    SettingsCategory("3D Export", "3D Export", _EXPORT_DEFAULTS_RESET_SCOPE),
     SettingsCategory("CAM", "CAM"),
     SettingsCategory("Performance", "Performance"),
     SettingsCategory("Advanced", "Advanced"),
@@ -194,6 +198,7 @@ class GeneralSettingsDialog(QDialog):
         service: TranslationService | None = None,
         ai_assist_controller: AiAssistController | None = None,
         advisor_settings_service: AdvisorSettingsService | None = None,
+        export_defaults_service: ExportDefaultsSettingsService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -201,6 +206,10 @@ class GeneralSettingsDialog(QDialog):
         self._service = service or translation_service()
         self._ai_assist_controller = ai_assist_controller
         self._advisor_settings_service = advisor_settings_service
+        self._export_defaults_service = (
+            export_defaults_service
+            or ExportDefaultsSettingsService(scale_manager.settings)
+        )
         self._categories = (
             (*_SETTINGS_CATEGORIES, _AI_ASSIST_CATEGORY)
             if ai_assist_controller is not None
@@ -271,10 +280,18 @@ class GeneralSettingsDialog(QDialog):
             page = (
                 AiAssistSettingsPage(self._ai_assist_controller, advisor_settings_service=self._advisor_settings_service)
                 if category.key == _AI_ASSIST_CATEGORY.key and self._ai_assist_controller is not None
+                else Export3dSettingsPage(
+                    self._export_defaults_service,
+                    translation=self._service,
+                )
+                if category.key == "3D Export"
                 else self._build_placeholder_page(category.key)
             )
             self.page_stack.addWidget(page)
             self._category_pages.append(page)
+            if isinstance(page, Export3dSettingsPage):
+                self._export_3d_page = page
+                page.dirty_changed.connect(self._export_defaults_dirty_changed)
 
         self.reset_button = QPushButton()
         self.reset_button.setObjectName("ResetUiScaleButton")
@@ -474,7 +491,7 @@ class GeneralSettingsDialog(QDialog):
                 + "\n"
                 + ui_text("This scale may require a compact layout on the current screen.")
             )
-        self.apply_button.setEnabled(self._preview_dirty)
+        self._update_apply_button()
         self._schedule_fit()
 
     def _applied_scale_changed(self, value: int) -> None:
@@ -525,16 +542,42 @@ class GeneralSettingsDialog(QDialog):
 
     def _update_reset_button(self, category_key: str | None = None) -> None:
         category = self._category_by_key.get(category_key or self.selected_category)
-        enabled = category is not None and category.reset_scope == _UI_SCALE_RESET_SCOPE
+        enabled = category is not None and category.reset_scope in {
+            _UI_SCALE_RESET_SCOPE,
+            _EXPORT_DEFAULTS_RESET_SCOPE,
+        }
         self.reset_button.setEnabled(enabled)
-        self.reset_button.setText(ui_text("Reset to 100%" if enabled else "Reset"))
+        self.reset_button.setText(
+            ui_text(
+                "Reset to 100%"
+                if category is not None and category.reset_scope == _UI_SCALE_RESET_SCOPE
+                else "Reset current format"
+                if category is not None and category.reset_scope == _EXPORT_DEFAULTS_RESET_SCOPE
+                else "Reset"
+            )
+        )
 
+    def _export_defaults_dirty_changed(self, _dirty: bool) -> None:
+        self._update_apply_button()
+
+    def _update_apply_button(self) -> None:
+        export_page = getattr(self, "_export_3d_page", None)
+        self.apply_button.setEnabled(
+            self._preview_dirty
+            or (export_page is not None and export_page.dirty)
+        )
 
     def _apply(self) -> None:
-        if not self._scale_manager.apply_percent():
+        export_page = getattr(self, "_export_3d_page", None)
+        if export_page is not None and export_page.dirty and not export_page.apply():
+            self._update_apply_button()
+            return
+        if self._preview_dirty and not self._scale_manager.apply_percent():
             self.preview_status.setText(ui_text("The UI scale could not be saved."))
+            self._update_apply_button()
             return
         self._preview_dirty = False
+        self._update_apply_button()
 
     def _cancel(self) -> None:
         self._scale_manager.cancel_preview()
@@ -542,9 +585,12 @@ class GeneralSettingsDialog(QDialog):
 
     def _reset_default(self) -> None:
         category = self._category_by_key.get(self.selected_category)
-        if category is None or category.reset_scope != _UI_SCALE_RESET_SCOPE:
+        if category is None:
             return
-        self._scale_manager.reset_default()
+        if category.reset_scope == _UI_SCALE_RESET_SCOPE:
+            self._scale_manager.reset_default()
+        elif category.reset_scope == _EXPORT_DEFAULTS_RESET_SCOPE:
+            self._export_3d_page.reset_current()
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
@@ -682,6 +728,9 @@ class GeneralSettingsDialog(QDialog):
                 page = self._category_pages[index]
                 if isinstance(page, AiAssistSettingsPage):
                     page.retranslate_ui()
+                    continue
+                if isinstance(page, Export3dSettingsPage):
+                    page.retranslate_ui(language)
                     continue
                 heading = page.findChildren(QLabel)[0]
                 message = page.findChildren(QLabel)[1]

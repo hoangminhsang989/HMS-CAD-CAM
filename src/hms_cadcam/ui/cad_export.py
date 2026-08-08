@@ -38,6 +38,11 @@ from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localized_dialogs import QFileDialog
 from hms_cadcam.ui.project_worker import ProjectTask
+from hms_cadcam.ui.settings.export_defaults import (
+    ExportDefaultsIssue,
+    ExportDefaultsSettingsService,
+    factory_export_profiles,
+)
 from hms_cadcam.viewer.models import SelectionMetadata, SelectionMode
 
 
@@ -342,6 +347,8 @@ class CadExportUiController(QObject):
         geometry_kind: Callable[[], CadGeometryKind | None],
         selection: Callable[[], tuple[SelectionMetadata, ...]],
         operation_available: Callable[[], bool],
+        *,
+        defaults_service: ExportDefaultsSettingsService | None = None,
     ) -> None:
         super().__init__(window)
         self._window = window
@@ -351,10 +358,10 @@ class CadExportUiController(QObject):
         self._geometry_kind = geometry_kind
         self._selection = selection
         self._operation_available = operation_available
-        self._profiles = {
-            item.format_id: ExportProfile.default_for(item.format_id)
-            for item in service.capabilities()
-        }
+        self._defaults_service = defaults_service
+        self._profiles: dict[ExportFormatId, ExportProfile] = {}
+        self._settings_issues: tuple[ExportDefaultsIssue, ...] = ()
+        self._reload_persistent_profiles()
         self._thread_pool = QThreadPool.globalInstance()
         self._active_task: ProjectTask | None = None
         self.actions = {
@@ -370,7 +377,23 @@ class CadExportUiController(QObject):
 
     @property
     def profiles(self) -> dict[ExportFormatId, ExportProfile]:
+        self._reload_persistent_profiles()
         return dict(self._profiles)
+
+    @property
+    def settings_issues(self) -> tuple[ExportDefaultsIssue, ...]:
+        """Return detectable corruption diagnostics from the last strict load."""
+
+        return self._settings_issues
+
+    def _reload_persistent_profiles(self) -> None:
+        if self._defaults_service is None:
+            self._profiles = factory_export_profiles()
+            self._settings_issues = ()
+            return
+        snapshot = self._defaults_service.load()
+        self._profiles = dict(snapshot.profiles)
+        self._settings_issues = snapshot.issues
 
     def retranslate(self) -> None:
         self.actions["export_3d"].setText(_tr("3D Export"))
@@ -415,6 +438,11 @@ class CadExportUiController(QObject):
         profile = self._request_profile(capability.format_id)
         if profile is None:
             return False
+        if profile.format_id is not capability.format_id:
+            self._show_failure(
+                _tr("Export profile format does not match the destination extension.")
+            )
+            return False
         return self._start_export(target, profile, selected=False)
 
     def _interactive_export(self, *, selected: bool) -> None:
@@ -455,19 +483,34 @@ class CadExportUiController(QObject):
     def _request_profile(
         self, initial_format: ExportFormatId
     ) -> ExportProfile | None:
+        self._reload_persistent_profiles()
         dialog = CadExportProfileDialog(
             self._service.capabilities(),
             self._profiles,
             initial_format=initial_format,
             stl_tessellation_applicable=(
-                self._geometry_kind() is not CadGeometryKind.MESH
+                self._geometry_kind() is not CadGeometryKind.TRIANGLE_MESH
             ),
             parent=self._window,
         )
+        if self._settings_issues:
+            formats = ", ".join(
+                issue.format_id.value.upper() for issue in self._settings_issues
+            )
+            warning = f"{_tr('3D Export settings are corrupted')}: {formats}"
+            dialog.validation_label.setText(warning)
+            self.message.emit(warning)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         profile = dialog.profile()
-        self._profiles.update(dialog.profiles)
+        if any(
+            issue.format_id is profile.format_id for issue in self._settings_issues
+        ):
+            self.message.emit(
+                _tr("3D Export settings are corrupted")
+                + f": {profile.format_id.value.upper()}"
+            )
+            return None
         return profile
 
     def _start_export(
@@ -489,16 +532,31 @@ class CadExportUiController(QObject):
         except ValueError as error:
             self._show_failure(str(error))
             return False
-        request_profile = replace(
-            profile,
-            overwrite_policy=ExportOverwritePolicy.REPLACE_EXISTING,
-        )
+        if profile.overwrite_policy is not ExportOverwritePolicy.FAIL_IF_EXISTS:
+            self._show_failure(
+                _tr("Interactive export defaults must use safe no-overwrite policy.")
+            )
+            return False
+        request_policy = ExportOverwritePolicy.FAIL_IF_EXISTS
+        if target.exists():
+            response = QMessageBox.question(
+                self._window,
+                _tr("Confirm replacement"),
+                _tr("The export destination already exists. Replace it?")
+                + f"\n\n{target}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return False
+            request_policy = ExportOverwritePolicy.REPLACE_EXISTING
+        request_profile = replace(profile, overwrite_policy=request_policy)
         request = ExportRequest(
             document_id,
             target,
             request_profile,
             selections,
-            ExportOverwritePolicy.REPLACE_EXISTING,
+            request_policy,
         )
         ownership = self._capture_ownership(document_id)
         if not self._operation_available() or not self._ownership_matches(ownership):
