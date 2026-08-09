@@ -1,6 +1,6 @@
 # Trạng thái dự án HMS CAD/CAM
 
-## CANONICAL CURRENT PROGRAMME SUMMARY — R166 IMPLEMENTATION
+## CANONICAL CURRENT PROGRAMME SUMMARY — R177 DELIVERY
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
@@ -10,13 +10,25 @@
   `630b950ae1109ff927f85559ed6fbfc7a94007c9`
 - Protected local `main` intentionally remains behind remote.
 - **Stage16A: IN_PROGRESS**
-- Selected Stage16A programme:
-  **STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_AND_PRODUCTION_TOOL_LIBRARY_FOUNDATION**.
-- Mega-WP1 implementation: **100% / DIRECT_REVIEW_PENDING**.
-- SQLite schema remains **v5**; Stage16A migration count is **0** for SQLite and
-  `.HMS`. CAM algorithms, Simulation and Post remain unchanged.
-- Overall HMS: **~86% provisional roadmap estimate**; this is not a
+- **Stage16A Mega-WP1: 100% DELIVERED**.
+- Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
+  FOUNDATION**.
+- Accepted implementation candidate:
+  `891da56f8813bdc91c87b049dbea8f8198d5e74d`; accepted tree
+  `7722013bd9a358c1e40b4b0e4480d9b6c269bb7c`.
+- Direct review: **R176 FINAL DIRECT REVIEW PASS**.
+- Retained evidence remains separated by scope: Stage16A focused **79 PASS**;
+  R176 final bounded **431 PASS, failed 0, errors 0, exit 0**; production UI
+  matrix **144/144 PASS**; repository collection/full **0/0**. These are not a
+  combined repository-wide test count.
+- SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
+  CAM algorithm fork **0**. Calculate, Simulation and Post were
+  **NOT_TRIGGERED**; machine-ready claim **0**.
+- Overall HMS: **~87% provisional roadmap estimate**; this is not a
   mathematically certified project-completion metric.
+- Next authority is
+  **STAGE16A_MEGA_WP2_SCOPE_SELECTION_AND_IMPLEMENTATION_AUTHORITY**; Mega-WP2
+  has not started. Stage17 activity **0**; AI Sync activity **0**.
 
 The historical stage sections below are retained for provenance and do not
 override this canonical current summary.

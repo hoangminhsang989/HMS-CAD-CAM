@@ -1,19 +1,32 @@
-# Nhiệm vụ hiện tại — Stage16A Mega-WP1 chờ direct review
+# Nhiệm vụ hiện tại — Stage16A Mega-WP1 đã giao
 
-## CANONICAL CURRENT PROGRAMME STATE — R166 IMPLEMENTATION
+## CANONICAL CURRENT PROGRAMME STATE — R177 DELIVERY
 
-- **Stage13C: COMPLETE**
-- **Stage14A: COMPLETE**
-- **Stage15A: COMPLETE**
+- **Stage13C: 100% COMPLETE**
+- **Stage14A: 100% COMPLETE**
+- **Stage15A: 100% COMPLETE**
 - **Stage16A: IN_PROGRESS**
-- Selected programme:
-  **STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_AND_PRODUCTION_TOOL_LIBRARY_FOUNDATION**.
-- Mega-WP1: **IMPLEMENTATION_COMPLETE / DIRECT_REVIEW_PENDING**.
-- No SQLite schema change, `.HMS` migration, CAM algorithm fork, automatic
-  Calculate, Simulation or Post action.
+- Stage16A Mega-WP1: **100% DELIVERED**.
+- Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
+  FOUNDATION**.
+- Accepted implementation candidate:
+  `891da56f8813bdc91c87b049dbea8f8198d5e74d`; tree
+  `7722013bd9a358c1e40b4b0e4480d9b6c269bb7c`.
+- Direct review: **R176 FINAL DIRECT REVIEW PASS**.
+- Retained evidence, recorded as separate bounded sets: Stage16A focused
+  **79 PASS**; R176 final bounded **431 PASS, failed 0, errors 0, exit 0**;
+  production UI matrix **144/144 PASS**; repository collection/full **0/0**.
+  These sets are not combined into a repository-wide test count.
+- SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
+  CAM algorithm fork **0**. Calculate, Simulation and Post were
+  **NOT_TRIGGERED**; machine-ready claim **0**.
+- Overall HMS: **~87% provisional roadmap estimate**; this is not a
+  mathematically certified project-completion metric.
 - Canonical next authority:
-  **STAGE16A_3STEP_CAM_WORKFLOW_MEGA_WP1_DIRECT_REVIEW_AUTHORITY**.
-- Implementation details and evidence map:
+  **STAGE16A_MEGA_WP2_SCOPE_SELECTION_AND_IMPLEMENTATION_AUTHORITY**. Mega-WP2
+  has not started; further Stage16A scope requires that separate authority.
+- Stage17 activity **0**; AI Sync activity **0**.
+- Delivered capability and evidence map:
   `docs/STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_FOUNDATION.md`.
 
 The Stage 9A.7 and Stage 8A.x material below is retained as historical
