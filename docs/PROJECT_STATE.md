@@ -1,6 +1,6 @@
 # Trạng thái dự án HMS CAD/CAM
 
-## CANONICAL CURRENT PROGRAMME SUMMARY — R177 DELIVERY
+## CANONICAL CURRENT PROGRAMME SUMMARY — R178 IMPLEMENTATION CANDIDATE
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
@@ -11,6 +11,19 @@
 - Protected local `main` intentionally remains behind remote.
 - **Stage16A: IN_PROGRESS**
 - **Stage16A Mega-WP1: 100% DELIVERED**.
+- **Stage16A Mega-WP2: IMPLEMENTATION 100% / DIRECT_REVIEW_PENDING**.
+- Mega-WP2 selected scope: **PRODUCTION TOOL LIBRARY MANAGEMENT + SAFE REUSE**.
+- R178 implements dedicated create/edit/duplicate, optimistic Tool revision
+  conflict handling, common defaults/program profiles, real search/filter/sort,
+  usage/compatibility, safe unreferenced delete and Step2 live refresh without
+  adding Tool creation fields to the wizard.
+- Archive/unarchive remains truthfully
+  `ARCHIVE_UNAVAILABLE_WITH_CURRENT_SCHEMA`; cascade delete **0**.
+- SQLite schema remains **5**; `.HMS` migration **0**; Tool identity authority
+  remains application service UUID generation.
+- Focused R178 evidence before the one final bounded gate: application/query
+  **47 PASS**, UI **196 PASS** including **192/192** geometry states, sandbox
+  product integration **1 PASS**.
 - Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
   FOUNDATION**.
 - Accepted implementation candidate:
@@ -24,11 +37,11 @@
 - SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
   CAM algorithm fork **0**. Calculate, Simulation and Post were
   **NOT_TRIGGERED**; machine-ready claim **0**.
-- Overall HMS: **~87% provisional roadmap estimate**; this is not a
+- Overall HMS: **~88% provisional roadmap estimate**; this is not a
   mathematically certified project-completion metric.
-- Next authority is
-  **STAGE16A_MEGA_WP2_SCOPE_SELECTION_AND_IMPLEMENTATION_AUTHORITY**; Mega-WP2
-  has not started. Stage17 activity **0**; AI Sync activity **0**.
+- Next authority after R178 certification is
+  **STAGE16A_MEGA_WP2_PRODUCTION_TOOL_LIBRARY_DIRECT_REVIEW_AUTHORITY**.
+  Mega-WP2 is not delivered; Stage17 activity **0**; AI Sync activity **0**.
 
 The historical stage sections below are retained for provenance and do not
 override this canonical current summary.

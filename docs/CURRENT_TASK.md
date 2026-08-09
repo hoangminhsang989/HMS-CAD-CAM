@@ -1,12 +1,25 @@
-# Nhiệm vụ hiện tại — Stage16A Mega-WP1 đã giao
+# Nhiệm vụ hiện tại — Stage16A Mega-WP2 chờ direct review
 
-## CANONICAL CURRENT PROGRAMME STATE — R177 DELIVERY
+## CANONICAL CURRENT PROGRAMME STATE — R178 IMPLEMENTATION CANDIDATE
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
 - **Stage15A: 100% COMPLETE**
 - **Stage16A: IN_PROGRESS**
 - Stage16A Mega-WP1: **100% DELIVERED**.
+- Stage16A Mega-WP2: **IMPLEMENTATION 100% / DIRECT_REVIEW_PENDING**.
+- Mega-WP2 programme: **PRODUCTION TOOL LIBRARY MANAGEMENT + SAFE REUSE**.
+- R178 candidate base: `9d9cdf738d7dbdd6cbdf70e07159ba7b45446ee4`;
+  SQLite schema **5 unchanged**, `.HMS` migration **0**.
+- Implemented dedicated Tool Library create/edit/duplicate, strict
+  expected-revision conflict protection, common defaults/program profiles,
+  usage/compatibility/search/filter/sort, unreferenced safe delete và Step2
+  live refresh. Archive/unarchive được phân loại thật là
+  `ARCHIVE_UNAVAILABLE_WITH_CURRENT_SCHEMA`.
+- R178 focused implementation evidence hiện có: Tool Library application/query
+  **47 PASS**, UI **196 PASS** (geometry **192/192**), sandbox product
+  integration **1 PASS**. Final bounded/static certification chưa được ghi là
+  PASS cho tới gate cuối của authority.
 - Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
   FOUNDATION**.
 - Accepted implementation candidate:
@@ -20,14 +33,15 @@
 - SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
   CAM algorithm fork **0**. Calculate, Simulation and Post were
   **NOT_TRIGGERED**; machine-ready claim **0**.
-- Overall HMS: **~87% provisional roadmap estimate**; this is not a
+- Overall HMS: **~88% provisional roadmap estimate**; this is not a
   mathematically certified project-completion metric.
-- Canonical next authority:
-  **STAGE16A_MEGA_WP2_SCOPE_SELECTION_AND_IMPLEMENTATION_AUTHORITY**. Mega-WP2
-  has not started; further Stage16A scope requires that separate authority.
+- Canonical next authority sau candidate R178:
+  **STAGE16A_MEGA_WP2_PRODUCTION_TOOL_LIBRARY_DIRECT_REVIEW_AUTHORITY**.
 - Stage17 activity **0**; AI Sync activity **0**.
 - Delivered capability and evidence map:
   `docs/STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_FOUNDATION.md`.
+- Mega-WP2 implementation map:
+  `docs/STAGE16A_PRODUCTION_TOOL_LIBRARY_MEGA_WP2.md`.
 
 The Stage 9A.7 and Stage 8A.x material below is retained as historical
 provenance and is not the current programme state.
