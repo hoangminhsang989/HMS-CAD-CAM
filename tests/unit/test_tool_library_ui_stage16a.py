@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -14,6 +15,9 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QStyle,
+    QStyleOptionButton,
+    QToolButton,
     QTreeWidget,
     QWidget,
 )
@@ -91,12 +95,23 @@ def _fit(widget: QWidget, available: QRect, scale: float) -> None:
 
 def _assert_interactive_geometry(widget: QWidget) -> None:
     root_rect = widget.rect().adjusted(-1, -1, 1, 1)
-    for child_type in (QPushButton, QLineEdit, QComboBox, QTreeWidget):
+    visible_buttons: list[tuple[QPushButton, QRect]] = []
+    for child_type in (QPushButton, QToolButton, QLineEdit, QComboBox, QTreeWidget):
         for child in widget.findChildren(child_type):
             if not child.isVisibleTo(widget):
                 continue
             top_left = child.mapTo(widget, QPoint(0, 0))
             rect = child.rect().translated(top_left)
+            if child.isEnabled() or isinstance(child, QPushButton):
+                assert rect.width() > 0 and rect.height() > 0, (
+                    widget.objectName(), child.objectName(), rect
+                )
+                assert not rect.intersected(root_rect).isEmpty(), (
+                    widget.objectName(), child.objectName(), rect, root_rect
+                )
+                assert root_rect.contains(rect.center()), (
+                    widget.objectName(), child.objectName(), rect, root_rect
+                )
             assert root_rect.contains(rect.topLeft()), (
                 widget.objectName(), child.objectName(), rect, root_rect
             )
@@ -105,6 +120,57 @@ def _assert_interactive_geometry(widget: QWidget) -> None:
             )
             if child.isEnabled():
                 assert child.accessibleName().strip() or isinstance(child, QPushButton)
+            if isinstance(child, QPushButton):
+                visible_buttons.append((child, rect))
+                assert _button_text_fits(child), (
+                    widget.objectName(),
+                    child.objectName(),
+                    child.text(),
+                    child.fontMetrics().horizontalAdvance(child.text()),
+                    _button_content_width(child),
+                    child.size(),
+                )
+            if isinstance(child, QToolButton) and child.text().strip():
+                assert child.fontMetrics().horizontalAdvance(child.text()) < child.width(), (
+                    widget.objectName(), child.objectName(), child.text(), child.size()
+                )
+    for index, (left, left_rect) in enumerate(visible_buttons):
+        for right, right_rect in visible_buttons[index + 1 :]:
+            if left.isAncestorOf(right) or right.isAncestorOf(left):
+                continue
+            assert left_rect.intersected(right_rect).isEmpty(), (
+                widget.objectName(),
+                left.objectName(),
+                right.objectName(),
+                left_rect,
+                right_rect,
+            )
+
+
+def _button_content_width(button: QPushButton) -> int:
+    option = QStyleOptionButton()
+    option.initFrom(button)
+    option.text = button.text()
+    option.icon = button.icon()
+    content = button.style().subElementRect(
+        QStyle.SubElement.SE_PushButtonContents, option, button
+    )
+    width = content.width()
+    if not button.icon().isNull():
+        width -= button.iconSize().width()
+        width -= button.style().pixelMetric(
+            QStyle.PixelMetric.PM_LayoutHorizontalSpacing, None, button
+        )
+    return max(0, width)
+
+
+def _button_text_fits(button: QPushButton) -> bool:
+    if not button.text().strip():
+        return True
+    return (
+        button.fontMetrics().horizontalAdvance(button.text())
+        <= _button_content_width(button)
+    )
 
 
 @pytest.mark.parametrize("surface", SURFACES)
@@ -190,6 +256,74 @@ def test_library_keyboard_and_accessibility_contract(
     assert not dialog.archive_button.isEnabled()
     assert "SCHEMA" not in dialog.archive_button.toolTip()
     dialog.reject()
+
+
+def test_exact_r180_vi_action_geometry_and_common_defaults_click(
+    project_service: ProjectService,
+    application: QApplication,
+    monkeypatch,
+) -> None:
+    opened: list[ToolCommonDefaultsDialog] = []
+
+    def reject_defaults(editor: ToolCommonDefaultsDialog) -> QDialog.DialogCode:
+        opened.append(editor)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(ToolCommonDefaultsDialog, "exec", reject_defaults)
+    with translation_service().using(UiLanguage.VI_VN):
+        dialog = ToolLibraryDialog(project_service)
+        _fit(dialog, QRect(0, 0, 1280, 720), 1.0)
+        dialog.show()
+        application.processEvents()
+
+        before = project_service.cam_snapshot
+        assert dialog.edit_defaults.isVisibleTo(dialog)
+        assert dialog.edit_defaults.isEnabled()
+        assert dialog.edit_defaults.width() > 0
+        assert dialog.edit_defaults.height() > 0
+        assert _button_text_fits(dialog.edit_defaults)
+        assert dialog.archive_button.isVisibleTo(dialog)
+        assert not dialog.archive_button.isEnabled()
+        assert _button_text_fits(dialog.archive_button)
+        _assert_interactive_geometry(dialog)
+
+        QTest.mouseClick(dialog.edit_defaults, Qt.MouseButton.LeftButton)
+        application.processEvents()
+
+        assert len(opened) == 1
+        assert project_service.cam_snapshot == before
+        dialog.reject()
+
+
+@pytest.mark.parametrize("locale", tuple(UiLanguage))
+def test_action_geometry_recovers_across_scale_width_and_locale(
+    project_service: ProjectService,
+    application: QApplication,
+    locale: UiLanguage,
+) -> None:
+    with translation_service().using(locale):
+        dialog = ToolLibraryDialog(project_service)
+        dialog.show()
+        for available, scale in (
+            (QRect(0, 0, 1920, 1080), 1.0),
+            (QRect(0, 0, 1280, 720), 2.0),
+        ):
+            dialog.apply_available_geometry(available, scale)
+            application.processEvents()
+            _assert_interactive_geometry(dialog)
+            assert dialog.edit_defaults.width() > 0
+            assert _button_text_fits(dialog.edit_defaults)
+            assert _button_text_fits(dialog.archive_button)
+
+        dialog._splitter.setSizes((10_000, 1))
+        application.processEvents()
+        _assert_interactive_geometry(dialog)
+
+        dialog.apply_available_geometry(QRect(0, 0, 1920, 1080), 1.0)
+        application.processEvents()
+        _assert_interactive_geometry(dialog)
+        assert dialog._library_action_columns >= 2
+        dialog.reject()
 
 
 def test_cancel_create_has_zero_project_mutation(

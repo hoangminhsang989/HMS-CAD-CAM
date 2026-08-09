@@ -6,7 +6,7 @@ import logging
 from typing import Callable
 
 from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -569,18 +569,28 @@ class ToolLibraryDialog(QDialog):
         self._service = service
         self._selected_tool_id = initial_tool_id
         self._records: dict[str, ToolLibraryRecord] = {}
+        self._logical_scale = 1.0
+        self._available_geometry = QRect(0, 0, 1366, 768)
+        self._library_action_columns: int | None = None
+        self._common_row_stacked: bool | None = None
+        self._filters_stacked = False
+        self._sort_stacked = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
         root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.setObjectName("ToolLibrarySplitter")
-        split.addWidget(self._build_list_surface())
-        split.addWidget(self._build_detail_surface())
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        root.addWidget(split, 1)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setObjectName("ToolLibrarySplitter")
+        self._splitter.setChildrenCollapsible(False)
+        self._list_surface = self._build_list_surface()
+        self._detail_surface = self._build_detail_surface()
+        self._splitter.addWidget(self._list_surface)
+        self._splitter.addWidget(self._detail_surface)
+        self._splitter.setStretchFactor(0, 11)
+        self._splitter.setStretchFactor(1, 9)
+        self._splitter.splitterMoved.connect(self._splitter_moved)
+        root.addWidget(self._splitter, 1)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.button(QDialogButtonBox.StandardButton.Close).setText(ui_text("Close"))
         close.rejected.connect(self.reject)
@@ -588,24 +598,25 @@ class ToolLibraryDialog(QDialog):
         self.apply_available_geometry(QRect(0, 0, 1366, 768), 1.0)
         self._refresh()
         localize_widget_tree(self)
+        self._update_adaptive_layout()
 
     def _build_list_surface(self) -> QWidget:
         frame = QFrame()
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(0, 0, 5, 0)
-        filters = QGridLayout()
-        filters.setHorizontalSpacing(5)
-        filters.setVerticalSpacing(4)
+        self._filter_layout = QGridLayout()
+        self._filter_layout.setHorizontalSpacing(5)
+        self._filter_layout.setVerticalSpacing(4)
         self.search = QLineEdit()
         self.search.setObjectName("ToolLibrarySearch")
         self.search.setPlaceholderText(ui_text("Search name, ID, family, size, assembly or Holder…"))
         self.search.setAccessibleName(ui_text("Search Tool Library"))
         self.search.setClearButtonEnabled(True)
         self.search.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self.search.textChanged.connect(self._refresh)
-        filters.addWidget(self.search, 0, 0, 1, 2)
+        self._filter_layout.addWidget(self.search, 0, 0, 1, 2)
         self.family_filter = QComboBox()
         self.family_filter.setAccessibleName(ui_text("Filter by Tool family"))
         self.family_filter.addItem(ui_text("All families"), None)
@@ -616,7 +627,7 @@ class ToolLibraryDialog(QDialog):
         )
         self.family_filter.setMinimumContentsLength(10)
         self.family_filter.currentIndexChanged.connect(self._refresh)
-        filters.addWidget(self.family_filter, 1, 0)
+        self._filter_layout.addWidget(self.family_filter, 1, 0)
         self.compatibility_filter = QComboBox()
         self.compatibility_filter.setAccessibleName(ui_text("Filter by strategy compatibility"))
         self.compatibility_filter.addItem(ui_text("All strategies"), None)
@@ -627,11 +638,15 @@ class ToolLibraryDialog(QDialog):
         )
         self.compatibility_filter.setMinimumContentsLength(10)
         self.compatibility_filter.currentIndexChanged.connect(self._refresh)
-        filters.addWidget(self.compatibility_filter, 1, 1)
-        layout.addLayout(filters)
-        sort_row = QHBoxLayout()
-        sort_row.addWidget(QLabel(ui_text("Sort")))
+        self._filter_layout.addWidget(self.compatibility_filter, 1, 1)
+        layout.addLayout(self._filter_layout)
+        self._sort_layout = QGridLayout()
+        self._sort_layout.setHorizontalSpacing(6)
+        self._sort_layout.setVerticalSpacing(4)
+        self._sort_label = QLabel(ui_text("Sort"))
+        self._sort_layout.addWidget(self._sort_label, 0, 0)
         self.sort = QComboBox()
+        self.sort.setAccessibleName(ui_text("Sort"))
         for value, label in (
             (ToolLibrarySort.NAME, "Name"),
             (ToolLibrarySort.FAMILY, "Family"),
@@ -641,12 +656,12 @@ class ToolLibraryDialog(QDialog):
         ):
             self.sort.addItem(ui_text(label), value)
         self.sort.currentIndexChanged.connect(self._refresh)
-        sort_row.addWidget(self.sort)
+        self._sort_layout.addWidget(self.sort, 0, 1)
         self.descending = QCheckBox(ui_text("Descending"))
         self.descending.toggled.connect(self._refresh)
-        sort_row.addWidget(self.descending)
-        sort_row.addStretch(1)
-        layout.addLayout(sort_row)
+        self._sort_layout.addWidget(self.descending, 0, 2)
+        self._sort_layout.setColumnStretch(1, 1)
+        layout.addLayout(self._sort_layout)
         self.table = QTreeWidget()
         self.table.setObjectName("ToolLibraryTable")
         self.table.setAccessibleName(ui_text("Project Tool list"))
@@ -680,9 +695,9 @@ class ToolLibraryDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.currentItemChanged.connect(self._selection_changed)
         layout.addWidget(self.table, 1)
-        actions = QGridLayout()
-        actions.setHorizontalSpacing(4)
-        actions.setVerticalSpacing(4)
+        self._action_layout = QGridLayout()
+        self._action_layout.setHorizontalSpacing(4)
+        self._action_layout.setVerticalSpacing(4)
         self.create_button = self._action_button("Create", self._create)
         self.edit_button = self._action_button("Edit", self._edit)
         self.duplicate_button = self._action_button("Duplicate", self._duplicate)
@@ -692,22 +707,22 @@ class ToolLibraryDialog(QDialog):
         self.delete_button = self._action_button("Delete", self._delete)
         self.delete_button.setDefault(False)
         self.delete_button.setAutoDefault(False)
-        for index, button in enumerate((
+        self._library_action_buttons = (
             self.create_button,
             self.edit_button,
             self.duplicate_button,
             self.archive_button,
             self.delete_button,
-        )):
-            actions.addWidget(button, index // 3, index % 3)
-        layout.addLayout(actions)
+        )
+        self._set_library_action_columns(3)
+        layout.addLayout(self._action_layout)
         return frame
 
     def _action_button(self, text: str, callback: Callable[[], None]) -> QPushButton:
         button = QPushButton(ui_text(text))
         button.setAccessibleName(ui_text(f"{text} Tool"))
         button.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
         )
         button.clicked.connect(callback)
         return button
@@ -732,24 +747,257 @@ class ToolLibraryDialog(QDialog):
         self.usage.setAccessibleName(ui_text("Tool usage and references"))
         self.usage.setWordWrap(True)
         layout.addWidget(self.usage)
-        common_row = QHBoxLayout()
+        self._common_layout = QGridLayout()
+        self._common_layout.setHorizontalSpacing(6)
+        self._common_layout.setVerticalSpacing(4)
         self.common_status = QLabel()
         self.common_status.setWordWrap(True)
-        common_row.addWidget(self.common_status, 1)
         self.edit_defaults = QPushButton(ui_text("Edit common defaults"))
+        self.edit_defaults.setObjectName("ToolLibraryEditCommonDefaults")
         self.edit_defaults.setAccessibleName(ui_text("Edit Tool common defaults"))
         self.edit_defaults.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+            QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
         )
         self.edit_defaults.clicked.connect(self._edit_common_defaults)
-        common_row.addWidget(self.edit_defaults)
-        layout.addLayout(common_row)
+        self._set_common_row_stacked(False)
+        layout.addLayout(self._common_layout)
         self.profiles = ToolProgramProfilesWidget(parent=frame)
         self.profiles.set_expanded(True)
+        self.profiles.toggle.setText(ui_text("Tool Profile"))
+        self.profiles.toggle.setToolTip(self.profiles.toggle.accessibleName())
+        self.profiles.toggle.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
+        )
         self.profiles.save_current_button.hide()
+        self.profiles.tree.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        for button in self.profiles.action_buttons.values():
+            button.setSizePolicy(
+                QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
+            )
         self.profiles.action_requested.connect(self._profile_action)
         layout.addWidget(self.profiles, 1)
         return frame
+
+    def _set_library_action_columns(self, columns: int) -> None:
+        columns = max(1, min(int(columns), 3))
+        if self._library_action_columns == columns:
+            return
+        for button in getattr(self, "_library_action_buttons", ()):
+            self._action_layout.removeWidget(button)
+        for index, button in enumerate(getattr(self, "_library_action_buttons", ())):
+            self._action_layout.addWidget(button, index // columns, index % columns)
+        for column in range(3):
+            self._action_layout.setColumnStretch(column, int(column < columns))
+        self._library_action_columns = columns
+
+    def _set_filters_stacked(self, stacked: bool) -> None:
+        stacked = bool(stacked)
+        if self._filters_stacked == stacked:
+            return
+        for widget in (self.search, self.family_filter, self.compatibility_filter):
+            self._filter_layout.removeWidget(widget)
+        self._filter_layout.addWidget(self.search, 0, 0, 1, 2)
+        if stacked:
+            self._filter_layout.addWidget(self.family_filter, 1, 0, 1, 2)
+            self._filter_layout.addWidget(self.compatibility_filter, 2, 0, 1, 2)
+        else:
+            self._filter_layout.addWidget(self.family_filter, 1, 0)
+            self._filter_layout.addWidget(self.compatibility_filter, 1, 1)
+        self._filters_stacked = stacked
+
+    def _set_sort_stacked(self, stacked: bool) -> None:
+        stacked = bool(stacked)
+        if self._sort_stacked == stacked:
+            return
+        for widget in (self._sort_label, self.sort, self.descending):
+            self._sort_layout.removeWidget(widget)
+        if stacked:
+            self._sort_layout.addWidget(self._sort_label, 0, 0, 1, 2)
+            self._sort_layout.addWidget(self.sort, 1, 0, 1, 2)
+            self._sort_layout.addWidget(self.descending, 2, 0, 1, 2)
+            self._sort_layout.setColumnStretch(0, 1)
+            self._sort_layout.setColumnStretch(1, 0)
+        else:
+            self._sort_layout.addWidget(self._sort_label, 0, 0)
+            self._sort_layout.addWidget(self.sort, 0, 1)
+            self._sort_layout.addWidget(self.descending, 0, 2)
+            self._sort_layout.setColumnStretch(0, 0)
+            self._sort_layout.setColumnStretch(1, 1)
+        self._sort_stacked = stacked
+
+    def _set_common_row_stacked(self, stacked: bool) -> None:
+        stacked = bool(stacked)
+        if self._common_row_stacked == stacked:
+            return
+        for widget in (self.common_status, self.edit_defaults):
+            self._common_layout.removeWidget(widget)
+        if stacked:
+            self._common_layout.addWidget(self.common_status, 0, 0, 1, 2)
+            self._common_layout.addWidget(self.edit_defaults, 1, 0, 1, 2)
+            self._common_layout.setColumnStretch(0, 1)
+            self._common_layout.setColumnStretch(1, 0)
+        else:
+            self._common_layout.addWidget(self.common_status, 0, 0)
+            self._common_layout.addWidget(self.edit_defaults, 0, 1)
+            self._common_layout.setColumnStretch(0, 1)
+            self._common_layout.setColumnStretch(1, 0)
+        self._common_row_stacked = stacked
+
+    @staticmethod
+    def _layout_horizontal_margins(widget: QWidget) -> int:
+        layout = widget.layout()
+        if layout is None:
+            return 0
+        margins = layout.contentsMargins()
+        return margins.left() + margins.right()
+
+    def _minimum_pane_widths(self) -> tuple[int, int]:
+        self._refresh_action_minimums()
+        action_width = max(
+            button.sizeHint().width() for button in self._library_action_buttons
+        )
+        filter_width = max(
+            self.search.sizeHint().width(),
+            self.family_filter.sizeHint().width(),
+            self.compatibility_filter.sizeHint().width(),
+        )
+        sort_width = max(
+            self._sort_label.sizeHint().width(),
+            self.sort.sizeHint().width(),
+            self.descending.sizeHint().width(),
+        )
+        list_width = max(
+            360,
+            action_width + self._layout_horizontal_margins(self._list_surface) + 12,
+            filter_width + self._layout_horizontal_margins(self._list_surface) + 12,
+            sort_width + self._layout_horizontal_margins(self._list_surface) + 12,
+        )
+        profile_width = max(
+            button.sizeHint().width()
+            for button in self.profiles.action_buttons.values()
+        )
+        profile_grid_width = (
+            profile_width * 2
+            + max(0, self.profiles.body.layout().spacing())
+            + self._layout_horizontal_margins(self.profiles.body)
+        )
+        detail_width = max(
+            360,
+            self.edit_defaults.sizeHint().width() + 12,
+            self.profiles.toggle.sizeHint().width() + 12,
+            profile_grid_width + self._layout_horizontal_margins(self._detail_surface),
+        )
+        return list_width, detail_width
+
+    def _refresh_action_minimums(self) -> None:
+        buttons = (
+            *self._library_action_buttons,
+            self.edit_defaults,
+            *self.profiles.action_buttons.values(),
+        )
+        for button in buttons:
+            button.setMinimumSize(0, 0)
+            button.setMinimumSize(button.sizeHint())
+        self.profiles.toggle.setMinimumSize(0, 0)
+        self.profiles.toggle.setMinimumSize(self.profiles.toggle.sizeHint())
+
+    def _layout_panes(self, list_width: int, detail_width: int) -> None:
+        self._refresh_action_minimums()
+        list_content_width = max(
+            1, list_width - self._layout_horizontal_margins(self._list_surface)
+        )
+        filter_spacing = max(0, self._filter_layout.horizontalSpacing())
+        filter_horizontal_width = (
+            self.family_filter.sizeHint().width()
+            + self.compatibility_filter.sizeHint().width()
+            + filter_spacing
+        )
+        self._set_filters_stacked(list_content_width < filter_horizontal_width)
+        sort_spacing = max(0, self._sort_layout.horizontalSpacing())
+        sort_horizontal_width = (
+            self._sort_label.sizeHint().width()
+            + self.sort.sizeHint().width()
+            + self.descending.sizeHint().width()
+            + sort_spacing * 2
+        )
+        self._set_sort_stacked(list_content_width < sort_horizontal_width)
+        spacing = max(0, self._action_layout.horizontalSpacing())
+        widest_action = max(
+            button.sizeHint().width() for button in self._library_action_buttons
+        )
+        columns = max(
+            1,
+            min(3, (list_content_width + spacing) // (widest_action + spacing)),
+        )
+        self._set_library_action_columns(columns)
+
+        detail_content_width = max(
+            1, detail_width - self._layout_horizontal_margins(self._detail_surface)
+        )
+        status_floor = max(
+            self.common_status.fontMetrics().height() * 6,
+            self.common_status.fontMetrics().averageCharWidth() * 8,
+        )
+        required_horizontal = (
+            self.edit_defaults.sizeHint().width()
+            + status_floor
+            + max(0, self._common_layout.horizontalSpacing())
+        )
+        self._set_common_row_stacked(detail_content_width < required_horizontal)
+
+    def _update_adaptive_layout(self, dialog_width: int | None = None) -> None:
+        if not hasattr(self, "_splitter"):
+            return
+        width = max(1, int(dialog_width if dialog_width is not None else self.width()))
+        root_layout = self.layout()
+        root_margins = root_layout.contentsMargins() if root_layout is not None else None
+        horizontal_margins = (
+            root_margins.left() + root_margins.right()
+            if root_margins is not None
+            else 0
+        )
+        usable = max(
+            2,
+            width - horizontal_margins - self._splitter.handleWidth(),
+        )
+        list_minimum, detail_minimum = self._minimum_pane_widths()
+        if list_minimum + detail_minimum <= usable:
+            preferred_list = int(usable * 0.55)
+            list_width = min(
+                max(list_minimum, preferred_list), usable - detail_minimum
+            )
+        else:
+            minimum_total = list_minimum + detail_minimum
+            list_width = max(
+                1, int(usable * list_minimum / max(1, minimum_total))
+            )
+        detail_width = max(1, usable - list_width)
+        self._layout_panes(list_width, detail_width)
+        # Relayout first so QSplitter sees the reduced stacked minimums, then
+        # apply the same allocation again after Qt has refreshed those hints.
+        self._splitter.setSizes((list_width, detail_width))
+        self._layout_panes(list_width, detail_width)
+        self._splitter.setSizes((list_width, detail_width))
+
+    def _splitter_moved(self, _position: int, _index: int) -> None:
+        sizes = self._splitter.sizes()
+        if len(sizes) != 2:
+            return
+        list_minimum, detail_minimum = self._minimum_pane_widths()
+        total = sizes[0] + sizes[1]
+        if total >= list_minimum + detail_minimum and (
+            sizes[0] < list_minimum or sizes[1] < detail_minimum
+        ):
+            list_width = min(
+                max(list_minimum, sizes[0]), total - detail_minimum
+            )
+            detail_width = total - list_width
+            self._layout_panes(list_width, detail_width)
+            self._splitter.setSizes((list_width, detail_width))
+            return
+        self._layout_panes(sizes[0], sizes[1])
 
     def _refresh(self, *_args: object) -> None:
         try:
@@ -823,6 +1071,7 @@ class ToolLibraryDialog(QDialog):
             self.usage.clear()
             self.common_status.clear()
             self.delete_button.setEnabled(False)
+            self._update_adaptive_layout()
             return
         tool = record.tool
         self.detail_title.setText(f"{tool.name} · {_family_label(tool.family)}")
@@ -868,6 +1117,7 @@ class ToolLibraryDialog(QDialog):
             if record.referenced
             else ui_text("Delete this unreferenced Tool")
         )
+        self._update_adaptive_layout()
 
     def _current_record(self) -> ToolLibraryRecord:
         if self._selected_tool_id is None:
@@ -1136,21 +1386,37 @@ class ToolLibraryDialog(QDialog):
         """Clamp four audited surfaces for 100–200% display scales."""
         if not available.isValid():
             return
+        self._available_geometry = QRect(available)
         logical_scale = max(1.0, float(scale))
+        self._logical_scale = logical_scale
         compact = logical_scale >= 1.5 or available.width() <= 1366
+        self.profiles.optional_note.setVisible(logical_scale < 1.5)
         self.table.setColumnHidden(1, compact)
         self.table.setColumnHidden(4, compact and logical_scale >= 2.0)
         self.table.setColumnHidden(5, compact)
-        splitter = self.findChild(QSplitter, "ToolLibrarySplitter")
-        if splitter is not None:
-            splitter.setSizes(
-                [int(available.width() * 0.6), int(available.width() * 0.4)]
-            )
-        width = min(available.width(), max(900, 1120))
+        list_minimum, detail_minimum = self._minimum_pane_widths()
+        root_margins = self.layout().contentsMargins()
+        required_width = (
+            list_minimum
+            + detail_minimum
+            + self._splitter.handleWidth()
+            + root_margins.left()
+            + root_margins.right()
+        )
+        width = min(available.width(), max(900, 1120, required_width))
         height = min(available.height(), max(600, 760))
         self.setMaximumSize(available.size())
         self.setMinimumSize(0, 0)
         self.resize(width, height)
+        self._update_adaptive_layout(width)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._update_adaptive_layout(event.size().width())
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self.apply_available_geometry(self._available_geometry, self._logical_scale)
 
     def _show_error(self, message: str) -> None:
         QMessageBox.warning(self, ui_text("Tool Library"), ui_text(message))
