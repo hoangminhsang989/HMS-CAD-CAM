@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import cast
+from uuid import UUID
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
@@ -40,6 +41,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.cam.domain.machine import OperationCapability
 from hms_cadcam.cam.operation_creation import (
     OperationCreationSession,
+    OperationCreationState,
     OperationStrategyChoice,
     OperationToolChoice,
     Stage16AStrategyRegistry,
@@ -81,6 +83,8 @@ from hms_cadcam.ui.function_editor.strategies.zlevel import (
     z_level_validation_diagnostics,
 )
 from hms_cadcam.ui.operation_creation_wizard import (
+    FinishBindingClaim,
+    FinishBindingCompletion,
     OperationCreationEditorBinding,
     error_diagnostic,
 )
@@ -88,6 +92,41 @@ from hms_cadcam.ui.tool_program_profiles import ToolEditorDialog
 
 
 HoleSource = HoleReference | HolePattern
+
+
+@dataclass(frozen=True, slots=True)
+class _OperationCreationBindingIdentity:
+    """Stable binding metadata; the live session remains wizard-owned."""
+
+    session_id: UUID
+    project_id: UUID
+    project_generation: int
+    job_id: object
+    setup_id: object
+    parent_node_id: CamNodeId
+    strategy_id: str | None
+    tool_assembly_id: object | None
+    tool_id: object | None
+    profile_id: object | None
+    tool_configuration_revision: object | None
+
+    @classmethod
+    def from_session(
+        cls, session: OperationCreationSession
+    ) -> "_OperationCreationBindingIdentity":
+        return cls(
+            session.session_id,
+            session.project_id,
+            session.project_generation,
+            session.job_id,
+            session.setup_id,
+            session.parent_node_id,
+            session.strategy_id,
+            session.tool_assembly_id,
+            session.tool_id,
+            session.profile_id,
+            session.tool_configuration_revision,
+        )
 
 
 class Stage16AOperationCreationAdapter:
@@ -180,17 +219,21 @@ class Stage16AOperationCreationAdapter:
         return True, ""
 
     def build_editor(
-        self, session: OperationCreationSession
+        self,
+        session: OperationCreationSession,
+        *,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
     ) -> OperationCreationEditorBinding:
         current, reason = self.context_is_current(session)
         if not current:
             raise RuntimeError(reason)
         if session.strategy_id == "parallel_finishing_3d":
-            return self._parallel_binding(session)
+            return self._parallel_binding(session, claim_finish, complete_finish)
         if session.strategy_id == "z_level_finishing_3d":
-            return self._z_level_binding(session)
+            return self._z_level_binding(session, claim_finish, complete_finish)
         if session.strategy_id == "drilling_v1":
-            return self._drilling_binding(session)
+            return self._drilling_binding(session, claim_finish, complete_finish)
         raise ValueError("Strategy chưa được Stage16A hỗ trợ.")
 
     def open_tool_management(
@@ -225,7 +268,10 @@ class Stage16AOperationCreationAdapter:
         dialog.open()
 
     def _parallel_binding(
-        self, session: OperationCreationSession
+        self,
+        session: OperationCreationSession,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
     ) -> OperationCreationEditorBinding:
         job, setup, _parent = self._current_context(session)
         if setup.wcs.origin.unit is not LengthUnit.MM:
@@ -249,6 +295,7 @@ class Stage16AOperationCreationAdapter:
         )
         draft = ParallelEditorDraftContext(())
         schema = build_parallel_schema(context)
+        binding_identity = _OperationCreationBindingIdentity.from_session(session)
 
         def action(
             action_id: str, values: Mapping[str, PresentationValue]
@@ -256,14 +303,21 @@ class Stage16AOperationCreationAdapter:
             return self._surface_action(context, draft, action_id, values)
 
         def finish(values: Mapping[str, PresentationValue]) -> Operation:
-            update = prepare_parallel_update(context, draft, values)
-            self._commit(
-                session,
-                update.operation_name,
-                update.operation,
-                zone=update.zone,
-            )
-            return update.operation
+            success = False
+            try:
+                current_session = claim_finish()
+                self._require_current_binding(binding_identity, current_session)
+                update = prepare_parallel_update(context, draft, values)
+                self._commit(
+                    current_session,
+                    update.operation_name,
+                    update.operation,
+                    zone=update.zone,
+                )
+                success = True
+                return update.operation
+            finally:
+                complete_finish(success)
 
         return OperationCreationEditorBinding(
             schema,
@@ -277,7 +331,10 @@ class Stage16AOperationCreationAdapter:
         )
 
     def _z_level_binding(
-        self, session: OperationCreationSession
+        self,
+        session: OperationCreationSession,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
     ) -> OperationCreationEditorBinding:
         job, setup, _parent = self._current_context(session)
         if setup.wcs.origin.unit is not LengthUnit.MM:
@@ -301,6 +358,7 @@ class Stage16AOperationCreationAdapter:
         )
         draft = ZLevelEditorDraftContext(())
         schema = build_z_level_schema(context)
+        binding_identity = _OperationCreationBindingIdentity.from_session(session)
 
         def action(
             action_id: str, values: Mapping[str, PresentationValue]
@@ -308,14 +366,21 @@ class Stage16AOperationCreationAdapter:
             return self._surface_action(context, draft, action_id, values)
 
         def finish(values: Mapping[str, PresentationValue]) -> Operation:
-            update = prepare_z_level_update(context, draft, values)
-            self._commit(
-                session,
-                update.operation_name,
-                update.operation,
-                zone=update.zone,
-            )
-            return update.operation
+            success = False
+            try:
+                current_session = claim_finish()
+                self._require_current_binding(binding_identity, current_session)
+                update = prepare_z_level_update(context, draft, values)
+                self._commit(
+                    current_session,
+                    update.operation_name,
+                    update.operation,
+                    zone=update.zone,
+                )
+                success = True
+                return update.operation
+            finally:
+                complete_finish(success)
 
         return OperationCreationEditorBinding(
             schema,
@@ -329,7 +394,10 @@ class Stage16AOperationCreationAdapter:
         )
 
     def _drilling_binding(
-        self, session: OperationCreationSession
+        self,
+        session: OperationCreationSession,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
     ) -> OperationCreationEditorBinding:
         if self._drilling_pick_provider is None or self._drilling_resolver is None:
             raise RuntimeError("Bộ chọn và resolver hình học Khoan chưa sẵn sàng.")
@@ -363,6 +431,7 @@ class Stage16AOperationCreationAdapter:
         )
         draft = DrillingFamilyEditorDraftContext(source)
         schema = build_drilling_family_schema(context)
+        binding_identity = _OperationCreationBindingIdentity.from_session(session)
 
         def validate(
             values: Mapping[str, PresentationValue]
@@ -408,10 +477,17 @@ class Stage16AOperationCreationAdapter:
             return drilling_family_geometry_values(selected, True)
 
         def finish(values: Mapping[str, PresentationValue]) -> Operation:
-            update = prepare_drilling_family_update(context, draft, values)
-            self._resolve_drilling(update, setup)
-            self._commit(session, update.operation_name, update.operation)
-            return update.operation
+            success = False
+            try:
+                current_session = claim_finish()
+                self._require_current_binding(binding_identity, current_session)
+                update = prepare_drilling_family_update(context, draft, values)
+                self._resolve_drilling(update, setup)
+                self._commit(current_session, update.operation_name, update.operation)
+                success = True
+                return update.operation
+            finally:
+                complete_finish(success)
 
         return OperationCreationEditorBinding(
             schema,
@@ -489,6 +565,32 @@ class Stage16AOperationCreationAdapter:
                 draft.geometry_evidence, added
             )
         return _surface_presentation(context, draft.surfaces)
+
+    @staticmethod
+    def _require_current_binding(
+        identity: _OperationCreationBindingIdentity,
+        current_session: OperationCreationSession,
+    ) -> None:
+        if current_session.state not in {
+            OperationCreationState.CONFIGURE_OPERATION,
+            OperationCreationState.READY_TO_CREATE,
+        }:
+            raise RuntimeError("Phiên tạo nguyên công không còn hiện hành.")
+        if (
+            current_session.session_id != identity.session_id
+            or current_session.project_id != identity.project_id
+            or current_session.project_generation != identity.project_generation
+            or current_session.job_id != identity.job_id
+            or current_session.setup_id != identity.setup_id
+            or current_session.parent_node_id != identity.parent_node_id
+            or current_session.strategy_id != identity.strategy_id
+            or current_session.tool_assembly_id != identity.tool_assembly_id
+            or current_session.tool_id != identity.tool_id
+            or current_session.profile_id != identity.profile_id
+            or current_session.tool_configuration_revision
+            != identity.tool_configuration_revision
+        ):
+            raise RuntimeError("Phiên tạo nguyên công không còn hiện hành.")
 
     def _commit(
         self,

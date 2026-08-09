@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from hms_cadcam.cam.application import AUTOMATIC_PARAMETER_CONTRACT_KEY
+from hms_cadcam.cam.application import basic_parallel_resources
 from hms_cadcam.cam.automatic_parameters import (
     AutomaticParameterContract,
     AutomaticParameterMode,
@@ -26,6 +27,7 @@ from hms_cadcam.cam.domain import (
     GeometryReferenceId,
     GeometryReferenceKind,
     GeometryRepresentationKind,
+    LengthUnit,
     Revision,
 )
 from hms_cadcam.cam.operation_creation import OperationCreationState
@@ -114,8 +116,41 @@ def _open_strategy_wizard(
     return wizard
 
 
+def _select_strategy(wizard, strategy_id: str) -> None:
+    for row in range(wizard.strategy_list.count()):
+        item = wizard.strategy_list.item(row)
+        if item.data(Qt.ItemDataRole.UserRole) == strategy_id:
+            wizard.strategy_list.setCurrentItem(item)
+            return
+    raise AssertionError(strategy_id)
+
+
 def _open_parallel_wizard(workspace: CamWorkspace, application: QApplication):
     return _open_strategy_wizard(workspace, application, "parallel_finishing_3d")
+
+
+def _add_second_parallel_tool(service: ProjectService):
+    tool, holder, assembly, machine = basic_parallel_resources(LengthUnit.MM)
+    service.execute_cam_command(
+        lambda app: (
+            app.add_tool_definition(tool),
+            app.add_holder_definition(holder),
+            app.add_tool_assembly(assembly),
+            app.add_machine_definition(machine),
+        )[-1]
+    )
+    return assembly
+
+
+def _prepare_parallel_binding(wizard, application: QApplication):
+    wizard.next_button.click()
+    application.processEvents()
+    page = wizard.editor_page
+    binding = wizard._binding
+    assert page is not None and binding is not None
+    page._field_widgets["geometry_summary"].action_button.click()
+    application.processEvents()
+    return binding, page.state.applicable_snapshot()
 
 
 def test_real_parallel_workflow_creates_exactly_once_without_automatic_runtime(
@@ -257,7 +292,7 @@ def test_created_product_session_rejects_resurrection_and_second_transaction(
         with pytest.raises(RuntimeError):
             attempt()
 
-    with pytest.raises(ValueError, match="lặp"):
+    with pytest.raises(RuntimeError, match="hiện hành"):
         binding.finish_callback(values)
     wizard._finish()
     application.processEvents()
@@ -321,6 +356,140 @@ def test_cancelled_product_session_cannot_reach_finish_or_persistence(
         for job in service.cam_snapshot.jobs
         for setup in job.setups
     )
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_saved_finish_callback_after_cancel_is_never_authoritative(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding, values = _prepare_parallel_binding(wizard, application)
+    operations_before = sum(
+        len(setup.operation_tree.operations)
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    zones_before = service.cam3d_config.zones
+
+    wizard.reject()
+    application.processEvents()
+    assert wizard.session.state is OperationCreationState.CANCELLED
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding.finish_callback(values)
+
+    operations_after = sum(
+        len(setup.operation_tree.operations)
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    assert operations_after == operations_before == 0
+    assert service.cam3d_config.zones == zones_before == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_saved_finish_callback_after_close_is_never_authoritative(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding, values = _prepare_parallel_binding(wizard, application)
+    wizard.close()
+    application.processEvents()
+    assert wizard.session.state is OperationCreationState.CANCELLED
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding.finish_callback(values)
+    assert all(
+        not setup.operation_tree.operations
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    assert service.cam3d_config.zones == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_old_callback_after_back_is_blocked_and_replacement_is_valid(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding_a, values_a = _prepare_parallel_binding(wizard, application)
+    wizard.back_button.click()
+    application.processEvents()
+    assert wizard.session.current_step.value == "select_tool"
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_a.finish_callback(values_a)
+
+    binding_b, values_b = _prepare_parallel_binding(wizard, application)
+    assert binding_b is not binding_a
+    wizard.finish_button.click()
+    application.processEvents()
+    assert wizard.session.state is OperationCreationState.CREATED
+    assert len(service.cam_snapshot.jobs[0].setups[0].operation_tree.operations) == 1
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_a.finish_callback(values_a)
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_b.finish_callback(values_b)
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_old_callback_after_tool_change_is_blocked_and_current_tool_creates_once(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding_a, values_a = _prepare_parallel_binding(wizard, application)
+    wizard.back_button.click()
+    application.processEvents()
+    tool_b = _add_second_parallel_tool(service)
+    wizard.refresh_live_state()
+    application.processEvents()
+    for row in range(wizard.tool_list.topLevelItemCount()):
+        item = wizard.tool_list.topLevelItem(row)
+        if item.data(0, Qt.ItemDataRole.UserRole) == str(tool_b.assembly_id):
+            wizard.tool_list.setCurrentItem(item)
+            break
+    else:
+        raise AssertionError("Second compatible Tool was not listed")
+    binding_b, _values_b = _prepare_parallel_binding(wizard, application)
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_a.finish_callback(values_a)
+    wizard.finish_button.click()
+    application.processEvents()
+    operations = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations
+    assert len(operations) == 1
+    assert operations[0].tool_assembly.assembly_id == tool_b.assembly_id
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_b.finish_callback(_values_b)
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_old_callback_after_strategy_change_is_blocked(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding_a, values_a = _prepare_parallel_binding(wizard, application)
+    wizard.back_button.click()
+    wizard.back_button.click()
+    application.processEvents()
+    _select_strategy(wizard, "z_level_finishing_3d")
+    wizard.next_button.click()
+    application.processEvents()
+    assert wizard.session.strategy_id == "z_level_finishing_3d"
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_a.finish_callback(values_a)
+    assert all(
+        not setup.operation_tree.operations
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    assert service.cam3d_config.zones == ()
     service.close_project(discard_changes=True)
     workspace.close()
 

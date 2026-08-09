@@ -52,6 +52,8 @@ FieldActionCallback = Callable[
     [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
 ]
 FinishCallback = Callable[[Mapping[str, PresentationValue]], object]
+FinishBindingClaim = Callable[[], OperationCreationSession]
+FinishBindingCompletion = Callable[[bool], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +80,11 @@ class OperationCreationWizardAdapter(Protocol):
     ) -> bool: ...
 
     def build_editor(
-        self, session: OperationCreationSession
+        self,
+        session: OperationCreationSession,
+        *,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
     ) -> OperationCreationEditorBinding: ...
 
     def context_is_current(self, session: OperationCreationSession) -> tuple[bool, str]: ...
@@ -111,6 +117,9 @@ class OperationCreationWizard(QDialog):
         self._session = session
         self._adapter = adapter
         self._binding: OperationCreationEditorBinding | None = None
+        self._binding_generation = 0
+        self._active_binding_generation: int | None = None
+        self._binding_claimed = False
         self._editor_page: FunctionEditorPage | None = None
         self._finishing = False
         self._closing_after_create = False
@@ -374,6 +383,7 @@ class OperationCreationWizard(QDialog):
             if item is None:
                 return
             strategy_id = str(item.data(Qt.ItemDataRole.UserRole))
+            self._invalidate_binding()
             keep = self._adapter.selected_tool_is_compatible(self._session, strategy_id)
             self._session = self._session.select_strategy(
                 strategy_id, selected_tool_remains_compatible=keep
@@ -386,10 +396,20 @@ class OperationCreationWizard(QDialog):
             if choice is None:
                 return
             self._session = self._session.select_tool(choice)
+            generation = self._activate_binding()
             try:
-                self._binding = self._adapter.build_editor(self._session)
+                self._binding = self._adapter.build_editor(
+                    self._session,
+                    claim_finish=lambda generation=generation: self._claim_binding(
+                        generation
+                    ),
+                    complete_finish=lambda success, generation=generation: self._complete_binding(
+                        generation, success
+                    ),
+                )
                 self._install_editor(self._binding)
             except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self._invalidate_binding()
                 self._session = self._session.back()
                 self._show_feedback(str(error))
                 self._show_step(OperationCreationStep.SELECT_TOOL)
@@ -400,6 +420,8 @@ class OperationCreationWizard(QDialog):
     def _back(self) -> None:
         if self._session.current_step is OperationCreationStep.SELECT_OPERATION:
             return
+        if self._session.current_step is OperationCreationStep.CONFIGURE_OPERATION:
+            self._invalidate_binding()
         self._session = self._session.back()
         if self._session.current_step is not OperationCreationStep.CONFIGURE_OPERATION:
             self._dispose_editor()
@@ -449,6 +471,7 @@ class OperationCreationWizard(QDialog):
         self._clear_feedback()
         current, reason = self._adapter.context_is_current(self._session)
         if not current:
+            self._invalidate_binding()
             self._show_feedback(reason)
             self._update_navigation()
             return
@@ -485,6 +508,7 @@ class OperationCreationWizard(QDialog):
                 getattr(result, "node_id", getattr(result, "operation_id", result))
             )
             self._session = self._session.mark_created()
+            self._consume_binding()
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._session = self._session.configure(
                 dict(state.values), validation_errors=(str(error),)
@@ -507,6 +531,7 @@ class OperationCreationWizard(QDialog):
             return
         current, reason = self._adapter.context_is_current(self._session)
         if not current:
+            self._invalidate_binding()
             self._show_feedback(reason)
         if self._session.current_step is OperationCreationStep.SELECT_TOOL:
             self._populate_tools()
@@ -571,6 +596,7 @@ class OperationCreationWizard(QDialog):
             not self._closing_after_create
             and self._session.state is not OperationCreationState.CREATED
         ):
+            self._invalidate_binding()
             self._session = self._session.cancel()
             self.session_changed.emit(self._session)
         super().reject()
@@ -580,9 +606,42 @@ class OperationCreationWizard(QDialog):
             not self._closing_after_create
             and self._session.state is not OperationCreationState.CREATED
         ):
+            self._invalidate_binding()
             self._session = self._session.cancel()
             self.session_changed.emit(self._session)
         event.accept()
+
+    def _activate_binding(self) -> int:
+        self._invalidate_binding()
+        self._active_binding_generation = self._binding_generation
+        return self._binding_generation
+
+    def _invalidate_binding(self) -> None:
+        self._binding_generation += 1
+        self._active_binding_generation = None
+        self._binding_claimed = False
+
+    def _claim_binding(self, generation: int) -> OperationCreationSession:
+        if (
+            self._active_binding_generation != generation
+            or self._binding_claimed
+            or self._session.state
+            in {OperationCreationState.CREATED, OperationCreationState.CANCELLED}
+        ):
+            raise RuntimeError("Phiên tạo nguyên công không còn hiện hành.")
+        self._binding_claimed = True
+        return self._session
+
+    def _complete_binding(self, generation: int, success: bool) -> None:
+        if self._active_binding_generation != generation:
+            return
+        if success:
+            return
+        self._invalidate_binding()
+
+    def _consume_binding(self) -> None:
+        self._active_binding_generation = None
+        self._binding_claimed = False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:

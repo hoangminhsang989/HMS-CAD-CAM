@@ -141,9 +141,11 @@ class _Adapter:
             and strategy_id in {"parallel_finishing_3d", "z_level_finishing_3d"}
         )
 
-    def build_editor(self, _session):
+    def build_editor(self, _session, *, claim_finish, complete_finish):
         def finish(_values):
+            claim_finish()
             self.finish_calls += 1
+            complete_finish(True)
             return CamNodeId.new()
 
         return OperationCreationEditorBinding(
