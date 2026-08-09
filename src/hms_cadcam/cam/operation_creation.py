@@ -139,14 +139,21 @@ class OperationCreationSession:
         """Expose the repository's actual Job/Setup program context."""
         return f"{self.job_id}:{self.setup_id}"
 
+    def _require_active(self) -> None:
+        """Reject every attempt to reopen a terminal creation session."""
+        if self.state in {
+            OperationCreationState.CREATED,
+            OperationCreationState.CANCELLED,
+        }:
+            raise RuntimeError("Operation creation session is terminal")
+
     def select_strategy(
         self,
         strategy_id: str,
         *,
         selected_tool_remains_compatible: bool = False,
     ) -> "OperationCreationSession":
-        if self.state in {OperationCreationState.CREATED, OperationCreationState.CANCELLED}:
-            raise RuntimeError("Operation creation session is terminal")
+        self._require_active()
         if not strategy_id:
             raise ValueError("Strategy identity is required")
         keep_tool = (
@@ -171,6 +178,7 @@ class OperationCreationSession:
         )
 
     def select_tool(self, choice: OperationToolChoice) -> "OperationCreationSession":
+        self._require_active()
         if self.strategy_id is None:
             raise RuntimeError("Select a strategy before selecting a Tool")
         if not choice.compatible:
@@ -194,6 +202,7 @@ class OperationCreationSession:
         *,
         validation_errors: tuple[str, ...] = (),
     ) -> "OperationCreationSession":
+        self._require_active()
         if self.tool_assembly_id is None:
             raise RuntimeError("Select a Tool before configuring the operation")
         normalized = tuple(sorted(values.items(), key=lambda item: item[0]))
@@ -211,6 +220,7 @@ class OperationCreationSession:
         )
 
     def back(self) -> "OperationCreationSession":
+        self._require_active()
         if self.current_step is OperationCreationStep.CONFIGURE_OPERATION:
             return replace(
                 self,
@@ -229,6 +239,7 @@ class OperationCreationSession:
         return self
 
     def mark_created(self) -> "OperationCreationSession":
+        self._require_active()
         if self.state is not OperationCreationState.READY_TO_CREATE:
             raise RuntimeError("Operation creation session is not ready")
         return replace(self, state=OperationCreationState.CREATED)
@@ -236,6 +247,8 @@ class OperationCreationSession:
     def cancel(self) -> "OperationCreationSession":
         if self.state is OperationCreationState.CREATED:
             raise RuntimeError("Created operation cannot be cancelled")
+        if self.state is OperationCreationState.CANCELLED:
+            return self
         return replace(
             self,
             state=OperationCreationState.CANCELLED,

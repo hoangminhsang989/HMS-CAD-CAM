@@ -61,6 +61,59 @@ def _choice(*, compatible: bool = True) -> OperationToolChoice:
     )
 
 
+def _ready_session() -> tuple[OperationCreationSession, OperationToolChoice]:
+    choice = _choice()
+    session = (
+        _session()
+        .select_strategy("parallel_finishing_3d")
+        .select_tool(choice)
+        .configure({"operation_name": "Terminal", "stepover_mm": "1.25"})
+    )
+    return session, choice
+
+
+def _terminal_snapshot(session: OperationCreationSession) -> tuple[object, ...]:
+    """Capture every semantic identity and mutable working-copy field."""
+    return (
+        session.state,
+        session.current_step,
+        session.session_id,
+        session.project_id,
+        session.project_generation,
+        session.job_id,
+        session.setup_id,
+        session.parent_node_id,
+        session.strategy_id,
+        session.tool_assembly_id,
+        session.tool_id,
+        session.profile_id,
+        session.tool_configuration_revision,
+        session.resolved_provenance,
+        session.working_values,
+        session.validation_errors,
+    )
+
+
+def _invoke_public_mutator(
+    session: OperationCreationSession,
+    mutator: str,
+    choice: OperationToolChoice,
+) -> OperationCreationSession:
+    if mutator == "select_strategy":
+        return session.select_strategy("drilling_v1")
+    if mutator == "select_tool":
+        return session.select_tool(choice)
+    if mutator == "configure":
+        return session.configure({"operation_name": "Resurrected"})
+    if mutator == "back":
+        return session.back()
+    if mutator == "cancel":
+        return session.cancel()
+    if mutator == "mark_created":
+        return session.mark_created()
+    raise AssertionError(f"Unmapped public mutator: {mutator}")
+
+
 def _library():
     ball = tool(ball=True)
     flat = tool(ball=False)
@@ -202,6 +255,64 @@ def test_cancel_clears_working_copy_and_is_terminal() -> None:
     assert cancelled.working_values == ()
     with pytest.raises(RuntimeError, match="terminal"):
         cancelled.select_strategy("drilling_v1")
+
+
+@pytest.mark.parametrize(
+    "terminal_state",
+    (OperationCreationState.CANCELLED, OperationCreationState.CREATED),
+)
+@pytest.mark.parametrize(
+    "mutator",
+    (
+        "select_strategy",
+        "select_tool",
+        "configure",
+        "back",
+        "cancel",
+        "mark_created",
+    ),
+)
+def test_terminal_state_public_mutator_matrix_is_monotonic_and_immutable(
+    terminal_state: OperationCreationState,
+    mutator: str,
+) -> None:
+    ready, choice = _ready_session()
+    terminal = (
+        ready.cancel()
+        if terminal_state is OperationCreationState.CANCELLED
+        else ready.mark_created()
+    )
+    before = _terminal_snapshot(terminal)
+
+    if terminal_state is OperationCreationState.CANCELLED and mutator == "cancel":
+        result = _invoke_public_mutator(terminal, mutator, choice)
+        assert result is terminal
+        assert _terminal_snapshot(result) == before
+    else:
+        with pytest.raises(RuntimeError):
+            _invoke_public_mutator(terminal, mutator, choice)
+
+    assert _terminal_snapshot(terminal) == before
+
+
+def test_exact_r169_terminal_resurrection_paths_are_rejected() -> None:
+    ready, choice = _ready_session()
+    cancelled = ready.cancel()
+    created = ready.mark_created()
+
+    for attempt in (
+        lambda: cancelled.configure({"operation_name": "Cancelled configure"}),
+        lambda: cancelled.select_tool(choice),
+        cancelled.back,
+        lambda: created.configure({"operation_name": "Created configure"}),
+        lambda: created.select_tool(choice),
+        created.back,
+    ):
+        with pytest.raises(RuntimeError, match="terminal"):
+            attempt()
+
+    assert cancelled.state is OperationCreationState.CANCELLED
+    assert created.state is OperationCreationState.CREATED
 
 
 def test_tool_service_prioritizes_compatible_and_explains_negative_pair() -> None:

@@ -28,6 +28,7 @@ from hms_cadcam.cam.domain import (
     GeometryRepresentationKind,
     Revision,
 )
+from hms_cadcam.cam.operation_creation import OperationCreationState
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cam_ui import CamWorkspace
 from tests.unit.test_drilling_ui import _hole, _resolved
@@ -209,6 +210,117 @@ def test_cancel_discards_editor_working_copy_without_project_side_effect(
     assert service.cam_snapshot.artifacts == ()
     assert service.simulation_runs.results() == ()
     assert service.post_service.results() == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_created_product_session_rejects_resurrection_and_second_transaction(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    choice = wizard._selected_tool_choice()
+    assert choice is not None
+    wizard.next_button.click()
+    application.processEvents()
+    page = wizard.editor_page
+    binding = wizard._binding
+    assert page is not None
+    assert binding is not None
+    page._field_widgets["geometry_summary"].action_button.click()
+    application.processEvents()
+    values = page.state.applicable_snapshot()
+    simulation_before = service.simulation_runs.results()
+    post_before = service.post_service.results()
+
+    wizard.finish_button.click()
+    application.processEvents()
+    created = wizard.session
+    assert created.state is OperationCreationState.CREATED
+    setup = service.cam_snapshot.jobs[0].setups[0]
+    operation_ids = tuple(
+        operation.operation_id for operation in setup.operation_tree.operations
+    )
+    zones = service.cam3d_config.zones
+    tools = service.cam_snapshot.tool_definitions
+    assert len(operation_ids) == 1
+    assert len(zones) == 1
+
+    for attempt in (
+        lambda: created.configure({"operation_name": "Duplicate"}),
+        lambda: created.select_tool(choice),
+        lambda: created.select_strategy("z_level_finishing_3d"),
+        created.back,
+        created.mark_created,
+        created.cancel,
+    ):
+        with pytest.raises(RuntimeError):
+            attempt()
+
+    with pytest.raises(ValueError, match="lặp"):
+        binding.finish_callback(values)
+    wizard._finish()
+    application.processEvents()
+
+    setup_after = service.cam_snapshot.jobs[0].setups[0]
+    assert tuple(
+        operation.operation_id
+        for operation in setup_after.operation_tree.operations
+    ) == operation_ids
+    assert service.cam3d_config.zones == zones
+    assert service.cam_snapshot.tool_definitions == tools
+    assert service.simulation_runs.results() == simulation_before == ()
+    assert service.post_service.results() == post_before == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_cancelled_product_session_cannot_reach_finish_or_persistence(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    choice = wizard._selected_tool_choice()
+    assert choice is not None
+    wizard.next_button.click()
+    application.processEvents()
+    page = wizard.editor_page
+    assert page is not None
+    page._field_widgets["geometry_summary"].action_button.click()
+    application.processEvents()
+    snapshot_before = service.cam_snapshot
+    config_before = service.cam3d_config
+    simulation_before = service.simulation_runs.results()
+    post_before = service.post_service.results()
+
+    wizard.reject()
+    application.processEvents()
+    cancelled = wizard.session
+    assert cancelled.state is OperationCreationState.CANCELLED
+
+    for attempt in (
+        lambda: cancelled.configure({"operation_name": "Forbidden"}),
+        lambda: cancelled.select_tool(choice),
+        lambda: cancelled.select_strategy("z_level_finishing_3d"),
+        cancelled.back,
+        cancelled.mark_created,
+    ):
+        with pytest.raises(RuntimeError, match="terminal"):
+            attempt()
+    assert cancelled.cancel() is cancelled
+    with pytest.raises(RuntimeError, match="terminal"):
+        wizard._finish()
+
+    assert wizard.session.state is OperationCreationState.CANCELLED
+    assert service.cam_snapshot == snapshot_before
+    assert service.cam3d_config == config_before
+    assert service.simulation_runs.results() == simulation_before == ()
+    assert service.post_service.results() == post_before == ()
+    assert all(
+        not setup.operation_tree.operations
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
     service.close_project(discard_changes=True)
     workspace.close()
 
