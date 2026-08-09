@@ -48,6 +48,9 @@ from hms_cadcam.cam.operation_creation import (
     Stage16AToolSelectionService,
     default_drilling_creation_strategy,
 )
+from hms_cadcam.cam.tool_profile_integration import (
+    resolve_editor_tool_profile_application,
+)
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.function_editor.model import (
     FunctionEditorDiagnostic,
@@ -319,7 +322,7 @@ class Stage16AOperationCreationAdapter:
             finally:
                 complete_finish(success)
 
-        return OperationCreationEditorBinding(
+        binding = OperationCreationEditorBinding(
             schema,
             _schema_values(schema, parallel_applied_values(context)),
             lambda values: parallel_validation_diagnostics(
@@ -329,6 +332,7 @@ class Stage16AOperationCreationAdapter:
             action,
             lambda values: parallel_draft_derived_values(context, draft, values),
         )
+        return self._resolved_editor_binding(session, binding, snapshot)
 
     def _z_level_binding(
         self,
@@ -382,7 +386,7 @@ class Stage16AOperationCreationAdapter:
             finally:
                 complete_finish(success)
 
-        return OperationCreationEditorBinding(
+        binding = OperationCreationEditorBinding(
             schema,
             _schema_values(schema, z_level_applied_values(context)),
             lambda values: z_level_validation_diagnostics(
@@ -392,6 +396,7 @@ class Stage16AOperationCreationAdapter:
             action,
             lambda values: z_level_draft_derived_values(context, draft, values),
         )
+        return self._resolved_editor_binding(session, binding, snapshot)
 
     def _drilling_binding(
         self,
@@ -489,13 +494,66 @@ class Stage16AOperationCreationAdapter:
             finally:
                 complete_finish(success)
 
-        return OperationCreationEditorBinding(
+        binding = OperationCreationEditorBinding(
             schema,
             _schema_values(schema, drilling_family_applied_values(context)),
             validate,
             finish,
             action,
         )
+        return self._resolved_editor_binding(session, binding, snapshot)
+
+    def _resolved_editor_binding(
+        self,
+        session: OperationCreationSession,
+        binding: OperationCreationEditorBinding,
+        snapshot,
+    ) -> OperationCreationEditorBinding:
+        """Seed the existing editor from one authoritative profile resolution."""
+        if session.strategy_id is None or session.tool_id is None:
+            raise RuntimeError("Tool profile context is incomplete.")
+        tool = next(
+            (
+                item
+                for item in snapshot.tool_definitions
+                if item.tool_id == session.tool_id
+            ),
+            None,
+        )
+        if tool is None:
+            raise ValueError("Tool Definition is missing.")
+        assembly = self._assembly(snapshot.tool_assemblies, session)
+        holder = next(
+            (
+                item
+                for item in snapshot.holder_definitions
+                if assembly.holder_id is not None
+                and item.holder_id == assembly.holder_id
+            ),
+            None,
+        )
+        applied = dict(binding.applied_values)
+        for field_id, value in session.working_values:
+            if field_id in applied:
+                applied[field_id] = _presentation_like(applied[field_id], value)
+        application = resolve_editor_tool_profile_application(
+            tool,
+            session.strategy_id,
+            applied,
+            profile_id=session.profile_id,
+            operation_id=str(session.session_id),
+            holder_fingerprint=(
+                holder.content_fingerprint if holder is not None else None
+            ),
+        )
+        for field_id, value in application.editor_values:
+            if field_id in applied:
+                applied[field_id] = _presentation_like(applied[field_id], value)
+        if not set(session.resolved_provenance).issubset(
+            application.winning_sources
+        ):
+            raise RuntimeError("Tool profile provenance changed; select the Tool again.")
+        return replace(binding, applied_values=applied)
 
     def _resolve_drilling(self, update, setup: Setup) -> object:
         assert self._drilling_resolver is not None
@@ -783,6 +841,15 @@ def _machine_requirement(machine, capability: OperationCapability) -> MachineReq
 def _schema_values(schema, values: Mapping[str, PresentationValue]):
     """Mirror the production-session boundary's exact schema-field projection."""
     return {field.field_id: values[field.field_id] for field in schema.fields}
+
+
+def _presentation_like(current: PresentationValue, value: object) -> PresentationValue:
+    """Keep existing FunctionEditor primitive shape while replacing its value."""
+    if isinstance(current, str) and not isinstance(value, str):
+        return str(value)
+    if not isinstance(value, (str, int, float, bool, type(None), tuple)):
+        raise TypeError("Resolved Tool profile value is not presentation-safe.")
+    return cast(PresentationValue, value)
 
 
 def _surface_key(surface: CamSurfaceReference) -> tuple[object, ...]:

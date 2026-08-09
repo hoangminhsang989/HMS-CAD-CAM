@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Mapping
 from uuid import UUID, uuid4
 
+from hms_cadcam.cam.automatic_parameters import CamQualityProfile
 from hms_cadcam.cam.domain import (
     DEFAULT_TOOL_PROFILE_REGISTRY,
     CamJobId,
@@ -45,6 +46,9 @@ from hms_cadcam.cam.domain.machine import OperationCapability
 from hms_cadcam.cam.domain.tool_profiles import ToolStrategyProfileSchema
 from hms_cadcam.cam.domain.units import LengthUnit
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot
+from hms_cadcam.cam.tool_profile_integration import (
+    resolve_tool_profile_application,
+)
 
 
 HoleSource = HoleReference | HolePattern
@@ -95,6 +99,7 @@ class OperationToolChoice:
     tool_revision: Revision
     configuration_revision: Revision
     assembly_revision: Revision
+    effective_values: tuple[tuple[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +195,7 @@ class OperationCreationSession:
             profile_id=choice.profile_id,
             tool_configuration_revision=choice.configuration_revision,
             resolved_provenance=choice.provenance,
-            working_values=(),
+            working_values=choice.effective_values,
             validation_errors=(),
             current_step=OperationCreationStep.CONFIGURE_OPERATION,
             state=OperationCreationState.CONFIGURE_OPERATION,
@@ -413,11 +418,10 @@ class Stage16AToolSelectionService:
 
         profile_state = ToolProfileListState.NOT_CONFIGURED
         profile_id = None
-        provenance: list[ToolProfileValueSource] = []
+        provenance: tuple[ToolProfileValueSource, ...] = ()
+        effective_values: tuple[tuple[str, object], ...] = ()
         if tool is not None:
             schema = DEFAULT_TOOL_PROFILE_REGISTRY.schema(strategy.strategy_id)
-            if not tool.common_defaults.is_empty:
-                provenance.append(ToolProfileValueSource.TOOL_COMMON_DEFAULT)
             usable = []
             for profile in tool.profiles_for_strategy(strategy.strategy_id):
                 assessed = assess_tool_program_profile(
@@ -433,17 +437,31 @@ class Stage16AToolSelectionService:
                     usable.append(profile)
             if len(usable) == 1:
                 profile_id = usable[0].profile_id
-                provenance.append(ToolProfileValueSource.TOOL_PROGRAM_PROFILE)
             elif len(usable) > 1:
                 compatible = False
                 reason = (
                     "Multiple enabled Tool profiles require an explicit selection."
                 )
                 profile_state = ToolProfileListState.INCOMPATIBLE
-            if not provenance:
-                provenance.append(ToolProfileValueSource.AUTOMATIC_POLICY)
-            if any(field.report_dict()["has_safe_default"] for field in schema.fields):
-                provenance.append(ToolProfileValueSource.SAFE_DEFAULT)
+            if compatible:
+                automatic_values = (
+                    {"quality_profile": CamQualityProfile.BALANCED.value}
+                    if any(
+                        field.field_id == "quality_profile" for field in schema.fields
+                    )
+                    else {}
+                )
+                application = resolve_tool_profile_application(
+                    tool,
+                    strategy.strategy_id,
+                    automatic_values=automatic_values,
+                    profile_id=profile_id,
+                    holder_fingerprint=(
+                        holder.content_fingerprint if holder is not None else None
+                    ),
+                )
+                provenance = application.winning_sources
+                effective_values = application.editor_values
 
         diameter = getattr(getattr(tool, "cutting_geometry", None), "diameter", None)
         diameter_text = "—"
@@ -461,10 +479,11 @@ class Stage16AToolSelectionService:
             reason,
             profile_state,
             profile_id,
-            tuple(dict.fromkeys(provenance)),
+            provenance,
             tool.revision if tool is not None else Revision(0),
             tool.configuration_revision if tool is not None else Revision(0),
             assembly.revision,
+            effective_values,
         )
 
     def _tool(self, assembly: ToolAssembly) -> ToolDefinition | None:

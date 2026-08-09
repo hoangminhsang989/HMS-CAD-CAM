@@ -3,22 +3,36 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
 from _cam3d_fixtures import tool
+from hms_cadcam.cam.automatic_parameters import (
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    AutomaticParameterValue,
+    AutomaticValidationResult,
+    CamQualityProfile,
+)
 from hms_cadcam.cam.domain import (
     CamJobId,
     CamNodeId,
+    DependencyFingerprint,
     Length,
     LengthUnit,
     Revision,
     SetupId,
     ToolAssembly,
     ToolAssemblyId,
+    ToolCommonDefaults,
     ToolProfileListState,
+    ToolProfileValue,
     ToolProfileValueSource,
+    ToolProgramProfile,
+    ToolProgramProfileId,
 )
 from hms_cadcam.cam.operation_creation import (
     OperationCreationSession,
@@ -29,6 +43,10 @@ from hms_cadcam.cam.operation_creation import (
     Stage16AToolSelectionService,
 )
 from hms_cadcam.cam.persistence import CamProjectSnapshot
+from hms_cadcam.cam.tool_profile_integration import (
+    apply_tool_profile_to_automatic_contract,
+    resolve_tool_profile_application,
+)
 
 
 def _session() -> OperationCreationSession:
@@ -136,6 +154,59 @@ def _library():
         tool_assemblies=(ball_assembly, flat_assembly),
     )
     return snapshot, ball, flat, ball_assembly, flat_assembly
+
+
+def _profile(tool_definition, values: dict[str, object]) -> ToolProgramProfile:
+    now = datetime(2026, 8, 9, tzinfo=UTC)
+    return ToolProgramProfile(
+        ToolProgramProfileId.new(),
+        tool_definition.tool_id,
+        "parallel_finishing_3d",
+        "R175 profile",
+        True,
+        1,
+        tuple(ToolProfileValue(key, value) for key, value in values.items()),
+        now,
+        now,
+        tool_definition.revision,
+        tool_definition.content_fingerprint,
+    )
+
+
+def _automatic_value(
+    key: str,
+    value: object,
+    *,
+    override: object = None,
+) -> AutomaticParameterValue:
+    return AutomaticParameterValue(
+        key,
+        (
+            AutomaticParameterMode.MANUAL
+            if override is not None
+            else AutomaticParameterMode.AUTO
+        ),
+        value,
+        "R175 automatic policy",
+        1,
+        DependencyFingerprint.from_payload({"key": key, "value": value}),
+        AutomaticParameterStatus.RESOLVED,
+        "R175 deterministic fixture",
+        override,
+        AutomaticValidationResult(True),
+    )
+
+
+def _parallel_contract(*, manual_stepover: float | None = None):
+    return AutomaticParameterContract(
+        "parallel.finishing.automatic",
+        1,
+        CamQualityProfile.BALANCED,
+        (
+            _automatic_value("stepover_mm", 1.2, override=manual_stepover),
+            _automatic_value("tolerance_mm", 0.02),
+        ),
+    )
 
 
 def test_start_has_stable_project_program_and_no_working_operation() -> None:
@@ -397,3 +468,173 @@ def test_tool_service_fails_closed_on_setup_unit_mismatch() -> None:
     ).choices("parallel_finishing_3d")
     assert all(not item.compatible for item in choices)
     assert all("unit" in item.reason.casefold() for item in choices)
+
+
+def test_r175_precedence_ladder_reports_only_actual_winning_sources() -> None:
+    base_tool = tool(ball=True)
+    safe = resolve_tool_profile_application(
+        base_tool,
+        "parallel_finishing_3d",
+        automatic_values={},
+    )
+    assert safe.value("quality_profile") == "balanced"
+    assert safe.resolution.value("quality_profile").source is (
+        ToolProfileValueSource.SAFE_DEFAULT
+    )
+
+    automatic = resolve_tool_profile_application(
+        base_tool,
+        "parallel_finishing_3d",
+        automatic_values={"quality_profile": "fast"},
+    )
+    assert automatic.value("quality_profile") == "fast"
+    assert automatic.resolution.value("quality_profile").source is (
+        ToolProfileValueSource.AUTOMATIC_POLICY
+    )
+
+    common_tool = replace(
+        base_tool,
+        common_defaults=ToolCommonDefaults(quality_profile="high"),
+        configuration_revision=Revision(1),
+    )
+    common = resolve_tool_profile_application(
+        common_tool,
+        "parallel_finishing_3d",
+        automatic_values={"quality_profile": "fast"},
+    )
+    assert common.value("quality_profile") == "high"
+    assert common.resolution.value("quality_profile").source is (
+        ToolProfileValueSource.TOOL_COMMON_DEFAULT
+    )
+
+    profile = _profile(common_tool, {"quality_profile": "fast"})
+    profiled_tool = replace(
+        common_tool,
+        program_profiles=(profile,),
+        configuration_revision=Revision(2),
+    )
+    profiled = resolve_tool_profile_application(
+        profiled_tool,
+        "parallel_finishing_3d",
+        automatic_values={"quality_profile": "balanced"},
+        profile_id=profile.profile_id,
+    )
+    assert profiled.value("quality_profile") == "fast"
+    assert profiled.resolution.value("quality_profile").source is (
+        ToolProfileValueSource.TOOL_PROGRAM_PROFILE
+    )
+    assert ToolProfileValueSource.TOOL_COMMON_DEFAULT not in profiled.winning_sources
+
+
+def test_r175_typed_contract_applies_top_level_and_values_map_winners() -> None:
+    base_tool = tool(ball=True)
+    common_tool = replace(
+        base_tool,
+        common_defaults=ToolCommonDefaults(quality_profile="high"),
+        configuration_revision=Revision(1),
+    )
+    profile = _profile(
+        common_tool,
+        {"stepover_mm": 0.45, "tolerance_mm": 0.008},
+    )
+    configured = replace(
+        common_tool,
+        program_profiles=(profile,),
+        configuration_revision=Revision(2),
+    )
+    original = _parallel_contract()
+    applied = apply_tool_profile_to_automatic_contract(
+        original,
+        configured,
+        "parallel_finishing_3d",
+        operation_override_keys=frozenset(),
+        operation_id="r175:typed-contract",
+        profile_id=profile.profile_id,
+    )
+    assert applied.quality_profile is CamQualityProfile.HIGH
+    assert applied.value("stepover_mm").effective_value == pytest.approx(0.45)
+    assert applied.value("tolerance_mm").effective_value == pytest.approx(0.008)
+    assert "Tool theo chương trình" in applied.value("stepover_mm").source
+    assert applied.effective_fingerprint != original.effective_fingerprint
+
+
+def test_r175_real_values_map_operation_override_remains_authoritative() -> None:
+    base_tool = tool(ball=True)
+    profile = _profile(base_tool, {"stepover_mm": 0.45, "tolerance_mm": 0.008})
+    configured = replace(
+        base_tool,
+        program_profiles=(profile,),
+        configuration_revision=Revision(1),
+    )
+    manual = _parallel_contract(manual_stepover=0.2)
+    application = resolve_tool_profile_application(
+        configured,
+        "parallel_finishing_3d",
+        automatic_values={
+            "quality_profile": "balanced",
+            "stepover_mm": 1.2,
+            "tolerance_mm": 0.02,
+        },
+        operation_overrides={"stepover_mm": 0.2},
+        contract=manual,
+        profile_id=profile.profile_id,
+    )
+    assert application.resolution.value("stepover_mm").source is (
+        ToolProfileValueSource.OPERATION_OVERRIDE
+    )
+    assert application.contract is not None
+    assert application.contract.value("stepover_mm").mode is (
+        AutomaticParameterMode.MANUAL
+    )
+    assert application.contract.value("stepover_mm").effective_value == pytest.approx(0.2)
+    assert application.contract.value("tolerance_mm").effective_value == pytest.approx(
+        0.008
+    )
+
+
+def test_r175_tool_choice_seed_and_aggregate_provenance_follow_winners() -> None:
+    snapshot, ball, _flat, ball_assembly, _flat_assembly = _library()
+    configured = replace(
+        ball,
+        common_defaults=ToolCommonDefaults(quality_profile="high"),
+        configuration_revision=Revision(1),
+    )
+    configured_snapshot = replace(
+        snapshot,
+        tool_definitions=tuple(
+            configured if item.tool_id == ball.tool_id else item
+            for item in snapshot.tool_definitions
+        ),
+    )
+    configured_choice = Stage16AToolSelectionService(
+        configured_snapshot, setup_unit=LengthUnit.MM
+    ).require_current(
+        "parallel_finishing_3d",
+        ball_assembly.assembly_id,
+        tool_id=ball.tool_id,
+        configuration_revision=Revision(1),
+    )
+    assert dict(configured_choice.effective_values)["quality_profile"] == "high"
+    assert configured_choice.provenance == (
+        ToolProfileValueSource.TOOL_COMMON_DEFAULT,
+    )
+    selected = (
+        _session()
+        .select_strategy("parallel_finishing_3d")
+        .select_tool(configured_choice)
+    )
+    assert dict(selected.working_values)["quality_profile"] == "high"
+    assert selected.resolved_provenance == configured_choice.provenance
+
+    fallback_choice = Stage16AToolSelectionService(
+        snapshot, setup_unit=LengthUnit.MM
+    ).require_current(
+        "parallel_finishing_3d",
+        ball_assembly.assembly_id,
+        tool_id=ball.tool_id,
+        configuration_revision=Revision(0),
+    )
+    assert dict(fallback_choice.effective_values)["quality_profile"] == "balanced"
+    assert fallback_choice.provenance == (
+        ToolProfileValueSource.AUTOMATIC_POLICY,
+    )

@@ -21,7 +21,9 @@ from hms_cadcam.cam.cam3d import (
     CamSurfaceRole,
 )
 from hms_cadcam.cam.domain import (
+    DEFAULT_TOOL_PROFILE_REGISTRY,
     ArtifactStatus,
+    DrillingStrategy,
     GeometryFingerprint,
     GeometryReference,
     GeometryReferenceId,
@@ -29,6 +31,9 @@ from hms_cadcam.cam.domain import (
     GeometryRepresentationKind,
     LengthUnit,
     Revision,
+    ToolCommonDefaults,
+    ToolProfileValueSource,
+    preview_tool_profile_capture,
 )
 from hms_cadcam.cam.operation_creation import OperationCreationState
 from hms_cadcam.project.service import ProjectService
@@ -608,5 +613,310 @@ def test_drilling_and_zlevel_use_real_production_editor_and_transaction(
     assert service.cam_snapshot.artifacts == ()
     assert service.simulation_runs.results() == ()
     assert service.post_service.results() == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_r175_exact_r173_revision_refresh_is_editor_session_commit_consistent(
+    tmp_path, application: QApplication
+) -> None:
+    service, project, workspace = _workspace(tmp_path, application)
+    wizard = _open_parallel_wizard(workspace, application)
+    binding_a, values_a = _prepare_parallel_binding(wizard, application)
+    tool_id = wizard.session.tool_id
+    revision_0 = wizard.session.tool_configuration_revision
+    assert tool_id is not None and revision_0 == Revision(0)
+    operations_before = sum(
+        len(setup.operation_tree.operations)
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    zones_before = service.cam3d_config.zones
+    database_before = (project.root_path / "project.db").read_bytes()
+
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool_id,
+            ToolCommonDefaults(quality_profile="high"),
+            expected_configuration_revision=revision_0,
+        )
+    )
+    with pytest.raises(RuntimeError, match="profile"):
+        binding_a.finish_callback(values_a)
+    assert sum(
+        len(setup.operation_tree.operations)
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    ) == operations_before == 0
+    assert service.cam3d_config.zones == zones_before == ()
+    assert (project.root_path / "project.db").read_bytes() == database_before
+
+    wizard.back_button.click()
+    application.processEvents()
+    binding_b, values_b = _prepare_parallel_binding(wizard, application)
+    assert wizard.session.tool_configuration_revision == Revision(1)
+    assert binding_b.applied_values["quality_profile"] == "high"
+    assert values_b["quality_profile"] == "high"
+    assert dict(wizard.session.working_values)["quality_profile"] == "high"
+    assert ToolProfileValueSource.TOOL_COMMON_DEFAULT in (
+        wizard.session.resolved_provenance
+    )
+
+    simulation_before = service.simulation_runs.results()
+    post_before = service.post_service.results()
+    wizard.finish_button.click()
+    application.processEvents()
+    operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    automatic = AutomaticParameterContract.from_json(
+        dict(operation.parameters.values)[AUTOMATIC_PARAMETER_CONTRACT_KEY]
+    )
+    assert automatic.quality_profile.value == "high"
+    assert dict(wizard.session.working_values)["quality_profile"] == "high"
+    assert service.simulation_runs.results() == simulation_before == ()
+    assert service.post_service.results() == post_before == ()
+    assert service.cam_snapshot.artifacts == ()
+
+    root = project.root_path
+    operation_id = operation.operation_id
+    strategy = operation.strategy_key
+    tool_reference = operation.tool_assembly
+    job_id = service.cam_snapshot.jobs[0].job_id
+    setup_id = service.cam_snapshot.jobs[0].setups[0].setup_id
+    service.save()
+    service.close_project(discard_changes=True)
+    reopened = service.open_project(root)
+    restored = reopened.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    restored_contract = AutomaticParameterContract.from_json(
+        dict(restored.parameters.values)[AUTOMATIC_PARAMETER_CONTRACT_KEY]
+    )
+    assert restored.operation_id == operation_id
+    assert restored.strategy_key == strategy
+    assert restored.tool_assembly == tool_reference
+    assert reopened.cam_snapshot.jobs[0].job_id == job_id
+    assert reopened.cam_snapshot.jobs[0].setups[0].setup_id == setup_id
+    assert restored_contract.quality_profile.value == "high"
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_r175_common_default_removal_falls_back_without_stale_provenance(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    tool = next(
+        item
+        for item in service.cam_snapshot.tool_definitions
+        if item.family.value == "ball_end_mill"
+    )
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool.tool_id,
+            ToolCommonDefaults(quality_profile="high"),
+            expected_configuration_revision=tool.configuration_revision,
+        )
+    )
+    first = _open_parallel_wizard(workspace, application)
+    binding_high, _values_high = _prepare_parallel_binding(first, application)
+    assert binding_high.applied_values["quality_profile"] == "high"
+    assert ToolProfileValueSource.TOOL_COMMON_DEFAULT in first.session.resolved_provenance
+    first.reject()
+    application.processEvents()
+
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool.tool_id,
+            ToolCommonDefaults(),
+            expected_configuration_revision=Revision(1),
+        )
+    )
+    second = _open_parallel_wizard(workspace, application)
+    binding_fallback, _values_fallback = _prepare_parallel_binding(second, application)
+    assert binding_fallback.applied_values["quality_profile"] == "balanced"
+    assert second.session.resolved_provenance == (
+        ToolProfileValueSource.AUTOMATIC_POLICY,
+    )
+    second.reject()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_r175_zlevel_common_default_reaches_editor_and_committed_contract(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    tool = next(
+        item
+        for item in service.cam_snapshot.tool_definitions
+        if item.family.value == "ball_end_mill"
+    )
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool.tool_id,
+            ToolCommonDefaults(quality_profile="high"),
+            expected_configuration_revision=tool.configuration_revision,
+        )
+    )
+    wizard = _open_strategy_wizard(workspace, application, "z_level_finishing_3d")
+    wizard.next_button.click()
+    application.processEvents()
+    page = wizard.editor_page
+    binding = wizard._binding
+    assert page is not None and binding is not None
+    assert binding.applied_values["quality_profile"] == "high"
+    assert page.state.values["quality_profile"] == "high"
+    page._field_widgets["geometry_summary"].action_button.click()
+    application.processEvents()
+    wizard.finish_button.click()
+    application.processEvents()
+    operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    automatic = AutomaticParameterContract.from_json(
+        dict(operation.parameters.values)[AUTOMATIC_PARAMETER_CONTRACT_KEY]
+    )
+    assert automatic.quality_profile.value == "high"
+    assert dict(wizard.session.working_values)["quality_profile"] == "high"
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_r175_drilling_program_profile_reaches_existing_editor_and_operation(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    snapshot = service.cam_snapshot
+    tool = next(
+        item for item in snapshot.tool_definitions if item.family.value == "drill"
+    )
+    assembly = next(
+        item for item in snapshot.tool_assemblies if item.tool_id == tool.tool_id
+    )
+    holder = next(
+        (
+            item
+            for item in snapshot.holder_definitions
+            if assembly.holder_id is not None and item.holder_id == assembly.holder_id
+        ),
+        None,
+    )
+    values = {
+        "dwell_seconds": 0.75,
+        "retract_policy": "clearance_height",
+    }
+    preview = preview_tool_profile_capture(
+        tool,
+        "drilling_v1",
+        "R175 drilling profile",
+        values,
+        overridden_field_ids=frozenset(values),
+        registry=DEFAULT_TOOL_PROFILE_REGISTRY,
+    )
+    service.execute_cam_command(
+        lambda app: app.save_tool_program_profile(
+            preview,
+            expected_configuration_revision=tool.configuration_revision,
+            holder_fingerprint=(
+                holder.content_fingerprint if holder is not None else None
+            ),
+        )
+    )
+
+    wizard = _open_strategy_wizard(workspace, application, "drilling_v1")
+    for row in range(wizard.tool_list.topLevelItemCount()):
+        item = wizard.tool_list.topLevelItem(row)
+        if item.data(0, Qt.ItemDataRole.UserRole) == str(assembly.assembly_id):
+            wizard.tool_list.setCurrentItem(item)
+            break
+    else:
+        raise AssertionError("Profiled drilling Tool was not listed")
+    wizard.next_button.click()
+    application.processEvents()
+    page = wizard.editor_page
+    binding = wizard._binding
+    assert page is not None and binding is not None
+    assert float(binding.applied_values["dwell_seconds"]) == pytest.approx(0.75)
+    assert binding.applied_values["retract_policy"] == "clearance_height"
+    assert float(page.state.values["dwell_seconds"]) == pytest.approx(0.75)
+    assert ToolProfileValueSource.TOOL_PROGRAM_PROFILE in (
+        wizard.session.resolved_provenance
+    )
+    wizard.finish_button.click()
+    application.processEvents()
+    operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    strategy = DrillingStrategy.from_operation_parameters(operation.parameters)
+    assert strategy.dwell_seconds == pytest.approx(0.75)
+    assert strategy.retract_policy.value == "clearance_height"
+    assert dict(wizard.session.working_values)["dwell_seconds"] == "0.75"
+    assert service.cam_snapshot.artifacts == ()
+    assert service.simulation_runs.results() == ()
+    assert service.post_service.results() == ()
+    service.close_project(discard_changes=True)
+    workspace.close()
+
+
+def test_r175_tool_change_re_resolves_value_source_and_invalidates_old_binding(
+    tmp_path, application: QApplication
+) -> None:
+    service, _project, workspace = _workspace(tmp_path, application)
+    tool_a = next(
+        item
+        for item in service.cam_snapshot.tool_definitions
+        if item.family.value == "ball_end_mill"
+    )
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool_a.tool_id,
+            ToolCommonDefaults(quality_profile="high"),
+            expected_configuration_revision=tool_a.configuration_revision,
+        )
+    )
+    wizard = _open_parallel_wizard(workspace, application)
+    binding_a, values_a = _prepare_parallel_binding(wizard, application)
+    assert binding_a.applied_values["quality_profile"] == "high"
+    wizard.back_button.click()
+    application.processEvents()
+
+    assembly_b = _add_second_parallel_tool(service)
+    tool_b = next(
+        item
+        for item in service.cam_snapshot.tool_definitions
+        if item.tool_id == assembly_b.tool_id
+    )
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool_b.tool_id,
+            ToolCommonDefaults(quality_profile="fast"),
+            expected_configuration_revision=tool_b.configuration_revision,
+        )
+    )
+    wizard.refresh_live_state()
+    application.processEvents()
+    for row in range(wizard.tool_list.topLevelItemCount()):
+        item = wizard.tool_list.topLevelItem(row)
+        if item.data(0, Qt.ItemDataRole.UserRole) == str(assembly_b.assembly_id):
+            wizard.tool_list.setCurrentItem(item)
+            break
+    else:
+        raise AssertionError("Tool B was not listed")
+    binding_b, values_b = _prepare_parallel_binding(wizard, application)
+    assert binding_b.applied_values["quality_profile"] == "fast"
+    assert values_b["quality_profile"] == "fast"
+    with pytest.raises(RuntimeError, match="hiện hành"):
+        binding_a.finish_callback(values_a)
+    assert all(
+        not setup.operation_tree.operations
+        for job in service.cam_snapshot.jobs
+        for setup in job.setups
+    )
+    assert service.cam3d_config.zones == ()
+    wizard.finish_button.click()
+    application.processEvents()
+    operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    automatic = AutomaticParameterContract.from_json(
+        dict(operation.parameters.values)[AUTOMATIC_PARAMETER_CONTRACT_KEY]
+    )
+    assert operation.tool_assembly.assembly_id == assembly_b.assembly_id
+    assert automatic.quality_profile.value == "fast"
+    assert ToolProfileValueSource.TOOL_COMMON_DEFAULT in (
+        wizard.session.resolved_provenance
+    )
     service.close_project(discard_changes=True)
     workspace.close()
