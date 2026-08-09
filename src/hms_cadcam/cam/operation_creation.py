@@ -201,6 +201,22 @@ class OperationCreationSession:
             state=OperationCreationState.CONFIGURE_OPERATION,
         )
 
+    def invalidate_tool_selection(self) -> "OperationCreationSession":
+        """Clear stale Step2 identity without changing the selected strategy."""
+        self._require_active()
+        return replace(
+            self,
+            tool_assembly_id=None,
+            tool_id=None,
+            profile_id=None,
+            tool_configuration_revision=None,
+            resolved_provenance=(),
+            working_values=(),
+            validation_errors=(),
+            current_step=OperationCreationStep.SELECT_TOOL,
+            state=OperationCreationState.SELECT_TOOL,
+        )
+
     def configure(
         self,
         values: Mapping[str, object],

@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from typing import cast
 from uuid import UUID
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
 from hms_cadcam.cam.application.drilling import (
@@ -91,7 +90,7 @@ from hms_cadcam.ui.operation_creation_wizard import (
     OperationCreationEditorBinding,
     error_diagnostic,
 )
-from hms_cadcam.ui.tool_program_profiles import ToolEditorDialog
+from hms_cadcam.ui.tool_library import ToolLibraryDialog
 
 
 HoleSource = HoleReference | HolePattern
@@ -242,33 +241,13 @@ class Stage16AOperationCreationAdapter:
     def open_tool_management(
         self, session: OperationCreationSession, parent: QWidget
     ) -> None:
-        if session.tool_assembly_id is None:
-            raise ValueError("Hãy chọn một Tool trước.")
-        snapshot = self._service.cam_snapshot
-        assembly = self._assembly(snapshot.tool_assemblies, session)
-        tool = next(
-            (item for item in snapshot.tool_definitions if item.tool_id == assembly.tool_id),
-            None,
-        )
-        if tool is None:
-            raise ValueError("Tool Definition không còn tồn tại.")
-        holder = next(
-            (
-                item
-                for item in snapshot.holder_definitions
-                if assembly.holder_id is not None and item.holder_id == assembly.holder_id
-            ),
-            None,
-        )
-        dialog = ToolEditorDialog(
-            tool,
-            holder_fingerprint=(
-                holder.content_fingerprint if holder is not None else None
-            ),
+        """Open the dedicated manager; Step2 refreshes only after it returns."""
+        dialog = ToolLibraryDialog(
+            self._service,
+            initial_tool_id=session.tool_id,
             parent=parent,
         )
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        dialog.open()
+        dialog.exec()
 
     def _parallel_binding(
         self,

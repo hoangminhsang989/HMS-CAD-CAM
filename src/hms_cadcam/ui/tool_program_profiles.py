@@ -51,6 +51,7 @@ from hms_cadcam.cam.domain import (
     ToolStrategyProfileSchema,
     assess_tool_program_profile,
 )
+from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 
 
 _STATUS_TEXT = {
@@ -114,9 +115,9 @@ class ToolProgramProfilesWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ToolProgramProfilesWidget")
-        self.setAccessibleName("Cấu hình Tool theo chương trình")
+        self.setAccessibleName(ui_text("Cấu hình Tool theo chương trình"))
         self.setAccessibleDescription(
-            "Danh sách cấu hình tùy chọn; Tool vẫn hợp lệ khi danh sách trống."
+            ui_text("Danh sách cấu hình tùy chọn; Tool vẫn hợp lệ khi danh sách trống.")
         )
         self._registry = registry
         self._tool: ToolDefinition | None = None
@@ -127,7 +128,7 @@ class ToolProgramProfilesWidget(QWidget):
 
         self.toggle = QToolButton()
         self.toggle.setObjectName("ToolProfilesCollapseToggle")
-        self.toggle.setText("Cấu hình theo chương trình · Không bắt buộc")
+        self.toggle.setText(ui_text("Cấu hình theo chương trình · Không bắt buộc"))
         self.toggle.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -135,7 +136,7 @@ class ToolProgramProfilesWidget(QWidget):
         self.toggle.setCheckable(True)
         self.toggle.setChecked(False)
         self.toggle.setAccessibleName(
-            "Mở hoặc thu gọn cấu hình Tool theo chương trình"
+            ui_text("Mở hoặc thu gọn cấu hình Tool theo chương trình")
         )
         self.toggle.toggled.connect(self.set_expanded)
         root.addWidget(self.toggle)
@@ -145,24 +146,28 @@ class ToolProgramProfilesWidget(QWidget):
         body_layout = QVBoxLayout(self.body)
         body_layout.setContentsMargins(8, 4, 8, 8)
         body_layout.setSpacing(5)
-        self.optional_note = QLabel(
+        self.optional_note = QLabel(ui_text(
             "Không bắt buộc. Khi chưa cấu hình, chương trình tiếp tục dùng "
             "chính sách tự động."
-        )
+        ))
         self.optional_note.setWordWrap(True)
         self.optional_note.setObjectName("ToolProfilesOptionalNote")
-        self.optional_note.setAccessibleName("Trạng thái cấu hình tùy chọn")
+        self.optional_note.setAccessibleName(ui_text("Trạng thái cấu hình tùy chọn"))
         body_layout.addWidget(self.optional_note)
 
         self.tree = QTreeWidget()
         self.tree.setObjectName("ToolProfilesList")
-        self.tree.setAccessibleName("Danh sách cấu hình theo chương trình")
+        self.tree.setAccessibleName(ui_text("Danh sách cấu hình theo chương trình"))
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels(
-            ("Chương trình", "Trạng thái", "Số trường", "Cập nhật")
+            tuple(ui_text(item) for item in ("Chương trình", "Trạng thái", "Số trường", "Cập nhật"))
         )
         self.tree.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.tree.setMinimumSize(0, 0)
+        self.tree.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding
         )
         self.tree.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -182,25 +187,28 @@ class ToolProgramProfilesWidget(QWidget):
         actions.setVerticalSpacing(4)
         self.action_buttons: dict[str, QPushButton] = {}
         for index, (action, label) in enumerate(_ACTION_LABELS):
-            button = QPushButton(label)
+            button = QPushButton(ui_text(label))
             button.setObjectName(f"ToolProfileAction_{action}")
-            button.setAccessibleName(f"{label} cấu hình Tool")
+            button.setAccessibleName(f"{ui_text(label)} — {ui_text('Tool profile action')}")
+            button.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+            )
             button.clicked.connect(
                 lambda _checked=False, key=action: self._request(key)
             )
-            actions.addWidget(button, index // 3, index % 3)
+            actions.addWidget(button, index // 2, index % 2)
             self.action_buttons[action] = button
         body_layout.addLayout(actions)
 
-        self.save_current_button = QPushButton(
+        self.save_current_button = QPushButton(ui_text(
             "Lưu thiết lập này cho Tool và chương trình hiện tại"
-        )
+        ))
         self.save_current_button.setObjectName("ToolProfileSaveCurrentOperation")
         self.save_current_button.setAccessibleName(
-            "Lưu thiết lập nguyên công hiện tại thành cấu hình Tool"
+            ui_text("Lưu thiết lập nguyên công hiện tại thành cấu hình Tool")
         )
         self.save_current_button.setAccessibleDescription(
-            "Mở bản xem trước thay đổi; mặc định chỉ lưu các trường đã tùy chỉnh."
+            ui_text("Mở bản xem trước thay đổi; mặc định chỉ lưu các trường đã tùy chỉnh.")
         )
         self.save_current_button.clicked.connect(
             lambda: self._request("save_current")
@@ -209,6 +217,7 @@ class ToolProgramProfilesWidget(QWidget):
         root.addWidget(self.body)
         self.body.setVisible(False)
         self._update_actions()
+        localize_widget_tree(self)
 
     @property
     def is_expanded(self) -> bool:
@@ -255,8 +264,8 @@ class ToolProgramProfilesWidget(QWidget):
             )
             item = QTreeWidgetItem(
                 (
-                    schema.display_name_vi,
-                    _STATUS_TEXT[compatibility.state],
+                    ui_text(schema.display_name_vi),
+                    ui_text(_STATUS_TEXT[compatibility.state]),
                     str(len(profile.values)),
                     _updated_text(profile.updated_at),
                 )
@@ -268,13 +277,13 @@ class ToolProgramProfilesWidget(QWidget):
                 self.tree.setCurrentItem(item)
         if self.tree.topLevelItemCount() == 0:
             self.optional_note.setText(
-                "Chưa cấu hình · Không bắt buộc. Tool vẫn dùng được và chương "
-                "trình tiếp tục dùng chính sách tự động."
+                ui_text("Chưa cấu hình · Không bắt buộc. Tool vẫn dùng được và chương "
+                "trình tiếp tục dùng chính sách tự động.")
             )
         else:
             self.optional_note.setText(
-                "Cấu hình theo chương trình là tùy chọn và chỉ lưu các trường "
-                "được chương trình khai báo."
+                ui_text("Cấu hình theo chương trình là tùy chọn và chỉ lưu các trường "
+                "được chương trình khai báo.")
             )
         self._update_actions()
 
@@ -305,9 +314,11 @@ class _ProfileFieldRow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        self.enabled = QCheckBox("Dùng")
+        self.enabled = QCheckBox(ui_text("Dùng"))
         self.enabled.setChecked(active)
-        self.enabled.setAccessibleName(f"Dùng trường {descriptor.display_name_vi}")
+        self.enabled.setAccessibleName(
+            f"{ui_text('Dùng')} {ui_text(descriptor.display_name_vi)}"
+        )
         layout.addWidget(self.enabled)
         if descriptor.field_type is ToolProfileFieldType.NUMBER:
             editor = QDoubleSpinBox()
@@ -325,19 +336,24 @@ class _ProfileFieldRow(QWidget):
             editor.setKeyboardTracking(False)
         elif descriptor.field_type is ToolProfileFieldType.ENUM:
             editor = QComboBox()
+            editor.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            editor.setMinimumContentsLength(10)
             for option in descriptor.enum_values:
-                editor.addItem(descriptor.display_value(option), option)
+                editor.addItem(ui_text(descriptor.display_value(option)), option)
             if active:
                 index = editor.findData(value)
                 editor.setCurrentIndex(max(0, index))
         else:
-            editor = QCheckBox("Bật")
+            editor = QCheckBox(ui_text("Bật"))
             editor.setChecked(bool(value) if active else False)
-        editor.setAccessibleName(descriptor.display_name_vi)
+        editor.setAccessibleName(ui_text(descriptor.display_name_vi))
         editor.setAccessibleDescription(
-            f"Trường tùy chọn do chương trình khai báo"
-            + (f", đơn vị {descriptor.unit}" if descriptor.unit else "")
+            ui_text("Trường tùy chọn do chương trình khai báo")
+            + (f", {ui_text('Unit')} {descriptor.unit}" if descriptor.unit else "")
         )
+        editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         editor.setEnabled(active)
         self.enabled.toggled.connect(editor.setEnabled)
         self.editor = editor
@@ -366,14 +382,14 @@ class ToolProfileEditorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ToolProfileEditorDialog")
-        self.setWindowTitle(
+        self.setWindowTitle(ui_text(
             "Thêm cấu hình theo chương trình"
             if profile is None
             else "Chỉnh sửa cấu hình theo chương trình"
-        )
+        ))
         self.setAccessibleName(self.windowTitle())
         self.setAccessibleDescription(
-            "Chỉ hiển thị các trường do chương trình hiện tại khai báo."
+            ui_text("Chỉ hiển thị các trường do chương trình hiện tại khai báo.")
         )
         self.setModal(True)
         self._schema = schema
@@ -383,30 +399,30 @@ class ToolProfileEditorDialog(QDialog):
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(7)
 
-        title = QLabel(schema.display_name_vi)
+        title = QLabel(ui_text(schema.display_name_vi))
         title.setObjectName("ToolProfileStrategyTitle")
         title.setWordWrap(True)
         root.addWidget(title)
-        note = QLabel(
-            "Không bắt buộc · chỉ các trường được bật mới được lưu."
-        )
+        note = QLabel(ui_text("Không bắt buộc · chỉ các trường được bật mới được lưu."))
         note.setWordWrap(True)
         root.addWidget(note)
         form = QFormLayout()
         self.name_edit = QLineEdit(
             profile.display_name if profile is not None else schema.display_name_vi
         )
-        self.name_edit.setAccessibleName("Tên cấu hình")
-        form.addRow("Tên cấu hình", self.name_edit)
-        self.enabled_check = QCheckBox("Bật cấu hình này")
+        self.name_edit.setAccessibleName(ui_text("Tên cấu hình"))
+        form.addRow(ui_text("Tên cấu hình"), self.name_edit)
+        self.enabled_check = QCheckBox(ui_text("Bật cấu hình này"))
         self.enabled_check.setChecked(profile.enabled if profile is not None else True)
-        form.addRow("Trạng thái", self.enabled_check)
+        form.addRow(ui_text("Trạng thái"), self.enabled_check)
         root.addLayout(form)
 
-        basic = QGroupBox("Cơ bản")
+        basic = QGroupBox(ui_text("Cơ bản"))
         basic_layout = QFormLayout(basic)
+        basic_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         advanced = QWidget()
         advanced_layout = QFormLayout(advanced)
+        advanced_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for descriptor in schema.fields:
             row = _ProfileFieldRow(
                 descriptor,
@@ -415,10 +431,10 @@ class ToolProfileEditorDialog(QDialog):
             )
             self._rows[descriptor.field_id] = row
             target = advanced_layout if descriptor.advanced else basic_layout
-            target.addRow(descriptor.display_name_vi, row)
+            target.addRow(ui_text(descriptor.display_name_vi), row)
         root.addWidget(basic)
 
-        self.advanced_group = QGroupBox("Nâng cao")
+        self.advanced_group = QGroupBox(ui_text("Nâng cao"))
         self.advanced_group.setCheckable(True)
         self.advanced_group.setChecked(False)
         advanced_group_layout = QVBoxLayout(self.advanced_group)
@@ -440,16 +456,17 @@ class ToolProfileEditorDialog(QDialog):
         root.addWidget(self.error_label)
         footer = QHBoxLayout()
         footer.addStretch(1)
-        cancel = QPushButton("Hủy")
+        cancel = QPushButton(ui_text("Hủy"))
         cancel.clicked.connect(self.reject)
         footer.addWidget(cancel)
-        self.save_button = QPushButton("Lưu cấu hình")
+        self.save_button = QPushButton(ui_text("Lưu cấu hình"))
         self.save_button.setObjectName("PrimaryPanelAction")
         self.save_button.clicked.connect(self._validate_and_accept)
         footer.addWidget(self.save_button)
         root.addLayout(footer)
         self.setMinimumSize(480, 520)
         self.resize(540, 640)
+        localize_widget_tree(self)
 
     @property
     def display_name(self) -> str:
@@ -471,7 +488,7 @@ class ToolProfileEditorDialog(QDialog):
     def _validate_and_accept(self) -> None:
         try:
             if not self.display_name:
-                raise ValueError("Tên cấu hình là bắt buộc.")
+                raise ValueError(ui_text("Tên cấu hình là bắt buộc."))
             self.profile_values()
         except (KeyError, TypeError, ValueError) as error:
             self.error_label.setText(str(error))

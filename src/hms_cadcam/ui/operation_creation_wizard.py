@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QModelIndex, QRect, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -124,6 +124,9 @@ class OperationCreationWizard(QDialog):
         self._finishing = False
         self._closing_after_create = False
         self._tool_by_id: dict[str, OperationToolChoice] = {}
+        self._suppress_tool_auto_select_once = False
+        self._tool_selection_requires_user_action = False
+        self._populating_tools = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
@@ -230,6 +233,9 @@ class OperationCreationWizard(QDialog):
         self.tool_list.currentItemChanged.connect(
             lambda _current, _previous: self._tool_selection_changed()
         )
+        self.tool_list.itemSelectionChanged.connect(
+            self._tool_user_selection_changed
+        )
         self.tool_list.itemDoubleClicked.connect(
             lambda item, _column: self._next() if not item.isDisabled() else None
         )
@@ -308,6 +314,7 @@ class OperationCreationWizard(QDialog):
             return
         selected_id = self._session.tool_assembly_id
         choices = self._adapter.tool_choices(self._session, self.tool_search.text())
+        self._populating_tools = True
         self._tool_by_id = {str(item.assembly_id): item for item in choices}
         self.tool_list.clear()
         first_compatible: QTreeWidgetItem | None = None
@@ -337,12 +344,22 @@ class OperationCreationWizard(QDialog):
             self.tool_list.addTopLevelItem(item)
             if choice.assembly_id == selected_id and choice.compatible:
                 self.tool_list.setCurrentItem(item)
-        if self.tool_list.currentItem() is None and first_compatible is not None:
+        if self._suppress_tool_auto_select_once:
+            self.tool_list.clearSelection()
+            self.tool_list.setCurrentIndex(QModelIndex())
+        elif (
+            self.tool_list.currentItem() is None
+            and first_compatible is not None
+        ):
             self.tool_list.setCurrentItem(first_compatible)
+        self._suppress_tool_auto_select_once = False
+        self._populating_tools = False
         self.tool_list.resizeColumnToContents(0)
         self._tool_selection_changed()
 
     def _selected_tool_choice(self) -> OperationToolChoice | None:
+        if self._tool_selection_requires_user_action:
+            return None
         item = self.tool_list.currentItem()
         if item is None or item.isDisabled():
             return None
@@ -358,8 +375,16 @@ class OperationCreationWizard(QDialog):
             if choice is None
             else ui_text(choice.reason)
         )
-        self.manage_tools.setEnabled(choice is not None)
+        # The dedicated library remains available even when the project has no
+        # Tool yet; Step2 is still selection-only and contains no creation form.
+        self.manage_tools.setEnabled(True)
         self._update_navigation()
+
+    def _tool_user_selection_changed(self) -> None:
+        if self._populating_tools:
+            return
+        self._tool_selection_requires_user_action = False
+        self._tool_selection_changed()
 
     def _show_step(self, step: OperationCreationStep) -> None:
         index = {
@@ -534,6 +559,15 @@ class OperationCreationWizard(QDialog):
             self._invalidate_binding()
             self._show_feedback(reason)
         if self._session.current_step is OperationCreationStep.SELECT_TOOL:
+            if (
+                self._session.strategy_id is not None
+                and self._session.tool_assembly_id is not None
+                and self._selected_tool_unavailable_or_incompatible()
+            ):
+                self._suppress_tool_auto_select_once = True
+                self._tool_selection_requires_user_action = True
+                self._session = self._session.invalidate_tool_selection()
+                self.session_changed.emit(self._session)
             self._populate_tools()
         self._update_navigation()
 
@@ -553,14 +587,18 @@ class OperationCreationWizard(QDialog):
 
     def _open_tool_management(self) -> None:
         try:
-            choice = self._selected_tool_choice()
-            target_session = (
-                self._session.select_tool(choice)
-                if choice is not None
-                and self._session.tool_assembly_id != choice.assembly_id
-                else self._session
-            )
-            self._adapter.open_tool_management(target_session, self)
+            self._adapter.open_tool_management(self._session, self)
+            self._invalidate_binding()
+            if (
+                self._session.strategy_id is not None
+                and self._session.tool_assembly_id is not None
+                and self._selected_tool_unavailable_or_incompatible()
+            ):
+                self._suppress_tool_auto_select_once = True
+                self._tool_selection_requires_user_action = True
+                self._session = self._session.invalidate_tool_selection()
+                self.session_changed.emit(self._session)
+            self.refresh_live_state()
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._show_feedback(str(error))
 
@@ -582,6 +620,31 @@ class OperationCreationWizard(QDialog):
         self.next_button.setAutoDefault(step is not OperationCreationStep.CONFIGURE_OPERATION)
         self.finish_button.setDefault(step is OperationCreationStep.CONFIGURE_OPERATION)
         self.finish_button.setAutoDefault(step is OperationCreationStep.CONFIGURE_OPERATION)
+
+    def _selected_tool_unavailable_or_incompatible(self) -> bool:
+        """Ignore config-only drift here; Next explicitly rebinds the live choice."""
+        if (
+            self._session.strategy_id is None
+            or self._session.tool_assembly_id is None
+            or self._session.tool_id is None
+        ):
+            return False
+        try:
+            choice = next(
+                (
+                    item
+                    for item in self._adapter.tool_choices(self._session)
+                    if item.assembly_id == self._session.tool_assembly_id
+                ),
+                None,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return True
+        return (
+            choice is None
+            or choice.tool_id != self._session.tool_id
+            or not choice.compatible
+        )
 
     def _show_feedback(self, text: str) -> None:
         self.feedback.setText(ui_text(text or "Operation creation is not ready."))
