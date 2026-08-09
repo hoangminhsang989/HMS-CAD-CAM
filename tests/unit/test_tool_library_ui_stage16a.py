@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QStyle,
     QStyleOptionButton,
     QToolButton,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from hms_cadcam.cam.domain import (
     DEFAULT_TOOL_PROFILE_REGISTRY,
     LengthUnit,
+    ToolCommonDefaults,
     ToolFamily,
 )
 from hms_cadcam.cam.tool_library import ToolDefinitionDraft
@@ -56,7 +58,7 @@ def project_service(tmp_path_factory) -> ProjectService:
     service = ProjectService.create_default(root / "config")
     service.create_project_from_source(root, "R178 UI", source)
     draft = ToolDefinitionDraft(
-        "R178 Ball Tool",
+        "R183 Production Ball Tool",
         ToolFamily.BALL_END_MILL,
         LengthUnit.MM,
         10.0,
@@ -65,9 +67,21 @@ def project_service(tmp_path_factory) -> ProjectService:
         40.0,
         10.0,
         50.0,
-        create_assembly=False,
+        create_assembly=True,
     )
     service.execute_cam_command(lambda app: app.create_managed_tool(draft))
+    tool = service.cam_snapshot.tool_definitions[0]
+    service.execute_cam_command(
+        lambda app: app.update_tool_common_defaults(
+            tool.tool_id,
+            ToolCommonDefaults(
+                spindle_speed_rpm=4500.0,
+                cutting_feed_mm_per_min=800.0,
+                quality_profile="high",
+            ),
+            expected_configuration_revision=tool.configuration_revision,
+        )
+    )
     return service
 
 
@@ -93,6 +107,27 @@ def _fit(widget: QWidget, available: QRect, scale: float) -> None:
         )
 
 
+def _settle_layout(widget: QWidget, application: QApplication) -> None:
+    """Activate nested production layouts without relying on timing sleeps."""
+    widget.show()
+    for _attempt in range(3):
+        layouts = (
+            widget.layout(),
+            *(child.layout() for child in widget.findChildren(QWidget)),
+        )
+        activated = False
+        for layout in layouts:
+            if layout is not None:
+                activated = layout.activate() or activated
+        application.processEvents()
+        if not activated:
+            break
+
+
+def _mapped_rect(child: QWidget, root: QWidget) -> QRect:
+    return child.rect().translated(child.mapTo(root, QPoint(0, 0)))
+
+
 def _assert_interactive_geometry(widget: QWidget) -> None:
     root_rect = widget.rect().adjusted(-1, -1, 1, 1)
     visible_buttons: list[tuple[QPushButton, QRect]] = []
@@ -100,8 +135,7 @@ def _assert_interactive_geometry(widget: QWidget) -> None:
         for child in widget.findChildren(child_type):
             if not child.isVisibleTo(widget):
                 continue
-            top_left = child.mapTo(widget, QPoint(0, 0))
-            rect = child.rect().translated(top_left)
+            rect = _mapped_rect(child, widget)
             if child.isEnabled() or isinstance(child, QPushButton):
                 assert rect.width() > 0 and rect.height() > 0, (
                     widget.objectName(), child.objectName(), rect
@@ -273,14 +307,31 @@ def test_exact_r180_vi_action_geometry_and_common_defaults_click(
     with translation_service().using(UiLanguage.VI_VN):
         dialog = ToolLibraryDialog(project_service)
         _fit(dialog, QRect(0, 0, 1280, 720), 1.0)
-        dialog.show()
-        application.processEvents()
+        _settle_layout(dialog, application)
 
         before = project_service.cam_snapshot
+        tool = before.tool_definitions[0]
+        splitter = dialog.findChild(QSplitter, "ToolLibrarySplitter")
+        assert splitter is not None
+        assert len(splitter.sizes()) == 2
+        assert all(size > 0 for size in splitter.sizes())
+        assert dialog._selected_tool_id == tool.tool_id
+        assert len(before.tool_assemblies) == 1
+        assert before.tool_assemblies[0].tool_id == tool.tool_id
+        assert not tool.common_defaults.is_empty
+        assert dialog.detail_title.text().strip()
+        assert dialog.detail_identity.text().strip()
+        assert dialog.usage.text().strip()
+        assert dialog.common_status.text().strip()
+
+        edit_rect = _mapped_rect(dialog.edit_defaults, dialog)
+        usable_edit_rect = edit_rect.intersected(dialog.rect())
         assert dialog.edit_defaults.isVisibleTo(dialog)
         assert dialog.edit_defaults.isEnabled()
         assert dialog.edit_defaults.width() > 0
         assert dialog.edit_defaults.height() > 0
+        assert not usable_edit_rect.isEmpty()
+        assert dialog.rect().contains(usable_edit_rect.center())
         assert _button_text_fits(dialog.edit_defaults)
         assert dialog.archive_button.isVisibleTo(dialog)
         assert not dialog.archive_button.isEnabled()
