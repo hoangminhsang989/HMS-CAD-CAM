@@ -17,6 +17,7 @@ from hms_cadcam.cam.domain import (
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
     ResolvedPocketGeometry, SetupId, StockDefinition, ToolAssembly,
+    ToolAssemblyId,
     ReamingStrategy, ReamingValidationError,
     BoringStrategy, BoringValidationError,
     TappingStrategy, TappingValidationError, ToolDefinition,
@@ -38,6 +39,7 @@ from hms_cadcam.cam.domain.revision import (
     Revision,
 )
 from hms_cadcam.cam.domain.tool_profiles import utc_profile_now
+from hms_cadcam.cam.tool_library import ToolDefinitionDraft
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator,
 )
@@ -320,6 +322,138 @@ class CamApplicationService:
     def add_tool_definition(self, value: ToolDefinition) -> CamProjectSnapshot:
         return self._append_unique("tool_definitions", value, "tool_id")
 
+    def create_managed_tool(
+        self, draft: ToolDefinitionDraft
+    ) -> CamProjectSnapshot:
+        """Create one Tool and its optional assembly with service-owned IDs."""
+        if not isinstance(draft, ToolDefinitionDraft):
+            raise TypeError("Managed Tool creation requires a typed draft")
+        with self._lock:
+            tool = draft.build_tool(ToolDefinitionId.new())
+            holder = None
+            if draft.holder_id is not None:
+                holder = next(
+                    (
+                        item
+                        for item in self._snapshot.holder_definitions
+                        if item.holder_id == draft.holder_id
+                    ),
+                    None,
+                )
+                if holder is None:
+                    raise CamChildNotFoundError(
+                        f"Holder does not exist: {draft.holder_id}"
+                    )
+                if not draft.create_assembly:
+                    raise ValueError("A Holder requires a Tool Assembly")
+            assembly = (
+                draft.build_assembly(ToolAssemblyId.new(), tool, holder=holder)
+                if draft.create_assembly
+                else None
+            )
+
+            def mutation(state: CamProjectSnapshot) -> CamProjectSnapshot:
+                if any(item.tool_id == tool.tool_id for item in state.tool_definitions):
+                    raise ValueError(f"Duplicate Tool identity: {tool.tool_id}")
+                assemblies = state.tool_assemblies
+                if assembly is not None:
+                    if any(
+                        item.assembly_id == assembly.assembly_id
+                        for item in assemblies
+                    ):
+                        raise ValueError(
+                            f"Duplicate Tool Assembly identity: {assembly.assembly_id}"
+                        )
+                    assemblies = (*assemblies, assembly)
+                return replace(
+                    state,
+                    tool_definitions=(*state.tool_definitions, tool),
+                    tool_assemblies=assemblies,
+                )
+
+            return self.apply(mutation)
+
+    def update_managed_tool(
+        self,
+        tool_id: ToolDefinitionId,
+        draft: ToolDefinitionDraft,
+        *,
+        expected_revision: Revision,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Atomically edit a Tool and refresh its assembly dependency snapshots."""
+        if not isinstance(draft, ToolDefinitionDraft):
+            raise TypeError("Managed Tool update requires a typed draft")
+        with self._lock:
+            current = _find_tool(self._snapshot, tool_id)
+            if current.revision != expected_revision:
+                raise ValueError("Tool definition revision is stale")
+            if current.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            if draft.unit is not current.unit:
+                raise ValueError("Editing a Tool cannot change its persisted unit")
+            changed = draft.build_tool(
+                current.tool_id,
+                revision=current.revision.next(),
+                configuration_revision=current.configuration_revision.next(),
+                common_defaults=current.common_defaults,
+                program_profiles=current.program_profiles,
+            )
+            refreshed_assemblies = tuple(
+                replace(
+                    assembly,
+                    expected_tool_revision=changed.revision,
+                    expected_tool_fingerprint=changed.content_fingerprint,
+                    expected_tool_unit=changed.unit,
+                    revision=assembly.revision.next(),
+                )
+                if assembly.tool_id == tool_id
+                else assembly
+                for assembly in self._snapshot.tool_assemblies
+            )
+            return self.apply(
+                lambda state: replace(
+                    state,
+                    tool_definitions=tuple(
+                        changed if item.tool_id == tool_id else item
+                        for item in state.tool_definitions
+                    ),
+                    tool_assemblies=refreshed_assemblies,
+                )
+            )
+
+    def remove_managed_tool(
+        self,
+        tool_id: ToolDefinitionId,
+        *,
+        expected_revision: Revision,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Hard-delete only a truly unreferenced Tool; never cascade."""
+        with self._lock:
+            current = _find_tool(self._snapshot, tool_id)
+            if current.revision != expected_revision:
+                raise ValueError("Tool definition revision is stale")
+            if current.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            references = tuple(
+                item
+                for item in self._snapshot.tool_assemblies
+                if item.tool_id == tool_id
+            )
+            if references:
+                raise ValueError(
+                    "Tool is referenced by persisted Tool Assemblies; delete is blocked"
+                )
+            return self.apply(
+                lambda state: replace(
+                    state,
+                    tool_definitions=tuple(
+                        item for item in state.tool_definitions if item.tool_id != tool_id
+                    ),
+                )
+            )
+
     def save_tool_program_profile(
         self,
         preview: ToolProfileSavePreview,
@@ -549,11 +683,54 @@ class CamApplicationService:
                 for item in source.program_profiles
             )
             duplicate = replace(base, program_profiles=profiles)
+            duplicate_assemblies = tuple(
+                replace(
+                    assembly,
+                    assembly_id=ToolAssemblyId.new(),
+                    name=f"{assembly.name} — Bản sao",
+                    tool_id=duplicate_id,
+                    expected_tool_revision=duplicate.revision,
+                    expected_tool_fingerprint=duplicate.content_fingerprint,
+                    expected_tool_unit=duplicate.unit,
+                    revision=Revision(0),
+                )
+                for assembly in self._snapshot.tool_assemblies
+                if assembly.tool_id == tool_id
+            )
             self._snapshot = replace(
                 self._snapshot,
                 tool_definitions=(*self._snapshot.tool_definitions, duplicate),
+                tool_assemblies=(
+                    *self._snapshot.tool_assemblies,
+                    *duplicate_assemblies,
+                ),
             )
             return duplicate
+
+    def duplicate_tool_program_profile_entry(
+        self,
+        tool_id: ToolDefinitionId,
+        profile_id: ToolProgramProfileId,
+        *,
+        expected_configuration_revision: Revision,
+    ) -> CamProjectSnapshot:
+        """Deep-copy one profile with a service-owned ID and disabled state."""
+        with self._lock:
+            tool = _find_tool(self._snapshot, tool_id)
+            if tool.configuration_revision != expected_configuration_revision:
+                raise ValueError("Tool configuration revision is stale")
+            profile = _find_profile(tool, profile_id)
+            duplicate = duplicate_tool_program_profile(
+                profile, new_tool_id=tool.tool_id
+            )
+            changed = replace(
+                tool,
+                program_profiles=(*tool.program_profiles, duplicate),
+                configuration_revision=tool.configuration_revision.next(),
+            )
+            return self._replace_tool_configuration(
+                tool, changed, affected_strategies=(profile.strategy_id,)
+            )
 
     def _replace_tool_configuration(
         self,
