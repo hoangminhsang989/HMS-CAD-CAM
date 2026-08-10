@@ -1,12 +1,35 @@
 # CANONICAL CURRENT PROGRAMME STATE — R193 STAGE17A
 
 - Stage16A: **CLOSED**.
-- Stage17A: **BASELINE_FROZEN; TRANCHE 1 IMPLEMENTATION IN PROGRESS**.
+- Stage17A: **TRANCHE 1 IMPLEMENTED; LOCAL DIRECT REVIEW PENDING**.
 - Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
 - Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
 - Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
 - Owner contract: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
 - R193 implementation remains isolated in branch `stage17a-megawp3-auto-parameters`.
+- Contract commit: `f37be6b2bd2dc0c9b939c1aa0eb1535e13dcfe5e`.
+- Implementation commit: `500e732e32c250aa89c0de132930c6bb8e587da9` /
+  tree `6a523e94d9940b53e696eaf2716f203b9f3ed45a`.
+- Implemented tranche: shared typed AUTO/MANUAL_OVERRIDE/NOT_APPLICABLE
+  contract; Facing Stock BOX stepover, stepdown and overtravel; Planar FACE
+  stepover and stepdown; provenance, bounds/clamps, Basic/Advanced UX,
+  persistence compatibility and VI/EN/KO localization.
+- Operation audit: Parallel and Z-Level remain `ALREADY_AUTOMATIC`; Contour,
+  Pocket, Drilling, Tapping, Reaming, Boring and Lathe are deferred because
+  their correct policies need different geometry/process evidence. Therefore
+  no additional operation qualifies as `MIGRATE_IN_R193`.
+- Verification on the exact implementation tree: focused **72/72 PASS**;
+  bounded **396 passed + 1 independently proven inherited baseline failure**;
+  full **4079 passed, 8 inherited/external failures, 8 skipped, 2 deselected**.
+  Candidate-induced and indeterminate failures are `0`, and
+  `NEW_FAILURE_DELTA_R193=0`.
+- Static checks: `compileall src tests tools`, import provenance, catalog JSON,
+  `pip check` and `git diff --check` all PASS. Localization audit remains
+  `1874 total / 0 untranslated / 239 allowlisted`.
+- Current boundary:
+  `READY_FOR_STAGE17A_TRANCHE1_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
+- Stage17A as a whole is not marked complete by R193; the next action requires
+  separate final direct-review/integration authority.
 - Protected main and its five dirty local identities plus eight R191 `.ai` outputs are read-only.
 - R193 must not push, run AI Sync, or reopen Stage16A.
 

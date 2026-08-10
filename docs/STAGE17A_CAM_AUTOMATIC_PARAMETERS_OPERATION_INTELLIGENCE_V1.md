@@ -108,4 +108,3 @@ Reject the candidate if any legacy numeric payload changes meaning, an unsupport
 tool receives a fabricated value, an override is lost, schema compatibility fails,
 or any candidate-induced/indeterminate regression remains. Revert only candidate
 commits in the clean worktree; protected main is never reset, stashed or edited.
-

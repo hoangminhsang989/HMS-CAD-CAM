@@ -1,14 +1,38 @@
 # CANONICAL CURRENT PROGRAMME SUMMARY — R193 STAGE17A
 
 - Stage16A: **CLOSED**.
-- Stage17A: **BASELINE_FROZEN; TRANCHE 1 IMPLEMENTATION IN PROGRESS**.
+- Stage17A: **TRANCHE 1 IMPLEMENTED; LOCAL DIRECT REVIEW PENDING**.
 - Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
 - Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
 - Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
 - Scope/spec: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
 - R193 is local-only on `stage17a-megawp3-auto-parameters`; protected main remains untouched.
+- Contract commit: `f37be6b2bd2dc0c9b939c1aa0eb1535e13dcfe5e`.
+- Implementation commit: `500e732e32c250aa89c0de132930c6bb8e587da9` /
+  tree `6a523e94d9940b53e696eaf2716f203b9f3ed45a`.
+- Facing Stock BOX now derives stepover, stepdown and overtravel; Planar FACE
+  derives stepover and stepdown. AUTO recomputes from validated Tool, boundary,
+  depth, unit and quality evidence; Advanced manual overrides persist and can
+  return to AUTO. Missing or contradictory evidence fails closed.
+- Parallel and Z-Level remain `ALREADY_AUTOMATIC`. Contour, Pocket, Drilling,
+  Tapping, Reaming, Boring and Lathe are deferred to distinct geometry/process
+  policies; the R193-compatible additional migration count is `0`.
+- Persistence is additive in the existing Facing parameter set; Facing schema
+  remains version 1, SQLite and `.HMS` schema/migration deltas are `0`, and
+  legacy numeric values retain manual intent.
+- R193 verification: focused **72/72 PASS**; bounded **396 passed + 1 inherited
+  baseline failure**; canonical full **4079 passed, 8 inherited/external
+  failures, 8 skipped, 2 deselected**. Candidate-induced failures,
+  indeterminate failures and `NEW_FAILURE_DELTA_R193` are all `0`.
+- Qt lifecycle remediation is receiver-bound and the focused popup/lifecycle
+  segment passes; full regression has no candidate lifecycle failure.
+- Localization audit: `1874 total / 0 untranslated / 239 allowlisted`; VI/EN/KO
+  key parity and UTF-8 checks pass.
+- Current boundary:
+  `READY_FOR_STAGE17A_TRANCHE1_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
 - Five protected local paths and eight R191 `.ai` outputs remain outside the candidate.
-- Stage17A is not complete until the frozen acceptance criteria and direct-review boundary pass.
+- Stage17A remains open beyond this implemented first tranche; R193 does not
+  authorize protected-main integration or later Stage17A tranches.
 
 The historical Stage16/R191 material below is retained for provenance and does
 not override this R193 canonical summary.
