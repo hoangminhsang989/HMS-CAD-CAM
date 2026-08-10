@@ -1,3 +1,18 @@
+# CANONICAL CURRENT PROGRAMME STATE — R193 STAGE17A
+
+- Stage16A: **CLOSED**.
+- Stage17A: **BASELINE_FROZEN; TRANCHE 1 IMPLEMENTATION IN PROGRESS**.
+- Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
+- Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
+- Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
+- Owner contract: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
+- R193 implementation remains isolated in branch `stage17a-megawp3-auto-parameters`.
+- Protected main and its five dirty local identities plus eight R191 `.ai` outputs are read-only.
+- R193 must not push, run AI Sync, or reopen Stage16A.
+
+The historical material below is retained for provenance and does not override
+this R193 canonical state.
+
 # Nhiệm vụ hiện tại — Stage16A Mega-WP2 post-integration delivery
 
 ## CANONICAL CURRENT PROGRAMME STATE — R189 LOCAL CLOSURE

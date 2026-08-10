@@ -1,3 +1,18 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R193 STAGE17A
+
+- Stage16A: **CLOSED**.
+- Stage17A: **BASELINE_FROZEN; TRANCHE 1 IMPLEMENTATION IN PROGRESS**.
+- Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
+- Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
+- Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
+- Scope/spec: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
+- R193 is local-only on `stage17a-megawp3-auto-parameters`; protected main remains untouched.
+- Five protected local paths and eight R191 `.ai` outputs remain outside the candidate.
+- Stage17A is not complete until the frozen acceptance criteria and direct-review boundary pass.
+
+The historical Stage16/R191 material below is retained for provenance and does
+not override this R193 canonical summary.
+
 # Trạng thái dự án HMS CAD/CAM
 
 ## CANONICAL CURRENT PROGRAMME SUMMARY — R189 LOCAL CLOSURE
