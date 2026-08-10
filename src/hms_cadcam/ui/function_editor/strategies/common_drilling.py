@@ -556,7 +556,7 @@ def _automatic_reason(value: AutomaticParameterValue) -> str:
     prefix = "AUTO intent preserved while current evidence is unavailable: "
     if value.reason.startswith(prefix):
         localized = (
-            f"{ui_text('AUTO intent preserved while current evidence is unavailable')}: "
+            f"{ui_text('Giữ ý định tự động khi bằng chứng hiện hành tạm thời không khả dụng')}: "
             f"{ui_text(value.reason.removeprefix(prefix))}"
         )
     else:

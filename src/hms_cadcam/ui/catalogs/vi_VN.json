@@ -43,6 +43,8 @@
   "The selected cycle does not use a peck amount.": "Chu trình đã chọn không dùng lượng khoan nhấp.",
   "Legacy explicit Drilling numeric value preserved as manual intent.": "Giữ giá trị số Khoan cũ rõ ràng như ý định thủ công.",
   "AUTO intent preserved while current evidence is unavailable": "Giữ ý định AUTO khi bằng chứng hiện hành tạm thời không khả dụng",
+  "Giữ ý định AUTO khi bằng chứng hiện hành tạm thời không khả dụng": "Giữ ý định AUTO khi bằng chứng hiện hành tạm thời không khả dụng",
+  "Giữ ý định tự động khi bằng chứng hiện hành tạm thời không khả dụng": "Giữ ý định tự động khi bằng chứng hiện hành tạm thời không khả dụng",
   "Pocket 2D Auto Setup": "Thiết lập tự động Pocket 2D",
   "Tóm tắt trạng thái tự động, tùy chỉnh và không khả dụng.": "Tóm tắt trạng thái tự động, tùy chỉnh và không khả dụng.",
   "Vị trí vào dao": "Vị trí vào dao",

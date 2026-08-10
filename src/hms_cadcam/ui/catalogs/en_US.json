@@ -43,6 +43,8 @@
   "The selected cycle does not use a peck amount.": "The selected cycle does not use a peck amount.",
   "Legacy explicit Drilling numeric value preserved as manual intent.": "Legacy explicit Drilling numeric value preserved as manual intent.",
   "AUTO intent preserved while current evidence is unavailable": "AUTO intent preserved while current evidence is unavailable",
+  "Giữ ý định AUTO khi bằng chứng hiện hành tạm thời không khả dụng": "AUTO intent preserved while current evidence is unavailable",
+  "Giữ ý định tự động khi bằng chứng hiện hành tạm thời không khả dụng": "AUTO intent preserved while current evidence is unavailable",
   "Pocket 2D Auto Setup": "Pocket 2D Auto Setup",
   "Tóm tắt trạng thái tự động, tùy chỉnh và không khả dụng.": "Summary of AUTO, overrides, and unavailable states.",
   "Vị trí vào dao": "Entry location",

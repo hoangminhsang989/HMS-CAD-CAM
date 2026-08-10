@@ -43,6 +43,8 @@
   "The selected cycle does not use a peck amount.": "선택한 사이클은 펙 양을 사용하지 않습니다.",
   "Legacy explicit Drilling numeric value preserved as manual intent.": "기존의 명시적 드릴링 숫자 값을 수동 의도로 유지합니다.",
   "AUTO intent preserved while current evidence is unavailable": "현재 근거를 사용할 수 없는 동안 AUTO 의도를 유지합니다",
+  "Giữ ý định AUTO khi bằng chứng hiện hành tạm thời không khả dụng": "현재 근거를 사용할 수 없는 동안 AUTO 의도를 유지합니다",
+  "Giữ ý định tự động khi bằng chứng hiện hành tạm thời không khả dụng": "현재 근거를 사용할 수 없는 동안 AUTO 의도를 유지합니다",
   "Pocket 2D Auto Setup": "Pocket 2D 자동 설정",
   "Tóm tắt trạng thái tự động, tùy chỉnh và không khả dụng.": "AUTO, 재정의 및 사용 불가 상태 요약입니다.",
   "Vị trí vào dao": "진입 위치",
