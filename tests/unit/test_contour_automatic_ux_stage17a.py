@@ -3,6 +3,7 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+from time import perf_counter
 import pytest
 
 from hms_cadcam.cam.application import ContourGenerator
@@ -23,8 +24,15 @@ from hms_cadcam.cam.domain import (
 )
 from hms_cadcam.ui.function_editor import (
     FunctionEditorDraftState,
+    FunctionEditorPage,
     FunctionEditorValueSource,
     ParameterDisclosureLevel,
+)
+from hms_cadcam.ui.i18n import UiLanguage, translation_service
+from _qt_lifecycle import (
+    drain_test_owned_qt_state,
+    qt_lifecycle_snapshot,
+    top_level_baseline,
 )
 from hms_cadcam.ui.function_editor.strategies import (
     ContourEditorDraftContext,
@@ -403,3 +411,67 @@ def test_contour_auto_catalog_keys_have_vi_en_ko_parity_and_utf8() -> None:
         "Use available automatic values"
     )
     assert catalogs["ko_KR.json"]["Lead-in tự động"] == "자동 리드인"
+
+
+def test_contour_auto_editor_cycles_have_zero_qt_leak_and_no_tail_slowdown(
+    qapp,
+    record_testsuite_property,
+) -> None:
+    context, _descriptor = _context()
+    baseline_pointers = top_level_baseline(qapp)
+    stable = qt_lifecycle_snapshot(qapp)
+    durations: list[float] = []
+    service = translation_service()
+
+    for cycle in range(24):
+        started = perf_counter()
+        with service.using(tuple(UiLanguage)[cycle % len(UiLanguage)]):
+            schema = build_contour_schema(context)
+            state = FunctionEditorDraftState(
+                schema,
+                contour_applied_values(context),
+                draft_transform_callback=lambda values: contour_draft_transform(
+                    context, _draft(context), values
+                ),
+            )
+            page = FunctionEditorPage(state)
+            page.resize(300 + (cycle % 4) * 80, 620 + (cycle % 3) * 60)
+            page.show()
+            qapp.processEvents()
+            state.edit(
+                "quality_profile",
+                ("fast", "balanced", "high")[cycle % 3],
+            )
+            qapp.processEvents()
+            page.close()
+            page.deleteLater()
+            drain_test_owned_qt_state(qapp, baseline_pointers)
+            del page
+        durations.append(perf_counter() - started)
+        current = qt_lifecycle_snapshot(qapp)
+        assert current.top_levels <= stable.top_levels
+        assert current.modal_top_levels <= stable.modal_top_levels
+        assert current.running_app_threads == 0
+
+    head_max = max(durations[:6])
+    tail_max = max(durations[-6:])
+    assert tail_max <= max(1.0, head_max * 5.0)
+    final = qt_lifecycle_snapshot(qapp)
+    assert final.top_levels <= stable.top_levels
+    assert final.hidden_top_levels <= stable.hidden_top_levels
+    assert final.modal_top_levels <= stable.modal_top_levels
+    assert final.running_app_threads == 0
+    record_testsuite_property("r202_contour_cycles", str(len(durations)))
+    record_testsuite_property(
+        "r202_top_level_delta", str(final.top_levels - stable.top_levels)
+    )
+    record_testsuite_property(
+        "r202_hidden_top_level_delta",
+        str(final.hidden_top_levels - stable.hidden_top_levels),
+    )
+    record_testsuite_property(
+        "r202_modal_delta", str(final.modal_top_levels - stable.modal_top_levels)
+    )
+    record_testsuite_property("r202_running_qthreads", str(final.running_app_threads))
+    record_testsuite_property("r202_head_max_seconds", f"{head_max:.6f}")
+    record_testsuite_property("r202_tail_max_seconds", f"{tail_max:.6f}")
