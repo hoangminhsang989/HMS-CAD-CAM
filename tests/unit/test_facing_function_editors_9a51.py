@@ -86,6 +86,7 @@ from hms_cadcam.ui.function_editor.strategies.common_milling import (
     FacingEditorDraftContext,
     FacingEditorVariant,
     facing_applied_values,
+    facing_draft_transform,
     prepare_facing_update,
     validate_facing_schema_contract,
 )
@@ -245,6 +246,11 @@ def _session(
             if action_id == "select_geometry"
             else None
         ),
+        draft_transform_callback=lambda current: facing_draft_transform(
+            context,
+            variant,
+            current,
+        ),
     )
 
 
@@ -261,6 +267,7 @@ def test_schema_is_typed_stable_and_deterministic(variant: FacingEditorVariant) 
         "basic",
         "geometry",
         "tool",
+        "automatic_parameters",
         "cutting",
         "levels",
         "linking",
@@ -311,10 +318,14 @@ def test_sources_defaults_and_basic_disclosure_are_explicit(
         "basic",
         "geometry",
         "tool",
+        "automatic_parameters",
         "cutting",
         "levels",
     )
     assert schema.field("stepover").default == "5.0"
+    assert schema.field("stepover").disclosure_level is ParameterDisclosureLevel.ADVANCED
+    assert schema.field("automatic_stepover").source.value == "derived"
+    assert schema.field("automatic_summary").action_id == "use_automatic_parameters"
     assert schema.field("tool_details").source.value == "tool"
     expected_source = "stock" if variant is FacingEditorVariant.STOCK else "geometry"
     assert schema.field("geometry_summary").source.value == expected_source

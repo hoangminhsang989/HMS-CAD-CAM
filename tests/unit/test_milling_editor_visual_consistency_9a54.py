@@ -46,6 +46,7 @@ _SECTION_ORDER = (
     "basic",
     "geometry",
     "tool",
+    "automatic_parameters",
     "cutting",
     "levels",
     "entry",
@@ -114,7 +115,12 @@ def test_production_schemas_share_order_footer_and_reasonable_basic() -> None:
             field.disclosure_level is not ParameterDisclosureLevel.EXPERT
             for field in schema.fields
         )
-    for schema in (facing, planar, contour, pocket):
+    for schema in (facing, planar):
+        assert (
+            schema.field("stepdown").disclosure_level
+            is ParameterDisclosureLevel.ADVANCED
+        )
+    for schema in (contour, pocket):
         assert schema.field("stepdown").disclosure_level is ParameterDisclosureLevel.BASIC
     for schema in (facing, planar, contour, pocket):
         field_ids = {item.field_id for item in schema.fields}

@@ -48,6 +48,7 @@ _ACTION_ACCESSIBLE_NAMES = {
     "reselect_z_level_faces": "Chọn lại bề mặt gia công",
     "remove_z_level_faces": "Loại bề mặt khỏi bản nháp",
     "clear_z_level_faces": "Xóa toàn bộ lựa chọn bề mặt",
+    "use_automatic_parameters": "Dùng các giá trị tham số tự động",
 }
 
 

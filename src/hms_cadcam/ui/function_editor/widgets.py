@@ -1053,6 +1053,15 @@ class FunctionEditorPage(QWidget):
         )
 
     def _update_responsive_grid(self, content_width: int) -> None:
+        # Prime narrow fields before measuring section minima.  A newly added
+        # provenance/action row can otherwise report its desktop minimum before
+        # its resize event, forcing horizontal scrolling at the supported 300px
+        # compact width.
+        if min(content_width, self.width()) < 520:
+            for field in self._field_widgets.values():
+                if not field.isHidden():
+                    field.set_compact(True)
+            QTimer.singleShot(0, self, self._force_narrow_field_compact)
         visible_hints = [
             widget.minimumSizeHint().width()
             for widget in self._section_widgets.values()
@@ -1074,6 +1083,16 @@ class FunctionEditorPage(QWidget):
         self._content_layout_signature = None
         self._rebuild_content_order()
         QTimer.singleShot(0, self, self._sync_content_overflow)
+
+    def _force_narrow_field_compact(self) -> None:
+        """Keep fields compact after the parent layout assigns a desktop width."""
+        if self.width() >= 520:
+            return
+        for field in self._field_widgets.values():
+            if not field.isHidden():
+                field.set_compact(True, force=True)
+        self.content.updateGeometry()
+        self.scroll_area.updateGeometry()
 
     def _sync_content_overflow(self) -> None:
         """Let QScrollArea expose real overflow instead of shrinking section bodies."""

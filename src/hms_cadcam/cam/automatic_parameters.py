@@ -33,7 +33,10 @@ class AutomaticParameterMode(StrEnum):
     """Whether the effective value comes from policy or user intent."""
 
     AUTO = "auto"
+    MANUAL_OVERRIDE = "manual_override"
+    # ``manual`` is retained so Stage16A/Z-Level/Parallel payloads keep loading.
     MANUAL = "manual"
+    NOT_APPLICABLE = "not_applicable"
 
 
 class AutomaticParameterStatus(StrEnum):
@@ -106,6 +109,10 @@ class AutomaticParameterValue:
     reason: str
     override_value: AutomaticPrimitive = None
     validation: AutomaticValidationResult = AutomaticValidationResult(True)
+    inputs: tuple[tuple[str, AutomaticPrimitive], ...] = ()
+    lower_bound: AutomaticPrimitive = None
+    upper_bound: AutomaticPrimitive = None
+    clamped: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or _KEY.fullmatch(self.key) is None:
@@ -128,13 +135,44 @@ class AutomaticParameterValue:
             raise TypeError("Automatic parameter status is invalid")
         if not isinstance(self.validation, AutomaticValidationResult):
             raise TypeError("Automatic validation is invalid")
+        if not isinstance(self.inputs, tuple):
+            raise TypeError("Automatic provenance inputs must be a tuple")
+        input_keys: set[str] = set()
+        normalized_inputs: list[tuple[str, AutomaticPrimitive]] = []
+        for item in self.inputs:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise TypeError("Automatic provenance input is invalid")
+            input_key, input_value = item
+            input_key = _text(input_key, "Automatic input key")
+            if input_key in input_keys:
+                raise ValueError("Automatic provenance input keys must be unique")
+            input_keys.add(input_key)
+            normalized_inputs.append((input_key, _primitive(input_value, "Automatic input")))
+        object.__setattr__(self, "inputs", tuple(normalized_inputs))
+        object.__setattr__(self, "lower_bound", _primitive(self.lower_bound, "Lower bound"))
+        object.__setattr__(self, "upper_bound", _primitive(self.upper_bound, "Upper bound"))
+        if type(self.clamped) is not bool:
+            raise TypeError("Automatic clamp state is invalid")
 
     @property
     def effective_value(self) -> AutomaticPrimitive:
         """Return user intent in manual mode, otherwise the resolved policy value."""
-        if self.mode is AutomaticParameterMode.MANUAL:
+        if self.mode in {
+            AutomaticParameterMode.MANUAL,
+            AutomaticParameterMode.MANUAL_OVERRIDE,
+        }:
             return self.override_value
+        if self.mode is AutomaticParameterMode.NOT_APPLICABLE:
+            return None
         return self.resolved_value
+
+    @property
+    def has_manual_override(self) -> bool:
+        """Return whether this entry represents an explicit user override."""
+        return self.mode in {
+            AutomaticParameterMode.MANUAL,
+            AutomaticParameterMode.MANUAL_OVERRIDE,
+        }
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -148,11 +186,17 @@ class AutomaticParameterValue:
             "reason": self.reason,
             "override_value": self.override_value,
             "validation": self.validation.to_dict(),
+            "inputs": [
+                {"key": key, "value": value} for key, value in self.inputs
+            ],
+            "lower_bound": self.lower_bound,
+            "upper_bound": self.upper_bound,
+            "clamped": self.clamped,
         }
 
     @classmethod
     def from_dict(cls, data: object) -> "AutomaticParameterValue":
-        fields = {
+        required_fields = {
             "key",
             "mode",
             "resolved_value",
@@ -164,8 +208,27 @@ class AutomaticParameterValue:
             "override_value",
             "validation",
         }
-        if not isinstance(data, dict) or set(data) != fields:
+        optional_fields = {"inputs", "lower_bound", "upper_bound", "clamped"}
+        if not isinstance(data, dict) or not required_fields.issubset(data) or not set(data).issubset(
+            required_fields | optional_fields
+        ):
             raise ValueError("Automatic parameter payload is malformed")
+        raw_inputs = data.get("inputs", ())
+        if isinstance(raw_inputs, list):
+            parsed_inputs = tuple(
+                (
+                    item["key"],
+                    item["value"],
+                )
+                for item in raw_inputs
+                if isinstance(item, dict) and set(item) == {"key", "value"}
+            )
+            if len(parsed_inputs) != len(raw_inputs):
+                raise ValueError("Automatic provenance inputs are malformed")
+        elif raw_inputs == ():
+            parsed_inputs = ()
+        else:
+            raise ValueError("Automatic provenance inputs are malformed")
         return cls(
             data["key"],  # type: ignore[arg-type]
             AutomaticParameterMode(data["mode"]),
@@ -177,6 +240,10 @@ class AutomaticParameterValue:
             data["reason"],  # type: ignore[arg-type]
             data["override_value"],  # type: ignore[arg-type]
             AutomaticValidationResult.from_dict(data["validation"]),
+            parsed_inputs,
+            data.get("lower_bound"),  # type: ignore[arg-type]
+            data.get("upper_bound"),  # type: ignore[arg-type]
+            data.get("clamped", False),  # type: ignore[arg-type]
         )
 
 
@@ -231,6 +298,11 @@ class AutomaticParameterContract:
                         "dependency_fingerprint": item.dependency_fingerprint.to_dict(),
                         "status": item.status.value,
                         "validation": item.validation.to_dict(),
+                        "source": item.source,
+                        "inputs": item.inputs,
+                        "lower_bound": item.lower_bound,
+                        "upper_bound": item.upper_bound,
+                        "clamped": item.clamped,
                     }
                     for item in self.values
                 ],

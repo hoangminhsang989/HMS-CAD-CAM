@@ -15,6 +15,7 @@ from hms_cadcam.ui.function_editor.strategies.common_milling import (
     FacingEditorVariant,
     FacingOperationUpdate,
     facing_applied_values,
+    facing_draft_transform,
     prepare_facing_update,
     validate_facing_schema_contract,
 )
@@ -118,6 +119,7 @@ __all__ = [
     "drilling_family_applied_values",
     "drilling_family_geometry_values",
     "facing_applied_values",
+    "facing_draft_transform",
     "pocket_applied_values",
     "parallel_applied_values",
     "parallel_draft_derived_values",

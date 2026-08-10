@@ -206,8 +206,9 @@ class FunctionEditorSectionWidget(QFrame):
         return super().sizeHint()
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
-        """Keep the complete visible body above its real layout minimum."""
-        return super().minimumSizeHint()
+        """Allow horizontal field reflow while retaining the real body height."""
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
 
     def set_diagnostics(
         self, diagnostics: tuple[FunctionEditorDiagnostic, ...]

@@ -7,8 +7,24 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 import math
 
+from hms_cadcam.cam.automatic_facing import (
+    FACING_AUTOMATIC_POLICY_KEY,
+    FacingAutomaticContext,
+    FacingAutomaticVariant,
+    resolve_facing_automatic_contract,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    AutomaticParameterValue,
+    AutomaticValidationResult,
+    CamQualityProfile,
+)
 from hms_cadcam.cam.domain import (
     BoxStock,
+    DependencyFingerprint,
     DirtyReason,
     FacingBoundarySource,
     FacingCutDirection,
@@ -26,6 +42,7 @@ from hms_cadcam.cam.domain import (
     Operation,
     OperationCapability,
     OperationGeometryInput,
+    OperationParameterSet,
     Setup,
     SpindleSpeed,
     ToolAssembly,
@@ -121,10 +138,23 @@ _BASE_FIELD_IDS = frozenset(
         "retract_height",
         "machine_id",
         "enabled",
+        "quality_profile",
+        "automatic_summary",
+        "automatic_stepover",
+        "automatic_stepdown",
+        "stepover_mode",
+        "stepdown_mode",
     }
 )
-_STOCK_FIELD_IDS = _BASE_FIELD_IDS | {"geometry_bounds", "overtravel"}
+_STOCK_FIELD_IDS = _BASE_FIELD_IDS | {
+    "geometry_bounds",
+    "overtravel",
+    "automatic_overtravel",
+    "overtravel_mode",
+}
 _PLANAR_FIELD_IDS = _BASE_FIELD_IDS | {"geometry_reference_id"}
+
+_FACING_POLICY_TOLERANCE = 1.0e-8
 
 
 def _text(value: object, field_id: str) -> str:
@@ -245,6 +275,266 @@ def _geometry_values(
     )
 
 
+def _stored_automatic_contract(
+    context: FacingEditorContext,
+) -> AutomaticParameterContract | None:
+    raw = dict(context.operation.parameters.values).get(
+        AUTOMATIC_PARAMETER_CONTRACT_KEY
+    )
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("Facing automatic metadata is invalid.")
+    try:
+        contract = AutomaticParameterContract.from_json(raw)
+    except ValueError as error:
+        raise ValueError("Facing automatic metadata is malformed.") from error
+    if contract.policy_key != FACING_AUTOMATIC_POLICY_KEY:
+        raise ValueError("Facing automatic policy identity is invalid.")
+    return contract
+
+
+def _selected_tool(
+    context: FacingEditorContext,
+    assembly_id: object | None = None,
+) -> ToolDefinition | None:
+    identity = (
+        str(context.operation.tool_assembly.assembly_id)
+        if assembly_id is None
+        else str(assembly_id)
+    )
+    assembly = next(
+        (
+            item
+            for item in context.tool_assemblies
+            if str(item.assembly_id) == identity
+        ),
+        None,
+    )
+    if assembly is None:
+        return None
+    return next(
+        (
+            item
+            for item in context.tool_definitions
+            if item.tool_id == assembly.tool_id
+        ),
+        None,
+    )
+
+
+def _automatic_context(
+    context: FacingEditorContext,
+    variant: FacingEditorVariant,
+    parameters: FacingParameters,
+    assembly_id: object | None = None,
+    values: Mapping[str, PresentationValue] | None = None,
+) -> FacingAutomaticContext:
+    unit = parameters.unit
+    tool = _selected_tool(context, assembly_id)
+    geometry = None if tool is None else tool.cutting_geometry
+    diameter = getattr(geometry, "diameter", None)
+    corner_radius = getattr(geometry, "corner_radius", None)
+    axial = None if geometry is None else geometry.axial_cutting_length
+    boundary_fingerprint: str | None = None
+    if variant is FacingEditorVariant.STOCK and isinstance(context.setup.stock, BoxStock):
+        boundary_fingerprint = DependencyFingerprint.from_payload(
+            context.setup.stock.to_dict()
+        ).digest
+    elif context.geometry_reference is not None:
+        boundary_fingerprint = (
+            context.geometry_reference.expected_geometry_fingerprint.digest
+        )
+    depth_span = parameters.top_height.value - parameters.final_cut_height
+    if values is not None:
+        try:
+            top_height = _number(values["top_height"], "top_height")
+            target_height = _number(values["target_height"], "target_height")
+            stock_allowance = _number(
+                values["stock_allowance"],
+                "stock_allowance",
+            )
+        except (KeyError, ValueError):
+            # Keep the last validated dependency while a numeric editor contains
+            # an incomplete token. Final draft validation still fails closed.
+            pass
+        else:
+            depth_span = top_height - (target_height + stock_allowance)
+    return FacingAutomaticContext(
+        FacingAutomaticVariant.STOCK_BOX
+        if variant is FacingEditorVariant.STOCK
+        else FacingAutomaticVariant.PLANAR_FACE,
+        unit,
+        None if tool is None else tool.family,
+        None if diameter is None else diameter.to(unit).value,
+        None if corner_radius is None else corner_radius.to(unit).value,
+        None if axial is None else axial.to(unit).value,
+        depth_span if depth_span > 0.0 else None,
+        _FACING_POLICY_TOLERANCE,
+        boundary_fingerprint,
+        None if tool is None else tool.content_fingerprint.digest,
+    )
+
+
+def _quality_profile(value: object) -> CamQualityProfile:
+    try:
+        return CamQualityProfile(str(value))
+    except ValueError as error:
+        raise ValueError("Hồ sơ chất lượng tự động không hợp lệ.") from error
+
+
+def _legacy_manual_contract(
+    base: AutomaticParameterContract,
+    parameters: FacingParameters,
+    variant: FacingEditorVariant,
+) -> AutomaticParameterContract:
+    legacy = {
+        "stepover": parameters.stepover.value,
+        "stepdown": parameters.stepdown.value,
+        "overtravel": parameters.overtravel.value,
+    }
+    values: list[AutomaticParameterValue] = []
+    for item in base.values:
+        if item.key == "overtravel" and variant is FacingEditorVariant.PLANAR_FACE:
+            values.append(item)
+            continue
+        values.append(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=legacy[item.key],
+                validation=AutomaticValidationResult(True),
+                reason=(
+                    "Legacy explicit numeric value preserved as intentional manual override."
+                ),
+            )
+        )
+    return replace(base, values=tuple(values))
+
+
+def _recompute_automatic_contract(
+    context: FacingEditorContext,
+    variant: FacingEditorVariant,
+    *,
+    values: Mapping[str, PresentationValue] | None = None,
+) -> AutomaticParameterContract:
+    parameters = FacingParameters.from_operation_parameters(context.operation.parameters)
+    stored = _stored_automatic_contract(context)
+    profile = (
+        _quality_profile(values["quality_profile"])
+        if values is not None and "quality_profile" in values
+        else stored.quality_profile
+        if stored is not None
+        else CamQualityProfile.BALANCED
+    )
+    assembly_id = None if values is None else values.get("tool_assembly_id")
+    base = resolve_facing_automatic_contract(
+        _automatic_context(context, variant, parameters, assembly_id, values),
+        quality_profile=profile,
+    )
+    if values is None:
+        if stored is None:
+            return _legacy_manual_contract(base, parameters, variant)
+        merged: list[AutomaticParameterValue] = []
+        for item in base.values:
+            try:
+                previous = stored.value(item.key)
+            except KeyError:
+                merged.append(item)
+                continue
+            if previous.has_manual_override:
+                merged.append(
+                    replace(
+                        item,
+                        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                        override_value=previous.override_value,
+                        validation=previous.validation,
+                    )
+                )
+            else:
+                merged.append(item)
+        return replace(base, values=tuple(merged))
+    updated: list[AutomaticParameterValue] = []
+    for item in base.values:
+        mode_key = f"{item.key}_mode"
+        if mode_key not in values:
+            updated.append(item)
+            continue
+        try:
+            mode = AutomaticParameterMode(str(values[mode_key]))
+        except ValueError as error:
+            raise ValueError(f"Chế độ {item.key} không hợp lệ.") from error
+        if mode is AutomaticParameterMode.AUTO:
+            if item.status is not AutomaticParameterStatus.RESOLVED:
+                raise ValueError(f"{item.key} chưa đủ evidence để dùng AUTO: {item.reason}")
+            updated.append(item)
+            continue
+        if mode not in {
+            AutomaticParameterMode.MANUAL,
+            AutomaticParameterMode.MANUAL_OVERRIDE,
+        }:
+            raise ValueError(f"{item.key} không hỗ trợ chế độ đã chọn.")
+        override = _number(values[item.key], item.key)
+        updated.append(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=override,
+                validation=AutomaticValidationResult(True),
+                reason="Explicit Advanced manual override.",
+            )
+        )
+    return replace(base, values=tuple(updated))
+
+
+def _automatic_text(value: AutomaticParameterValue, unit: str) -> str:
+    if value.mode is AutomaticParameterMode.NOT_APPLICABLE:
+        return f"Không áp dụng · {value.reason}"
+    prefix = "Tự động" if value.mode is AutomaticParameterMode.AUTO else "Tùy chỉnh"
+    suffix = " · đã giới hạn an toàn" if value.clamped else ""
+    return f"{prefix} · {value.effective_value:g} {unit}{suffix}"
+
+
+def _automatic_presentation(
+    contract: AutomaticParameterContract,
+    variant: FacingEditorVariant,
+    unit: str,
+) -> dict[str, PresentationValue]:
+    visible_keys = ["stepover", "stepdown"]
+    if variant is FacingEditorVariant.STOCK:
+        visible_keys.append("overtravel")
+    entries = [contract.value(key) for key in visible_keys]
+    auto = sum(item.mode is AutomaticParameterMode.AUTO for item in entries)
+    manual = sum(item.has_manual_override for item in entries)
+    unavailable = len(entries) - auto - manual
+    result: dict[str, PresentationValue] = {
+        "quality_profile": contract.quality_profile.value,
+        "automatic_summary": (
+            f"{auto} tự động · {manual} tùy chỉnh · {unavailable} không áp dụng"
+        ),
+    }
+    for item in entries:
+        result[f"automatic_{item.key}"] = _automatic_text(item, unit)
+        result[f"{item.key}_mode"] = item.mode.value
+        if item.effective_value is not None:
+            result[item.key] = str(item.effective_value)
+    return result
+
+
+def facing_draft_transform(
+    context: FacingEditorContext,
+    variant: FacingEditorVariant,
+    values: Mapping[str, PresentationValue],
+) -> dict[str, PresentationValue]:
+    """Recompute AUTO fields after Tool/profile/mode edits; preserve overrides."""
+    contract = _recompute_automatic_contract(context, variant, values=values)
+    return _automatic_presentation(
+        contract,
+        variant,
+        context.setup.wcs.origin.unit.value,
+    )
+
+
 def facing_applied_values(
     context: FacingEditorContext, variant: FacingEditorVariant
 ) -> dict[str, PresentationValue]:
@@ -282,6 +572,13 @@ def facing_applied_values(
         values["overtravel"] = str(parameters.overtravel.value)
     else:
         values["geometry_reference_id"] = geometry_detail
+    values.update(
+        _automatic_presentation(
+            _recompute_automatic_contract(context, variant),
+            variant,
+            context.setup.wcs.origin.unit.value,
+        )
+    )
     return values
 
 
@@ -348,15 +645,17 @@ def prepare_facing_update(
     values: Mapping[str, PresentationValue],
 ) -> FacingOperationUpdate:
     """Build the exact legacy-equivalent operation candidate without mutation."""
-    parameters = _parameters_from_values(context, variant, values)
-    assembly_id = _text(values["tool_assembly_id"], "tool_assembly_id")
+    complete = dict(values)
+    complete.update(facing_draft_transform(context, variant, complete))
+    parameters = _parameters_from_values(context, variant, complete)
+    assembly_id = _text(complete["tool_assembly_id"], "tool_assembly_id")
     assembly = next(
         (item for item in context.tool_assemblies if str(item.assembly_id) == assembly_id),
         None,
     )
     if assembly is None:
         raise ValueError("Tool Assembly không còn tồn tại trong project.")
-    machine_id = _text(values["machine_id"], "machine_id")
+    machine_id = _text(complete["machine_id"], "machine_id")
     machine = next(
         (item for item in context.machine_definitions if str(item.machine_id) == machine_id),
         None,
@@ -374,7 +673,7 @@ def prepare_facing_update(
         machine.unit,
         (OperationCapability.MILLING,),
     )
-    reference = _geometry_reference_for_values(context, draft, values)
+    reference = _geometry_reference_for_values(context, draft, complete)
     geometry_inputs: tuple[OperationGeometryInput, ...] = ()
     if variant is FacingEditorVariant.PLANAR_FACE:
         assert reference is not None
@@ -398,9 +697,32 @@ def prepare_facing_update(
                 0,
             ),
         )
-    parameter_set = parameters.to_operation_parameters()
+    automatic = _recompute_automatic_contract(
+        context,
+        variant,
+        values=complete,
+    )
+    base_parameters = parameters.to_operation_parameters()
+    visible_automatic_keys = ["stepover", "stepdown"]
+    if variant is FacingEditorVariant.STOCK:
+        visible_automatic_keys.append("overtravel")
+    persist_automatic = _stored_automatic_contract(context) is not None or any(
+        automatic.value(key).mode is AutomaticParameterMode.AUTO
+        for key in visible_automatic_keys
+    )
+    parameter_set = (
+        OperationParameterSet(
+            base_parameters.strategy_key,
+            base_parameters.strategy_version,
+            base_parameters.values
+            + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic.to_json()),),
+            base_parameters.schema_version,
+        )
+        if persist_automatic
+        else base_parameters
+    )
     tool_reference = ToolAssemblyReference.from_assembly(assembly)
-    enabled = _boolean(values["enabled"], "enabled")
+    enabled = _boolean(complete["enabled"], "enabled")
     inputs_changed = (
         parameter_set != context.operation.parameters
         or tool_reference != context.operation.tool_assembly
@@ -426,7 +748,7 @@ def prepare_facing_update(
             artifact_state=context.operation.artifact_state.mark_dirty(reason),
         )
     return FacingOperationUpdate(
-        _text(values["operation_name"], "operation_name"),
+        _text(complete["operation_name"], "operation_name"),
         changed,
         parameters,
         assembly,
@@ -493,6 +815,35 @@ def _number_field(
         binding_key=binding_key,
         conversion=FunctionEditorValueConversion.FLOAT,
         reset_behavior=FunctionEditorResetBehavior.APPLIED,
+    )
+
+
+def _automatic_mode_field(
+    field_id: str,
+    label: str,
+    value: PresentationValue,
+    *,
+    order: int,
+) -> FunctionEditorField:
+    return FunctionEditorField(
+        field_id,
+        label,
+        FunctionEditorFieldKind.CHOICE,
+        value,
+        source=FunctionEditorValueSource.USER,
+        disclosure_level=ParameterDisclosureLevel.ADVANCED,
+        choices=(
+            AutomaticParameterMode.AUTO.value,
+            AutomaticParameterMode.MANUAL_OVERRIDE.value,
+        ),
+        choice_labels=(
+            (AutomaticParameterMode.AUTO.value, "Tự động"),
+            (AutomaticParameterMode.MANUAL_OVERRIDE.value, "Tùy chỉnh"),
+        ),
+        tooltip="Chế độ tự động tính lại từ bằng chứng; tùy chỉnh giữ ý định người dùng.",
+        help_key=f"facing.{field_id}",
+        order=order,
+        binding_key=f"automatic.{field_id}",
     )
 
 
@@ -593,15 +944,99 @@ def build_facing_sections(
         ),
         "Tool Assembly và chi tiết read-only từ Tool Library.", order=30,
     )
+    automatic_fields = [
+        FunctionEditorField(
+            "quality_profile",
+            "Hồ sơ chất lượng",
+            FunctionEditorFieldKind.CHOICE,
+            values["quality_profile"],
+            source=FunctionEditorValueSource.USER,
+            choices=tuple(item.value for item in CamQualityProfile),
+            choice_labels=(
+                (CamQualityProfile.FAST.value, "Nhanh"),
+                (CamQualityProfile.BALANCED.value, "Cân bằng"),
+                (CamQualityProfile.HIGH.value, "Chất lượng cao"),
+            ),
+            tooltip="Điều chỉnh tỷ lệ bước ngang/bước xuống trong giới hạn hình học thực.",
+            help_key="facing.quality_profile",
+            order=10,
+            binding_key="automatic.quality_profile",
+        ),
+        FunctionEditorField(
+            "automatic_summary",
+            "Trạng thái tham số tự động",
+            FunctionEditorFieldKind.READ_ONLY,
+            values["automatic_summary"],
+            source=FunctionEditorValueSource.DERIVED,
+            tooltip="Tóm tắt chế độ tự động, giá trị tùy chỉnh và tham số thiếu bằng chứng.",
+            help_key="facing.automatic_summary",
+            order=20,
+            binding_key="automatic.summary",
+            action_id="use_automatic_parameters",
+            action_label="AUTO",
+        ),
+        FunctionEditorField(
+            "automatic_stepover",
+            "Bước ngang tự động",
+            FunctionEditorFieldKind.READ_ONLY,
+            values["automatic_stepover"],
+            source=FunctionEditorValueSource.DERIVED,
+            help_key="facing.automatic_stepover",
+            order=30,
+            binding_key="automatic.stepover_summary",
+        ),
+        FunctionEditorField(
+            "automatic_stepdown",
+            "Bước xuống tự động",
+            FunctionEditorFieldKind.READ_ONLY,
+            values["automatic_stepdown"],
+            source=FunctionEditorValueSource.DERIVED,
+            help_key="facing.automatic_stepdown",
+            order=40,
+            binding_key="automatic.stepdown_summary",
+        ),
+    ]
+    if variant is FacingEditorVariant.STOCK:
+        automatic_fields.append(
+            FunctionEditorField(
+                "automatic_overtravel",
+                "Vượt biên tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_overtravel"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="facing.automatic_overtravel",
+                order=50,
+                binding_key="automatic.overtravel_summary",
+            )
+        )
+    automatic = FunctionEditorSection(
+        "automatic_parameters",
+        "THAM SỐ TỰ ĐỘNG",
+        tuple(automatic_fields),
+        "Giá trị suy ra từ Tool, hình học, đơn vị và hồ sơ chất lượng.",
+        order=35,
+    )
     cutting = FunctionEditorSection(
         "cutting", "CUTTING",
         (
+            _automatic_mode_field(
+                "stepover_mode",
+                "Chế độ Bước ngang",
+                values["stepover_mode"],
+                order=5,
+            ),
             _number_field(
                 "stepover", "Stepover", values["stepover"], unit=unit,
                 binding_key="parameters.stepover", order=10,
                 default=defaults.get("stepover"),
                 validators=(_positive("facing.stepover_positive", "Stepover phải lớn hơn 0."),),
                 help_text="Stepover không được lớn hơn đường kính dao.",
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                source=(
+                    FunctionEditorValueSource.DERIVED
+                    if values["stepover_mode"] == AutomaticParameterMode.AUTO.value
+                    else FunctionEditorValueSource.USER
+                ),
             ),
             FunctionEditorField(
                 "direction", "Hướng cắt", FunctionEditorFieldKind.CHOICE,
@@ -656,11 +1091,23 @@ def build_facing_sections(
                     "Lượng dư phôi không được âm.", "facing.allowance_nonnegative",
                 ),),
             ),
+            _automatic_mode_field(
+                "stepdown_mode",
+                "Chế độ Bước xuống",
+                values["stepdown_mode"],
+                order=35,
+            ),
             _number_field(
                 "stepdown", "Stepdown", values["stepdown"], unit=unit,
                 binding_key="parameters.stepdown", order=40,
                 default=defaults.get("stepdown"),
                 validators=(_positive("facing.stepdown_positive", "Stepdown phải lớn hơn 0."),),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                source=(
+                    FunctionEditorValueSource.DERIVED
+                    if values["stepdown_mode"] == AutomaticParameterMode.AUTO.value
+                    else FunctionEditorValueSource.USER
+                ),
             ),
         ),
         "Top, target, allowance và phân lớp theo Setup WCS.", order=50,
@@ -707,16 +1154,30 @@ def build_facing_sections(
         ),
     ]
     if variant is FacingEditorVariant.STOCK:
-        advanced_fields.append(
-            _number_field(
-                "overtravel", "Overtravel", values["overtravel"], unit=unit,
-                binding_key="parameters.overtravel", order=30,
-                default=defaults.get("overtravel"),
-                disclosure_level=ParameterDisclosureLevel.ADVANCED,
-                validators=(FunctionEditorValidationRule(
-                    FunctionEditorValidationKind.MINIMUM, 0.0,
-                    "Overtravel không được âm.", "facing.overtravel_nonnegative",
-                ),),
+        advanced_fields.extend(
+            (
+                _automatic_mode_field(
+                    "overtravel_mode",
+                    "Chế độ Vượt biên",
+                    values["overtravel_mode"],
+                    order=25,
+                ),
+                _number_field(
+                    "overtravel", "Overtravel", values["overtravel"], unit=unit,
+                    binding_key="parameters.overtravel", order=30,
+                    default=defaults.get("overtravel"),
+                    disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                    source=(
+                        FunctionEditorValueSource.DERIVED
+                        if values["overtravel_mode"]
+                        == AutomaticParameterMode.AUTO.value
+                        else FunctionEditorValueSource.USER
+                    ),
+                    validators=(FunctionEditorValidationRule(
+                        FunctionEditorValidationKind.MINIMUM, 0.0,
+                        "Overtravel không được âm.", "facing.overtravel_nonnegative",
+                    ),),
+                ),
             )
         )
     advanced_fields.extend(
@@ -749,7 +1210,7 @@ def build_facing_sections(
         default_expanded=False,
         order=70,
     )
-    return (basic, geometry, tool, cutting, levels, linking, advanced)
+    return (basic, geometry, tool, automatic, cutting, levels, linking, advanced)
 
 
 def facing_footer() -> FunctionEditorFooter:

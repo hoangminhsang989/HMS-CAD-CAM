@@ -18,6 +18,14 @@ from hms_cadcam.cam.automatic_parameters import (
     AutomaticValidationResult,
     CamQualityProfile,
 )
+from hms_cadcam.cam.automatic_facing import (
+    FACING_AUTOMATIC_KEYS,
+    FACING_AUTOMATIC_POLICY_KEY,
+    FACING_AUTOMATIC_POLICY_VERSION,
+    FacingAutomaticContext,
+    FacingAutomaticVariant,
+    resolve_facing_automatic_contract,
+)
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator, FacingInputs, resolve_box_facing_region,
 )
@@ -73,6 +81,9 @@ from hms_cadcam.cam.application.pocket import (
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "AutomaticParameterMode", "AutomaticParameterStatus", "AutomaticParameterValue",
            "AutomaticValidationResult", "CamQualityProfile",
+           "FACING_AUTOMATIC_KEYS", "FACING_AUTOMATIC_POLICY_KEY",
+           "FACING_AUTOMATIC_POLICY_VERSION", "FacingAutomaticContext",
+           "FacingAutomaticVariant", "resolve_facing_automatic_contract",
            "CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
            "FacingGenerator", "FacingInputs", "basic_boring_resources", "basic_drilling_resources", "basic_mill_resources", "basic_parallel_resources",

@@ -454,6 +454,28 @@ UI_TRANSLATIONS = MappingProxyType(
         "MACHINE / POST CAPABILITY": "KHẢ NĂNG HỖ TRỢ CỦA MÁY / POST",
         "CAPABILITY AND SAFETY": "KHẢ NĂNG HỖ TRỢ VÀ AN TOÀN",
         "SUMMARY": "TÓM TẮT",
+        # Stage17A automatic Facing/Planar parameter presentation.
+        "Chế độ tự động tính lại từ bằng chứng; tùy chỉnh giữ ý định người dùng.": (
+            "Chế độ tự động tính lại từ bằng chứng; tùy chỉnh giữ ý định người dùng."
+        ),
+        "Điều chỉnh tỷ lệ bước ngang/bước xuống trong giới hạn hình học thực.": (
+            "Điều chỉnh tỷ lệ bước ngang/bước xuống trong giới hạn hình học thực."
+        ),
+        "Tóm tắt chế độ tự động, giá trị tùy chỉnh và tham số thiếu bằng chứng.": (
+            "Tóm tắt chế độ tự động, giá trị tùy chỉnh và tham số thiếu bằng chứng."
+        ),
+        "Bước ngang tự động": "Bước ngang tự động",
+        "Bước xuống tự động": "Bước xuống tự động",
+        "Vượt biên tự động": "Vượt biên tự động",
+        "THAM SỐ TỰ ĐỘNG": "THAM SỐ TỰ ĐỘNG",
+        "Trạng thái tham số tự động": "Trạng thái tham số tự động",
+        "Hồ sơ chất lượng": "Hồ sơ chất lượng",
+        "Chế độ Bước ngang": "Chế độ Bước ngang",
+        "Chế độ Bước xuống": "Chế độ Bước xuống",
+        "Chế độ Vượt biên": "Chế độ Vượt biên",
+        "Tự động": "Tự động",
+        "Tùy chỉnh": "Tùy chỉnh",
+        "AUTO": "AUTO",
         # Schema field labels and choice labels.
         "Operation name": "Tên nguyên công",
         "Operation type": "Loại nguyên công",

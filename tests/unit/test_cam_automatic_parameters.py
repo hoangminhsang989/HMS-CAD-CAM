@@ -94,3 +94,45 @@ def test_invalid_manual_value_is_preserved_in_contract() -> None:
     restored = AutomaticParameterContract.from_json(contract.to_json())
     assert restored.value("stepover_mm").override_value == "không-phải-số"
     assert not restored.value("stepover_mm").validation.valid
+
+
+def test_stage17a_modes_and_provenance_round_trip() -> None:
+    value = replace(
+        _value(),
+        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+        inputs=(("diameter", 10.0), ("quality", "balanced")),
+        lower_bound=0.01,
+        upper_bound=10.0,
+        clamped=True,
+    )
+    restored = AutomaticParameterValue.from_dict(value.to_dict())
+    assert restored == value
+    assert restored.has_manual_override
+    assert restored.inputs == (("diameter", 10.0), ("quality", "balanced"))
+    assert restored.lower_bound == 0.01
+    assert restored.upper_bound == 10.0
+    assert restored.clamped
+
+
+def test_legacy_value_without_stage17a_provenance_still_loads() -> None:
+    payload = _value(mode=AutomaticParameterMode.MANUAL).to_dict()
+    for key in ("inputs", "lower_bound", "upper_bound", "clamped"):
+        payload.pop(key)
+    restored = AutomaticParameterValue.from_dict(payload)
+    assert restored.mode is AutomaticParameterMode.MANUAL
+    assert restored.has_manual_override
+    assert restored.inputs == ()
+    assert restored.lower_bound is None
+    assert restored.upper_bound is None
+    assert not restored.clamped
+
+
+def test_not_applicable_has_no_effective_numeric_value() -> None:
+    value = replace(
+        _value(),
+        mode=AutomaticParameterMode.NOT_APPLICABLE,
+        resolved_value=None,
+        status=AutomaticParameterStatus.UNSUPPORTED,
+    )
+    assert value.effective_value is None
+    assert not value.has_manual_override

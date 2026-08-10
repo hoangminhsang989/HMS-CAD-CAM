@@ -124,6 +124,7 @@ from hms_cadcam.ui.function_editor.strategies import (
     build_tapping_schema,
     contour_applied_values,
     facing_applied_values,
+    facing_draft_transform,
     pocket_applied_values,
     drilling_family_applied_values,
     drilling_family_geometry_values,
@@ -696,6 +697,11 @@ class CamWorkspace(QWidget):
             ),
             field_action_callback=lambda action_id, values: self._facing_field_action(
                 context, draft, variant, action_id, values
+            ),
+            draft_transform_callback=lambda values: facing_draft_transform(
+                context,
+                variant,
+                values,
             ),
         )
 
@@ -2821,9 +2827,16 @@ class CamWorkspace(QWidget):
         draft: FacingEditorDraftContext,
         variant: FacingEditorVariant,
         action_id: str,
-        _values: Mapping[str, PresentationValue],
+        values: Mapping[str, PresentationValue],
     ) -> Mapping[str, PresentationValue] | None:
         """Bind one persistent FACE to the draft without mutating the operation."""
+        if action_id == "use_automatic_parameters":
+            changed = dict(values)
+            for key in ("stepover", "stepdown"):
+                changed[f"{key}_mode"] = "auto"
+            if variant is FacingEditorVariant.STOCK:
+                changed["overtravel_mode"] = "auto"
+            return facing_draft_transform(context, variant, changed)
         if action_id != "select_geometry" or variant is not FacingEditorVariant.PLANAR_FACE:
             raise ValueError(f"Field action không hỗ trợ: {action_id}")
         if self._pick_provider is None or self._face_resolver is None:
