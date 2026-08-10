@@ -1,3 +1,34 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R204 STAGE17A TRANCHE 2 DELIVERY
+
+- Stage16A is **CLOSED**. Stage17A is **ACTIVE** with Tranche1 and Tranche2
+  production-delivered; Stage17A itself remains open.
+- Tranche2 `Contour 2D Auto Setup` is **COMPLETE**. R202 implemented and broadly
+  certified it; R203 directly reviewed it and committed the non-positive manual
+  override hardening at `1132d481`.
+- Final candidate identity is
+  `1132d481547151bfc9d057b53d36acfb11dcbf96` / tree
+  `16c75d4b93acf651ae1db68ab1024a0dc4ac2dd5`.
+- R204 exact-four ACL bootstrap passed `4/4` without byte/blob/owner/parent-ACL/
+  ADS change. Standard-user DELETE is `15/15`; add-only is `3/3` with residue
+  `0`.
+- Protected main integrated by one fast-forward. Protected dirty identities are
+  preserved `14/14`, staged `0`, protected overlap `0`.
+- Certification composition: R202 focused `311`, bounded `1328`, lifecycle and
+  full `4111 passed / 8 inherited-or-external failed / 8 skipped / 2 deselected`;
+  R203 remediation `4`, direct core `183 / 1 deselected`, bounded `818`, lifecycle
+  leakage `0/0/0/0`; fresh R204 detached core `183 / 1 deselected`, bounded
+  `818`, lifecycle/compile/import PASS. Candidate-induced and indeterminate are
+  `0`; `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Push A delivered the final candidate to live `origin/main`; independent
+  verification produced local/remote divergence `0/0`.
+- This docs/state-only closure has no code/test/catalog/schema/dependency delta.
+  Push B and AI Sync V1.1 remain pending at this commit point.
+- The next boundary after remote state closure and AI Sync is a Tranche3 audit
+  limited to remaining Stage17A automatic-setup scope.
+
+The R202 and older sections below remain historical provenance and do not
+override this R204 delivery summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R202 STAGE17A TRANCHE 2 LOCAL CANDIDATE
 
 - Stage16A is **CLOSED**.

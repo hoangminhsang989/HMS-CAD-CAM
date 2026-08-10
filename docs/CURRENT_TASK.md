@@ -1,3 +1,39 @@
+# CANONICAL CURRENT PROGRAMME STATE — R204 STAGE17A TRANCHE 2 PRODUCTION DELIVERY
+
+- Stage16A: **CLOSED**.
+- Stage17A: **ACTIVE; TRANCHE 1 AND TRANCHE 2 PRODUCTION-DELIVERED**.
+- Tranche2 `Contour 2D Auto Setup` is **COMPLETE** after R202 implementation,
+  R203 direct review/remediation, and R204 protected-main integration plus
+  production Push A.
+- Final product candidate:
+  `1132d481547151bfc9d057b53d36acfb11dcbf96` / tree
+  `16c75d4b93acf651ae1db68ab1024a0dc4ac2dd5`.
+- R203 direct review approved the candidate and added the bounded remediation
+  commit `1132d481` so non-positive Contour manual overrides fail at the
+  application boundary. `NEW_FAILURE_DELTA_R203_REVIEW=0`.
+- R204 resolved the exact-four legacy Windows file ACL prerequisite with one
+  finite UAC helper: exact SID DELETE ACE `4/4`, raw/filtered/owner/parent-ACL/
+  ADS preservation `4/4`, standard-user DELETE `15/15`, add-only `3/3`, and
+  probe residue `0`.
+- Protected main fast-forwarded exactly once to the final candidate. Protected
+  dirty identities remain `14/14`; staged content and protected overlap remain
+  `0`.
+- R202 broad certification plus R203 delta certification compose for the final
+  candidate. Fresh detached post-integration verification passes direct core
+  **183 passed / 1 deselected**, bounded **818/818**, lifecycle 24 cycles with
+  leakage `0/0/0/0`, compile/import and `git diff --check`.
+  `NEW_FAILURE_DELTA_INTEGRATION=0`, candidate-induced `0`, indeterminate `0`.
+- Push A delivered `1132d481547151bfc9d057b53d36acfb11dcbf96` to live
+  `origin/main` and independent verification produced divergence `0/0`.
+- This state-only record introduces no production/test/catalog/schema/
+  dependency delta. Its remote Push B and AI Sync V1.1 snapshot are pending at
+  this exact commit point.
+- Stage17A remains **OPEN** for a bounded Tranche3 audit of only the remaining
+  automatic-setup families. No overall HMS percentage is invented.
+
+The R202 and older material below remains historical provenance and does not
+override this R204 production-delivery state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R202 STAGE17A TRANCHE 2 LOCAL CANDIDATE
 
 - Stage16A: **CLOSED**.
