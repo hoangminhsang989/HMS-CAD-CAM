@@ -1,3 +1,67 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R208 STAGE17A TRANCHE 4 LOCAL CANDIDATE
+
+- Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranche1, Tranche2 and
+  Tranche3 are production-delivered; Tranche4 `Drilling Auto Setup` is
+  implemented and certified locally. Stage17A remains **OPEN**.
+- Frozen scope and existing-product audit:
+  `docs/STAGE17A_TRANCHE4_DRILLING_AUTO_SETUP.md`.
+- Protected production and live remote remain at
+  `9959c7ccde84d3543eb585896095e82f7fdfdf99`, divergence `0/0`. R208 did not
+  integrate, push, force-update or run production AI Sync.
+- Candidate branch/worktree: `stage17a-tranche4-drilling-auto` at
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\CLONES\R208-STAGE17A-TRANCHE4-DRILLING-AUTO`.
+  Implementation lineage is `629b1eb` -> `38939c7` -> `0c1d351` before this
+  docs-only state commit.
+- Product scope is limited to Standard, Spot and Peck Drilling. Eligible input
+  is a resolved finite non-empty hole pattern with deterministic identity, one
+  common +Z axis/plane, a stable geometry fingerprint and the exact
+  production-supported Tool family (`DRILL`, or `CENTER_DRILL` for Spot).
+- Pattern count/order/fingerprint, bounds, minimum spacing, common axis and
+  plane are derived provenance. Top/reference Z is AUTO from the resolved
+  common hole plane. Target depth is AUTO only from explicit common feature
+  depth; Spot depth is AUTO only from explicit target diameter plus Center
+  Drill point angle. Current production exposes neither feature depth nor Spot
+  target diameter, so those conditional fields remain manual/unavailable in
+  today's editor rather than being fabricated.
+- No stock/fixture safe-plane authority exists in the current Drilling model;
+  retract and clearance therefore remain manual. The typed policy supports an
+  explicit future safe-plane authority but never invents clearance. Peck,
+  cycle selection, feed, spindle, dwell, coolant, material, Tool selection and
+  controller semantics remain explicit process/user intent.
+- AUTO/MANUAL_OVERRIDE/legacy MANUAL/NOT_APPLICABLE reuse the shared Stage17A
+  contract. Legacy numerics remain manual, reset-to-AUTO is explicit,
+  temporary unavailable geometry preserves AUTO intent, and generator-side
+  revalidation rejects stale Tool/pattern/count/axis/plane/depth dependencies.
+- Persistence is additive through `automatic_parameter_contract`; SQLite
+  schema remains **5**. Missing/malformed/legacy/AUTO/override and project
+  close/open paths are covered.
+- Basic/Advanced Function Editor integration is shared across Standard, Spot
+  and Peck, with localized summary, modes, provenance and unavailable reasons.
+  Catalogs retain exact VI/EN/KO key parity, UTF-8, duplicate keys `0`, and
+  production untranslated strings `0`.
+- Verification: focused **299/299**, shared Stage17A engine **85/85**, bounded
+  **1378/1378** across 71 deterministic files, lifecycle 24 Standard/Spot/Peck
+  VI/EN/KO cycles with top/hidden/modal/QThread delta `0/0/0/0`, and full
+  **4174 passed, 8 failed, 8 skipped, 2 deselected**.
+- The full eight exactly match the inherited/external signature: four CAD
+  status-text expectations, one workspace-shell action expectation and three
+  absent private historical R3 package artifacts. Candidate-induced `0`,
+  indeterminate `0`, `NEW_FAILURE_DELTA_R208=0`.
+- Compile/import, provenance, catalog/UTF-8, localization, diff and path audits
+  pass. The inherited environment-only `flet 0.24.0` / `packaging 26.2`
+  `pip check` conflict remains; tracked dependency changes are `0`.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R208_STAGE17A_TRANCHE4_DRILLING_AUTO_20260810`.
+- Verdict boundary:
+  `PASS_R208_STAGE17A_TRANCHE4_DRILLING_AUTO_SETUP_LARGE_LOCAL_IMPLEMENTATION`.
+  Exact next action is a separate Stage17A Tranche4 final direct review and
+  integration authority.
+- HMS CAD/CAM total percentage is not recalculated without an owner-approved
+  programme formula.
+
+The R206 and older sections below remain historical provenance and do not
+override this R208 local-candidate summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R206 STAGE17A TRANCHE 3 FULL DELIVERY
 
 - Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranche1, Tranche2 and
