@@ -39,6 +39,18 @@ from hms_cadcam.cam.automatic_facing import (
     FacingAutomaticVariant,
     resolve_facing_automatic_contract,
 )
+from hms_cadcam.cam.automatic_pocket import (
+    POCKET_AUTOMATIC_KEYS,
+    POCKET_AUTOMATIC_POLICY_KEY,
+    POCKET_AUTOMATIC_POLICY_VERSION,
+    POCKET_AUTOMATIC_SUPPORTED_TOOL_FAMILIES,
+    POCKET_AUTOMATIC_USER_KEYS,
+    PocketAutomaticContext,
+    PocketAutomaticEntryPlacement,
+    pocket_automatic_entry_loops,
+    pocket_geometric_stepover_target,
+    resolve_pocket_automatic_contract,
+)
 from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator, FacingInputs, resolve_box_facing_region,
 )
@@ -90,6 +102,7 @@ from hms_cadcam.cam.application.pocket import (
     PocketInputs,
     build_pocket_offset_loops,
     pocket_depth_levels,
+    prepare_pocket_machining_geometry,
 )
 
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
@@ -104,6 +117,12 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "FACING_AUTOMATIC_KEYS", "FACING_AUTOMATIC_POLICY_KEY",
            "FACING_AUTOMATIC_POLICY_VERSION", "FacingAutomaticContext",
            "FacingAutomaticVariant", "resolve_facing_automatic_contract",
+           "POCKET_AUTOMATIC_KEYS", "POCKET_AUTOMATIC_POLICY_KEY",
+           "POCKET_AUTOMATIC_POLICY_VERSION",
+           "POCKET_AUTOMATIC_SUPPORTED_TOOL_FAMILIES",
+           "POCKET_AUTOMATIC_USER_KEYS", "PocketAutomaticContext",
+           "PocketAutomaticEntryPlacement", "pocket_automatic_entry_loops",
+           "pocket_geometric_stepover_target", "resolve_pocket_automatic_contract",
            "CamApplicationService", "CamSelection", "ContourComputeResult", "ContourGenerationError",
            "ContourGenerator", "ContourInputs", "ContourPath", "FacingComputeResult", "FacingGenerationError",
            "FacingGenerator", "FacingInputs", "basic_boring_resources", "basic_drilling_resources", "basic_mill_resources", "basic_parallel_resources",
@@ -119,5 +138,6 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "BoringComputeResult", "BoringGenerationError", "BoringGenerator",
            "BoringHole", "BoringInputs",
            "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
-           "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels", "resolve_box_facing_region",
+           "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels",
+           "prepare_pocket_machining_geometry", "resolve_box_facing_region",
            "resolve_profile_in_setup"]

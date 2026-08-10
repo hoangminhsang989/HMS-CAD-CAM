@@ -121,7 +121,8 @@ def test_production_schemas_share_order_footer_and_reasonable_basic() -> None:
             is ParameterDisclosureLevel.ADVANCED
         )
     assert contour.field("stepdown").disclosure_level is ParameterDisclosureLevel.ADVANCED
-    assert pocket.field("stepdown").disclosure_level is ParameterDisclosureLevel.BASIC
+    assert pocket.field("stepdown").disclosure_level is ParameterDisclosureLevel.ADVANCED
+    assert pocket.field("stepover").disclosure_level is ParameterDisclosureLevel.ADVANCED
     for schema in (facing, planar, contour, pocket):
         field_ids = {item.field_id for item in schema.fields}
         feed_id = "feed_rate" if "feed_rate" in field_ids else "cutting_feed_rate"
@@ -182,6 +183,15 @@ def test_source_default_and_inline_error_have_text_and_focus() -> None:
     try:
         page.resize(420, 720)
         page.show()
+        application.processEvents()
+        advanced_index = page.disclosure_selector.findData(
+            ParameterDisclosureLevel.ADVANCED
+        )
+        assert advanced_index >= 0
+        page.disclosure_selector.setCurrentIndex(advanced_index)
+        application.processEvents()
+        page.activateWindow()
+        page.setFocus()
         application.processEvents()
         derived = page._field_widgets["final_depth_summary"]
         recommended = page._field_widgets["stepover"]

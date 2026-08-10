@@ -7,10 +7,25 @@ from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
 from hms_cadcam.cam.application.contour import (
+    ContourPath,
     ContourGenerationError,
     _sample_loop,
     offset_contour,
     resolve_profile_in_setup,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+)
+from hms_cadcam.cam.automatic_pocket import (
+    POCKET_AUTOMATIC_POLICY_KEY,
+    POCKET_AUTOMATIC_POLICY_VERSION,
+    PocketAutomaticContext,
+    PocketAutomaticEntryPlacement,
+    pocket_automatic_entry_loops,
+    resolve_pocket_automatic_contract,
 )
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
@@ -245,6 +260,228 @@ def pocket_depth_levels(
     return tuple(levels)
 
 
+def prepare_pocket_machining_geometry(
+    region: PocketRegion,
+    setup: Setup,
+    *,
+    tool_diameter: float,
+    radial_stock_allowance: float,
+    stepover: float,
+    tolerance: float,
+    cutting_direction: PocketCuttingDirection,
+) -> tuple[ContourPath, tuple[ContourLoop, ...]]:
+    """Return the exact cutter-centre loops shared by AUTO and generation."""
+    if not isinstance(region, PocketRegion) or not isinstance(setup, Setup):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket machining region or Setup is invalid",
+        )
+    if not isinstance(cutting_direction, PocketCuttingDirection):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket cutting direction is invalid",
+        )
+    values = (tool_diameter, radial_stock_allowance, stepover, tolerance)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in values
+    ):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_OFFSET_FAILED,
+            "Pocket machining geometry inputs must be finite",
+        )
+    if (
+        tool_diameter <= 0.0
+        or radial_stock_allowance < 0.0
+        or stepover <= 0.0
+        or tolerance <= 0.0
+    ):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_OFFSET_FAILED,
+            "Pocket machining geometry inputs are outside safe bounds",
+        )
+    descriptor = ContourProfileDescriptor(
+        region.reference,
+        region.plane_origin,
+        region.x_axis,
+        region.y_axis,
+        region.normal,
+        region.boundary.outer_loop,
+        (),
+        region.bounds,
+        region.unit,
+        region.source_fingerprint,
+        region.provenance,
+    )
+    try:
+        path = resolve_profile_in_setup(descriptor, setup)
+    except ContourGenerationError as error:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID, str(error)
+        ) from error
+    loops = build_pocket_offset_loops(
+        path.loop,
+        tool_diameter / 2.0 + radial_stock_allowance,
+        stepover,
+        tolerance,
+        terminal_coverage_radius=tool_diameter / 2.0,
+    )
+    if cutting_direction is PocketCuttingDirection.CONVENTIONAL:
+        loops = tuple(loop.reversed() for loop in loops)
+    elif any(
+        loop.orientation is not ContourOrientation.COUNTERCLOCKWISE for loop in loops
+    ):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_OFFSET_FAILED,
+            "Pocket climb loops are not counterclockwise",
+        )
+    return path, loops
+
+
+def _stored_automatic_contract(
+    operation: Operation,
+) -> AutomaticParameterContract | None:
+    raw = dict(operation.parameters.values).get(AUTOMATIC_PARAMETER_CONTRACT_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket automatic metadata is invalid",
+        )
+    try:
+        contract = AutomaticParameterContract.from_json(raw)
+    except ValueError as error:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket automatic metadata is malformed",
+        ) from error
+    if contract.policy_key != POCKET_AUTOMATIC_POLICY_KEY:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket automatic policy identity is invalid",
+        )
+    return contract
+
+
+def _automatic_entry_placement(
+    contract: AutomaticParameterContract,
+    current: AutomaticParameterContract,
+    strategy: PocketStrategy,
+) -> PocketAutomaticEntryPlacement | None:
+    if contract.policy_version != POCKET_AUTOMATIC_POLICY_VERSION:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_PROFILE_INVALID,
+            "Pocket automatic policy version is unsupported",
+        )
+    for key, expected in (
+        ("stepdown", strategy.stepdown.value),
+        ("stepover", strategy.stepover.value),
+    ):
+        try:
+            item = contract.value(key)
+        except KeyError:
+            continue
+        if item.mode is AutomaticParameterMode.AUTO:
+            current_item = current.value(key)
+            if (
+                item.source != POCKET_AUTOMATIC_POLICY_KEY
+                or item.policy_version != POCKET_AUTOMATIC_POLICY_VERSION
+                or item.status is not AutomaticParameterStatus.RESOLVED
+                or current_item.status is not AutomaticParameterStatus.RESOLVED
+                or item.dependency_fingerprint
+                != current_item.dependency_fingerprint
+                or item.inputs != current_item.inputs
+                or not isinstance(item.effective_value, (int, float))
+                or isinstance(item.effective_value, bool)
+                or not math.isfinite(float(item.effective_value))
+                or not math.isclose(
+                    float(item.effective_value),
+                    expected,
+                    rel_tol=0.0,
+                    abs_tol=strategy.tolerance.value,
+                )
+                or not math.isclose(
+                    float(item.effective_value),
+                    float(current_item.effective_value),
+                    rel_tol=0.0,
+                    abs_tol=strategy.tolerance.value,
+                )
+            ):
+                raise PocketGenerationError(
+                    DiagnosticCode.POCKET_PROFILE_INVALID,
+                    f"Pocket AUTO {key} does not match current authoritative evidence",
+                )
+    keys = (
+        "entry_loop_index",
+        "entry_segment_index",
+        "entry_point_x",
+        "entry_point_y",
+        "entry_clearance",
+    )
+    try:
+        entries = tuple(contract.value(key) for key in keys)
+    except KeyError:
+        # Earlier additive contracts remain executable with canonical starts.
+        return None
+    if all(item.status is not AutomaticParameterStatus.RESOLVED for item in entries):
+        return None
+    current_entries = tuple(current.value(key) for key in keys)
+    if (
+        any(
+            item.mode is not AutomaticParameterMode.AUTO
+            or item.source != POCKET_AUTOMATIC_POLICY_KEY
+            or item.policy_version != POCKET_AUTOMATIC_POLICY_VERSION
+            or item.status is not AutomaticParameterStatus.RESOLVED
+            or item.dependency_fingerprint
+            != current_item.dependency_fingerprint
+            or item.inputs != current_item.inputs
+            for item, current_item in zip(entries, current_entries)
+        )
+        or entries[0].status is not AutomaticParameterStatus.RESOLVED
+        or type(entries[0].effective_value) is not int
+        or entries[1].status is not AutomaticParameterStatus.RESOLVED
+        or type(entries[1].effective_value) is not int
+        or any(
+            item.status is not AutomaticParameterStatus.RESOLVED
+            or not isinstance(item.effective_value, (int, float))
+            or isinstance(item.effective_value, bool)
+            or not math.isfinite(float(item.effective_value))
+            for item in entries[2:]
+        )
+    ):
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_ENTRY_UNSAFE,
+            "Pocket automatic entry placement is unresolved",
+        )
+    for item, current_item in zip(entries, current_entries):
+        if isinstance(item.effective_value, int) and not isinstance(
+            item.effective_value, bool
+        ):
+            matches = item.effective_value == current_item.effective_value
+        else:
+            matches = math.isclose(
+                float(item.effective_value),
+                float(current_item.effective_value),
+                rel_tol=0.0,
+                abs_tol=strategy.tolerance.value,
+            )
+        if not matches:
+            raise PocketGenerationError(
+                DiagnosticCode.POCKET_ENTRY_UNSAFE,
+                "Pocket automatic entry placement is stale",
+            )
+    return PocketAutomaticEntryPlacement(
+        entries[0].effective_value,
+        entries[1].effective_value,
+        float(entries[2].effective_value),
+        float(entries[3].effective_value),
+        float(entries[4].effective_value),
+    )
+
+
 class PocketGenerator:
     """Controller-neutral Pocket generator with fail-closed validation."""
 
@@ -295,19 +532,6 @@ class PocketGenerator:
         if region.reference != geometry_inputs[0].reference:
             raise PocketGenerationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Resolved Pocket region does not match the operation reference")
-        descriptor = ContourProfileDescriptor(
-            region.reference, region.plane_origin, region.x_axis, region.y_axis, region.normal,
-            region.boundary.outer_loop, (), region.bounds, region.unit,
-            region.source_fingerprint, region.provenance,
-        )
-        try:
-            path = resolve_profile_in_setup(descriptor, setup)
-        except ContourGenerationError as error:
-            raise PocketGenerationError(DiagnosticCode.POCKET_PROFILE_INVALID, str(error)) from error
-        if any(abs(segment.start.z - strategy.top_z.value) > strategy.tolerance.value
-               for segment in path.loop.segments):
-            raise PocketGenerationError(DiagnosticCode.POCKET_INVALID_DEPTH,
-                                        "Pocket top Z must match the resolved boundary plane")
 
         tool_status = operation.tool_assembly.assess(assembly)
         if tool_status is ToolReferenceStatus.MISSING:
@@ -369,19 +593,59 @@ class PocketGenerator:
             raise PocketGenerationError(DiagnosticCode.POCKET_ENTRY_UNSAFE,
                                         "Pocket entry policy is not supported safely")
 
-        initial_offset = diameter.value / 2.0 + strategy.radial_stock_allowance.value
-        loops = build_pocket_offset_loops(
-            path.loop,
-            initial_offset,
-            strategy.stepover.value,
-            strategy.tolerance.value,
-            terminal_coverage_radius=diameter.value / 2.0,
+        path, loops = prepare_pocket_machining_geometry(
+            region,
+            setup,
+            tool_diameter=diameter.value,
+            radial_stock_allowance=strategy.radial_stock_allowance.value,
+            stepover=strategy.stepover.value,
+            tolerance=strategy.tolerance.value,
+            cutting_direction=strategy.cutting_direction,
         )
-        if strategy.cutting_direction is PocketCuttingDirection.CONVENTIONAL:
-            loops = tuple(loop.reversed() for loop in loops)
-        elif any(loop.orientation is not ContourOrientation.COUNTERCLOCKWISE for loop in loops):
-            raise PocketGenerationError(DiagnosticCode.POCKET_OFFSET_FAILED,
-                                        "Pocket climb loops are not counterclockwise")
+        if any(abs(segment.start.z - strategy.top_z.value) > strategy.tolerance.value
+               for segment in path.loop.segments):
+            raise PocketGenerationError(DiagnosticCode.POCKET_INVALID_DEPTH,
+                                        "Pocket top Z must match the resolved boundary plane")
+        automatic = _stored_automatic_contract(operation)
+        if automatic is not None:
+            current_automatic = resolve_pocket_automatic_contract(
+                PocketAutomaticContext(
+                    strategy.unit,
+                    tool.family,
+                    diameter.value,
+                    cutting_length.value,
+                    assembly.stickout.value,
+                    required_depth,
+                    strategy.tolerance.value,
+                    path.loop,
+                    loops,
+                    region.fingerprint.digest,
+                    region.boundary.fingerprint.digest,
+                    None,
+                    tool.content_fingerprint.digest,
+                    "reachable",
+                ),
+                quality_profile=automatic.quality_profile,
+            )
+            placement = _automatic_entry_placement(
+                automatic,
+                current_automatic,
+                strategy,
+            )
+            if placement is not None:
+                try:
+                    loops = pocket_automatic_entry_loops(
+                        path.loop,
+                        loops,
+                        placement,
+                        cutter_radius=diameter.value / 2.0,
+                        tolerance=strategy.tolerance.value,
+                    )
+                except ValueError as error:
+                    raise PocketGenerationError(
+                        DiagnosticCode.POCKET_ENTRY_UNSAFE,
+                        str(error),
+                    ) from error
         levels = pocket_depth_levels(strategy.top_z.value, strategy.final_depth.value,
                                      strategy.stepdown.value, strategy.tolerance.value)
         event_estimate = len(levels) * sum(len(loop.segments) + 3 for loop in loops) + 4

@@ -10,6 +10,11 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from hms_cadcam.cam.application import PocketGenerator, basic_mill_resources
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+)
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
     CamNodeId,
@@ -198,13 +203,12 @@ def test_basic_is_minimal_and_advanced_expert_are_progressive() -> None:
     assert basic_editable == {
         "operation_name",
         "tool_assembly_id",
+        "quality_profile",
         "cutting_direction",
-        "stepover",
         "cutting_feed_rate",
         "spindle_speed",
         "top_z",
         "bottom_z",
-        "stepdown",
         "entry_policy",
     }
     advanced = schema.visible_sections(values, ParameterDisclosureLevel.ADVANCED)
@@ -309,7 +313,19 @@ def test_ui_binding_matches_legacy_parameter_and_dirty_semantics(
         assert getattr(update.strategy, attribute) == domain_value
     assert update.operation.revision == context.operation.revision.next()
     assert DirtyReason.PARAMETERS_CHANGED in update.operation.artifact_state.dirty_reasons
-    assert update.operation.parameters == update.strategy.to_operation_parameters()
+    assert context.geometry_reference is not None
+    assert (
+        PocketStrategy.from_operation_parameters(
+            update.operation.parameters, context.geometry_reference
+        )
+        == update.strategy
+    )
+    if field_id in {"stepover", "stepdown"}:
+        raw = dict(update.operation.parameters.values)[
+            AUTOMATIC_PARAMETER_CONTRACT_KEY
+        ]
+        contract = AutomaticParameterContract.from_json(raw)
+        assert contract.value(field_id).mode is AutomaticParameterMode.MANUAL_OVERRIDE
 
 
 def test_geometry_tool_machine_duplicate_and_island_states_fail_closed() -> None:

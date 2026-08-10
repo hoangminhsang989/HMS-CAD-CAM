@@ -128,6 +128,7 @@ from hms_cadcam.ui.function_editor.strategies import (
     facing_applied_values,
     facing_draft_transform,
     pocket_applied_values,
+    pocket_draft_transform,
     drilling_family_applied_values,
     drilling_family_geometry_values,
     prepare_contour_update,
@@ -1978,8 +1979,17 @@ class CamWorkspace(QWidget):
             orientation,
             island_count,
             diagnostic,
+            (
+                resolved_pocket.region
+                if resolved_pocket is not None
+                and resolved_pocket.status is GeometryResolutionStatus.RESOLVED
+                else None
+            ),
         )
-        draft = PocketEditorDraftContext(reference)
+        draft = PocketEditorDraftContext(
+            reference,
+            geometry_region=context.geometry_region,
+        )
         schema = build_pocket_schema(context)
         applied = pocket_applied_values(context)
         project = self._service.current_project
@@ -2008,6 +2018,9 @@ class CamWorkspace(QWidget):
             ),
             field_action_callback=lambda action_id, values: self._pocket_field_action(
                 context, draft, action_id, values
+            ),
+            draft_transform_callback=lambda values: pocket_draft_transform(
+                context, draft, values
             ),
         )
 
@@ -3500,6 +3513,7 @@ class CamWorkspace(QWidget):
             )
             raise ValueError(message)
         draft.geometry_reference = reference
+        draft.geometry_region = resolved.region
         current_id = (
             context.geometry_reference.reference_id
             if context.geometry_reference is not None

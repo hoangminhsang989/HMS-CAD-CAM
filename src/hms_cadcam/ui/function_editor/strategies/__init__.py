@@ -30,6 +30,7 @@ from hms_cadcam.ui.function_editor.strategies.pocket import (
     PocketOperationUpdate,
     build_pocket_schema,
     pocket_applied_values,
+    pocket_draft_transform,
     prepare_pocket_update,
     validate_pocket_schema_contract,
 )
@@ -123,6 +124,7 @@ __all__ = [
     "facing_applied_values",
     "facing_draft_transform",
     "pocket_applied_values",
+    "pocket_draft_transform",
     "parallel_applied_values",
     "parallel_draft_derived_values",
     "parallel_safety_presentation",

@@ -6,7 +6,27 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import math
 
-from hms_cadcam.cam.application import pocket_depth_levels
+from hms_cadcam.cam.application import (
+    PocketGenerationError,
+    pocket_depth_levels,
+    prepare_pocket_machining_geometry,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    AutomaticParameterValue,
+    AutomaticValidationResult,
+    CamQualityProfile,
+)
+from hms_cadcam.cam.automatic_pocket import (
+    POCKET_AUTOMATIC_POLICY_KEY,
+    POCKET_AUTOMATIC_USER_KEYS,
+    PocketAutomaticContext,
+    pocket_geometric_stepover_target,
+    resolve_pocket_automatic_contract,
+)
 from hms_cadcam.cam.domain import (
     BoxStock,
     DirtyReason,
@@ -22,10 +42,12 @@ from hms_cadcam.cam.domain import (
     Operation,
     OperationCapability,
     OperationGeometryInput,
+    OperationParameterSet,
     PocketCuttingDirection,
     PocketDepthDefinition,
     PocketEntryPolicy,
     PocketGeometryInput,
+    PocketRegion,
     PocketStrategy,
     Setup,
     SpindleSpeed,
@@ -70,6 +92,7 @@ class PocketEditorContext:
     geometry_orientation: str = ""
     geometry_island_count: int | None = None
     geometry_diagnostic: str = ""
+    geometry_region: PocketRegion | None = None
 
 
 @dataclass(slots=True)
@@ -78,6 +101,7 @@ class PocketEditorDraftContext:
 
     geometry_reference: GeometryReference | None
     pending_input_id: GeometryInputId | None = None
+    geometry_region: PocketRegion | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +129,7 @@ _FIELD_IDS = frozenset(
         "machining_pattern",
         "cutting_direction",
         "stepover",
+        "stepover_mode",
         "radial_stock_allowance",
         "cutting_feed_rate",
         "spindle_speed",
@@ -112,6 +137,7 @@ _FIELD_IDS = frozenset(
         "bottom_z",
         "final_depth_summary",
         "stepdown",
+        "stepdown_mode",
         "level_count",
         "axial_allowance",
         "entry_policy",
@@ -121,6 +147,14 @@ _FIELD_IDS = frozenset(
         "machine_id",
         "enabled",
         "tolerance",
+        "quality_profile",
+        "automatic_summary",
+        "automatic_stepdown",
+        "automatic_stepover",
+        "automatic_entry_location",
+        "automatic_entry_form",
+        "automatic_linking",
+        "automatic_provenance",
     }
 )
 _PARAMETER_KEYS = frozenset(
@@ -142,6 +176,31 @@ _PARAMETER_KEYS = frozenset(
         "tolerance",
     }
 )
+
+_AUTOMATIC_REASON_TEXT = {
+    "A validated cutter-accessible closed Pocket region is required.": "Cần vùng Pocket kín mà tâm dao tiếp cận được và đã xác minh.",
+    "Pocket AUTO requires a generator-supported End Mill with axial geometry and stickout.": "Pocket AUTO cần dao phay ngón được generator hỗ trợ, có hình học cắt dọc trục và stickout rõ ràng.",
+    "Positive Pocket depth span and usable axial capacity are required.": "Cần khoảng sâu Pocket dương và khả năng cắt dọc trục sử dụng được.",
+    "Pocket depth exceeds validated axial cutting length or stickout.": "Chiều sâu Pocket vượt quá chiều dài cắt dọc trục hoặc stickout đã xác minh.",
+    "Validated positive Pocket stepdown bounds are unavailable.": "Không có giới hạn stepdown Pocket dương đã xác minh.",
+    "Derived from Pocket depth span, axial cutting length, stickout and quality profile.": "Suy ra từ khoảng sâu Pocket, chiều dài cắt dọc trục, stickout và hồ sơ chất lượng.",
+    "Production Pocket offset geometry did not prove a reachable cutter-centre region.": "Hình học offset Pocket production chưa chứng minh được vùng tâm dao tiếp cận được.",
+    "Pocket AUTO stepover requires a generator-supported End Mill diameter.": "Stepover AUTO cần đường kính dao phay ngón được generator hỗ trợ.",
+    "Validated positive Pocket stepover bounds are unavailable.": "Không có giới hạn stepover Pocket dương đã xác minh.",
+    "Geometric Pocket coverage derived from cutter diameter and quality profile; no material-load claim.": "Độ phủ hình học Pocket suy ra từ đường kính dao và hồ sơ chất lượng; không tuyên bố tải vật liệu.",
+    "No deterministic cutter-centre-accessible Pocket entry location was proven.": "Chưa chứng minh được vị trí vào Pocket xác định mà tâm dao tiếp cận được.",
+    "Ranked deterministic Pocket entry by local boundary clearance and stable geometry tie-break.": "Xếp hạng vị trí vào Pocket xác định theo khoảng hở biên cục bộ và quy tắc hòa hình học ổn định.",
+    "Validated cutter-centre clearance to the closed Pocket outer boundary.": "Khoảng hở tâm dao tới biên ngoài Pocket kín đã được xác minh.",
+    "Vertical plunge is the only generator form and Tool metadata does not prove center-cutting capability.": "Cắm thẳng là kiểu duy nhất của generator và metadata Tool chưa chứng minh khả năng cắt tâm.",
+    "Existing retract linking is preserved because no complete stay-down path validator exists.": "Giữ liên kết rút dao hiện có vì chưa có bộ xác minh đầy đủ cho đường stay-down.",
+    "Legacy explicit Pocket numeric value preserved as manual intent.": "Giữ giá trị số Pocket cũ như ý định thủ công.",
+    "Missing additive field loaded as preserved legacy manual intent.": "Trường bổ sung bị thiếu được nạp như ý định thủ công cũ.",
+    "Explicit Advanced manual override.": "Tùy chỉnh thủ công rõ ràng trong Advanced.",
+}
+
+
+def _automatic_reason(reason: str) -> str:
+    return ui_text(_AUTOMATIC_REASON_TEXT.get(reason, reason))
 
 
 def _text(value: object, field_id: str) -> str:
@@ -184,12 +243,18 @@ def _choice_data(
 
 def _selected_tool(
     context: PocketEditorContext,
+    assembly_id: object | None = None,
 ) -> tuple[ToolAssembly | None, ToolDefinition | None, HolderDefinition | None]:
+    identity = (
+        str(context.operation.tool_assembly.assembly_id)
+        if assembly_id is None
+        else str(assembly_id)
+    )
     assembly = next(
         (
             item
             for item in context.tool_assemblies
-            if item.assembly_id == context.operation.tool_assembly.assembly_id
+            if str(item.assembly_id) == identity
         ),
         None,
     )
@@ -286,11 +351,521 @@ def _parameter_defaults(context: PocketEditorContext) -> dict[str, str]:
     }
 
 
+def _stored_automatic_contract(
+    context: PocketEditorContext,
+) -> AutomaticParameterContract | None:
+    raw = dict(context.operation.parameters.values).get(
+        AUTOMATIC_PARAMETER_CONTRACT_KEY
+    )
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("Pocket automatic metadata is invalid.")
+    try:
+        contract = AutomaticParameterContract.from_json(raw)
+    except ValueError as error:
+        raise ValueError("Pocket automatic metadata is malformed.") from error
+    if contract.policy_key != POCKET_AUTOMATIC_POLICY_KEY:
+        raise ValueError("Pocket automatic policy identity is invalid.")
+    return contract
+
+
+def _quality_profile(value: object) -> CamQualityProfile:
+    try:
+        return CamQualityProfile(str(value))
+    except ValueError as error:
+        raise ValueError("Pocket quality profile is invalid.") from error
+
+
+def _automatic_context(
+    context: PocketEditorContext,
+    draft: PocketEditorDraftContext,
+    parameters: PocketStrategy,
+    quality_profile: CamQualityProfile,
+    *,
+    values: Mapping[str, PresentationValue] | None = None,
+    stepover_probe: float | None = None,
+) -> PocketAutomaticContext:
+    assembly_id = None if values is None else values.get("tool_assembly_id")
+    assembly, tool, _holder = _selected_tool(context, assembly_id)
+    geometry = None if tool is None else tool.cutting_geometry
+    diameter = getattr(geometry, "diameter", None)
+    axial = None if geometry is None else geometry.axial_cutting_length
+    region = draft.geometry_region or context.geometry_region
+    dependency_parameters = parameters
+    depth_span = parameters.top_z.value - parameters.final_depth.value
+    tolerance = parameters.tolerance.value
+    if values is not None:
+        try:
+            unit = parameters.unit
+            top_z = _number(values["top_z"], "top_z")
+            bottom_z = _number(values["bottom_z"], "bottom_z")
+            axial_allowance = _number(
+                values["axial_allowance"], "axial_allowance"
+            )
+            tolerance = _number(values["tolerance"], "tolerance")
+            dependency_parameters = replace(
+                parameters,
+                depth=PocketDepthDefinition(
+                    unit,
+                    Length(top_z, unit),
+                    Length(bottom_z, unit),
+                    Length(axial_allowance, unit),
+                ),
+                radial_stock_allowance=Length(
+                    _number(
+                        values["radial_stock_allowance"],
+                        "radial_stock_allowance",
+                    ),
+                    unit,
+                ),
+                cutting_direction=PocketCuttingDirection(
+                    _text(values["cutting_direction"], "cutting_direction")
+                ),
+                tolerance=Length(tolerance, unit),
+            )
+            depth_span = top_z - (bottom_z + axial_allowance)
+        except (KeyError, TypeError, ValueError):
+            pass
+    if stepover_probe is None:
+        stepover_probe = parameters.stepover.value
+    source_loop = None
+    offset_loops: tuple = ()
+    accessibility_result = "unresolved"
+    if (
+        region is not None
+        and diameter is not None
+        and diameter.unit is parameters.unit
+        and diameter.value > 0.0
+    ):
+        try:
+            try:
+                target, _lower, _upper, _clamped = pocket_geometric_stepover_target(
+                    diameter.value,
+                    max(tolerance, 1.0e-9),
+                    quality_profile,
+                )
+            except ValueError:
+                target = stepover_probe
+            source_path, offset_loops = prepare_pocket_machining_geometry(
+                region,
+                context.setup,
+                tool_diameter=diameter.value,
+                radial_stock_allowance=dependency_parameters.radial_stock_allowance.value,
+                stepover=(
+                    stepover_probe
+                    if stepover_probe is not None
+                    and stepover_probe > 0.0
+                    else target
+                ),
+                tolerance=tolerance,
+                cutting_direction=dependency_parameters.cutting_direction,
+            )
+            source_loop = source_path.loop
+            accessibility_result = "reachable" if offset_loops else "empty"
+        except (PocketGenerationError, TypeError, ValueError):
+            accessibility_result = "unresolved"
+    return PocketAutomaticContext(
+        parameters.unit,
+        None if tool is None else tool.family,
+        None if diameter is None else diameter.to(parameters.unit).value,
+        None if axial is None else axial.to(parameters.unit).value,
+        None if assembly is None else assembly.stickout.to(parameters.unit).value,
+        depth_span if depth_span > 0.0 else None,
+        tolerance if tolerance > 0.0 else None,
+        source_loop,
+        tuple(offset_loops),
+        None if region is None else region.fingerprint.digest,
+        None if region is None else region.boundary.fingerprint.digest,
+        None,
+        None if tool is None else tool.content_fingerprint.digest,
+        accessibility_result,
+    )
+
+
+def _legacy_manual_contract(
+    base: AutomaticParameterContract,
+    strategy: PocketStrategy,
+) -> AutomaticParameterContract:
+    legacy = {
+        "stepdown": strategy.stepdown.value,
+        "stepover": strategy.stepover.value,
+    }
+    return replace(
+        base,
+        values=tuple(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=legacy[item.key],
+                validation=AutomaticValidationResult(True),
+                reason="Legacy explicit Pocket numeric value preserved as manual intent.",
+            )
+            if item.key in POCKET_AUTOMATIC_USER_KEYS
+            else item
+            for item in base.values
+        ),
+    )
+
+
+def _recompute_automatic_contract(
+    context: PocketEditorContext,
+    draft: PocketEditorDraftContext,
+    *,
+    values: Mapping[str, PresentationValue] | None = None,
+) -> AutomaticParameterContract:
+    strategy = PocketStrategy.from_operation_parameters(
+        context.operation.parameters,
+        context.geometry_reference
+        or (draft.geometry_reference if draft.geometry_reference is not None else None),
+    )
+    stored = _stored_automatic_contract(context)
+    profile = (
+        _quality_profile(values["quality_profile"])
+        if values is not None and "quality_profile" in values
+        else stored.quality_profile
+        if stored is not None
+        else CamQualityProfile.BALANCED
+    )
+    assembly_id = None if values is None else values.get("tool_assembly_id")
+    assembly, tool, _holder = _selected_tool(context, assembly_id)
+    diameter = (
+        getattr(tool.cutting_geometry, "diameter", None) if tool is not None else None
+    )
+    draft_tolerance = strategy.tolerance.value
+    if values is not None and "tolerance" in values:
+        try:
+            candidate_tolerance = _number(values["tolerance"], "tolerance")
+        except (TypeError, ValueError):
+            pass
+        else:
+            if candidate_tolerance > 0.0:
+                draft_tolerance = candidate_tolerance
+    stepover_probe = strategy.stepover.value
+    mode_value = None if values is None else values.get("stepover_mode")
+    if mode_value is not None and str(mode_value) == AutomaticParameterMode.AUTO.value:
+        if diameter is not None:
+            try:
+                stepover_probe, _lower, _upper, _clamped = pocket_geometric_stepover_target(
+                    diameter.to(strategy.unit).value,
+                    max(draft_tolerance, 1.0e-9),
+                    profile,
+                )
+            except ValueError:
+                pass
+    elif mode_value is not None:
+        stepover_probe = _number(values["stepover"], "stepover")
+    elif stored is not None:
+        try:
+            previous = stored.value("stepover")
+        except KeyError:
+            previous = None
+        if previous is not None and previous.has_manual_override:
+            stepover_probe = float(previous.override_value)
+        elif previous is not None and previous.mode is AutomaticParameterMode.AUTO and diameter is not None:
+            try:
+                stepover_probe, _lower, _upper, _clamped = pocket_geometric_stepover_target(
+                    diameter.to(strategy.unit).value,
+                    max(draft_tolerance, 1.0e-9),
+                    profile,
+                )
+            except ValueError:
+                pass
+    base = resolve_pocket_automatic_contract(
+        _automatic_context(
+            context,
+            draft,
+            strategy,
+            profile,
+            values=values,
+            stepover_probe=stepover_probe,
+        ),
+        quality_profile=profile,
+    )
+    if values is None:
+        if stored is None:
+            return _legacy_manual_contract(base, strategy)
+        merged: list[AutomaticParameterValue] = []
+        for item in base.values:
+            if item.key not in POCKET_AUTOMATIC_USER_KEYS:
+                merged.append(item)
+                continue
+            try:
+                previous = stored.value(item.key)
+            except KeyError:
+                merged.append(
+                    replace(
+                        item,
+                        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                        override_value={
+                            "stepdown": strategy.stepdown.value,
+                            "stepover": strategy.stepover.value,
+                        }[item.key],
+                        validation=AutomaticValidationResult(True),
+                        reason="Missing additive field loaded as preserved legacy manual intent.",
+                    )
+                )
+                continue
+            if previous.has_manual_override:
+                merged.append(
+                    replace(
+                        item,
+                        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                        override_value=previous.override_value,
+                        validation=previous.validation,
+                    )
+                )
+            elif previous.mode is AutomaticParameterMode.AUTO:
+                merged.append(
+                    item
+                    if item.status is AutomaticParameterStatus.RESOLVED
+                    else replace(item, mode=AutomaticParameterMode.AUTO)
+                )
+            else:
+                merged.append(item)
+        return replace(base, values=tuple(merged))
+    updated: list[AutomaticParameterValue] = []
+    mode_fields = {"stepdown": "stepdown_mode", "stepover": "stepover_mode"}
+    for item in base.values:
+        mode_key = mode_fields.get(item.key)
+        if mode_key is None or mode_key not in values:
+            updated.append(item)
+            continue
+        try:
+            mode = AutomaticParameterMode(str(values[mode_key]))
+        except ValueError as error:
+            raise ValueError(f"Pocket {item.key} mode is invalid.") from error
+        if mode is AutomaticParameterMode.AUTO:
+            if item.status is not AutomaticParameterStatus.RESOLVED:
+                previous = None
+                if stored is not None:
+                    try:
+                        previous = stored.value(item.key)
+                    except KeyError:
+                        pass
+                if previous is not None and previous.mode is AutomaticParameterMode.AUTO:
+                    updated.append(replace(item, mode=AutomaticParameterMode.AUTO))
+                    continue
+                raise ValueError(f"Pocket AUTO evidence is unavailable: {item.reason}")
+            updated.append(item)
+            continue
+        override = _number(values[item.key], item.key)
+        if override <= 0.0:
+            raise ValueError(f"Pocket {item.key} override must be positive.")
+        updated.append(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=override,
+                validation=AutomaticValidationResult(True),
+                reason="Explicit Advanced manual override.",
+            )
+        )
+    return replace(base, values=tuple(updated))
+
+
+def _unbound_automatic_contract(
+    context: PocketEditorContext,
+) -> AutomaticParameterContract:
+    data = _parameter_data(context)
+    unit = context.setup.wcs.origin.unit
+    assembly, tool, _holder = _selected_tool(context)
+    geometry = None if tool is None else tool.cutting_geometry
+    diameter = getattr(geometry, "diameter", None)
+    axial = None if geometry is None else geometry.axial_cutting_length
+    depth_span = (
+        _number(data["top_z"], "top_z")
+        - _number(data["bottom_z"], "bottom_z")
+        - _number(data["axial_allowance"], "axial_allowance")
+    )
+    stored = _stored_automatic_contract(context)
+    profile = (
+        stored.quality_profile
+        if stored is not None
+        else CamQualityProfile.BALANCED
+    )
+    base = resolve_pocket_automatic_contract(
+        PocketAutomaticContext(
+            unit,
+            None if tool is None else tool.family,
+            None if diameter is None else diameter.to(unit).value,
+            None if axial is None else axial.to(unit).value,
+            None if assembly is None else assembly.stickout.to(unit).value,
+            depth_span if depth_span > 0.0 else None,
+            _number(data["tolerance"], "tolerance"),
+            None,
+            (),
+            None,
+            None,
+            None,
+            None if tool is None else tool.content_fingerprint.digest,
+            "unresolved",
+        ),
+        quality_profile=profile,
+    )
+    current = {
+        "stepdown": _number(data["stepdown"], "stepdown"),
+        "stepover": _number(data["stepover"], "stepover"),
+    }
+    if stored is None:
+        return replace(
+            base,
+            values=tuple(
+                replace(
+                    item,
+                    mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                    override_value=current[item.key],
+                    validation=AutomaticValidationResult(True),
+                    reason="Legacy explicit Pocket numeric value preserved as manual intent.",
+                )
+                if item.key in POCKET_AUTOMATIC_USER_KEYS
+                else item
+                for item in base.values
+            ),
+        )
+    merged: list[AutomaticParameterValue] = []
+    for item in base.values:
+        if item.key not in POCKET_AUTOMATIC_USER_KEYS:
+            merged.append(item)
+            continue
+        try:
+            previous = stored.value(item.key)
+        except KeyError:
+            previous = None
+        if previous is not None and previous.has_manual_override:
+            merged.append(
+                replace(
+                    item,
+                    mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                    override_value=previous.override_value,
+                    validation=previous.validation,
+                )
+            )
+        elif previous is not None and previous.mode is AutomaticParameterMode.AUTO:
+            merged.append(replace(item, mode=AutomaticParameterMode.AUTO))
+        else:
+            merged.append(item)
+    return replace(base, values=tuple(merged))
+
+
+def _current_automatic_contract(
+    context: PocketEditorContext,
+) -> AutomaticParameterContract:
+    if context.geometry_reference is None:
+        return _unbound_automatic_contract(context)
+    return _recompute_automatic_contract(
+        context,
+        PocketEditorDraftContext(
+            context.geometry_reference,
+            geometry_region=context.geometry_region,
+        ),
+    )
+
+
+def _automatic_text(value: AutomaticParameterValue, unit: str) -> str:
+    if value.mode is AutomaticParameterMode.NOT_APPLICABLE:
+        return f"{ui_text('Không khả dụng')} · {_automatic_reason(value.reason)}"
+    if (
+        value.mode is AutomaticParameterMode.AUTO
+        and (
+            value.status is not AutomaticParameterStatus.RESOLVED
+            or value.effective_value is None
+        )
+    ):
+        return f"{ui_text('Tự động không khả dụng')} · {_automatic_reason(value.reason)}"
+    prefix = (
+        ui_text("Tự động")
+        if value.mode is AutomaticParameterMode.AUTO
+        else ui_text("Tùy chỉnh")
+    )
+    suffix = f" · {ui_text('đã giới hạn an toàn')}" if value.clamped else ""
+    value_text = (
+        f"{float(value.effective_value):g} {unit}"
+        if isinstance(value.effective_value, (int, float))
+        else str(value.effective_value)
+    )
+    return f"{prefix} · {value_text}{suffix}"
+
+
+def _automatic_presentation(
+    contract: AutomaticParameterContract,
+    unit: str,
+) -> dict[str, PresentationValue]:
+    entries = [contract.value(key) for key in POCKET_AUTOMATIC_USER_KEYS]
+    auto = sum(
+        item.mode is AutomaticParameterMode.AUTO
+        and item.status is AutomaticParameterStatus.RESOLVED
+        for item in entries
+    )
+    manual = sum(item.has_manual_override for item in entries)
+    unavailable = len(entries) - auto - manual
+    entry_index = contract.value("entry_segment_index")
+    entry_x = contract.value("entry_point_x")
+    entry_y = contract.value("entry_point_y")
+    entry_form = contract.value("entry_form")
+    linking = contract.value("linking_mode")
+    if entry_index.status is AutomaticParameterStatus.RESOLVED:
+        entry_text = (
+            f"{ui_text('Đoạn')} {entry_index.effective_value} · "
+            f"({float(entry_x.effective_value):g}, {float(entry_y.effective_value):g})"
+        )
+    else:
+        entry_text = (
+            f"{ui_text('Không khả dụng')} · {_automatic_reason(entry_index.reason)}"
+        )
+    result: dict[str, PresentationValue] = {
+        "quality_profile": contract.quality_profile.value,
+        "automatic_summary": (
+            f"{auto} AUTO · {manual} {ui_text('tùy chỉnh')} · "
+            f"{unavailable} {ui_text('không khả dụng')}"
+        ),
+        "automatic_stepdown": _automatic_text(contract.value("stepdown"), unit),
+        "automatic_stepover": _automatic_text(contract.value("stepover"), unit),
+        "automatic_entry_location": entry_text,
+        "automatic_entry_form": (
+            ui_text("Không khả dụng") + " · " + _automatic_reason(entry_form.reason)
+            if entry_form.status is not AutomaticParameterStatus.RESOLVED
+            else str(entry_form.effective_value)
+        ),
+        "automatic_linking": (
+            ui_text("Giữ hành vi rút dao hiện có")
+            + " · "
+            + _automatic_reason(linking.reason)
+            if linking.status is not AutomaticParameterStatus.RESOLVED
+            else str(linking.effective_value)
+        ),
+        "automatic_provenance": (
+            f"Stepdown: {_automatic_reason(contract.value('stepdown').reason)} "
+            f"Stepover: {_automatic_reason(contract.value('stepover').reason)}"
+        ),
+    }
+    for key, mode_key in (
+        ("stepdown", "stepdown_mode"),
+        ("stepover", "stepover_mode"),
+    ):
+        item = contract.value(key)
+        result[mode_key] = item.mode.value
+        if item.effective_value is not None:
+            result[key] = str(item.effective_value)
+    return result
+
+
+def pocket_draft_transform(
+    context: PocketEditorContext,
+    draft: PocketEditorDraftContext,
+    values: Mapping[str, PresentationValue],
+) -> dict[str, PresentationValue]:
+    """Recompute Pocket AUTO values after Tool, geometry, depth or quality edits."""
+    contract = _recompute_automatic_contract(context, draft, values=values)
+    return _automatic_presentation(contract, context.setup.wcs.origin.unit.value)
+
+
 def _parameter_data(context: PocketEditorContext) -> dict[str, object]:
     parameters = context.operation.parameters
     if parameters.strategy_key != "pocket_2_5d" or parameters.strategy_version != 1:
         raise ValueError("Operation không dùng Pocket strategy v1.")
     data = dict(parameters.values)
+    data.pop(AUTOMATIC_PARAMETER_CONTRACT_KEY, None)
     if set(data) != _PARAMETER_KEYS:
         raise ValueError("Pocket operation parameters không khớp codec v1.")
     if data["unit"] != context.setup.wcs.origin.unit.value:
@@ -303,6 +878,7 @@ def pocket_applied_values(
 ) -> dict[str, PresentationValue]:
     """Map every production field to deterministic presentation primitives."""
     data = _parameter_data(context)
+    automatic = _current_automatic_contract(context)
     if context.geometry_reference is not None:
         PocketStrategy.from_operation_parameters(
             context.operation.parameters, context.geometry_reference
@@ -321,7 +897,7 @@ def pocket_applied_values(
     except ValueError:
         count = 0
     reference = context.geometry_reference
-    return {
+    values: dict[str, PresentationValue] = {
         "operation_name": context.operation_name,
         "geometry_summary": _geometry_summary(context),
         "geometry_reference_id": "" if reference is None else str(reference.reference_id),
@@ -356,6 +932,10 @@ def pocket_applied_values(
         "enabled": context.operation.enabled,
         "tolerance": str(data["tolerance"]),
     }
+    values.update(
+        _automatic_presentation(automatic, context.setup.wcs.origin.unit.value)
+    )
+    return values
 
 
 def _complete_values(
@@ -369,15 +949,20 @@ def _complete_values(
 
 def _strategy_from_values(
     context: PocketEditorContext,
+    draft: PocketEditorDraftContext,
     reference: GeometryReference,
     values: Mapping[str, PresentationValue],
-) -> PocketStrategy:
+) -> tuple[PocketStrategy, AutomaticParameterContract]:
     complete = _complete_values(context, values)
+    automatic = _recompute_automatic_contract(context, draft, values=complete)
+    complete.update(
+        _automatic_presentation(automatic, context.setup.wcs.origin.unit.value)
+    )
     if _text(complete["machining_pattern"], "machining_pattern") != "offset_inward":
         raise ValueError("Pocket v1 chỉ hỗ trợ deterministic inward offset.")
     unit = context.setup.wcs.origin.unit
     feed_unit = FeedUnit.MM_PER_MINUTE if unit.value == "mm" else FeedUnit.INCH_PER_MINUTE
-    return PocketStrategy(
+    strategy = PocketStrategy(
         unit,
         PocketGeometryInput(reference, unit),
         PocketDepthDefinition(
@@ -386,8 +971,18 @@ def _strategy_from_values(
             Length(_number(complete["bottom_z"], "bottom_z"), unit),
             Length(_number(complete["axial_allowance"], "axial_allowance"), unit),
         ),
-        Length(_number(complete["stepover"], "stepover"), unit),
-        Length(_number(complete["stepdown"], "stepdown"), unit),
+        Length(
+            float(automatic.value("stepover").effective_value)
+            if automatic.value("stepover").effective_value is not None
+            else _number(complete["stepover"], "stepover"),
+            unit,
+        ),
+        Length(
+            float(automatic.value("stepdown").effective_value)
+            if automatic.value("stepdown").effective_value is not None
+            else _number(complete["stepdown"], "stepdown"),
+            unit,
+        ),
         Length(
             _number(complete["radial_stock_allowance"], "radial_stock_allowance"),
             unit,
@@ -407,6 +1002,7 @@ def _strategy_from_values(
         ),
         Length(_number(complete["tolerance"], "tolerance"), unit),
     )
+    return strategy, automatic
 
 
 def _geometry_reference_for_values(
@@ -446,7 +1042,9 @@ def prepare_pocket_update(
         raise ValueError("Pocket geometry input hiện tại không có role BOUNDARY.")
     complete = _complete_values(context, values)
     reference = _geometry_reference_for_values(context, draft, complete)
-    strategy = _strategy_from_values(context, reference, complete)
+    strategy, automatic = _strategy_from_values(
+        context, draft, reference, complete
+    )
     assembly_id = _text(complete["tool_assembly_id"], "tool_assembly_id")
     assembly = next(
         (item for item in context.tool_assemblies if str(item.assembly_id) == assembly_id),
@@ -492,7 +1090,39 @@ def prepare_pocket_update(
             0,
         ),
     )
-    parameter_set = strategy.to_operation_parameters()
+    base_parameters = strategy.to_operation_parameters()
+    previous_values = pocket_applied_values(context)
+    automatic_changed = any(
+        complete.get(key) != previous_values.get(key)
+        for key in (
+            "quality_profile",
+            "stepdown_mode",
+            "stepdown",
+            "stepover_mode",
+            "stepover",
+        )
+    )
+    persist_automatic = (
+        _stored_automatic_contract(context) is not None
+        or automatic_changed
+        or any(
+            automatic.value(key).mode is AutomaticParameterMode.AUTO
+            for key in POCKET_AUTOMATIC_USER_KEYS
+        )
+        or automatic.value("entry_segment_index").status
+        is AutomaticParameterStatus.RESOLVED
+    )
+    parameter_set = (
+        OperationParameterSet(
+            base_parameters.strategy_key,
+            base_parameters.strategy_version,
+            base_parameters.values
+            + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic.to_json()),),
+            base_parameters.schema_version,
+        )
+        if persist_automatic
+        else base_parameters
+    )
     tool_reference = ToolAssemblyReference.from_assembly(assembly)
     enabled = _boolean(complete["enabled"], "enabled")
     parameter_changed = parameter_set != context.operation.parameters
@@ -591,11 +1221,59 @@ def _number_field(
     )
 
 
+def _automatic_mode_field(
+    field_id: str,
+    label: str,
+    value: PresentationValue,
+    *,
+    order: int,
+    auto_available: bool,
+) -> FunctionEditorField:
+    choices = (
+        (
+            AutomaticParameterMode.AUTO.value,
+            AutomaticParameterMode.MANUAL_OVERRIDE.value,
+        )
+        if auto_available
+        else (
+            (
+                AutomaticParameterMode.AUTO.value,
+                AutomaticParameterMode.MANUAL_OVERRIDE.value,
+            )
+            if value == AutomaticParameterMode.AUTO.value
+            else (AutomaticParameterMode.MANUAL_OVERRIDE.value,)
+        )
+    )
+    labels = tuple(
+        (choice, "AUTO" if choice == AutomaticParameterMode.AUTO.value else "Manual override")
+        for choice in choices
+    )
+    return FunctionEditorField(
+        field_id,
+        label,
+        FunctionEditorFieldKind.CHOICE,
+        value,
+        required=True,
+        disclosure_level=ParameterDisclosureLevel.ADVANCED,
+        choices=choices,
+        choice_labels=labels,
+        tooltip=(
+            "AUTO recomputes from Tool, Pocket geometry, depth and quality; manual override is preserved."
+            if auto_available
+            else "AUTO is unavailable because validated Pocket or cutter evidence is missing."
+        ),
+        help_key=f"pocket.{field_id}",
+        order=order,
+        binding_key=f"automatic.{field_id}",
+    )
+
+
 def build_pocket_sections(
     context: PocketEditorContext,
 ) -> tuple[FunctionEditorSection, ...]:
     """Build deterministic operator-oriented sections over Pocket v1 only."""
     values = pocket_applied_values(context)
+    automatic_contract = _current_automatic_contract(context)
     defaults = _parameter_defaults(context)
     unit = context.setup.wcs.origin.unit.value
     feed_unit = "mm/min" if unit == "mm" else "in/min"
@@ -624,6 +1302,64 @@ def build_pocket_sections(
                 order=10,
                 binding_key="node.name",
                 conversion=FunctionEditorValueConversion.TEXT,
+            ),
+            FunctionEditorField(
+                "quality_profile",
+                "Hồ sơ chất lượng",
+                FunctionEditorFieldKind.CHOICE,
+                values["quality_profile"],
+                required=True,
+                choices=tuple(item.value for item in CamQualityProfile),
+                choice_labels=(
+                    (CamQualityProfile.FAST.value, "Nhanh"),
+                    (CamQualityProfile.BALANCED.value, "Cân bằng"),
+                    (CamQualityProfile.HIGH.value, "Chất lượng cao"),
+                ),
+                tooltip="Chính sách hình học dùng chung; không phải mô hình tải vật liệu.",
+                help_key="pocket.quality_profile",
+                order=20,
+                binding_key="automatic.quality_profile",
+            ),
+            FunctionEditorField(
+                "automatic_summary",
+                "Pocket 2D Auto Setup",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_summary"],
+                source=FunctionEditorValueSource.DERIVED,
+                tooltip="Tóm tắt trạng thái tự động, tùy chỉnh và không khả dụng.",
+                help_key="pocket.automatic_summary",
+                order=30,
+                binding_key="automatic.summary",
+            ),
+            FunctionEditorField(
+                "automatic_stepdown",
+                "Stepdown tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_stepdown"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="pocket.automatic_stepdown",
+                order=40,
+                binding_key="automatic.stepdown.summary",
+            ),
+            FunctionEditorField(
+                "automatic_stepover",
+                "Bước ngang tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_stepover"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="pocket.automatic_stepover",
+                order=50,
+                binding_key="automatic.stepover.summary",
+            ),
+            FunctionEditorField(
+                "automatic_entry_location",
+                "Vị trí vào dao",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_entry_location"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="pocket.automatic_entry_location",
+                order=60,
+                binding_key="automatic.entry_location",
             ),
         ),
         "Các quyết định Pocket cốt lõi nằm trong Geometry, Tool, Cutting, Levels và Entry.",
@@ -748,14 +1484,25 @@ def build_pocket_sections(
                 order=20,
                 binding_key="parameters.cutting_direction",
             ),
+            _automatic_mode_field(
+                "stepover_mode",
+                "Chế độ stepover",
+                values["stepover_mode"],
+                order=30,
+                auto_available=(
+                    automatic_contract.value("stepover").status
+                    is AutomaticParameterStatus.RESOLVED
+                ),
+            ),
             _number_field(
                 "stepover",
                 "Stepover",
                 values["stepover"],
                 unit=unit,
                 binding_key="parameters.stepover",
-                order=30,
+                order=40,
                 default=defaults.get("stepover"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(_minimum("pocket.stepover_positive", "Stepover phải lớn hơn 0."),),
                 help_text="Khoảng cách tuyệt đối; miền yêu cầu nhỏ hơn đường kính dao.",
             ),
@@ -765,7 +1512,7 @@ def build_pocket_sections(
                 values["radial_stock_allowance"],
                 unit=unit,
                 binding_key="parameters.radial_stock_allowance",
-                order=40,
+                order=50,
                 default=defaults.get("radial_stock_allowance"),
                 validators=(
                     _minimum(
@@ -782,7 +1529,7 @@ def build_pocket_sections(
                 values["cutting_feed_rate"],
                 unit=feed_unit,
                 binding_key="parameters.cutting_feed_rate",
-                order=50,
+                order=60,
                 default=defaults.get("cutting_feed_rate"),
                 validators=(_minimum("pocket.feed_positive", "Feed cắt phải lớn hơn 0."),),
             ),
@@ -792,7 +1539,7 @@ def build_pocket_sections(
                 values["spindle_speed"],
                 unit="RPM",
                 binding_key="parameters.spindle_speed",
-                order=60,
+                order=70,
                 default=defaults.get("spindle_speed"),
                 validators=(_minimum("pocket.spindle_positive", "Spindle RPM phải lớn hơn 0."),),
             ),
@@ -832,14 +1579,25 @@ def build_pocket_sections(
                 ),
                 help_text="Đáy danh nghĩa trong hệ tọa độ Thiết lập; lượng dư đáy nâng Z dao cuối.",
             ),
+            _automatic_mode_field(
+                "stepdown_mode",
+                "Chế độ stepdown",
+                values["stepdown_mode"],
+                order=30,
+                auto_available=(
+                    automatic_contract.value("stepdown").status
+                    is AutomaticParameterStatus.RESOLVED
+                ),
+            ),
             _number_field(
                 "stepdown",
                 "Stepdown",
                 values["stepdown"],
                 unit=unit,
                 binding_key="parameters.stepdown",
-                order=30,
+                order=40,
                 default=defaults.get("stepdown"),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 validators=(_minimum("pocket.stepdown_positive", "Stepdown phải lớn hơn 0."),),
             ),
             _number_field(
@@ -848,7 +1606,7 @@ def build_pocket_sections(
                 values["axial_allowance"],
                 unit=unit,
                 binding_key="parameters.axial_allowance",
-                order=40,
+                order=50,
                 default=defaults.get("axial_allowance"),
                 validators=(
                     _minimum(
@@ -868,7 +1626,7 @@ def build_pocket_sections(
                 source=FunctionEditorValueSource.DERIVED,
                 tooltip="Derived = Bottom Z + floor allowance; không phải input thứ hai.",
                 help_key="pocket.final_depth",
-                order=50,
+                order=60,
                 binding_key="derived.final_depth",
             ),
             FunctionEditorField(
@@ -879,7 +1637,7 @@ def build_pocket_sections(
                 source=FunctionEditorValueSource.DERIVED,
                 tooltip="Derived theo thuật toán pocket_depth_levels hiện có.",
                 help_key="pocket.level_count",
-                order=60,
+                order=70,
                 binding_key="derived.level_count",
             ),
         ),
@@ -903,13 +1661,25 @@ def build_pocket_sections(
                 order=10,
                 binding_key="parameters.entry_policy",
             ),
+            FunctionEditorField(
+                "automatic_entry_form",
+                "Trạng thái kiểu vào dao",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_entry_form"],
+                source=FunctionEditorValueSource.DERIVED,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                tooltip="Chế độ vào dao tự động không chọn cắm thẳng khi dữ liệu Dao chưa chứng minh khả năng cắt tâm.",
+                help_key="pocket.automatic_entry_form",
+                order=20,
+                binding_key="automatic.entry_form",
+            ),
             _number_field(
                 "plunge_feed_rate",
                 "Plunge feed",
                 values["plunge_feed_rate"],
                 unit=feed_unit,
                 binding_key="parameters.plunge_feed_rate",
-                order=20,
+                order=30,
                 default=defaults.get("plunge_feed_rate"),
                 validators=(_minimum("pocket.plunge_positive", "Plunge feed phải lớn hơn 0."),),
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
@@ -923,13 +1693,25 @@ def build_pocket_sections(
         "linking",
         "LINKING",
         (
+            FunctionEditorField(
+                "automatic_linking",
+                "Liên kết tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_linking"],
+                source=FunctionEditorValueSource.DERIVED,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                tooltip="Giữ nguyên rút dao và liên kết an toàn hiện có khi chưa có bộ xác minh đầy đủ cho đường chạy dao không nâng dao.",
+                help_key="pocket.automatic_linking",
+                order=10,
+                binding_key="automatic.linking",
+            ),
             _number_field(
                 "clearance_height",
                 "Clearance",
                 values["clearance_height"],
                 unit=unit,
                 binding_key="parameters.clearance_height",
-                order=10,
+                order=20,
                 default=defaults.get("clearance_height"),
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 help_text="Giá trị nguyên công tường minh trong hệ tọa độ Thiết lập; không phải Z máy.",
@@ -940,7 +1722,7 @@ def build_pocket_sections(
                 values["retract_height"],
                 unit=unit,
                 binding_key="parameters.retract_height",
-                order=20,
+                order=30,
                 default=defaults.get("retract_height"),
                 validators=(
                     FunctionEditorValidationRule(
@@ -964,6 +1746,18 @@ def build_pocket_sections(
         "ADVANCED",
         (
             FunctionEditorField(
+                "automatic_provenance",
+                "Nguồn gốc thiết lập tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_provenance"],
+                source=FunctionEditorValueSource.DERIVED,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                tooltip="Giải thích chính sách, giới hạn và trạng thái dự phòng của tham số Hốc tự động.",
+                help_key="pocket.automatic_provenance",
+                order=10,
+                binding_key="automatic.provenance",
+            ),
+            FunctionEditorField(
                 "machine_id",
                 "Máy",
                 FunctionEditorFieldKind.CHOICE,
@@ -974,7 +1768,7 @@ def build_pocket_sections(
                 choice_labels=machine_labels,
                 tooltip="Machine requirement hiện có; domain kiểm tra capability/feed/spindle.",
                 help_key="pocket.machine",
-                order=10,
+                order=20,
                 binding_key="operation.machine_requirement",
             ),
             FunctionEditorField(
@@ -984,7 +1778,7 @@ def build_pocket_sections(
                 values["enabled"],
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 help_key="pocket.enabled",
-                order=20,
+                order=30,
                 binding_key="operation.enabled",
                 conversion=FunctionEditorValueConversion.BOOLEAN,
             ),
@@ -1073,6 +1867,7 @@ __all__ = [
     "PocketOperationUpdate",
     "build_pocket_schema",
     "pocket_applied_values",
+    "pocket_draft_transform",
     "prepare_pocket_update",
     "validate_pocket_schema_contract",
 ]

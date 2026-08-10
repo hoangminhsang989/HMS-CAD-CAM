@@ -401,6 +401,8 @@ class PocketStrategy:
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Operation is not a Pocket strategy")
         data = dict(value.values)
+        # Stage17A metadata is additive; legacy Pocket numeric semantics stay V1.
+        data.pop("automatic_parameter_contract", None)
         fields = {"unit", "top_z", "bottom_z", "axial_allowance", "stepover", "stepdown",
                   "radial_stock_allowance", "clearance_height", "retract_height",
                   "cutting_feed_rate", "plunge_feed_rate", "spindle_speed", "entry_policy",
