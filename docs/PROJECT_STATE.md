@@ -25,10 +25,18 @@
   are all `0`.
 - R188E preserved the seven protected local dirty identities exactly:
   `PROTECTED_DIRTY_IDENTITIES_PRESERVED_7_OF_7`.
-- Local integration is complete. The remaining delivery boundary is remote
-  publication under a separate authority: **push NOT run**,
-  **AI Sync NOT run**, **Stage17 NOT started**, and **Mega-WP3 NOT started**.
-- Current task: `STAGE16A_MEGA_WP2_POST_INTEGRATION_DELIVERY`.
+- R189 local closure:
+  `PASS_STAGE16A_R189_MEGA_WP2_POST_INTEGRATION_STATE_RECONCILIATION_AND_LOCAL_DELIVERY`.
+- Production remote delivery is complete after Push A:
+  `MEGA_WP2_PRODUCTION_REMOTE_DELIVERY_COMPLETE`; remote
+  `refs/heads/main` was independently verified at
+  `f67262c31a7a5611daf392ce8ce3b26ff9fb233a`.
+- R190 state commit records the completed Mega-WP2 production remote delivery.
+- Final remote state closure remains pending Push B:
+  `MEGA_WP2_REMOTE_STATE_CLOSURE_PENDING_PUSH_B`.
+- Current task: `STAGE16A_MEGA_WP2_REMOTE_DELIVERY_CLOSURE`.
+- Push B has not run yet; **AI Sync NOT run**, **Stage17 NOT started**, and
+  **Mega-WP3 NOT started**.
 
 The historical stage sections below, including local-only Stage 9A.7 material,
 are retained for provenance and do not override this canonical Stage16A

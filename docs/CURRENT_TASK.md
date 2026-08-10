@@ -21,13 +21,21 @@
   candidate-induced failures and provenance mismatches remain `0`.
 - R188E completed with
   `PROTECTED_DIRTY_IDENTITIES_PRESERVED_7_OF_7`.
-- Current delivery task:
-  `STAGE16A_MEGA_WP2_POST_INTEGRATION_DELIVERY`.
-- Local integration is complete. Remote delivery is not complete:
-  **push NOT run**, **AI Sync NOT run**, **Stage17 NOT started**, and
+- R189 local closure:
+  `PASS_STAGE16A_R189_MEGA_WP2_POST_INTEGRATION_STATE_RECONCILIATION_AND_LOCAL_DELIVERY`.
+- Production remote delivery is complete after Push A:
+  `MEGA_WP2_PRODUCTION_REMOTE_DELIVERY_COMPLETE`; remote
+  `refs/heads/main` was independently verified at
+  `f67262c31a7a5611daf392ce8ce3b26ff9fb233a`.
+- R190 state commit records the completed Mega-WP2 production remote delivery.
+- Final remote state closure remains pending Push B:
+  `MEGA_WP2_REMOTE_STATE_CLOSURE_PENDING_PUSH_B`.
+- Current delivery boundary:
+  `STAGE16A_MEGA_WP2_REMOTE_DELIVERY_CLOSURE`.
+- Push B has not run yet; **AI Sync NOT run**, **Stage17 NOT started**, and
   **Mega-WP3 NOT started**.
-- The next boundary after R189 local closure requires a separate
-  `STAGE16A_MEGA_WP2_REMOTE_PUSH_AND_DELIVERY_AUTHORITY`.
+- Final remote closure requires the separate bounded Push B step in this
+  authority; no later phase is being started automatically.
 
 The Stage 9A.7 and Stage 8A.x material below is preserved from the local
 pre-integration working state as historical context. It does not override the
