@@ -1,40 +1,37 @@
-# CANONICAL CURRENT PROGRAMME STATE — R193 STAGE17A
+# CANONICAL CURRENT PROGRAMME STATE — R201 STAGE17A TRANCHE 1 DELIVERY
 
 - Stage16A: **CLOSED**.
-- Stage17A: **TRANCHE 1 IMPLEMENTED; LOCAL DIRECT REVIEW PENDING**.
+- Stage17A: **ACTIVE; TRANCHE 1 COMPLETE AND PRODUCTION-DELIVERED**.
 - Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
 - Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
-- Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
 - Owner contract: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
-- R193 implementation remains isolated in branch `stage17a-megawp3-auto-parameters`.
-- Contract commit: `f37be6b2bd2dc0c9b939c1aa0eb1535e13dcfe5e`.
-- Implementation commit: `500e732e32c250aa89c0de132930c6bb8e587da9` /
-  tree `6a523e94d9940b53e696eaf2716f203b9f3ed45a`.
-- Implemented tranche: shared typed AUTO/MANUAL_OVERRIDE/NOT_APPLICABLE
-  contract; Facing Stock BOX stepover, stepdown and overtravel; Planar FACE
-  stepover and stepdown; provenance, bounds/clamps, Basic/Advanced UX,
-  persistence compatibility and VI/EN/KO localization.
-- Operation audit: Parallel and Z-Level remain `ALREADY_AUTOMATIC`; Contour,
-  Pocket, Drilling, Tapping, Reaming, Boring and Lathe are deferred because
-  their correct policies need different geometry/process evidence. Therefore
-  no additional operation qualifies as `MIGRATE_IN_R193`.
-- Verification on the exact implementation tree: focused **72/72 PASS**;
-  bounded **396 passed + 1 independently proven inherited baseline failure**;
-  full **4079 passed, 8 inherited/external failures, 8 skipped, 2 deselected**.
-  Candidate-induced and indeterminate failures are `0`, and
-  `NEW_FAILURE_DELTA_R193=0`.
-- Static checks: `compileall src tests tools`, import provenance, catalog JSON,
-  `pip check` and `git diff --check` all PASS. Localization audit remains
-  `1874 total / 0 untranslated / 239 allowlisted`.
-- Current boundary:
-  `READY_FOR_STAGE17A_TRANCHE1_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
-- Stage17A as a whole is not marked complete by R193; the next action requires
-  separate final direct-review/integration authority.
-- Protected main and its five dirty local identities plus eight R191 `.ai` outputs are read-only.
-- R193 must not push, run AI Sync, or reopen Stage16A.
+- R193 implementation and verification PASS; R194 final direct review approved
+  the exact candidate for integration.
+- R195–R200 isolated the legacy Windows file-object ACL defect, normalized the
+  failed replacement set under the correct standard-user privilege boundary,
+  and proved DELETE `18/18`, add-only create `3/3`, and Git replacement
+  feasibility `12/12`.
+- R201 reconciled the exact-two semantic-clean index stat entries without
+  changing raw bytes or index blobs, then fast-forwarded protected main to the
+  approved production identity.
+- Production commit: `0f1836777c2c8553474503955abba381e6a1c46e` / tree
+  `b99e7ec24e4b152975043be25f6c222479e1b06e`.
+- Push A is complete and live `origin/main` was independently verified at the
+  production commit above.
+- Exact-tree R193/R194 certification is inherited. Fresh post-integration
+  verification passes focused **72/72**, localization
+  **1874 total / 0 untranslated / 239 allowlisted**, and bounded
+  **396 passed + 1 directly reproduced inherited baseline failure**;
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- The five protected local identities and eight pre-sync R191 `.ai` outputs
+  remain preserved; staged changes remain `0` before this state-only closure.
+- Current delivery boundary: state-only Push B and AI Sync V1.1 remain pending
+  at this commit point.
+- Stage17A remains **OPEN** beyond Tranche 1. Deferred operation families require
+  a separate canonical Tranche2 product decision or implementation scope.
 
 The historical material below is retained for provenance and does not override
-this R193 canonical state.
+this R201 canonical state.
 
 # Nhiệm vụ hiện tại — Stage16A Mega-WP2 post-integration delivery
 

@@ -1,41 +1,40 @@
-# CANONICAL CURRENT PROGRAMME SUMMARY — R193 STAGE17A
+# CANONICAL CURRENT PROGRAMME SUMMARY — R201 STAGE17A TRANCHE 1 DELIVERY
 
 - Stage16A: **CLOSED**.
-- Stage17A: **TRANCHE 1 IMPLEMENTED; LOCAL DIRECT REVIEW PENDING**.
+- Stage17A: **ACTIVE; TRANCHE 1 COMPLETE AND PRODUCTION-DELIVERED**.
 - Canonical increment: `STAGE17A_CAM_AUTOMATIC_PARAMETERS_AND_OPERATION_INTELLIGENCE`.
 - Program container: `MEGA_WP3_AUTOMATIC_CAM_SETUP_MODERNIZATION`.
-- Baseline: `aaeca0bb7e0ef64f299c5c719f5e5d1b67fd127e` / tree `b6e09a204e3dc5c27244e2e50312c5f4d73dad1e`.
 - Scope/spec: `docs/STAGE17A_CAM_AUTOMATIC_PARAMETERS_OPERATION_INTELLIGENCE_V1.md`.
-- R193 is local-only on `stage17a-megawp3-auto-parameters`; protected main remains untouched.
-- Contract commit: `f37be6b2bd2dc0c9b939c1aa0eb1535e13dcfe5e`.
-- Implementation commit: `500e732e32c250aa89c0de132930c6bb8e587da9` /
-  tree `6a523e94d9940b53e696eaf2716f203b9f3ed45a`.
-- Facing Stock BOX now derives stepover, stepdown and overtravel; Planar FACE
-  derives stepover and stepdown. AUTO recomputes from validated Tool, boundary,
-  depth, unit and quality evidence; Advanced manual overrides persist and can
-  return to AUTO. Missing or contradictory evidence fails closed.
-- Parallel and Z-Level remain `ALREADY_AUTOMATIC`. Contour, Pocket, Drilling,
-  Tapping, Reaming, Boring and Lathe are deferred to distinct geometry/process
-  policies; the R193-compatible additional migration count is `0`.
-- Persistence is additive in the existing Facing parameter set; Facing schema
-  remains version 1, SQLite and `.HMS` schema/migration deltas are `0`, and
-  legacy numeric values retain manual intent.
-- R193 verification: focused **72/72 PASS**; bounded **396 passed + 1 inherited
-  baseline failure**; canonical full **4079 passed, 8 inherited/external
-  failures, 8 skipped, 2 deselected**. Candidate-induced failures,
-  indeterminate failures and `NEW_FAILURE_DELTA_R193` are all `0`.
-- Qt lifecycle remediation is receiver-bound and the focused popup/lifecycle
-  segment passes; full regression has no candidate lifecycle failure.
-- Localization audit: `1874 total / 0 untranslated / 239 allowlisted`; VI/EN/KO
-  key parity and UTF-8 checks pass.
-- Current boundary:
-  `READY_FOR_STAGE17A_TRANCHE1_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
-- Five protected local paths and eight R191 `.ai` outputs remain outside the candidate.
-- Stage17A remains open beyond this implemented first tranche; R193 does not
-  authorize protected-main integration or later Stage17A tranches.
+- R193 implementation PASS and R194 final direct review PASS apply to candidate
+  `0f1836777c2c8553474503955abba381e6a1c46e` / tree
+  `b99e7ec24e4b152975043be25f6c222479e1b06e`.
+- R195–R200 preserved the product candidate while correcting the legacy Windows
+  file-object ACL/replacement defect. The final filesystem proof is DELETE
+  `18/18`, add-only create `3/3`, Git replacement `12/12`, with content/blob
+  integrity preserved.
+- R201 proved `GIT_INDEX_STAT_CACHE_FALSE_DIRTY_STATE` for the exact two state
+  docs, reconciled their stat metadata without changing index blobs or raw
+  bytes, and completed the one-shot fast-forward integration.
+- Push A delivered the exact production candidate to `origin/main`; the live
+  remote was independently verified at
+  `0f1836777c2c8553474503955abba381e6a1c46e`.
+- Exact-tree certification is inherited from R193/R194. Fresh post-integration
+  evidence: focused **72/72 PASS**; bounded **396 passed + 1 directly reproduced
+  inherited baseline failure**; localization
+  **1874 total / 0 untranslated / 239 allowlisted**; static compile/import,
+  catalog, `pip check`, and committed-delta `git diff --check` PASS.
+- Candidate-induced and indeterminate failures remain `0`;
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Production/test/catalog/schema/dependency delta from this state-closure phase
+  is `0`.
+- The five protected local identities and eight pre-sync R191 `.ai` outputs
+  remain preserved.
+- State-only Push B and AI Sync V1.1 are pending at this commit point.
+- Stage17A remains **OPEN** beyond Tranche 1; the next tranche requires a
+  canonically defined operation-family policy or an owner definition packet.
 
 The historical Stage16/R191 material below is retained for provenance and does
-not override this R193 canonical summary.
+not override this R201 canonical summary.
 
 # Trạng thái dự án HMS CAD/CAM
 
