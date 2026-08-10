@@ -575,6 +575,8 @@ def _recompute_automatic_contract(
             raise ValueError(f"{item.key} không hỗ trợ chế độ đã chọn.")
         value_key = item.key
         override = _number(values[value_key], value_key)
+        if override <= 0.0:
+            raise ValueError(f"{item.key} override phải lớn hơn 0.")
         updated.append(
             replace(
                 item,

@@ -255,6 +255,18 @@ def test_malformed_contract_and_invalid_mode_fail_safely() -> None:
         contour_draft_transform(context, draft, values)
 
 
+@pytest.mark.parametrize("invalid", ("0", "-1.0"))
+def test_manual_lead_out_override_must_be_positive(invalid: str) -> None:
+    context, _descriptor = _context()
+    draft = _draft(context)
+    values = dict(contour_applied_values(context))
+    values["lead_out_mode"] = AutomaticParameterMode.MANUAL_OVERRIDE.value
+    values["lead_out_length"] = invalid
+
+    with pytest.raises(ValueError, match="lead_out_length override phải lớn hơn 0"):
+        prepare_contour_update(context, draft, values)
+
+
 def test_missing_additive_contract_fields_load_as_legacy_manual_intent() -> None:
     context, descriptor = _context()
     draft = _draft(context)
