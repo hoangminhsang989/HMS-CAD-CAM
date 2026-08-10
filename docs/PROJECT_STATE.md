@@ -1,3 +1,55 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R210 STAGE17A TRANCHE 4 DELIVERY
+
+- Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranches 1-4 are product-
+  complete and production-delivered; the remaining Stage17A family audit is
+  pending, so Stage17A itself remains **OPEN**.
+- Tranche4 `Drilling Auto Setup` is complete for exactly Standard, Spot and Peck.
+  Frozen scope and existing-product audit remain in
+  `docs/STAGE17A_TRANCHE4_DRILLING_AUTO_SETUP.md`.
+- R208 implemented and broadly certified the tranche. R209 directly reviewed
+  actual candidate bytes, approved the product boundaries, and committed
+  `cd5723b` to harden incomplete numeric draft recomputation and restore AUTO
+  eligibility after resolved geometry reselection.
+- Final reviewed product identity is
+  `cd5723bc285fca67cf023c4fd8b3495d723f4b2e` / tree
+  `1624fed8d2d70fa5147e3b8347f193e393396421`.
+- R210 used one authorized UAC invocation with retry `0` to grant only the exact
+  current-user SID DELETE ACE on four frozen legacy files. Exact-four ACE proof
+  is `4/4`; bytes/blobs/owner/ADS/parent ACLs are unchanged; standard-user
+  replacement DELETE is `12/12`; add-only capability is `3/3`; residue is `0`.
+- One `git merge --ff-only` integrated the final candidate. The 16 protected
+  dirty identities are preserved byte-for-byte; staged content, protected
+  overlap, false-dirty replacement paths, merge locks and unexpected residue
+  are `0`.
+- Certification composition: R208 focused `299`, bounded `1378`, full
+  `4174 passed / 8 known failed / 8 skipped / 2 deselected`; R209 final focused
+  `301`, shared engine `85`, remediation/probes `48`, bounded `1380`, full
+  `4176 passed / 8 inherited-or-external failed / 8 skipped / 2 deselected`.
+- Fresh detached R210 verification passes focused **301/301**, permanent R209
+  remediation **2/2**, shared engine **85/85**, bounded **1380/1380** on a
+  deterministic 71-file manifest, and 24 Standard/Spot/Peck × VI/EN/KO
+  lifecycle cycles with leakage `0/0/0/0`. Compile/import, UTF-8 catalog
+  duplicate/parity checks and `git diff --check` pass.
+- The eight full failures remain the established inherited/external signature:
+  four CAD status-text expectations, one workspace-shell action expectation and
+  three absent private historical R3 artifacts. Candidate-induced `0`,
+  indeterminate `0`, `NEW_FAILURE_DELTA_INTEGRATION=0`. The inherited
+  environment-only `flet 0.24.0` / `packaging 26.2` `pip check` conflict remains;
+  tracked dependency changes are `0`.
+- Push A delivered the exact product candidate to live `origin/main` and
+  independent verification produced divergence `0/0`.
+- This R210 state closure is the single docs-only descendant. It introduces no
+  production/test/catalog/schema/dependency delta. Push B and AI Sync V1.1 are
+  pending at this exact state-commit point.
+- After remote state closure and AI Sync, R210 will audit only the remaining
+  automatic-parameter families. It will not invent another tranche or an HMS
+  completion percentage without product authority.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R210_STAGE17A_TRANCHE4_DELIVERY_20260811`.
+
+The R208 and older sections below remain historical provenance and do not
+override this R210 delivery summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R208 STAGE17A TRANCHE 4 LOCAL CANDIDATE
 
 - Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranche1, Tranche2 and

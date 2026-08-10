@@ -1,3 +1,51 @@
+# CANONICAL CURRENT PROGRAMME STATE — R210 STAGE17A TRANCHE 4 PRODUCTION DELIVERY
+
+- Stage16A: **CLOSED**.
+- Stage17A: **ACTIVE; TRANCHES 1-4 PRODUCT-COMPLETE AND PRODUCTION-DELIVERED**.
+- Tranche4 `Drilling Auto Setup` is **COMPLETE** for Standard, Spot and Peck
+  after R208 implementation, R209 direct review/remediation, and R210 protected
+  integration plus production Push A.
+- Final reviewed product identity:
+  `cd5723bc285fca67cf023c4fd8b3495d723f4b2e` / tree
+  `1624fed8d2d70fa5147e3b8347f193e393396421`.
+- R209 approved the product boundary and added remediation commit `cd5723b` for
+  incomplete per-keystroke numeric drafts and eligibility restoration after a
+  successfully resolved geometry reselection. Candidate-induced and
+  indeterminate failures remain `0`; `NEW_FAILURE_DELTA_R209_REVIEW=0`.
+- R210 resolved the exact-four legacy NTFS prerequisite with one authorized UAC
+  invocation and no retry. Exact SID DELETE ACE is `4/4`; raw bytes, filtered
+  Git blobs, owner, ADS and parent ACLs are preserved; standard-user DELETE is
+  `12/12`; add-only destinations are `3/3`; residue is `0`.
+- Protected `main` fast-forwarded exactly once from `9959c7c` to `cd5723b`.
+  The 16 protected dirty identities remain byte-for-byte preserved; staged
+  content, protected overlap, false-dirty replacement paths and merge locks are
+  all `0`.
+- Fresh detached post-integration verification: focused **301/301**; R209
+  remediation **2/2**; shared Stage17A engine **85/85**; bounded **1380/1380**
+  across 71 deterministic files; lifecycle 24 Standard/Spot/Peck × VI/EN/KO
+  cycles with top/hidden/modal/QThread delta `0/0/0/0`; compile/import, strict
+  catalog UTF-8/duplicate/parity and `git diff --check` PASS.
+- R208 broad plus R209 final-candidate review evidence composes by exact
+  identity. The certified full result remains **4176 passed, 8 inherited or
+  external failed, 8 skipped, 2 deselected**. Fresh targeted evidence agrees;
+  candidate-induced `0`, indeterminate `0`,
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Push A delivered `cd5723b` to live `origin/main`; independent verification
+  produced local/tracking/live-remote identity equality and divergence `0/0`.
+- This R210 state closure is docs-only. It changes no production code, test,
+  catalog, schema or dependency. Push B and AI Sync V1.1 remain pending at this
+  exact commit point.
+- Stage17A remains **OPEN** until R210 audits the remaining automatic-parameter
+  families and classifies them as complete, canonical-next, definition-needed
+  or outside Stage17A. No next tranche is inferred in this state commit.
+- R210 evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R210_STAGE17A_TRANCHE4_DELIVERY_20260811`.
+- HMS CAD/CAM total percentage is not recalculated without an owner-approved
+  programme formula.
+
+The R208 and older material below remains historical provenance and does not
+override this R210 production-delivery state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R206 STAGE17A TRANCHE 3 FULL DELIVERY
 
 - Stage16A: **CLOSED**.
