@@ -120,8 +120,8 @@ def test_production_schemas_share_order_footer_and_reasonable_basic() -> None:
             schema.field("stepdown").disclosure_level
             is ParameterDisclosureLevel.ADVANCED
         )
-    for schema in (contour, pocket):
-        assert schema.field("stepdown").disclosure_level is ParameterDisclosureLevel.BASIC
+    assert contour.field("stepdown").disclosure_level is ParameterDisclosureLevel.ADVANCED
+    assert pocket.field("stepdown").disclosure_level is ParameterDisclosureLevel.BASIC
     for schema in (facing, planar, contour, pocket):
         field_ids = {item.field_id for item in schema.fields}
         feed_id = "feed_rate" if "feed_rate" in field_ids else "cutting_feed_rate"

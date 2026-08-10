@@ -169,6 +169,8 @@ class ContourParameters:
         if value.strategy_key != CONTOUR_STRATEGY_KEY:
             raise CamValidationError("Operation is not a 2D Contour strategy")
         payload = dict(value.values)
+        # Stage17A metadata is additive; legacy numeric Contour semantics stay V1.
+        payload.pop("automatic_parameter_contract", None)
         payload.update(format=_PARAMETER_FORMAT, format_version=1,
                        strategy_version=value.strategy_version, schema_version=value.schema_version)
         return cls.from_dict(payload)

@@ -6,6 +6,18 @@ import math
 from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
+from hms_cadcam.cam.automatic_contour import (
+    CONTOUR_AUTOMATIC_POLICY_KEY,
+    ContourAutomaticLeadForm,
+    ContourAutomaticLeadPlacement,
+    contour_automatic_lead_points,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+)
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
     CamInvariantError,
@@ -88,6 +100,8 @@ class ContourInputs:
     machine: MachineDefinition
     tool_diameter: float
     input_fingerprint: DependencyFingerprint
+    lead_in_point: tuple[float, float] | None = None
+    lead_out_point: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +209,151 @@ def offset_contour(loop: ContourLoop, side: ContourSide, distance: float) -> Con
     return _canonical_start(candidate)
 
 
+def prepare_contour_machining_geometry(
+    descriptor: ContourProfileDescriptor,
+    setup: Setup,
+    parameters: ContourParameters,
+    tool_diameter: float,
+) -> tuple[ContourPath, ContourLoop, tuple[tuple[float, float], ...]]:
+    """Return the exact source/offset geometry shared by AUTO and generation."""
+    if (
+        not isinstance(tool_diameter, (int, float))
+        or isinstance(tool_diameter, bool)
+        or not math.isfinite(tool_diameter)
+        or tool_diameter <= 0.0
+    ):
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_UNSUPPORTED_TOOL,
+            "Đường kính dao không hợp lệ.",
+        )
+    path = resolve_profile_in_setup(descriptor, setup)
+    offset_distance = tool_diameter / 2.0 + parameters.radial_stock_allowance.value
+    offset = offset_contour(path.loop, parameters.side, offset_distance)
+    desired = _desired_orientation(parameters.side, parameters.direction)
+    if offset.orientation is not desired:
+        offset = _canonical_start(offset.reversed())
+    return path, offset, _sample_loop(path.loop)
+
+
+def _stored_automatic_contract(operation: Operation) -> AutomaticParameterContract | None:
+    raw = dict(operation.parameters.values).get(AUTOMATIC_PARAMETER_CONTRACT_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic metadata không hợp lệ.",
+        )
+    try:
+        contract = AutomaticParameterContract.from_json(raw)
+    except ValueError as error:
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic metadata bị hỏng.",
+        ) from error
+    if contract.policy_key != CONTOUR_AUTOMATIC_POLICY_KEY:
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic policy identity không hợp lệ.",
+        )
+    return contract
+
+
+def _automatic_placement(
+    contract: AutomaticParameterContract,
+    parameters: ContourParameters,
+) -> ContourAutomaticLeadPlacement | None:
+    try:
+        stepdown = contract.value("stepdown")
+    except KeyError:
+        stepdown = None
+    if (
+        stepdown is not None
+        and stepdown.mode is AutomaticParameterMode.AUTO
+        and (
+            stepdown.status is not AutomaticParameterStatus.RESOLVED
+            or not isinstance(stepdown.effective_value, (int, float))
+            or isinstance(stepdown.effective_value, bool)
+            or not math.isclose(
+                float(stepdown.effective_value),
+                parameters.stepdown.value,
+                rel_tol=0.0,
+                abs_tol=_TOLERANCE,
+            )
+        )
+    ):
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour AUTO stepdown không khớp effective parameter.",
+        )
+    try:
+        lead_in = contract.value("lead_in_length")
+        lead_out = contract.value("lead_out_length")
+    except KeyError:
+        # Earlier additive contracts remain executable with the legacy shared
+        # numeric lead length.
+        return None
+    try:
+        entry = contract.value("entry_segment_index")
+        form = contract.value("lead_form")
+    except KeyError as error:
+        if not any(
+            item.mode is AutomaticParameterMode.AUTO for item in (lead_in, lead_out)
+        ):
+            return None
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic contract thiếu parameter bắt buộc.",
+        ) from error
+    lead_auto = any(
+        item.mode is AutomaticParameterMode.AUTO for item in (lead_in, lead_out)
+    )
+    placement_resolved = (
+        entry.status is AutomaticParameterStatus.RESOLVED
+        and type(entry.effective_value) is int
+        and form.status is AutomaticParameterStatus.RESOLVED
+        and isinstance(form.effective_value, str)
+    )
+    if not placement_resolved and not lead_auto:
+        # A stepdown-only contract may coexist with legacy/manual lead geometry.
+        return None
+    numeric_items = (lead_in, lead_out)
+    if any(
+        item.status is not AutomaticParameterStatus.RESOLVED
+        or not isinstance(item.effective_value, (int, float))
+        or isinstance(item.effective_value, bool)
+        or not math.isfinite(float(item.effective_value))
+        or float(item.effective_value) <= 0.0
+        for item in numeric_items
+    ):
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic lead chưa resolve an toàn.",
+        )
+    if not placement_resolved:
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic entry placement chưa resolve an toàn.",
+        )
+    try:
+        lead_form = ContourAutomaticLeadForm(form.effective_value)
+    except ValueError as error:
+        raise ContourGenerationError(
+            DiagnosticCode.CONTOUR_INVALID_PARAMETERS,
+            "Contour automatic lead form không hợp lệ.",
+        ) from error
+    return ContourAutomaticLeadPlacement(
+        entry.effective_value,  # type: ignore[arg-type]
+        lead_form,
+        float(lead_in.effective_value),
+        float(lead_out.effective_value),
+        float(lead_in.upper_bound or lead_in.effective_value),
+        float(lead_out.upper_bound or lead_out.effective_value),
+        lead_in.clamped,
+        lead_out.clamped,
+    )
+
+
 class ContourGenerator:
     """Controller-neutral 2D Contour generator using ToolpathBuilder v1."""
 
@@ -235,7 +394,6 @@ class ContourGenerator:
         if descriptor.provenance.source_kind is not parameters.profile_source:
             raise ContourGenerationError(DiagnosticCode.CONTOUR_SOURCE_MISMATCH,
                                          "Provenance profile không khớp parameter source.")
-        path = resolve_profile_in_setup(descriptor, setup)
         tool_status = operation.tool_assembly.assess(assembly)
         if tool_status is ToolReferenceStatus.MISSING:
             raise ContourGenerationError(DiagnosticCode.CONTOUR_TOOL_MISSING, "Không tìm thấy Tool Assembly đã chọn.")
@@ -273,13 +431,37 @@ class ContourGenerator:
         if not any(spindle.minimum_speed.value <= parameters.spindle_speed.value <= spindle.maximum_speed.value
                    for spindle in machine.spindles):
             raise ContourGenerationError(DiagnosticCode.CONTOUR_MACHINE_INCOMPATIBLE, "Spindle speed vượt giới hạn máy.")
-        offset_distance = diameter.value / 2.0 + parameters.radial_stock_allowance.value
-        offset = offset_contour(path.loop, parameters.side, offset_distance)
-        desired = _desired_orientation(parameters.side, parameters.direction)
-        if offset.orientation is not desired:
-            offset = _canonical_start(offset.reversed())
-        source_polygon = _sample_loop(path.loop)
-        _safe_lead_point(offset, source_polygon, parameters.side, parameters.lead_length.value)
+        path, offset, source_polygon = prepare_contour_machining_geometry(
+            descriptor, setup, parameters, diameter.value
+        )
+        automatic = _stored_automatic_contract(operation)
+        lead_in_point: tuple[float, float]
+        lead_out_point: tuple[float, float]
+        if automatic is None:
+            lead_in_point = _safe_lead_point(
+                offset, source_polygon, parameters.side, parameters.lead_length.value
+            )
+            lead_out_point = lead_in_point
+        else:
+            placement = _automatic_placement(automatic, parameters)
+            if placement is None:
+                lead_in_point = _safe_lead_point(
+                    offset,
+                    source_polygon,
+                    parameters.side,
+                    parameters.lead_length.value,
+                )
+                lead_out_point = lead_in_point
+            else:
+                try:
+                    offset, lead_in_point, lead_out_point = contour_automatic_lead_points(
+                        offset, path.loop, parameters.side, placement
+                    )
+                except (TypeError, ValueError) as error:
+                    raise ContourGenerationError(
+                        DiagnosticCode.CONTOUR_UNSAFE_LEAD,
+                        "Contour automatic lead không còn khả thi với geometry hiện hành.",
+                    ) from error
         levels = _depth_levels(parameters)
         event_estimate = len(levels) * (len(offset.segments) + 5) + 8
         if event_estimate > _MAX_EVENTS_ESTIMATE:
@@ -292,8 +474,18 @@ class ContourGenerator:
             "path_fingerprint": path.source_fingerprint.to_dict(),
             "offset_loop": offset.to_dict(),
         })
+        effective_parameters = ContentFingerprint.from_payload(
+            {
+                "parameters": parameters.to_dict(),
+                "automatic": (
+                    None
+                    if automatic is None
+                    else automatic.effective_fingerprint.to_dict()
+                ),
+            }
+        )
         snapshot = OperationInputSnapshot(
-            operation.strategy_key, operation.strategy_version, parameters.fingerprint,
+            operation.strategy_key, operation.strategy_version, effective_parameters,
             (("profile", geometry_fp),),
             (("setup", ContentFingerprint.from_payload({"revision": setup.revision.to_dict()})),
              ("operation", ContentFingerprint.from_payload({"revision": operation.revision.to_dict(),
@@ -301,8 +493,20 @@ class ContourGenerator:
              ("wcs", ContentFingerprint.from_payload(setup.wcs.to_dict()))),
             tool_fp, machine.content_fingerprint,
         )
-        return ContourInputs(operation, setup, parameters, ContourPath(offset, geometry_fp),
-                             source_polygon, assembly, tool, machine, diameter.value, snapshot.fingerprint)
+        return ContourInputs(
+            operation,
+            setup,
+            parameters,
+            ContourPath(offset, geometry_fp),
+            source_polygon,
+            assembly,
+            tool,
+            machine,
+            diameter.value,
+            snapshot.fingerprint,
+            lead_in_point,
+            lead_out_point,
+        )
 
     @staticmethod
     def _resolved_descriptor(
@@ -351,22 +555,27 @@ class ContourGenerator:
         )
         try:
             loop = inputs.path.loop
-            lead_xy = _safe_lead_point(loop, inputs.source_polygon, parameters.side,
-                                       parameters.lead_length.value)
+            lead_in_xy = inputs.lead_in_point or _safe_lead_point(
+                loop,
+                inputs.source_polygon,
+                parameters.side,
+                parameters.lead_length.value,
+            )
+            lead_out_xy = inputs.lead_out_point or lead_in_xy
             start = loop.segments[0].start
             axis = Vector3(0.0, 0.0, 1.0)
-            builder.set_initial_pose(Pose(Point3(lead_xy[0], lead_xy[1], parameters.clearance_height.value,
+            builder.set_initial_pose(Pose(Point3(lead_in_xy[0], lead_in_xy[1], parameters.clearance_height.value,
                                                        parameters.unit), axis))
             builder.set_initial_process_state(feed_mode=FeedMode.UNITS_PER_MINUTE)
             builder.set_spindle(SpindleState.CLOCKWISE, parameters.spindle_speed,
                                 provenance="contour.spindle.on")
             levels = _depth_levels(parameters)
             for pass_index, depth in enumerate(levels):
-                lead_clearance = Pose(Point3(lead_xy[0], lead_xy[1], parameters.clearance_height.value,
+                lead_clearance = Pose(Point3(lead_in_xy[0], lead_in_xy[1], parameters.clearance_height.value,
                                                    parameters.unit), axis)
                 _rapid_if_needed(builder, lead_clearance, inputs.machine.capabilities.maximum_rapid,
                                  f"contour.pass.{pass_index}.position")
-                lead_at_depth = Pose(Point3(lead_xy[0], lead_xy[1], depth, parameters.unit), axis)
+                lead_at_depth = Pose(Point3(lead_in_xy[0], lead_in_xy[1], depth, parameters.unit), axis)
                 builder.linear_to(lead_at_depth, parameters.plunge_feed_rate, motion_class=MotionClass.LINK,
                                   provenance=f"contour.pass.{pass_index}.plunge")
                 contour_start = Pose(Point3(start.x, start.y, depth, parameters.unit), axis)
@@ -384,9 +593,13 @@ class ContourGenerator:
                                        plane_normal=axis, sweep_radians=segment.sweep_radians,
                                        feed_rate=parameters.cutting_feed_rate,
                                        motion_class=MotionClass.CUTTING, provenance=provenance)
-                builder.linear_to(lead_at_depth, parameters.cutting_feed_rate, motion_class=MotionClass.LINK,
+                lead_out_at_depth = Pose(
+                    Point3(lead_out_xy[0], lead_out_xy[1], depth, parameters.unit),
+                    axis,
+                )
+                builder.linear_to(lead_out_at_depth, parameters.cutting_feed_rate, motion_class=MotionClass.LINK,
                                   provenance=f"contour.pass.{pass_index}.lead_out")
-                retract = Pose(Point3(lead_xy[0], lead_xy[1], parameters.retract_height.value,
+                retract = Pose(Point3(lead_out_xy[0], lead_out_xy[1], parameters.retract_height.value,
                                            parameters.unit), axis)
                 builder.linear_to(retract, parameters.plunge_feed_rate, motion_class=MotionClass.RETRACT,
                                   provenance=f"contour.pass.{pass_index}.retract")

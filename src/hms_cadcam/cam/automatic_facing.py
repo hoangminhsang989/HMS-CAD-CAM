@@ -13,6 +13,7 @@ from hms_cadcam.cam.automatic_parameters import (
     AutomaticParameterValue,
     AutomaticValidationResult,
     CamQualityProfile,
+    cam_quality_factor,
 )
 from hms_cadcam.cam.domain import (
     DependencyFingerprint,
@@ -66,14 +67,6 @@ class FacingAutomaticContext:
                 raise ValueError(f"Facing automatic {name} is invalid")
             if value is not None and value < 0.0:
                 raise ValueError(f"Facing automatic {name} cannot be negative")
-
-
-def _quality_factor(profile: CamQualityProfile) -> float:
-    return {
-        CamQualityProfile.FAST: 0.65,
-        CamQualityProfile.BALANCED: 0.50,
-        CamQualityProfile.HIGH: 0.35,
-    }[profile]
 
 
 def _dependency(context: FacingAutomaticContext, profile: CamQualityProfile) -> DependencyFingerprint:
@@ -154,7 +147,7 @@ def resolve_facing_automatic_contract(
 ) -> AutomaticParameterContract:
     """Resolve only evidence-backed Facing values; never invent process data."""
     dependency = _dependency(context, quality_profile)
-    factor = _quality_factor(quality_profile)
+    factor = cam_quality_factor(quality_profile)
     diameter = context.diameter
     supported = {
         ToolFamily.END_MILL,

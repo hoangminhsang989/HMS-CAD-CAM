@@ -56,6 +56,22 @@ class CamQualityProfile(StrEnum):
     HIGH = "high"
 
 
+def cam_quality_factor(profile: CamQualityProfile) -> float:
+    """Return the shared conservative engagement factor for one quality policy.
+
+    FAST permits a larger pass, BALANCED is the product default and HIGH uses
+    the smallest increment. Operation policies remain responsible for applying
+    physical and geometric upper bounds after this shared factor.
+    """
+    if not isinstance(profile, CamQualityProfile):
+        raise TypeError("CAM quality profile is invalid")
+    return {
+        CamQualityProfile.FAST: 0.65,
+        CamQualityProfile.BALANCED: 0.50,
+        CamQualityProfile.HIGH: 0.35,
+    }[profile]
+
+
 def _primitive(value: object, name: str) -> AutomaticPrimitive:
     if value is None or type(value) in {str, int, bool}:
         if isinstance(value, str) and len(value) > 1024:
@@ -412,4 +428,5 @@ __all__ = [
     "AutomaticParameterValue",
     "AutomaticValidationResult",
     "CamQualityProfile",
+    "cam_quality_factor",
 ]

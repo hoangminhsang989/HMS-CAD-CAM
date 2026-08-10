@@ -145,6 +145,7 @@ def _context(
             True,
             len(descriptor.outer_loop.segments),
             descriptor.outer_loop.orientation.value,
+            descriptor,
         ),
         descriptor,
     )
@@ -175,6 +176,7 @@ def test_schema_has_stable_complete_deterministic_mapping() -> None:
         "basic",
         "geometry",
         "tool",
+        "automatic_parameters",
         "cutting",
         "levels",
         "linking",
@@ -196,7 +198,7 @@ def test_disclosure_and_stepdown_applicability_are_domain_driven() -> None:
     _context_value, schema, values = _schema_values()
     basic_sections = schema.visible_sections(values, ParameterDisclosureLevel.BASIC)
     assert {section.section_id for section in basic_sections} == {
-        "basic", "geometry", "tool", "cutting", "levels"
+        "basic", "geometry", "tool", "automatic_parameters", "cutting", "levels"
     }
     assert schema.field("stepdown").is_applicable(values)
     values["multiple_depth_passes"] = False
@@ -264,7 +266,7 @@ def test_unchanged_round_trip_preserves_domain_codec_and_fingerprints() -> None:
         ("direction", "conventional", "direction", ContourCutDirection.CONVENTIONAL),
         ("radial_stock_allowance", "0.5", "radial_stock_allowance", Length(0.5, LengthUnit.MM)),
         ("axial_stock_allowance", "0.25", "axial_stock_allowance", Length(0.25, LengthUnit.MM)),
-        ("lead_length", "2.0", "lead_length", Length(2.0, LengthUnit.MM)),
+        ("lead_in_length", "2.0", "lead_length", Length(2.0, LengthUnit.MM)),
         ("finishing_pass", True, "finishing_pass", True),
         ("multiple_depth_passes", False, "multiple_depth_passes", False),
     ),
@@ -284,7 +286,9 @@ def test_ui_binding_matches_legacy_parameter_and_dirty_semantics(
     assert getattr(update.parameters, parameter_name) == domain_value
     assert update.operation.revision == context.operation.revision.next()
     assert DirtyReason.PARAMETERS_CHANGED in update.operation.artifact_state.dirty_reasons
-    assert update.operation.parameters == update.parameters.to_operation_parameters()
+    assert ContourParameters.from_operation_parameters(
+        update.operation.parameters
+    ) == update.parameters
 
 
 def test_hidden_stepdown_preserves_existing_codec_value() -> None:
@@ -309,11 +313,11 @@ def test_draft_invalid_reset_apply_and_rollback_do_not_mutate_domain() -> None:
     assert context.operation == before_operation
     assert not state.apply(lambda _values: pytest.fail("invalid draft called Apply"))
     state.reset_field("stepdown")
-    state.edit("lead_length", "2")
+    state.edit("lead_in_length", "2")
     assert state.is_dirty
     assert not state.apply(lambda _values: (_ for _ in ()).throw(RuntimeError("rollback")))
     assert context.operation == before_operation
-    assert state.applied_values["lead_length"] == "1.0"
+    assert state.applied_values["lead_in_length"] == "1.0"
     state.reset_draft()
     assert not state.is_dirty
 
@@ -569,7 +573,7 @@ def test_production_page_is_responsive_and_never_calculates_on_edit(width: int) 
     page.resize(width, 700)
     page.show()
     application.processEvents()
-    page._field_changed("lead_length", "2")
+    page._field_changed("lead_in_length", "2")
     assert calculated == []
     assert not page.footer.buttons[FunctionEditorAction.CALCULATE].isEnabled()
     assert page.scroll_area.horizontalScrollBar().maximum() == 0

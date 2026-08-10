@@ -6,6 +6,7 @@ from hms_cadcam.ui.function_editor.strategies.contour import (
     ContourOperationUpdate,
     build_contour_schema,
     contour_applied_values,
+    contour_draft_transform,
     prepare_contour_update,
     validate_contour_schema_contract,
 )
@@ -116,6 +117,7 @@ __all__ = [
     "build_reaming_schema",
     "build_tapping_schema",
     "contour_applied_values",
+    "contour_draft_transform",
     "drilling_family_applied_values",
     "drilling_family_geometry_values",
     "facing_applied_values",

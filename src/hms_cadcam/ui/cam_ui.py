@@ -56,6 +56,7 @@ from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.cam.application import (
     AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterMode,
     BoringGenerationError,
     BoringGenerator,
     ContourGenerationError,
@@ -123,6 +124,7 @@ from hms_cadcam.ui.function_editor.strategies import (
     build_reaming_schema,
     build_tapping_schema,
     contour_applied_values,
+    contour_draft_transform,
     facing_applied_values,
     facing_draft_transform,
     pocket_applied_values,
@@ -1850,8 +1852,20 @@ class CamWorkspace(QWidget):
             geometry_resolved,
             segment_count,
             orientation,
+            (
+                resolved.profile
+                if geometry_resolved and resolved is not None
+                else None
+            ),
         )
-        draft = ContourEditorDraftContext(reference)
+        draft = ContourEditorDraftContext(
+            reference,
+            geometry_profile=(
+                resolved.profile
+                if geometry_resolved and resolved is not None
+                else None
+            ),
+        )
         schema = build_contour_schema(context)
         applied = contour_applied_values(context)
         project = self._service.current_project
@@ -1880,6 +1894,11 @@ class CamWorkspace(QWidget):
             ),
             field_action_callback=lambda action_id, values: self._contour_field_action(
                 context, draft, action_id, values
+            ),
+            draft_transform_callback=lambda values: contour_draft_transform(
+                context,
+                draft,
+                values,
             ),
         )
 
@@ -3123,6 +3142,18 @@ class CamWorkspace(QWidget):
         _values: Mapping[str, PresentationValue],
     ) -> Mapping[str, PresentationValue] | None:
         """Select one persistent FACE/WIRE into the draft without mutation."""
+        if action_id == "use_contour_automatic_parameters":
+            changed = dict(_values)
+            for mode_key in ("stepdown_mode", "lead_in_mode", "lead_out_mode"):
+                candidate = dict(changed)
+                candidate[mode_key] = AutomaticParameterMode.AUTO.value
+                try:
+                    transformed = contour_draft_transform(context, draft, candidate)
+                except ValueError:
+                    continue
+                changed[mode_key] = AutomaticParameterMode.AUTO.value
+                changed.update(transformed)
+            return contour_draft_transform(context, draft, changed)
         if action_id != "select_geometry":
             raise ValueError(f"Field action không hỗ trợ: {action_id}")
         if self._contour_pick_provider is None or self._profile_resolver is None:
@@ -3145,6 +3176,7 @@ class CamWorkspace(QWidget):
                 resolved.message or "Contour profile đã chọn không resolve được an toàn."
             )
         draft.geometry_reference = reference
+        draft.geometry_profile = resolved.profile
         current_id = (
             context.geometry_reference.reference_id
             if context.geometry_reference is not None

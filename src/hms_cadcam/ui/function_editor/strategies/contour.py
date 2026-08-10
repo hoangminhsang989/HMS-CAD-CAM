@@ -6,11 +6,31 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import math
 
+from hms_cadcam.cam.application.contour import (
+    ContourGenerationError,
+    prepare_contour_machining_geometry,
+)
+from hms_cadcam.cam.automatic_contour import (
+    CONTOUR_AUTOMATIC_POLICY_KEY,
+    CONTOUR_AUTOMATIC_USER_KEYS,
+    ContourAutomaticContext,
+    resolve_contour_automatic_contract,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+    AutomaticParameterMode,
+    AutomaticParameterStatus,
+    AutomaticParameterValue,
+    AutomaticValidationResult,
+    CamQualityProfile,
+)
 from hms_cadcam.cam.domain import (
     BoxStock,
     ContourCutDirection,
     ContourLeadPolicy,
     ContourParameters,
+    ContourProfileDescriptor,
     ContourProfileSource,
     ContourSide,
     ContourStartPolicy,
@@ -28,6 +48,7 @@ from hms_cadcam.cam.domain import (
     Operation,
     OperationCapability,
     OperationGeometryInput,
+    OperationParameterSet,
     Setup,
     SpindleSpeed,
     ToolAssembly,
@@ -71,6 +92,7 @@ class ContourEditorContext:
     geometry_resolved: bool = False
     geometry_segment_count: int | None = None
     geometry_orientation: str = ""
+    geometry_profile: ContourProfileDescriptor | None = None
 
 
 @dataclass(slots=True)
@@ -79,6 +101,7 @@ class ContourEditorDraftContext:
 
     geometry_reference: GeometryReference | None
     pending_input_id: GeometryInputId | None = None
+    geometry_profile: ContourProfileDescriptor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,11 +136,22 @@ _FIELD_IDS = frozenset(
         "final_depth",
         "multiple_depth_passes",
         "stepdown",
+        "stepdown_mode",
         "axial_stock_allowance",
         "clearance_height",
         "retract_height",
         "lead_policy",
-        "lead_length",
+        "lead_in_mode",
+        "lead_in_length",
+        "lead_out_mode",
+        "lead_out_length",
+        "quality_profile",
+        "automatic_summary",
+        "automatic_stepdown",
+        "automatic_lead_in",
+        "automatic_lead_out",
+        "automatic_lead_provenance",
+        "automatic_entry_placement",
         "plunge_feed_rate",
         "finishing_pass",
         "machine_id",
@@ -125,6 +159,52 @@ _FIELD_IDS = frozenset(
         "start_policy",
     }
 )
+
+_AUTOMATIC_REASON_TEXT = {
+    "A validated closed Contour profile is required before AUTO setup.": (
+        "Cần profile Contour kín đã xác minh trước khi dùng thiết lập AUTO."
+    ),
+    "Single-depth Contour does not use an automatic stepdown.": (
+        "Contour một lớp không sử dụng stepdown tự động."
+    ),
+    "A supported cutter with explicit axial geometry and stickout is required.": (
+        "Cần cutter được hỗ trợ với hình học cắt dọc trục và stickout rõ ràng."
+    ),
+    "Positive depth-span and usable axial capacity evidence is required.": (
+        "Cần depth span dương và bằng chứng khả năng cắt dọc trục sử dụng được."
+    ),
+    "Requested depth exceeds validated cutter or assembly axial capacity.": (
+        "Chiều sâu yêu cầu vượt khả năng dọc trục đã xác minh của cutter hoặc assembly."
+    ),
+    "Validated positive stepdown bounds are unavailable.": (
+        "Không có giới hạn stepdown dương đã xác minh."
+    ),
+    "Derived from depth span, explicit axial cutting length, assembly stickout and quality profile.": (
+        "Suy ra từ depth span, chiều dài cắt dọc trục, stickout và hồ sơ chất lượng."
+    ),
+    "A supported cutter and validated closed-profile lead clearance are required.": (
+        "Cần cutter được hỗ trợ và khoảng trống lead của profile kín đã xác minh."
+    ),
+    "A supported cutter with explicit diameter geometry is required.": (
+        "Cần cutter được hỗ trợ với hình học đường kính rõ ràng."
+    ),
+    "Ranked deterministic non-corner entry with validated tangent continuity.": (
+        "Điểm vào không ở góc được xếp hạng ổn định với tiếp tuyến liên tục đã xác minh."
+    ),
+    "Ranked deterministic non-corner entry with validated normal linear fallback.": (
+        "Điểm vào không ở góc được xếp hạng ổn định với lead tuyến tính pháp tuyến an toàn."
+    ),
+    "Cutter-scaled lead-in bounded by local segment, curvature and profile clearance.": (
+        "Lead-in theo kích thước cutter, bị chặn bởi segment, độ cong và khoảng trống profile."
+    ),
+    "Cutter-scaled lead-out independently bounded by local exit geometry and profile clearance.": (
+        "Lead-out theo kích thước cutter, được chặn độc lập bởi hình học thoát và khoảng trống profile."
+    ),
+}
+
+
+def _automatic_reason(reason: str) -> str:
+    return ui_text(_AUTOMATIC_REASON_TEXT.get(reason, reason))
 
 
 def _text(value: object, field_id: str) -> str:
@@ -167,12 +247,18 @@ def _choice_data(
 
 def _selected_tool(
     context: ContourEditorContext,
+    assembly_id: object | None = None,
 ) -> tuple[ToolAssembly | None, ToolDefinition | None, HolderDefinition | None]:
+    identity = (
+        str(context.operation.tool_assembly.assembly_id)
+        if assembly_id is None
+        else str(assembly_id)
+    )
     assembly = next(
         (
             item
             for item in context.tool_assemblies
-            if item.assembly_id == context.operation.tool_assembly.assembly_id
+            if str(item.assembly_id) == identity
         ),
         None,
     )
@@ -252,8 +338,329 @@ def _parameter_defaults(context: ContourEditorContext) -> dict[str, str]:
         "cutting_feed_rate": str(500.0 * scale),
         "plunge_feed_rate": str(100.0 * scale),
         "spindle_speed": "1000.0",
-        "lead_length": str(scale),
+        "lead_in_length": str(scale),
+        "lead_out_length": str(scale),
     }
+
+
+def _stored_automatic_contract(
+    context: ContourEditorContext,
+) -> AutomaticParameterContract | None:
+    raw = dict(context.operation.parameters.values).get(
+        AUTOMATIC_PARAMETER_CONTRACT_KEY
+    )
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("Contour automatic metadata không hợp lệ.")
+    try:
+        contract = AutomaticParameterContract.from_json(raw)
+    except ValueError as error:
+        raise ValueError("Contour automatic metadata bị hỏng.") from error
+    if contract.policy_key != CONTOUR_AUTOMATIC_POLICY_KEY:
+        raise ValueError("Contour automatic policy identity không hợp lệ.")
+    return contract
+
+
+def _quality_profile(value: object) -> CamQualityProfile:
+    try:
+        return CamQualityProfile(str(value))
+    except ValueError as error:
+        raise ValueError("Hồ sơ chất lượng tự động không hợp lệ.") from error
+
+
+def _automatic_context(
+    context: ContourEditorContext,
+    draft: ContourEditorDraftContext,
+    parameters: ContourParameters,
+    values: Mapping[str, PresentationValue] | None = None,
+) -> ContourAutomaticContext:
+    assembly_id = None if values is None else values.get("tool_assembly_id")
+    assembly, tool, _holder = _selected_tool(context, assembly_id)
+    geometry = None if tool is None else tool.cutting_geometry
+    diameter = getattr(geometry, "diameter", None)
+    corner_radius = getattr(geometry, "corner_radius", None)
+    axial = None if geometry is None else geometry.axial_cutting_length
+    profile = draft.geometry_profile or context.geometry_profile
+    dependency_parameters = parameters
+    depth_span = parameters.top_height.value - parameters.final_cut_depth
+    multiple_depth_passes = parameters.multiple_depth_passes
+    if values is not None:
+        try:
+            unit = parameters.unit
+            dependency_parameters = replace(
+                parameters,
+                side=ContourSide(_text(values["side"], "side")),
+                direction=ContourCutDirection(
+                    _text(values["direction"], "direction")
+                ),
+                radial_stock_allowance=Length(
+                    _number(values["radial_stock_allowance"], "radial_stock_allowance"),
+                    unit,
+                ),
+            )
+            top_height = _number(values["top_height"], "top_height")
+            final_depth = _number(values["final_depth"], "final_depth")
+            axial_allowance = _number(
+                values["axial_stock_allowance"], "axial_stock_allowance"
+            )
+            depth_span = top_height - (final_depth + axial_allowance)
+            multiple_depth_passes = _boolean(
+                values["multiple_depth_passes"], "multiple_depth_passes"
+            )
+        except (KeyError, TypeError, ValueError):
+            # Preserve the last validated dependencies while an editor token is
+            # incomplete. Final draft validation still fails closed.
+            pass
+    machining_loop = None
+    source_loop = None
+    if profile is not None and diameter is not None and diameter.value > 0.0:
+        try:
+            source_path, machining_loop, _polygon = prepare_contour_machining_geometry(
+                profile,
+                context.setup,
+                dependency_parameters,
+                diameter.to(parameters.unit).value,
+            )
+            source_loop = source_path.loop
+        except (ContourGenerationError, TypeError, ValueError):
+            machining_loop = None
+            source_loop = None
+    return ContourAutomaticContext(
+        parameters.unit,
+        None if tool is None else tool.family,
+        None if diameter is None else diameter.to(parameters.unit).value,
+        None if corner_radius is None else corner_radius.to(parameters.unit).value,
+        None if axial is None else axial.to(parameters.unit).value,
+        None if assembly is None else assembly.stickout.to(parameters.unit).value,
+        depth_span if depth_span > 0.0 else None,
+        None,
+        dependency_parameters.side,
+        multiple_depth_passes,
+        machining_loop,
+        source_loop,
+        (
+            None
+            if profile is None
+            else profile.geometry_fingerprint.digest
+        ),
+        None if tool is None else tool.content_fingerprint.digest,
+    )
+
+
+def _legacy_manual_contract(
+    base: AutomaticParameterContract,
+    parameters: ContourParameters,
+) -> AutomaticParameterContract:
+    legacy = {
+        "stepdown": parameters.stepdown.value,
+        "lead_in_length": parameters.lead_length.value,
+        "lead_out_length": parameters.lead_length.value,
+    }
+    values: list[AutomaticParameterValue] = []
+    for item in base.values:
+        if item.key not in CONTOUR_AUTOMATIC_USER_KEYS:
+            values.append(item)
+            continue
+        values.append(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=legacy[item.key],
+                validation=AutomaticValidationResult(True),
+                reason="Legacy explicit numeric value preserved as intentional manual override.",
+            )
+        )
+    return replace(base, values=tuple(values))
+
+
+def _recompute_automatic_contract(
+    context: ContourEditorContext,
+    draft: ContourEditorDraftContext,
+    *,
+    values: Mapping[str, PresentationValue] | None = None,
+) -> AutomaticParameterContract:
+    parameters = ContourParameters.from_operation_parameters(context.operation.parameters)
+    stored = _stored_automatic_contract(context)
+    profile = (
+        _quality_profile(values["quality_profile"])
+        if values is not None and "quality_profile" in values
+        else stored.quality_profile
+        if stored is not None
+        else CamQualityProfile.BALANCED
+    )
+    base = resolve_contour_automatic_contract(
+        _automatic_context(context, draft, parameters, values),
+        quality_profile=profile,
+    )
+    if values is None:
+        if stored is None:
+            return _legacy_manual_contract(base, parameters)
+        merged: list[AutomaticParameterValue] = []
+        for item in base.values:
+            if item.key not in CONTOUR_AUTOMATIC_USER_KEYS:
+                merged.append(item)
+                continue
+            try:
+                previous = stored.value(item.key)
+            except KeyError:
+                legacy_value = {
+                    "stepdown": parameters.stepdown.value,
+                    "lead_in_length": parameters.lead_length.value,
+                    "lead_out_length": parameters.lead_length.value,
+                }[item.key]
+                merged.append(
+                    replace(
+                        item,
+                        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                        override_value=legacy_value,
+                        validation=AutomaticValidationResult(True),
+                        reason=(
+                            "Missing additive field loaded as preserved legacy manual intent."
+                        ),
+                    )
+                )
+                continue
+            if previous.has_manual_override:
+                merged.append(
+                    replace(
+                        item,
+                        mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                        override_value=previous.override_value,
+                        validation=previous.validation,
+                    )
+                )
+            elif previous.mode is AutomaticParameterMode.AUTO:
+                merged.append(
+                    item
+                    if item.status is AutomaticParameterStatus.RESOLVED
+                    else replace(item, mode=AutomaticParameterMode.AUTO)
+                )
+            else:
+                merged.append(item)
+        return replace(base, values=tuple(merged))
+    updated: list[AutomaticParameterValue] = []
+    mode_fields = {
+        "stepdown": "stepdown_mode",
+        "lead_in_length": "lead_in_mode",
+        "lead_out_length": "lead_out_mode",
+    }
+    for item in base.values:
+        mode_key = mode_fields.get(item.key)
+        if mode_key is None or mode_key not in values:
+            updated.append(item)
+            continue
+        try:
+            mode = AutomaticParameterMode(str(values[mode_key]))
+        except ValueError as error:
+            raise ValueError(f"Chế độ {item.key} không hợp lệ.") from error
+        if mode is AutomaticParameterMode.AUTO:
+            if item.status is not AutomaticParameterStatus.RESOLVED:
+                previous = None
+                if stored is not None:
+                    try:
+                        previous = stored.value(item.key)
+                    except KeyError:
+                        pass
+                if previous is not None and previous.mode is AutomaticParameterMode.AUTO:
+                    updated.append(replace(item, mode=AutomaticParameterMode.AUTO))
+                    continue
+                raise ValueError(f"{item.key} chưa đủ evidence để dùng AUTO: {item.reason}")
+            updated.append(item)
+            continue
+        if mode not in {
+            AutomaticParameterMode.MANUAL,
+            AutomaticParameterMode.MANUAL_OVERRIDE,
+        }:
+            raise ValueError(f"{item.key} không hỗ trợ chế độ đã chọn.")
+        value_key = item.key
+        override = _number(values[value_key], value_key)
+        updated.append(
+            replace(
+                item,
+                mode=AutomaticParameterMode.MANUAL_OVERRIDE,
+                override_value=override,
+                validation=AutomaticValidationResult(True),
+                reason="Explicit Advanced manual override.",
+            )
+        )
+    return replace(base, values=tuple(updated))
+
+
+def _automatic_text(value: AutomaticParameterValue, unit: str) -> str:
+    if value.mode is AutomaticParameterMode.NOT_APPLICABLE:
+        return f"Không áp dụng · {_automatic_reason(value.reason)}"
+    if (
+        value.mode is AutomaticParameterMode.AUTO
+        and (
+            value.status is not AutomaticParameterStatus.RESOLVED
+            or value.effective_value is None
+        )
+    ):
+        return f"Tự động không khả dụng · {_automatic_reason(value.reason)}"
+    prefix = "Tự động" if value.mode is AutomaticParameterMode.AUTO else "Tùy chỉnh"
+    suffix = " · đã giới hạn an toàn" if value.clamped else ""
+    return f"{prefix} · {float(value.effective_value):g} {unit}{suffix}"
+
+
+def _automatic_presentation(
+    contract: AutomaticParameterContract,
+    unit: str,
+) -> dict[str, PresentationValue]:
+    entries = [contract.value(key) for key in CONTOUR_AUTOMATIC_USER_KEYS]
+    auto = sum(
+        item.mode is AutomaticParameterMode.AUTO
+        and item.status is AutomaticParameterStatus.RESOLVED
+        for item in entries
+    )
+    manual = sum(item.has_manual_override for item in entries)
+    unavailable = len(entries) - auto - manual
+    lead_form = contract.value("lead_form")
+    entry = contract.value("entry_segment_index")
+    result: dict[str, PresentationValue] = {
+        "quality_profile": contract.quality_profile.value,
+        "automatic_summary": (
+            f"{auto} tự động · {manual} tùy chỉnh · {unavailable} không áp dụng"
+        ),
+        "automatic_stepdown": _automatic_text(contract.value("stepdown"), unit),
+        "automatic_lead_in": _automatic_text(
+            contract.value("lead_in_length"), unit
+        ),
+        "automatic_lead_out": _automatic_text(
+            contract.value("lead_out_length"), unit
+        ),
+        "automatic_lead_provenance": (
+            f"Không khả dụng · {_automatic_reason(lead_form.reason)}"
+            if lead_form.status is not AutomaticParameterStatus.RESOLVED
+            else f"{lead_form.effective_value} · {_automatic_reason(lead_form.reason)}"
+        ),
+        "automatic_entry_placement": (
+            f"Không khả dụng · {_automatic_reason(entry.reason)}"
+            if entry.status is not AutomaticParameterStatus.RESOLVED
+            else f"segment {entry.effective_value} · {_automatic_reason(entry.reason)}"
+        ),
+    }
+    field_names = {
+        "stepdown": ("stepdown_mode", "stepdown"),
+        "lead_in_length": ("lead_in_mode", "lead_in_length"),
+        "lead_out_length": ("lead_out_mode", "lead_out_length"),
+    }
+    for key, (mode_key, value_key) in field_names.items():
+        item = contract.value(key)
+        result[mode_key] = item.mode.value
+        if item.effective_value is not None:
+            result[value_key] = str(item.effective_value)
+    return result
+
+
+def contour_draft_transform(
+    context: ContourEditorContext,
+    draft: ContourEditorDraftContext,
+    values: Mapping[str, PresentationValue],
+) -> dict[str, PresentationValue]:
+    """Recompute AUTO fields after Tool/geometry/depth/quality edits."""
+    contract = _recompute_automatic_contract(context, draft, values=values)
+    return _automatic_presentation(contract, context.setup.wcs.origin.unit.value)
 
 
 def contour_applied_values(
@@ -261,9 +668,14 @@ def contour_applied_values(
 ) -> dict[str, PresentationValue]:
     """Map every production field to deterministic presentation primitives."""
     parameters = ContourParameters.from_operation_parameters(context.operation.parameters)
+    draft = ContourEditorDraftContext(
+        context.geometry_reference,
+        geometry_profile=context.geometry_profile,
+    )
+    automatic = _recompute_automatic_contract(context, draft)
     tool_text, holder_text, _assembly_name = _tool_summaries(context)
     reference = context.geometry_reference
-    return {
+    values: dict[str, PresentationValue] = {
         "operation_name": context.operation_name,
         "geometry_summary": _geometry_summary(context),
         "geometry_reference_id": "" if reference is None else str(reference.reference_id),
@@ -289,7 +701,8 @@ def contour_applied_values(
         "clearance_height": str(parameters.clearance_height.value),
         "retract_height": str(parameters.retract_height.value),
         "lead_policy": parameters.lead_policy.value,
-        "lead_length": str(parameters.lead_length.value),
+        "lead_in_length": str(parameters.lead_length.value),
+        "lead_out_length": str(parameters.lead_length.value),
         "plunge_feed_rate": str(parameters.plunge_feed_rate.value),
         "finishing_pass": parameters.finishing_pass,
         "machine_id": (
@@ -300,6 +713,10 @@ def contour_applied_values(
         "enabled": context.operation.enabled,
         "start_policy": parameters.start_policy.value,
     }
+    values.update(
+        _automatic_presentation(automatic, context.setup.wcs.origin.unit.value)
+    )
+    return values
 
 
 def _complete_values(
@@ -314,18 +731,31 @@ def _complete_values(
 
 def _parameters_from_values(
     context: ContourEditorContext,
+    draft: ContourEditorDraftContext,
     values: Mapping[str, PresentationValue],
-) -> ContourParameters:
+) -> tuple[ContourParameters, AutomaticParameterContract]:
     complete = _complete_values(context, values)
+    automatic = _recompute_automatic_contract(context, draft, values=complete)
+    automatic_values = _automatic_presentation(
+        automatic, context.setup.wcs.origin.unit.value
+    )
+    complete.update(automatic_values)
     unit = context.setup.wcs.origin.unit
     feed_unit = FeedUnit.MM_PER_MINUTE if unit.value == "mm" else FeedUnit.INCH_PER_MINUTE
-    return ContourParameters(
+    parameters = ContourParameters(
         unit,
         ContourProfileSource(_text(complete["profile_source"], "profile_source")),
         ContourSide(_text(complete["side"], "side")),
         Length(_number(complete["top_height"], "top_height"), unit),
         Length(_number(complete["final_depth"], "final_depth"), unit),
-        Length(_number(complete["stepdown"], "stepdown"), unit),
+        Length(
+            (
+                _number(complete["stepdown"], "stepdown")
+                if automatic.value("stepdown").effective_value is None
+                else float(automatic.value("stepdown").effective_value)
+            ),
+            unit,
+        ),
         Length(
             _number(complete["radial_stock_allowance"], "radial_stock_allowance"),
             unit,
@@ -346,10 +776,18 @@ def _parameters_from_values(
         ContourCutDirection(_text(complete["direction"], "direction")),
         ContourStartPolicy(_text(complete["start_policy"], "start_policy")),
         ContourLeadPolicy(_text(complete["lead_policy"], "lead_policy")),
-        Length(_number(complete["lead_length"], "lead_length"), unit),
+        Length(
+            (
+                _number(complete["lead_in_length"], "lead_in_length")
+                if automatic.value("lead_in_length").effective_value is None
+                else float(automatic.value("lead_in_length").effective_value)
+            ),
+            unit,
+        ),
         _boolean(complete["finishing_pass"], "finishing_pass"),
         _boolean(complete["multiple_depth_passes"], "multiple_depth_passes"),
     )
+    return parameters, automatic
 
 
 def _geometry_reference_for_values(
@@ -387,7 +825,7 @@ def prepare_contour_update(
 ) -> ContourOperationUpdate:
     """Build the exact candidate used by the legacy Contour Apply path."""
     complete = _complete_values(context, values)
-    parameters = _parameters_from_values(context, complete)
+    parameters, automatic = _parameters_from_values(context, draft, complete)
     reference = _geometry_reference_for_values(context, draft, complete, parameters)
     assembly_id = _text(complete["tool_assembly_id"], "tool_assembly_id")
     assembly = next(
@@ -439,7 +877,39 @@ def prepare_contour_update(
             0,
         ),
     )
-    parameter_set = parameters.to_operation_parameters()
+    base_parameters = parameters.to_operation_parameters()
+    previous_values = contour_applied_values(context)
+    automatic_changed = any(
+        complete.get(key) != previous_values.get(key)
+        for key in (
+            "quality_profile",
+            "stepdown_mode",
+            "stepdown",
+            "lead_in_mode",
+            "lead_in_length",
+            "lead_out_mode",
+            "lead_out_length",
+        )
+    )
+    persist_automatic = (
+        _stored_automatic_contract(context) is not None
+        or automatic_changed
+        or any(
+            automatic.value(key).mode is AutomaticParameterMode.AUTO
+            for key in CONTOUR_AUTOMATIC_USER_KEYS
+        )
+    )
+    parameter_set = (
+        OperationParameterSet(
+            base_parameters.strategy_key,
+            base_parameters.strategy_version,
+            base_parameters.values
+            + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic.to_json()),),
+            base_parameters.schema_version,
+        )
+        if persist_automatic
+        else base_parameters
+    )
     tool_reference = ToolAssemblyReference.from_assembly(assembly)
     enabled = _boolean(complete["enabled"], "enabled")
     inputs_changed = (
@@ -507,6 +977,7 @@ def _number_field(
     disclosure_level: ParameterDisclosureLevel = ParameterDisclosureLevel.BASIC,
     applicable_when: FunctionEditorApplicability | None = None,
     help_text: str = "",
+    source: FunctionEditorValueSource = FunctionEditorValueSource.USER,
 ) -> FunctionEditorField:
     return FunctionEditorField(
         field_id,
@@ -514,7 +985,7 @@ def _number_field(
         FunctionEditorFieldKind.NUMBER,
         value,
         unit=unit,
-        source=FunctionEditorValueSource.USER,
+        source=source,
         default=default,
         default_label=("HMS Contour v1 · Setup/Stock" if default is not None else ""),
         applicable_when=applicable_when,
@@ -531,6 +1002,66 @@ def _number_field(
     )
 
 
+def _automatic_mode_field(
+    field_id: str,
+    label: str,
+    value: PresentationValue,
+    *,
+    order: int,
+    auto_available: bool,
+    applicable_when: FunctionEditorApplicability | None = None,
+) -> FunctionEditorField:
+    choices = (
+        (
+            AutomaticParameterMode.AUTO.value,
+            AutomaticParameterMode.MANUAL_OVERRIDE.value,
+        )
+        if auto_available
+        else (
+            (
+                AutomaticParameterMode.AUTO.value,
+                AutomaticParameterMode.MANUAL_OVERRIDE.value,
+            )
+            if value == AutomaticParameterMode.AUTO.value
+            else (AutomaticParameterMode.MANUAL_OVERRIDE.value,)
+        )
+    )
+    labels = (
+        (
+            (AutomaticParameterMode.AUTO.value, "Tự động"),
+            (AutomaticParameterMode.MANUAL_OVERRIDE.value, "Tùy chỉnh"),
+        )
+        if auto_available
+        else (
+            (
+                (AutomaticParameterMode.AUTO.value, "Tự động · hiện không khả dụng"),
+                (AutomaticParameterMode.MANUAL_OVERRIDE.value, "Tùy chỉnh"),
+            )
+            if value == AutomaticParameterMode.AUTO.value
+            else ((AutomaticParameterMode.MANUAL_OVERRIDE.value, "Tùy chỉnh · AUTO không khả dụng"),)
+        )
+    )
+    return FunctionEditorField(
+        field_id,
+        label,
+        FunctionEditorFieldKind.CHOICE,
+        value,
+        required=True,
+        disclosure_level=ParameterDisclosureLevel.ADVANCED,
+        applicable_when=applicable_when,
+        choices=choices,
+        choice_labels=labels,
+        tooltip=(
+            "AUTO recompute theo Tool, profile, depth và quality; override được giữ nguyên."
+            if auto_available
+            else "AUTO không khả dụng vì thiếu evidence hình học hoặc cutter hợp lệ."
+        ),
+        help_key=f"contour.{field_id}",
+        order=order,
+        binding_key=f"automatic.{field_id}",
+    )
+
+
 def _choice_labels(enum_type, labels: dict[object, str]) -> tuple[tuple[PresentationValue, str], ...]:
     return tuple((item.value, labels.get(item, item.value)) for item in enum_type)
 
@@ -540,6 +1071,13 @@ def build_contour_sections(
 ) -> tuple[FunctionEditorSection, ...]:
     """Build deterministic operator-oriented sections over Contour v1 only."""
     values = contour_applied_values(context)
+    automatic_contract = _recompute_automatic_contract(
+        context,
+        ContourEditorDraftContext(
+            context.geometry_reference,
+            geometry_profile=context.geometry_profile,
+        ),
+    )
     defaults = _parameter_defaults(context)
     unit = context.setup.wcs.origin.unit.value
     feed_unit = "mm/min" if unit == "mm" else "in/min"
@@ -669,6 +1207,97 @@ def build_contour_sections(
         ),
         "Tool Library là nguồn chân lý cho diameter, corner radius, holder và stickout.",
         order=30,
+    )
+    automatic = FunctionEditorSection(
+        "automatic_parameters",
+        "THAM SỐ TỰ ĐỘNG",
+        (
+            FunctionEditorField(
+                "automatic_summary",
+                "Contour 2D Auto Setup",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_summary"],
+                source=FunctionEditorValueSource.DERIVED,
+                tooltip="Tóm tắt chế độ tự động, giá trị tùy chỉnh và tham số thiếu bằng chứng.",
+                help_key="contour.automatic_summary",
+                order=10,
+                binding_key="automatic.summary",
+                action_id="use_contour_automatic_parameters",
+                action_label="Dùng tự động khả dụng",
+            ),
+            FunctionEditorField(
+                "automatic_stepdown",
+                "Stepdown tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_stepdown"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="contour.automatic_stepdown",
+                order=20,
+                binding_key="automatic.stepdown_summary",
+            ),
+            FunctionEditorField(
+                "automatic_lead_in",
+                "Lead-in tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_lead_in"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="contour.automatic_lead_in",
+                order=30,
+                binding_key="automatic.lead_in_summary",
+            ),
+            FunctionEditorField(
+                "automatic_lead_out",
+                "Lead-out tự động",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_lead_out"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="contour.automatic_lead_out",
+                order=40,
+                binding_key="automatic.lead_out_summary",
+            ),
+            FunctionEditorField(
+                "quality_profile",
+                "Hồ sơ chất lượng",
+                FunctionEditorFieldKind.CHOICE,
+                values["quality_profile"],
+                required=True,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                choices=tuple(item.value for item in CamQualityProfile),
+                choice_labels=(
+                    (CamQualityProfile.FAST.value, "Nhanh"),
+                    (CamQualityProfile.BALANCED.value, "Cân bằng"),
+                    (CamQualityProfile.HIGH.value, "Chất lượng cao"),
+                ),
+                tooltip="Điều chỉnh tỷ lệ stepdown/lead trong giới hạn hình học đã xác minh.",
+                help_key="contour.quality_profile",
+                order=50,
+                binding_key="automatic.quality_profile",
+            ),
+            FunctionEditorField(
+                "automatic_lead_provenance",
+                "Nguồn gốc lead",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_lead_provenance"],
+                source=FunctionEditorValueSource.DERIVED,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                help_key="contour.automatic_lead_provenance",
+                order=60,
+                binding_key="automatic.lead_provenance",
+            ),
+            FunctionEditorField(
+                "automatic_entry_placement",
+                "Vị trí vào/ra",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["automatic_entry_placement"],
+                source=FunctionEditorValueSource.GEOMETRY,
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                help_key="contour.automatic_entry_placement",
+                order=70,
+                binding_key="automatic.entry_placement",
+            ),
+        ),
+        "Giá trị dẫn xuất, nguồn gốc và trạng thái dự phòng an toàn của biên dạng kín.",
+        order=35,
     )
     cutting = FunctionEditorSection(
         "cutting",
@@ -801,6 +1430,19 @@ def build_contour_sections(
                 binding_key="parameters.multiple_depth_passes",
                 conversion=FunctionEditorValueConversion.BOOLEAN,
             ),
+            _automatic_mode_field(
+                "stepdown_mode",
+                "Chế độ stepdown",
+                values["stepdown_mode"],
+                order=35,
+                auto_available=(
+                    automatic_contract.value("stepdown").status
+                    is AutomaticParameterStatus.RESOLVED
+                ),
+                applicable_when=FunctionEditorApplicability(
+                    "multiple_depth_passes", ApplicabilityOperator.TRUTHY
+                ),
+            ),
             _number_field(
                 "stepdown",
                 "Stepdown",
@@ -814,6 +1456,12 @@ def build_contour_sections(
                 ),
                 applicable_when=FunctionEditorApplicability(
                     "multiple_depth_passes", ApplicabilityOperator.TRUTHY
+                ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                source=(
+                    FunctionEditorValueSource.DERIVED
+                    if values["stepdown_mode"] == AutomaticParameterMode.AUTO.value
+                    else FunctionEditorValueSource.USER
                 ),
             ),
             _number_field(
@@ -881,18 +1529,61 @@ def build_contour_sections(
                 order=30,
                 binding_key="parameters.lead_policy",
             ),
-            _number_field(
-                "lead_length",
-                "Lead Length",
-                values["lead_length"],
-                unit=unit,
-                binding_key="parameters.lead_length",
+            _automatic_mode_field(
+                "lead_in_mode",
+                "Chế độ lead-in",
+                values["lead_in_mode"],
                 order=40,
-                default=defaults.get("lead_length"),
+                auto_available=(
+                    automatic_contract.value("lead_in_length").status
+                    is AutomaticParameterStatus.RESOLVED
+                ),
+            ),
+            _number_field(
+                "lead_in_length",
+                "Chiều dài lead-in",
+                values["lead_in_length"],
+                unit=unit,
+                binding_key="automatic.lead_in_length",
+                order=50,
+                default=defaults.get("lead_in_length"),
                 validators=(
-                    _minimum("contour.lead_positive", "Chiều dài lead phải lớn hơn 0."),
+                    _minimum("contour.lead_in_positive", "Chiều dài lead-in phải lớn hơn 0."),
                 ),
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                source=(
+                    FunctionEditorValueSource.DERIVED
+                    if values["lead_in_mode"] == AutomaticParameterMode.AUTO.value
+                    else FunctionEditorValueSource.USER
+                ),
+            ),
+            _automatic_mode_field(
+                "lead_out_mode",
+                "Chế độ lead-out",
+                values["lead_out_mode"],
+                order=60,
+                auto_available=(
+                    automatic_contract.value("lead_out_length").status
+                    is AutomaticParameterStatus.RESOLVED
+                ),
+            ),
+            _number_field(
+                "lead_out_length",
+                "Chiều dài lead-out",
+                values["lead_out_length"],
+                unit=unit,
+                binding_key="automatic.lead_out_length",
+                order=70,
+                default=defaults.get("lead_out_length"),
+                validators=(
+                    _minimum("contour.lead_out_positive", "Chiều dài lead-out phải lớn hơn 0."),
+                ),
+                disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                source=(
+                    FunctionEditorValueSource.DERIVED
+                    if values["lead_out_mode"] == AutomaticParameterMode.AUTO.value
+                    else FunctionEditorValueSource.USER
+                ),
             ),
             _number_field(
                 "plunge_feed_rate",
@@ -900,7 +1591,7 @@ def build_contour_sections(
                 values["plunge_feed_rate"],
                 unit=feed_unit,
                 binding_key="parameters.plunge_feed_rate",
-                order=50,
+                order=80,
                 default=defaults.get("plunge_feed_rate"),
                 validators=(
                     _minimum("contour.plunge_positive", "Plunge feed phải lớn hơn 0."),
@@ -986,7 +1677,17 @@ def build_contour_sections(
         default_expanded=False,
         order=80,
     )
-    return (basic, geometry, tool, cutting, levels, linking, advanced, expert)
+    return (
+        basic,
+        geometry,
+        tool,
+        automatic,
+        cutting,
+        levels,
+        linking,
+        advanced,
+        expert,
+    )
 
 
 def contour_footer() -> FunctionEditorFooter:
@@ -1038,6 +1739,7 @@ __all__ = [
     "ContourOperationUpdate",
     "build_contour_schema",
     "contour_applied_values",
+    "contour_draft_transform",
     "prepare_contour_update",
     "validate_contour_schema_contract",
 ]
