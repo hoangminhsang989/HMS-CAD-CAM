@@ -703,4 +703,3 @@ __all__ = [
     "pocket_geometric_stepover_target",
     "resolve_pocket_automatic_contract",
 ]
-
