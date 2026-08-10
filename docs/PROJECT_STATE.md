@@ -1,3 +1,49 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R202 STAGE17A TRANCHE 2 LOCAL CANDIDATE
+
+- Stage16A is **CLOSED**.
+- Stage17A is **ACTIVE**: Tranche1 is production-delivered; Tranche2 `Contour
+  2D Auto Setup` is implemented and certified locally, pending separate final
+  direct review and integration.
+- Frozen scope: `docs/STAGE17A_TRANCHE2_CONTOUR_AUTO_SETUP.md`.
+- Protected production/remote baseline remains
+  `84983fad0a8b8687c98e575a8f687e6d85ec3f58`; R202 did not integrate or push.
+- Candidate branch: `stage17a-tranche2-contour-auto`; implementation lineage:
+  `0f79bde` → `d7299a8` → `e03d60c` before this state record.
+- Product delta is limited to closed planar 2D Contour automatic setup:
+  bounded stepdown; independent lead-in/lead-out modes; deterministic entry
+  placement; tangent-linear preference and verified normal-linear fallback;
+  full provenance/recompute/reset; additive persistence; Basic/Advanced UI and
+  VI/EN/KO.
+- Eligible cutter families are End Mill and Bull Nose End Mill, matching the
+  current production Contour generator. Unsupported/open/non-planar/stale/
+  degenerate/missing-depth/missing-cutter inputs fail closed. Feed, spindle,
+  allowances, side, direction, compensation, Tool and depth endpoints remain
+  manual intent.
+- Entry ranking is complete within existing profile geometry. No stock,
+  fixture, holder or machine collision claim is added.
+- SQLite schema remains **5**. The only persistence extension is the existing
+  `automatic_parameter_contract`; legacy/missing/malformed/AUTO/override
+  compatibility paths are tested.
+- Final-candidate verification: focused **311/311**, bounded **1328/1328**,
+  lifecycle **2/2** with Qt top/hidden/modal/QThread delta `0/0/0/0`, and full
+  **4111 passed, 8 failed, 8 skipped, 2 deselected**.
+- The full eight are the trusted inherited signature: four CAD status-label
+  expectations, one workspace-shell action expectation, and three unavailable
+  private R3 package artifacts. Candidate-induced `0`, indeterminate `0`,
+  `NEW_FAILURE_DELTA_R202=0`.
+- Static compile/import/provenance, strict UTF-8 catalog parity, duplicate-key
+  scan, `pip check`, `git diff --check`, path audit and process cleanup pass.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R202_STAGE17A_TRANCHE2_CONTOUR_AUTO_20260810`.
+- Verdict boundary:
+  `PASS_R202_STAGE17A_TRANCHE2_CONTOUR_AUTO_PARAMETERS_LARGE_LOCAL_IMPLEMENTATION`;
+  next action is a separate final direct review/integration authority.
+- Stage17A remains **OPEN**. HMS CAD/CAM total percentage is intentionally not
+  invented or recalculated without an owner-approved programme formula.
+
+The R201 and older sections below are retained as historical provenance and do
+not override this R202 local-candidate summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R201 STAGE17A TRANCHE 1 DELIVERY
 
 - Stage16A: **CLOSED**.

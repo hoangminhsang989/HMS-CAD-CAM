@@ -1,3 +1,64 @@
+# CANONICAL CURRENT PROGRAMME STATE — R202 STAGE17A TRANCHE 2 LOCAL CANDIDATE
+
+- Stage16A: **CLOSED**.
+- Stage17A: **ACTIVE; TRANCHE 1 PRODUCTION-DELIVERED; TRANCHE 2 LOCAL
+  IMPLEMENTATION AND CERTIFICATION COMPLETE**.
+- Tranche2 identity:
+  `STAGE17A_TRANCHE2_CONTOUR_2D_CLOSED_PROFILE_AUTOMATIC_PARAMETERS_AND_LEAD_INTELLIGENCE`.
+- Product name: `Contour 2D Auto Setup`.
+- Owner contract/audit:
+  `docs/STAGE17A_TRANCHE2_CONTOUR_AUTO_SETUP.md`.
+- Production baseline remains
+  `84983fad0a8b8687c98e575a8f687e6d85ec3f58`; R202 is isolated on branch
+  `stage17a-tranche2-contour-auto` and has not been integrated or pushed.
+- Local candidate commits before this state record:
+  `0f79bde` contract, `d7299a8` implementation/tests/I18N, and `e03d60c`
+  lifecycle hardening.
+- Implemented scope: eligible planar closed LINE/ARC Contour policy; typed
+  kernel-free geometry evidence; bounded stepdown; independently represented
+  lead-in/lead-out AUTO and override modes; deterministic entry ranking;
+  tangent-linear preference with validated normal-linear fallback; provenance,
+  dependency recomputation, reset-to-AUTO, additive persistence, Basic/Advanced
+  editor and VI/EN/KO.
+- Current Contour cutter contract remains conservative: End Mill and Bull Nose
+  End Mill are eligible. Ball End and Custom remain unavailable because the
+  production Contour generator does not support those families; no toolpath
+  algorithm family was expanded.
+- Entry-point intelligence is implemented against the resolved closed profile
+  and actual cutter-centre loop. It does not claim stock/fixture/holder/machine
+  collision clearance.
+- Feed, spindle, Tool selection, side, direction, compensation, stock
+  allowances and explicit depth endpoints remain manual product intent.
+- Persistence extends only `automatic_parameter_contract`; legacy numeric
+  values remain manual, AUTO intent survives temporarily missing evidence,
+  missing additive fields load as legacy manual, malformed data fails closed,
+  and SQLite remains schema **5** with no migration.
+- Verification on final implementation candidate: focused **311/311 PASS**;
+  bounded **1328/1328 PASS**; lifecycle **2/2 PASS**, 24 editor cycles with
+  top-level/hidden/modal/QThread delta `0/0/0/0`, head/tail max
+  `0.157793s/0.083440s`; corrected full **4111 passed, 8 failed, 8 skipped,
+  2 deselected**.
+- Full failures exactly match the trusted inherited set: five inherited remote
+  baseline expectations (four CAD status localization and one workspace-shell
+  action reachability) plus three absent private R3 review artifacts.
+  `CANDIDATE_INDUCED=0`, `INDETERMINATE=0`,
+  `NEW_FAILURE_DELTA_R202=0`.
+- One full-run harness remediation was required: a long/hyphenated external
+  TEMP root violated the repository CAM path policy; the 68-test discriminator
+  passed after switching to the short `E:\HMSR` root, then the corrected full
+  gate produced the exact inherited-eight signature.
+- Consolidated evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R202_STAGE17A_TRANCHE2_CONTOUR_AUTO_20260810`.
+- Current boundary:
+  `READY_FOR_STAGE17A_TRANCHE2_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
+  R202 performed no integration, push, force operation or AI Sync.
+- Stage17A remains **OPEN**. No total HMS CAD/CAM percentage is recalculated
+  because the programme has no owner-approved percentage formula in this
+  tranche.
+
+The R201 and older material below remains historical provenance and does not
+override this R202 candidate state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R201 STAGE17A TRANCHE 1 DELIVERY
 
 - Stage16A: **CLOSED**.
