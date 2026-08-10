@@ -1,3 +1,49 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R205 STAGE17A TRANCHE 3 LOCAL CANDIDATE
+
+- Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranche1 and Tranche2 are
+  production-delivered; Tranche3 `Pocket 2D Auto Setup` is implemented and
+  certified locally, pending separate final direct review and integration.
+- Frozen scope and current-product audit:
+  `docs/STAGE17A_TRANCHE3_POCKET_AUTO_SETUP.md`.
+- Production/local-remote baseline remains
+  `229a56fb93ad88e89cd1287bdcd5b280c65b9e08`. Candidate branch is
+  `stage17a-tranche3-pocket-auto`; R205 did not integrate, push or mutate
+  production AI Sync.
+- Candidate implementation commits before this state record are `42f95ce` and
+  `143958966760b43fef7c43b105b9c949bfc6b821`.
+- The product delta is limited to existing Pocket v1: one planar closed outer
+  region, END_MILL only, bounded AUTO stepdown/stepover, production-offset
+  accessibility, deterministic entry placement, current dependency
+  revalidation, provenance/recompute/reset, additive persistence and compact
+  Basic/Advanced VI/EN/KO UX.
+- Islands remain unsupported. Entry-form AUTO is unavailable without
+  authoritative center-cutting metadata, and existing safe retract linking is
+  preserved without claiming a stay-down path validator. Feeds, spindle,
+  direction, Tool, allowances, endpoints and machining context remain manual.
+- SQLite schema remains **5**. `automatic_parameter_contract` is the only
+  persistence extension; legacy, missing, malformed, temporary-unavailable,
+  AUTO and MANUAL_OVERRIDE paths are covered.
+- Verification: focused **360/360**, bounded **1346/1346** on 69 deterministic
+  test files, lifecycle **2/2** with 24 VI/EN/KO cycles and Qt leakage
+  `0/0/0/0`, full **4142 passed, 8 failed, 8 skipped, 2 deselected**.
+- The full eight exactly match the inherited/external signature: four CAD
+  status-text expectations, one workspace-shell action expectation and three
+  absent private historical R3 package artifacts. Candidate-induced `0`,
+  indeterminate `0`, `NEW_FAILURE_DELTA_R205=0`.
+- Compile/import/provenance, UTF-8/catalog/localization, diff and path audits
+  pass. The global inherited `flet 0.24.0`/`packaging 26.2` `pip check` conflict
+  remains environment-only; no tracked dependency requirement changed.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R205_STAGE17A_TRANCHE3_POCKET_AUTO_20260810`.
+- Verdict boundary:
+  `PASS_R205_STAGE17A_TRANCHE3_POCKET_AUTO_SETUP_LARGE_LOCAL_IMPLEMENTATION`;
+  next action is an independent final direct review/integration authority.
+- Stage17A remains **OPEN**. HMS CAD/CAM total progress is not recalculated
+  without an owner-approved programme formula.
+
+The R204 and older sections below remain historical provenance and do not
+override this R205 local-candidate summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R204 STAGE17A TRANCHE 2 DELIVERY
 
 - Stage16A is **CLOSED**. Stage17A is **ACTIVE** with Tranche1 and Tranche2

@@ -47,3 +47,21 @@ Feed, plunge feed, spindle, Tool selection, direction, allowances, depth endpoin
 
 Derived values are finite and positive. Stepdown never exceeds depth span, axial cutting length, or stickout. Stepover is positive and strictly below diameter. Region accessibility uses the same production offset-loop builder used by generation. Legacy Pocket numerics load as manual overrides; AUTO intent and manual overrides persist additively; malformed metadata fails closed; temporary evidence loss preserves stored AUTO mode. No SQLite schema migration is authorized or required.
 
+## R205 local implementation and certification
+
+- Status: `PASS_R205_STAGE17A_TRANCHE3_POCKET_AUTO_SETUP_LARGE_LOCAL_IMPLEMENTATION`.
+- Implementation commit: `143958966760b43fef7c43b105b9c949bfc6b821`.
+- Focused: 360 passed.
+- Bounded: 1346 passed from 69 deterministic test files.
+- Lifecycle: 2 passed; 24 Pocket editor VI/EN/KO cycles; top-level, hidden,
+  modal and running-QThread delta `0/0/0/0`.
+- Full: 4142 passed, 8 inherited/external failed, 8 skipped, 2 deselected.
+  Candidate-induced and indeterminate failures are 0;
+  `NEW_FAILURE_DELTA_R205=0`.
+- The inherited environment-only `pip check` conflict is `flet 0.24.0` versus
+  installed `packaging 26.2`; canonical tracked requirements were not changed.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R205_STAGE17A_TRANCHE3_POCKET_AUTO_20260810`.
+- Delivery boundary: no R205 integration, push, force operation or production
+  AI Sync. The next action is an independent final direct review and integration
+  authority.

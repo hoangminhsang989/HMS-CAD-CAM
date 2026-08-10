@@ -1,3 +1,56 @@
+# CANONICAL CURRENT PROGRAMME STATE — R205 STAGE17A TRANCHE 3 LOCAL CANDIDATE
+
+- Stage16A: **CLOSED**.
+- Stage17A: **ACTIVE; TRANCHE 1 AND TRANCHE 2 PRODUCTION-DELIVERED; TRANCHE 3
+  LOCALLY IMPLEMENTED AND CERTIFIED**.
+- Tranche3 identity:
+  `STAGE17A_TRANCHE3_POCKET_2D_CLOSED_REGION_AUTOMATIC_SETUP_AND_ENTRY_INTELLIGENCE`.
+- Product name and frozen audit: `Pocket 2D Auto Setup`, documented in
+  `docs/STAGE17A_TRANCHE3_POCKET_AUTO_SETUP.md`.
+- Protected production/remote baseline remains
+  `229a56fb93ad88e89cd1287bdcd5b280c65b9e08`; R205 is isolated on branch
+  `stage17a-tranche3-pocket-auto` and performed no integration, push, force
+  operation or production AI Sync.
+- Local implementation lineage before this state record: `42f95ce` owner
+  contract freeze and `143958966760b43fef7c43b105b9c949bfc6b821` feature,
+  tests, I18N and fail-closed generator revalidation.
+- Implemented scope: one planar closed CCW LINE/ARC outer region; exact END_MILL
+  gating; geometry-derived AUTO stepdown and stepover; production-offset region
+  accessibility; deterministic cutter-centre entry placement; current Tool and
+  Pocket dependency fingerprint revalidation; provenance; manual override and
+  reset; additive persistence; Basic/Advanced editor and VI/EN/KO.
+- Islands remain unsupported by Pocket v1. Entry-form AUTO is NOT_APPLICABLE
+  because only vertical plunge exists and Tool metadata does not prove
+  center-cutting. Existing retract/position/plunge linking is preserved because
+  no complete stay-down path validator exists.
+- Feed, plunge feed, spindle, Tool selection, direction, allowances, depth
+  endpoints, final region, material, controller, machine, fixture and island
+  intent remain manual product decisions.
+- Persistence extends only `automatic_parameter_contract`; legacy numerics load
+  as manual overrides, AUTO and MANUAL_OVERRIDE round-trip, temporary evidence
+  loss preserves AUTO intent, malformed/missing additive payloads fail safely,
+  and SQLite remains schema **5** with no migration.
+- Final implementation verification: focused **360/360 PASS**; bounded
+  **1346/1346 PASS** from a deterministic 69-file manifest; lifecycle **2/2
+  PASS**, 24 Pocket editor VI/EN/KO cycles with top-level/hidden/modal/QThread
+  delta `0/0/0/0`; full **4142 passed, 8 failed, 8 skipped, 2 deselected**.
+- The full eight exactly match the trusted inherited signature: four CAD status
+  text expectations, one workspace-shell action reachability expectation and
+  three unavailable private historical R3 artifacts. Candidate-induced `0`,
+  indeterminate `0`, `NEW_FAILURE_DELTA_R205=0`.
+- Static compile/import/provenance, strict UTF-8, catalog parity/duplicate-key,
+  localization audit, `git diff --check` and path audit pass. `pip check` retains
+  the inherited environment-only `flet 0.24.0` versus `packaging 26.2` conflict;
+  tracked dependency metadata was not changed.
+- Consolidated evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R205_STAGE17A_TRANCHE3_POCKET_AUTO_20260810`.
+- Current boundary:
+  `READY_FOR_STAGE17A_TRANCHE3_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
+  Stage17A remains **OPEN** and no HMS-wide percentage is invented.
+
+The R204 and older material below remains historical provenance and does not
+override this R205 local-candidate state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R204 STAGE17A TRANCHE 2 PRODUCTION DELIVERY
 
 - Stage16A: **CLOSED**.
