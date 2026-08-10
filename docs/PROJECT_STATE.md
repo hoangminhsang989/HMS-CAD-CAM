@@ -1,89 +1,91 @@
 # Trạng thái dự án HMS CAD/CAM
 
-## CANONICAL CURRENT PROGRAMME SUMMARY — R178 IMPLEMENTATION CANDIDATE
+## CANONICAL CURRENT PROGRAMME SUMMARY — R189 LOCAL CLOSURE
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
 - **Stage15A: 100% COMPLETE**
-- **Stage15A WP1/WP2/WP3: DELIVERED**
-- Remote Stage15A delivered baseline:
-  `630b950ae1109ff927f85559ed6fbfc7a94007c9`
-- Protected local `main` intentionally remains behind remote.
 - **Stage16A: IN_PROGRESS**
 - **Stage16A Mega-WP1: 100% DELIVERED**.
-- **Stage16A Mega-WP2: IMPLEMENTATION 100% / DIRECT_REVIEW_PENDING**.
-- Mega-WP2 selected scope: **PRODUCTION TOOL LIBRARY MANAGEMENT + SAFE REUSE**.
-- R178 implements dedicated create/edit/duplicate, optimistic Tool revision
-  conflict handling, common defaults/program profiles, real search/filter/sort,
-  usage/compatibility, safe unreferenced delete and Step2 live refresh without
-  adding Tool creation fields to the wizard.
-- Archive/unarchive remains truthfully
-  `ARCHIVE_UNAVAILABLE_WITH_CURRENT_SCHEMA`; cascade delete **0**.
-- SQLite schema remains **5**; `.HMS` migration **0**; Tool identity authority
-  remains application service UUID generation.
-- Focused R178 evidence before the one final bounded gate: application/query
-  **47 PASS**, UI **196 PASS** including **192/192** geometry states, sandbox
-  product integration **1 PASS**.
-- Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
-  FOUNDATION**.
-- Accepted implementation candidate:
-  `891da56f8813bdc91c87b049dbea8f8198d5e74d`; accepted tree
-  `7722013bd9a358c1e40b4b0e4480d9b6c269bb7c`.
-- Direct review: **R176 FINAL DIRECT REVIEW PASS**.
-- Retained evidence remains separated by scope: Stage16A focused **79 PASS**;
-  R176 final bounded **431 PASS, failed 0, errors 0, exit 0**; production UI
-  matrix **144/144 PASS**; repository collection/full **0/0**. These are not a
-  combined repository-wide test count.
-- SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
-  CAM algorithm fork **0**. Calculate, Simulation and Post were
-  **NOT_TRIGGERED**; machine-ready claim **0**.
-- Overall HMS: **~88% provisional roadmap estimate**; this is not a
-  mathematically certified project-completion metric.
-- Next authority after R178 certification is
-  **STAGE16A_MEGA_WP2_PRODUCTION_TOOL_LIBRARY_DIRECT_REVIEW_AUTHORITY**.
-  Mega-WP2 is not delivered; Stage17 activity **0**; AI Sync activity **0**.
+- **Stage16A Mega-WP2: 100_PERCENT_IMPLEMENTED_REVIEWED_AND_INTEGRATED**.
+- Mega-WP2 production scope is the Tool Library management and safe-reuse
+  implementation integrated by R188E. SQLite schema remains **5**; `.HMS`
+  migration, dependency delta, and CAM algorithm fork remain `0`.
+- R187 final review verdict:
+  `APPROVE_STAGE16A_MEGA_WP2_TOOL_LIBRARY_FOR_INTEGRATION`.
+- R188E integration verdict:
+  `PASS_STAGE16A_R188E_TRANSACTIONAL_FAST_FORWARD_INTEGRATION`.
+- Integrated HEAD: `f67262c31a7a5611daf392ce8ce3b26ff9fb233a`.
+- Integrated tree: `8067361cd01d29240d845643ef79f5515c257959`.
+- Post-integration verification: focused **248/248 PASS**, bounded **645/645
+  PASS**, compile/import **7/7 PASS**, and
+  `NEW_FAILURE_DELTA_INTEGRATION = 0`.
+- R187 full broad certification is inherited by exact commit/tree identity;
+  candidate-induced failures, indeterminate results, and provenance mismatches
+  are all `0`.
+- R188E preserved the seven protected local dirty identities exactly:
+  `PROTECTED_DIRTY_IDENTITIES_PRESERVED_7_OF_7`.
+- Local integration is complete. The remaining delivery boundary is remote
+  publication under a separate authority: **push NOT run**,
+  **AI Sync NOT run**, **Stage17 NOT started**, and **Mega-WP3 NOT started**.
+- Current task: `STAGE16A_MEGA_WP2_POST_INTEGRATION_DELIVERY`.
 
-The historical stage sections below are retained for provenance and do not
-override this canonical current summary.
+The historical stage sections below, including local-only Stage 9A.7 material,
+are retained for provenance and do not override this canonical Stage16A
+summary.
 
-## HISTORICAL STAGE RECORD
+## HISTORICAL LOCAL PROJECT RECORD
 
 ## Stage 9A.7 — Post/Program Assembly UI Cleanup
 
-- Stage 9A.7 đã **FINALIZED / COMPLETE**. Final immutable R4 nằm tại
-  `reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
-  SHA-256
-  `1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
-  **109344 bytes**, **27 entries**; immutable/no-overwrite audit PASS.
-- Canonical source là WP1 base `9465d294f60ae31b810983c71588be9945a71368`
-  tới maintenance target `bbb07b9ba436293faa9d286927186d5e885016ea`,
-  tree `ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`, parent/original WP2
-  `ff250d67c70abfe80224befee4a17cccb4e4d3fb`. Patch SHA-256
-  `e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
-  bao phủ **16 paths**; maintenance delta là test-harness-only.
-- Exact-source QA: focused **315 passed, 1 skipped**; regression **147 passed,
-  1 skipped**; full offscreen **2185 passed, 1 skipped, 2 deselected**; native
-  geometry **1 passed**; native smoke **17 passed**; `pip check`, `compileall`
-  và `diff-check` PASS. Offscreen geometry skip đúng native-QPA contract.
-- Integrated compatibility evidence tại main offscreen-fix commit
-  `33c9330fe16ec5c371470072c9ef7b94e7dda3c0` đạt targeted **18 passed**,
-  native **398 passed**, và hai lượt full offscreen cùng **2262 passed,
-  6 skipped, 2 deselected**. Đây chỉ là supplementary evidence, không thay thế
-  exact-source QA và không đổi canonical R4 identity.
-- Maintenance branch/worktree chưa merge vào `main` và được giữ để bảo toàn
-  provenance với trạng thái
-  **RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**. Không claim final ZIP
-  Git-ignored hoặc maintenance commit nằm trong commit history của `main`.
-- Dự án đang **WAITING_FOR_NEXT_APPROVED_STAGE**; không stage phát triển kế
-  tiếp nào được tự động chọn hoặc bắt đầu.
-- SQLite schema v4, `.HMS`, CAM project data, toolpath/Post safety và machine
-  readiness không đổi.
+- Stage 9A.7 WP2 Review R3 is **COMPLETED_WAITING_REVIEW** on branch `main`, baseline HEAD
+  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`; specification R4 remains approved.
+- WP1 Review R7 is approved; total projection and accepted-result preservation remain unchanged.
+- WP2 Review R3 blocker remediation is complete and waiting for review; no stage/commit/push.
+- WP3-WP6 are not started.
+- Managed/external `CURRENT` không nhận explicit shortcut; mọi byte length,
+  SHA-256, source/request/order/project/Post/machine/target-path identity bắt
+  buộc tồn tại và khớp. Missing identity fail-closed; headline managed MISSING
+  không còn tuyên bố `MANAGED_CURRENT`.
+- Feature flags chỉ nhận exact bool; external attempt core chỉ có canonical
+  dispatch ID; diagnostic/operation/counter/identity evidence được validate
+  sớm. Managed explicit negative state và external `explicit_stale` fail-closed;
+  output presentation không có `disabled` action authority.
+- Callback counter accounting bị khóa theo received/published/discarded/write/
+  mutation; external active/failed identity phải complete và
+  `ExternalDispatchSourceIdentity` khóa nội dung managed bằng SHA/checksum/
+  bytes/provenance. `dirty_state` và confirmation rejection là audit output;
+  dead core input field count = 0.
+- R6 coi `current_request_fingerprint` là authority duy nhất; generation attempt
+  phải exact-match project/request/order source hiện tại; stale active reject,
+  stale terminal ignore. Callback publish phải có accepted result cùng attempt và
+  provenance; generation artifact-write/selection-mutation = 0; automatic
+  downstream count derive từ evidence.
+- R7 thêm optional output root cho review worker và dùng `tmp_path` trong test
+  Stage 8A.4.1; production default/behavior, permission và WP1 semantics không
+  đổi. Exact test đạt 3/3, shared DERIVED manifest bất biến. Legacy artifact
+  cleanup thất bại do owner/ACL cũ; không Administrator hoặc reset ACL rộng.
+- QA R7 đạt **280 passed** focused và **166 passed** regression. Full lặp lại
+  **2150 passed, 2 deselected**, failure/error = 0; `pip check`, `compileall src
+  tests tools` và `git diff --check` PASS; chưa stage, commit hoặc push.
+- Projector chỉ nhận immutable evidence và không đọc/ghi SQLite, không gọi
+  Calculate/Simulation/Generate/Save Managed/Export/project Save. External
+  publication trong source là synchronous; không có external worker/cancel API.
+- SQLite schema **v4**, `.HMS` contract, Post/Program Assembly schema,
+  artifact formats và CAM algorithms không đổi; không migration. Stage 9A.I1
+  icon pack vẫn **PAUSED/DEFERRED**, không được mở lại.
+- Chưa commit, chưa push; các thay đổi WP1 được giữ để review trước lifecycle
+  Git cuối.
+
 ## Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu
 
-- Stage 8A.4.4 đã **COMPLETED** trên baseline `3b70b5c`; package GUI R3 đã
-  được người dùng duyệt và chưa có stage kế tiếp được bắt đầu.
-- Install root production là `C:\HMS-CADCAM\` và read-only khi runtime chạy.
-  Machine shared root là `C:\ProgramData\HMS-CADCAM\` với đúng `Tool-Library`,
+- Stage 8A.4.4 đã **COMPLETED**; provenance package lịch sử từng dùng baseline
+  `3b70b5c`, còn baseline hiện tại sau phê duyệt R4 là
+  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`; package GUI R3 đã
+  được người dùng duyệt; câu “chưa có stage kế tiếp” chỉ đúng tại checkpoint
+  lịch sử đó, còn Stage 9A.7 hiện đang `IN PROGRESS`.
+- Install root production là `HMS-CADCAM install root` và read-only khi runtime chạy.
+  Machine shared root là `ProgramData machine-wide root` với đúng `Tool-Library`,
   `Program-Templates`, `Posts`, `Machines`, `Materials`, `Config`, `Schemas`,
   `Backups`.
 - Roaming AppData giữ Config/UI-State/Profiles; Local AppData giữ Cache/Logs/Temp/Crash.

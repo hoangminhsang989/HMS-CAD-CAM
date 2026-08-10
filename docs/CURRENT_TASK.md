@@ -1,86 +1,82 @@
-# Nhiệm vụ hiện tại — Stage16A Mega-WP2 chờ direct review
+# Nhiệm vụ hiện tại — Stage16A Mega-WP2 post-integration delivery
 
-## CANONICAL CURRENT PROGRAMME STATE — R178 IMPLEMENTATION CANDIDATE
+## CANONICAL CURRENT PROGRAMME STATE — R189 LOCAL CLOSURE
 
 - **Stage13C: 100% COMPLETE**
 - **Stage14A: 100% COMPLETE**
 - **Stage15A: 100% COMPLETE**
 - **Stage16A: IN_PROGRESS**
 - Stage16A Mega-WP1: **100% DELIVERED**.
-- Stage16A Mega-WP2: **IMPLEMENTATION 100% / DIRECT_REVIEW_PENDING**.
-- Mega-WP2 programme: **PRODUCTION TOOL LIBRARY MANAGEMENT + SAFE REUSE**.
-- R178 candidate base: `9d9cdf738d7dbdd6cbdf70e07159ba7b45446ee4`;
-  SQLite schema **5 unchanged**, `.HMS` migration **0**.
-- Implemented dedicated Tool Library create/edit/duplicate, strict
-  expected-revision conflict protection, common defaults/program profiles,
-  usage/compatibility/search/filter/sort, unreferenced safe delete và Step2
-  live refresh. Archive/unarchive được phân loại thật là
-  `ARCHIVE_UNAVAILABLE_WITH_CURRENT_SCHEMA`.
-- R178 focused implementation evidence hiện có: Tool Library application/query
-  **47 PASS**, UI **196 PASS** (geometry **192/192**), sandbox product
-  integration **1 PASS**. Final bounded/static certification chưa được ghi là
-  PASS cho tới gate cuối của authority.
-- Mega-WP1 programme: **3-STEP CAM OPERATION WORKFLOW + PRODUCTION TOOL LIBRARY
-  FOUNDATION**.
-- Accepted implementation candidate:
-  `891da56f8813bdc91c87b049dbea8f8198d5e74d`; tree
-  `7722013bd9a358c1e40b4b0e4480d9b6c269bb7c`.
-- Direct review: **R176 FINAL DIRECT REVIEW PASS**.
-- Retained evidence, recorded as separate bounded sets: Stage16A focused
-  **79 PASS**; R176 final bounded **431 PASS, failed 0, errors 0, exit 0**;
-  production UI matrix **144/144 PASS**; repository collection/full **0/0**.
-  These sets are not combined into a repository-wide test count.
-- SQLite schema remains **5**; `.HMS` migration **0**; dependency changes **0**;
-  CAM algorithm fork **0**. Calculate, Simulation and Post were
-  **NOT_TRIGGERED**; machine-ready claim **0**.
-- Overall HMS: **~88% provisional roadmap estimate**; this is not a
-  mathematically certified project-completion metric.
-- Canonical next authority sau candidate R178:
-  **STAGE16A_MEGA_WP2_PRODUCTION_TOOL_LIBRARY_DIRECT_REVIEW_AUTHORITY**.
-- Stage17 activity **0**; AI Sync activity **0**.
-- Delivered capability and evidence map:
-  `docs/STAGE16A_3STEP_CAM_OPERATION_WORKFLOW_FOUNDATION.md`.
-- Mega-WP2 implementation map:
-  `docs/STAGE16A_PRODUCTION_TOOL_LIBRARY_MEGA_WP2.md`.
+- Stage16A Mega-WP2: **100_PERCENT_IMPLEMENTED_REVIEWED_AND_INTEGRATED**.
+- R187 final review:
+  `APPROVE_STAGE16A_MEGA_WP2_TOOL_LIBRARY_FOR_INTEGRATION`.
+- R188E integration:
+  `PASS_STAGE16A_R188E_TRANSACTIONAL_FAST_FORWARD_INTEGRATION`.
+- Integrated HEAD: `f67262c31a7a5611daf392ce8ce3b26ff9fb233a`.
+- Integrated tree: `8067361cd01d29240d845643ef79f5515c257959`.
+- Integration verification: focused **248/248 PASS**, bounded **645/645
+  PASS**, compile/import **7/7 PASS**, and
+  `NEW_FAILURE_DELTA_INTEGRATION = 0`.
+- R187 full broad certification is inherited by exact commit/tree identity;
+  candidate-induced failures and provenance mismatches remain `0`.
+- R188E completed with
+  `PROTECTED_DIRTY_IDENTITIES_PRESERVED_7_OF_7`.
+- Current delivery task:
+  `STAGE16A_MEGA_WP2_POST_INTEGRATION_DELIVERY`.
+- Local integration is complete. Remote delivery is not complete:
+  **push NOT run**, **AI Sync NOT run**, **Stage17 NOT started**, and
+  **Mega-WP3 NOT started**.
+- The next boundary after R189 local closure requires a separate
+  `STAGE16A_MEGA_WP2_REMOTE_PUSH_AND_DELIVERY_AUTHORITY`.
 
-The Stage 9A.7 and Stage 8A.x material below is retained as historical
-provenance and is not the current programme state.
+The Stage 9A.7 and Stage 8A.x material below is preserved from the local
+pre-integration working state as historical context. It does not override the
+canonical Stage16A state above.
 
-## HISTORICAL TASK RECORD
+## HISTORICAL LOCAL TASK RECORD
+
+# Stage 9A.7 WP2 - Unified Post/Program Assembly Panel (COMPLETED_WAITING_REVIEW)
+
+# Nhiệm vụ hiện tại — Stage 9A.7
 
 ## Trạng thái ưu tiên
 
-- **Stage 9A.7 — Post/Program Assembly UI Cleanup — FINALIZED / COMPLETE.**
-- Final immutable review package:
-  `reference_private/DERIVED/STAGE_9A7_WP2_UNIFIED_PANEL_REVIEW_R4.zip`,
-  SHA-256
-  `1f1eb3a99911fe3c193703297fc786a0153bb550f1d3b1bc1cb7535629a1ebe6`,
-  **109344 bytes**, **27 entries**; CRC, manifest, byte-for-byte promotion và
-  no-overwrite gate đều PASS.
-- Canonical R4 source là WP1 base
-  `9465d294f60ae31b810983c71588be9945a71368` tới maintenance target
-  `bbb07b9ba436293faa9d286927186d5e885016ea`, tree
-  `ca84b5f5f6735f10a57e5b0f735c4a87c9e365da`; original WP2/parent là
-  `ff250d67c70abfe80224befee4a17cccb4e4d3fb`. Canonical patch SHA-256 là
-  `e08c2376245230d5543d2cec06e5af4705b83dbd7cc977d6ed4baf7413647210`
-  trên **16 paths**; maintenance delta chỉ sửa test harness.
-- Exact-source QA đạt **315 passed, 1 skipped** focused; **147 passed,
-  1 skipped** regression; **2185 passed, 1 skipped, 2 deselected** full
-  offscreen; native geometry **1 passed**; native smoke **17 passed**;
-  `pip check`, `compileall` và `diff-check` PASS. Offscreen geometry skip chỉ
-  áp dụng vì production geometry audit yêu cầu native Windows QPA.
-- Main offscreen-fix commit
-  `33c9330fe16ec5c371470072c9ef7b94e7dda3c0` có supplementary compatibility
-  evidence: targeted **18 passed**, native **398 passed**, và hai lượt full
-  offscreen cùng đạt **2262 passed, 6 skipped, 2 deselected**. Evidence này
-  không thay thế exact-source QA và không phải canonical R4 source.
-- Maintenance branch/worktree không merge vào `main` và được giữ tạm thời để
-  bảo toàn canonical provenance:
-  **RETAIN_UNTIL_STAGE_9A7_CLOSURE_COMMIT_VERIFIED**.
-- Final ZIP là Git-ignored review artifact; không claim ZIP hoặc maintenance
-  commit đã được commit trên `main`.
-- Stage 9A.7 đã đóng; chưa tự chọn hoặc khởi động stage phát triển kế tiếp.
-  Trạng thái hiện tại: **WAITING_FOR_NEXT_APPROVED_STAGE**.
+- **Stage 9A.7 - Post/Program Assembly UI Cleanup - WP2 R3 COMPLETED_WAITING_REVIEW.**
+- Đặc tả được duyệt: **R4** (`STAGE_9A7_SPECIFICATION_REVIEW_R4.zip`).
+- Baseline bắt buộc: branch `main`, HEAD
+  `7dd26867f27e67baef0ca2e7dc04d95663e8d27a`.
+- WP1 Review R7 is approved; test isolation and total state projection remain unchanged.
+- WP2 Review R3 blocker remediation is complete and waiting for review; no stage/commit/push.
+- WP3-WP6 are not started.
+- R4 tách accepted generation result khỏi incoming callback audit: callback
+  stale/incomplete/đến sau terminal không đổi state/headline/fingerprint/result,
+  còn cancel replacement attempt giữ previous result, managed artifact và
+  Preview evidence.
+- Readiness source identity không phụ thuộc generated payload byte/SHA; initial
+  no-result workflow phải đạt `READY_TO_GENERATE + IDLE`. Accepted result phải
+  nhất quán với attempt provenance; managed so với accepted payload hiện hành.
+- Callback counters phải cân bằng/không âm; external active/failed bắt buộc
+  identity complete và source identity khóa content SHA/checksum/bytes/provenance.
+- `dirty_state` và external confirmation rejection được project thành audit
+  output; dead core input field count = 0.
+- Feature flag chỉ nhận exact bool; external attempt chỉ có canonical dispatch
+  ID; nested evidence được validate sớm. Managed explicit negative state và
+  external `explicit_stale` fail-closed; core external không còn
+  `explicit_current`. `presentation_readiness_blocked` không phải WP2 action
+  authority.
+- R6 khóa `current_request_fingerprint` là source authority duy nhất; attempt
+  phải khớp project/request/order source hiện tại; stale active reject, stale
+  terminal ignore; callback publish bắt buộc accepted result exact identity và
+  provenance. Generation callback artifact-write/selection-mutation luôn bằng 0
+  và automatic downstream count được derive.
+- R7 cô lập review-package test Stage 8A.4.1 bằng optional output root và
+  `tmp_path`; production default/behavior, permission và WP1 semantics không đổi.
+  Shared DERIVED manifest được kiểm tra bất biến; exact test đạt 3/3. Legacy
+  artifact owner `BUILTIN\Administrators` không rename/xóa được và được ghi
+  cleanup failed, không dùng Administrator hoặc reset ACL.
+- QA R7: **280 passed** focused, **166 passed** regression; full lặp lại
+  **2150 passed, 2 deselected**, failure/error = 0. `pip check`, `compileall src
+  tests tools`, `git diff --check` PASS; chưa stage/commit/push.
 - **Stage 8A.4.4 — Kiến trúc cài đặt và dữ liệu — COMPLETED.**
 - **Stage 8A.4.3 — Hệ thống đa ngôn ngữ — COMPLETED.**
 - **Stage 8A.4.2 — Kiến trúc hai chế độ tài liệu — COMPLETED.**
@@ -89,8 +85,8 @@ provenance and is not the current programme state.
 
 Stage 8A.4.4 tách typed scope cho install read-only, dữ liệu machine-wide,
 preference/cache người dùng và document/CAM project do người dùng chọn. Root
-production đã chốt là `C:\HMS-CADCAM\`, `C:\ProgramData\HMS-CADCAM\`,
-`%APPDATA%\HMS-CADCAM\` và `%LOCALAPPDATA%\HMS-CADCAM\`; resolver không dùng
+production đã chốt là `HMS-CADCAM install root`, `ProgramData machine-wide root`,
+User configuration uses logical roots `user_roaming_root` and `user_local_root`; resolver does not use CWD.
 CWD và test/review chỉ dùng injection sandbox rõ nguồn.
 
 - `ApplicationPathsService`, `StorageBootstrapService`, manifest layout v1,
@@ -116,9 +112,8 @@ CWD và test/review chỉ dùng injection sandbox rõ nguồn.
   liên quan và **1870 passed, 2 deselected** toàn dự án; `pip check`,
   `compileall src tests tools` và `git diff --check` đều PASS.
 
-Stage 8A.4.4 đã `COMPLETED`; Stage 9A.7 cũng đã `FINALIZED / COMPLETE`.
-Canonical R4 source vẫn được giữ trên maintenance branch riêng và trạng thái
-hiện tại là `WAITING_FOR_NEXT_APPROVED_STAGE`.
+Stage 8A.4.4 đã `COMPLETED`; Stage 9A.7 đang `IN PROGRESS` theo phê duyệt R4.
+Chưa push và chưa commit trong stage hiện tại.
 
 Không thay đổi SQLite schema v4, `.HMS`, CAM project-root, Tool payload,
 geometry transfer, CAM algorithms, Simulation/Post safety hoặc machine-ready.
@@ -448,4 +443,7 @@ Tài liệu contract: `docs/HMS_DOCUMENT_AND_CAM_WORKSPACE_8A4_2.md`.
 - **Stage 9A.6 — COMPLETED.**
 - **Stage 9A.I1 — HMS Isometric CAD/CAM Icon Pack — DEFERRED.**
 
-Phần này được giữ lại để truy vết; không stage nào khác đang `IN PROGRESS`.
+Phần này được giữ lại để truy vết; tại thời điểm ghi chú lịch sử không có stage
+khác đang `IN PROGRESS`.
+
+WP2 Review R3 completes the unified presentation panel; WP3-WP6 are not started and no commit/push was performed.
