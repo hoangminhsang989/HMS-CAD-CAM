@@ -19,6 +19,18 @@ from hms_cadcam.cam.automatic_parameters import (
     CamQualityProfile,
     cam_quality_factor,
 )
+from hms_cadcam.cam.automatic_drilling import (
+    DRILLING_AUTOMATIC_KEYS,
+    DRILLING_AUTOMATIC_POLICY_KEY,
+    DRILLING_AUTOMATIC_POLICY_VERSION,
+    DRILLING_AUTOMATIC_USER_KEYS,
+    DrillingAutomaticContext,
+    DrillingPatternAnalysis,
+    analyze_drilling_pattern,
+    merge_drilling_automatic_intent,
+    resolve_drilling_automatic_contract,
+    validate_drilling_automatic_contract,
+)
 from hms_cadcam.cam.automatic_contour import (
     CONTOUR_AUTOMATIC_KEYS,
     CONTOUR_AUTOMATIC_POLICY_KEY,
@@ -106,6 +118,11 @@ from hms_cadcam.cam.application.pocket import (
 )
 
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
+           "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
+           "DRILLING_AUTOMATIC_POLICY_VERSION", "DRILLING_AUTOMATIC_USER_KEYS",
+           "DrillingAutomaticContext", "DrillingPatternAnalysis",
+           "analyze_drilling_pattern", "merge_drilling_automatic_intent",
+           "resolve_drilling_automatic_contract", "validate_drilling_automatic_contract",
            "AutomaticParameterMode", "AutomaticParameterStatus", "AutomaticParameterValue",
            "AutomaticValidationResult", "CamQualityProfile",
            "cam_quality_factor",

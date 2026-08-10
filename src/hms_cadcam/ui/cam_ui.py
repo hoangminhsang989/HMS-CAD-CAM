@@ -130,6 +130,7 @@ from hms_cadcam.ui.function_editor.strategies import (
     pocket_applied_values,
     pocket_draft_transform,
     drilling_family_applied_values,
+    drilling_family_draft_transform,
     drilling_family_geometry_values,
     prepare_contour_update,
     prepare_facing_update,
@@ -2066,8 +2067,11 @@ class CamWorkspace(QWidget):
             strategy.geometry.source,
             geometry_resolved,
             diagnostic,
+            None if not geometry_resolved else resolved.region.pattern,
         )
-        draft = DrillingFamilyEditorDraftContext(context.hole_source)
+        draft = DrillingFamilyEditorDraftContext(
+            context.hole_source, resolved_pattern=context.resolved_pattern
+        )
         builder = {
             DrillingFamilyEditorKind.DRILLING: build_drilling_schema,
             DrillingFamilyEditorKind.TAPPING: build_tapping_schema,
@@ -2102,6 +2106,11 @@ class CamWorkspace(QWidget):
             ),
             field_action_callback=lambda action_id, values: self._drilling_family_field_action(
                 context, draft, action_id, values
+            ),
+            draft_transform_callback=(
+                (lambda values: drilling_family_draft_transform(context, draft, values))
+                if kind is DrillingFamilyEditorKind.DRILLING
+                else None
             ),
             tool_profile_interaction_callback=(
                 (
@@ -2512,6 +2521,7 @@ class CamWorkspace(QWidget):
             raise ValueError(message)
         draft.hole_source = source
         draft.pending_input_ids = {}
+        draft.resolved_pattern = resolved.region.pattern
         self._set_picked_hole_source(source)
         self._picked_reference_resolved = True
         self.editor.show_hole_source(source, True)

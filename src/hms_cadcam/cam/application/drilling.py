@@ -6,7 +6,18 @@ import math
 from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
+from hms_cadcam.cam.automatic_drilling import (
+    DRILLING_AUTOMATIC_POLICY_KEY,
+    DrillingAutomaticContext,
+    resolve_drilling_automatic_contract,
+    validate_drilling_automatic_contract,
+)
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+)
 from hms_cadcam.cam.domain import (
+    AngleUnit,
     ArtifactStatus,
     ComputationToken,
     ContentFingerprint,
@@ -196,6 +207,9 @@ class DrillingGenerator:
         holes = self._holes_in_setup(region, setup, strategy)
         assembly_value, tool_value = self._validate_tool(
             operation, strategy, holes, assembly, tool
+        )
+        self._validate_automatic_setup(
+            operation, strategy, region, assembly_value, tool_value
         )
         machine_value = self._validate_machine(operation, strategy, machine)
         pecks = (
@@ -506,6 +520,59 @@ class DrillingGenerator:
                     "Drill diameter does not match the known hole diameter",
                 )
         return assembly, tool
+
+    @staticmethod
+    def _validate_automatic_setup(
+        operation: Operation,
+        strategy: DrillingStrategy,
+        region: DrillingRegion,
+        assembly: ToolAssembly,
+        tool: ToolDefinition,
+    ) -> None:
+        """Recompute every persisted AUTO dependency before toolpath emission."""
+        raw = dict(operation.parameters.values).get(AUTOMATIC_PARAMETER_CONTRACT_KEY)
+        if raw is None:
+            return
+        if not isinstance(raw, str):
+            raise DrillingGenerationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Drilling automatic metadata is invalid",
+            )
+        try:
+            stored = AutomaticParameterContract.from_json(raw)
+            if stored.policy_key != DRILLING_AUTOMATIC_POLICY_KEY:
+                raise ValueError("wrong policy")
+            geometry = tool.cutting_geometry
+            diameter = getattr(geometry, "diameter", None)
+            angle = getattr(geometry, "point_angle", None)
+            current = resolve_drilling_automatic_contract(
+                DrillingAutomaticContext(
+                    strategy.unit,
+                    strategy.cycle,
+                    region.pattern.locations,
+                    strategy.geometry.source.fingerprint.digest,
+                    True,
+                    tool.family,
+                    tool.content_fingerprint.digest,
+                    None if diameter is None else diameter.to(strategy.unit).value,
+                    geometry.axial_cutting_length.to(strategy.unit).value,
+                    assembly.stickout.to(strategy.unit).value,
+                    None if angle is None else angle.to(AngleUnit.DEGREE).value,
+                    strategy.top_z.value,
+                    strategy.final_depth.value,
+                    strategy.clearance_height.value,
+                    strategy.retract_height.value,
+                    None if strategy.peck_depth is None else strategy.peck_depth.value,
+                    strategy.tolerance.value,
+                ),
+                quality_profile=stored.quality_profile,
+            )
+            validate_drilling_automatic_contract(stored, current)
+        except (TypeError, ValueError) as error:
+            raise DrillingGenerationError(
+                DiagnosticCode.DRILL_INVALID_PARAMETER,
+                "Persisted Drilling Auto Setup is stale or malformed",
+            ) from error
 
     @staticmethod
     def _validate_machine(

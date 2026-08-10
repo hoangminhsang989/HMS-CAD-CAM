@@ -11,6 +11,11 @@ from hms_cadcam.cam.application import (
     basic_mill_resources,
     drilling_peck_levels,
 )
+from hms_cadcam.cam.automatic_drilling import (
+    DrillingAutomaticContext,
+    resolve_drilling_automatic_contract,
+)
+from hms_cadcam.cam.automatic_parameters import AUTOMATIC_PARAMETER_CONTRACT_KEY
 from hms_cadcam.cam.domain import (
     Angle,
     AngleUnit,
@@ -63,6 +68,7 @@ from hms_cadcam.cam.domain import (
     ToolFamily,
     ValidationDiagnostic,
     Vector3,
+    OperationParameterSet,
 )
 from hms_cadcam.cam.toolpath import (
     DwellEvent,
@@ -172,6 +178,88 @@ def _inputs(
 def _artifact(generator: DrillingGenerator, inputs):
     computing, token = generator.begin(inputs)
     return generator.generate(computing), computing, token
+
+
+def _automatic_contract_for_inputs(inputs):
+    strategy = inputs.strategy
+    geometry = inputs.tool.cutting_geometry
+    angle = getattr(geometry, "point_angle", None)
+    contract = resolve_drilling_automatic_contract(
+        DrillingAutomaticContext(
+            strategy.unit,
+            strategy.cycle,
+            inputs.region.pattern.locations,
+            strategy.geometry.source.fingerprint.digest,
+            True,
+            inputs.tool.family,
+            inputs.tool.content_fingerprint.digest,
+            geometry.diameter.to(strategy.unit).value,
+            geometry.axial_cutting_length.to(strategy.unit).value,
+            inputs.assembly.stickout.to(strategy.unit).value,
+            None if angle is None else angle.to(AngleUnit.DEGREE).value,
+            strategy.top_z.value,
+            strategy.final_depth.value,
+            strategy.clearance_height.value,
+            strategy.retract_height.value,
+            None if strategy.peck_depth is None else strategy.peck_depth.value,
+            strategy.tolerance.value,
+        )
+    )
+    return contract
+
+
+def _operation_with_automatic_contract(inputs, contract_or_raw):
+    base = inputs.operation.parameters
+    payload = (
+        contract_or_raw.to_json()
+        if hasattr(contract_or_raw, "to_json")
+        else contract_or_raw
+    )
+    parameters = OperationParameterSet(
+        base.strategy_key,
+        base.strategy_version,
+        base.values + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, payload),),
+        base.schema_version,
+    )
+    return replace(inputs.operation, parameters=parameters)
+
+
+def test_generator_revalidates_matching_and_stale_drilling_auto_contract() -> None:
+    generator, inputs, holder, resolved = _inputs()
+    contract = _automatic_contract_for_inputs(inputs)
+    operation = _operation_with_automatic_contract(inputs, contract)
+    valid = generator.resolve_inputs(
+        operation,
+        inputs.setup,
+        assembly=inputs.assembly,
+        tool=inputs.tool,
+        machine=inputs.machine,
+        resolved_geometry=resolved,
+    )
+    assert valid.operation == operation
+    changed_generator, changed_inputs, changed_holder, changed_resolved = _inputs(
+        pattern=_pattern((0, 0), (7, 0))
+    )
+    stale_operation = _operation_with_automatic_contract(changed_inputs, contract)
+    with pytest.raises(DrillingGenerationError, match="Auto Setup"):
+        changed_generator.resolve_inputs(
+            stale_operation,
+            changed_inputs.setup,
+            assembly=changed_inputs.assembly,
+            tool=changed_inputs.tool,
+            machine=changed_inputs.machine,
+            resolved_geometry=changed_resolved,
+        )
+    malformed_operation = _operation_with_automatic_contract(inputs, "{")
+    with pytest.raises(DrillingGenerationError, match="Auto Setup"):
+        generator.resolve_inputs(
+            malformed_operation,
+            inputs.setup,
+            assembly=inputs.assembly,
+            tool=inputs.tool,
+            machine=inputs.machine,
+            resolved_geometry=resolved,
+        )
 
 
 def test_strategy_versioned_round_trip_and_invalid_draft_is_atomic() -> None:

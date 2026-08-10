@@ -61,6 +61,7 @@ from hms_cadcam.ui.function_editor.strategies.common_drilling import (
     DrillingFamilyEditorKind,
     build_drilling_family_schema,
     drilling_family_applied_values,
+    drilling_family_draft_transform,
     drilling_family_geometry_values,
     prepare_drilling_family_update,
 )
@@ -412,8 +413,11 @@ class Stage16AOperationCreationAdapter:
             snapshot.machine_definitions,
             source,
             True,
+            resolved_pattern=resolved.region.pattern,
         )
-        draft = DrillingFamilyEditorDraftContext(source)
+        draft = DrillingFamilyEditorDraftContext(
+            source, resolved_pattern=resolved.region.pattern
+        )
         schema = build_drilling_family_schema(context)
         binding_identity = _OperationCreationBindingIdentity.from_session(session)
 
@@ -458,6 +462,7 @@ class Stage16AOperationCreationAdapter:
                 )
             draft.hole_source = selected
             draft.pending_input_ids = {}
+            draft.resolved_pattern = result.region.pattern
             return drilling_family_geometry_values(selected, True)
 
         def finish(values: Mapping[str, PresentationValue]) -> Operation:
@@ -479,6 +484,7 @@ class Stage16AOperationCreationAdapter:
             validate,
             finish,
             action,
+            lambda values: drilling_family_draft_transform(context, draft, values),
         )
         return self._resolved_editor_binding(session, binding, snapshot)
 

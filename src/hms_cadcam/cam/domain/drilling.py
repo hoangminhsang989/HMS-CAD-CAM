@@ -886,6 +886,8 @@ class DrillingStrategy:
             )
         data = dict(value.values)
         try:
+            # Stage17A metadata is additive and never changes strategy-v1 numerics.
+            data.pop("automatic_parameter_contract", None)
             chunk_count = data.pop("geometry_chunk_count")
             if type(chunk_count) is not int or not 1 <= chunk_count <= 1024:
                 raise ValueError("invalid geometry chunk count")
