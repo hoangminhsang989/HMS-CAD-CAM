@@ -65,3 +65,19 @@ Derived values are finite and positive. Stepdown never exceeds depth span, axial
 - Delivery boundary: no R205 integration, push, force operation or production
   AI Sync. The next action is an independent final direct review and integration
   authority.
+
+## R206 final direct review and remote delivery
+
+- Direct review and exact-baseline counterfactual passed; candidate delta is
+  proven and `NEW_FAILURE_DELTA_R206_REVIEW=0`.
+- Transition was `M/A/D/R/T = 13/4/0/0/0`; protected overlap and false-dirty
+  replacement paths were `0`; modify-existing DELETE capability was `14/14`;
+  exact legacy ACL remediation was `4/4`; add-only capability was `3/3` with
+  residue `0`.
+- One-shot fast-forward and Push A delivered
+  `9211761144552f3a89c96a6967679d8219c7518c` / tree
+  `b1271575420fb7697e47b431cd59f4704b0352ba`.
+- Fresh post-integration direct review passed `360/360`; fresh bounded review
+  passed `1346/1346`; candidate-induced and indeterminate failures are `0/0`.
+- Required marker: `STAGE17A_TRANCHE3_FULLY_DELIVERED`. AI Sync V1.1 and Push B
+  remain pending at this state-closure commit point.

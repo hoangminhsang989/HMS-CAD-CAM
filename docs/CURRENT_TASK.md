@@ -1,19 +1,18 @@
-# CANONICAL CURRENT PROGRAMME STATE — R205 STAGE17A TRANCHE 3 LOCAL CANDIDATE
+# CANONICAL CURRENT PROGRAMME STATE — R206 STAGE17A TRANCHE 3 FULL DELIVERY
 
 - Stage16A: **CLOSED**.
-- Stage17A: **ACTIVE; TRANCHE 1 AND TRANCHE 2 PRODUCTION-DELIVERED; TRANCHE 3
-  LOCALLY IMPLEMENTED AND CERTIFIED**.
+- Stage17A: **ACTIVE; TRANCHE 1, TRANCHE 2 AND TRANCHE 3 PRODUCTION-DELIVERED**.
 - Tranche3 identity:
   `STAGE17A_TRANCHE3_POCKET_2D_CLOSED_REGION_AUTOMATIC_SETUP_AND_ENTRY_INTELLIGENCE`.
 - Product name and frozen audit: `Pocket 2D Auto Setup`, documented in
   `docs/STAGE17A_TRANCHE3_POCKET_AUTO_SETUP.md`.
-- Protected production/remote baseline remains
-  `229a56fb93ad88e89cd1287bdcd5b280c65b9e08`; R205 is isolated on branch
-  `stage17a-tranche3-pocket-auto` and performed no integration, push, force
-  operation or production AI Sync.
-- Local implementation lineage before this state record: `42f95ce` owner
-  contract freeze and `143958966760b43fef7c43b105b9c949bfc6b821` feature,
-  tests, I18N and fail-closed generator revalidation.
+- R206 direct review approved the exact R205 candidate; candidate and baseline
+  counterfactual passed, then one-shot fast-forward integration and Push A
+  delivered `9211761144552f3a89c96a6967679d8219c7518c` / tree
+  `b1271575420fb7697e47b431cd59f4704b0352ba`.
+- Local implementation lineage: `42f95ce`, `1439589`, `2126e1d` and `9211761`.
+  R206 state closure is docs-only; no production/test/catalog/schema/dependency
+  delta is introduced by this commit.
 - Implemented scope: one planar closed CCW LINE/ARC outer region; exact END_MILL
   gating; geometry-derived AUTO stepdown and stepover; production-offset region
   accessibility; deterministic cutter-centre entry placement; current Tool and
@@ -42,14 +41,15 @@
   localization audit, `git diff --check` and path audit pass. `pip check` retains
   the inherited environment-only `flet 0.24.0` versus `packaging 26.2` conflict;
   tracked dependency metadata was not changed.
-- Consolidated evidence root:
-  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R205_STAGE17A_TRANCHE3_POCKET_AUTO_20260810`.
+- R206 evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R206_STAGE17A_TRANCHE3_FINAL_REVIEW_INTEGRATION_20260810`.
 - Current boundary:
-  `READY_FOR_STAGE17A_TRANCHE3_FINAL_DIRECT_REVIEW_AND_INTEGRATION`.
-  Stage17A remains **OPEN** and no HMS-wide percentage is invented.
+  `STAGE17A_TRANCHE3_FULLY_DELIVERED`; AI Sync V1.1 and Push B are the next
+  authorized closure actions. Stage17A remains **OPEN** and no HMS-wide
+  percentage is invented.
 
-The R204 and older material below remains historical provenance and does not
-override this R205 local-candidate state.
+The R205 and older material below remains historical provenance and does not
+override this R206 delivered state.
 
 # CANONICAL CURRENT PROGRAMME STATE — R204 STAGE17A TRANCHE 2 PRODUCTION DELIVERY
 
