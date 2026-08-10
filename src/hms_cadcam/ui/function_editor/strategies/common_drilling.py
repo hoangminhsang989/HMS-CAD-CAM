@@ -495,7 +495,7 @@ def _drilling_automatic_context(
         cycle,
         tuple(locations),
         source.fingerprint.digest,
-        context.geometry_resolved,
+        context.geometry_resolved or resolved_pattern is not None,
         None if tool is None else tool.family,
         None if tool is None else tool.content_fingerprint.digest,
         None if diameter is None else diameter.to(unit).value,
@@ -527,17 +527,24 @@ def _drilling_automatic_contract(
         )
     )
     stored = _stored_drilling_automatic_contract(context)
-    manual_values = {
-        key: _number(
-            values[key], key
-        ) if values is not None and key in values else getattr(strategy, {
-            "final_depth": "final_depth",
-            "top_z": "top_z",
-            "clearance_height": "clearance_height",
-            "retract_height": "retract_height",
-        }[key]).value
-        for key in DRILLING_AUTOMATIC_USER_KEYS
+    strategy_names = {
+        "final_depth": "final_depth",
+        "top_z": "top_z",
+        "clearance_height": "clearance_height",
+        "retract_height": "retract_height",
     }
+    manual_values: dict[str, float] = {}
+    for key in DRILLING_AUTOMATIC_USER_KEYS:
+        fallback = getattr(strategy, strategy_names[key]).value
+        if values is None or key not in values:
+            manual_values[key] = fallback
+            continue
+        try:
+            manual_values[key] = _number(values[key], key)
+        except ValueError:
+            # Draft transforms run for each keystroke. Keep an incomplete
+            # manual value in the draft and let normal validation report it.
+            manual_values[key] = fallback
     modes: dict[str, AutomaticParameterMode] = {}
     if values is not None:
         for key in DRILLING_AUTOMATIC_USER_KEYS:
@@ -963,8 +970,13 @@ def drilling_family_draft_transform(
         contract, context.setup.wcs.origin.unit.value
     )
     for key in DRILLING_AUTOMATIC_USER_KEYS:
-        value = contract.value(key).effective_value
-        if value is not None:
+        automatic = contract.value(key)
+        value = automatic.effective_value
+        if (
+            automatic.mode is AutomaticParameterMode.AUTO
+            and automatic.status is AutomaticParameterStatus.RESOLVED
+            and value is not None
+        ):
             result[key] = str(value)
     return result
 

@@ -23,7 +23,10 @@ from hms_cadcam.cam.domain import (
     LengthUnit,
     OperationParameterSet,
 )
-from hms_cadcam.ui.function_editor import ParameterDisclosureLevel
+from hms_cadcam.ui.function_editor import (
+    FunctionEditorDraftState,
+    ParameterDisclosureLevel,
+)
 from hms_cadcam.ui.function_editor.strategies import common_drilling as drilling_editor
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from tests.unit import test_drilling_ui as drilling_ui
@@ -216,3 +219,65 @@ def test_drilling_auto_catalogs_have_parity_no_duplicates_and_localize_runtime()
         ko = drilling_editor._drilling_automatic_presentation(contract, "mm")
     assert "unavailable" in str(en["automatic_pattern"]).lower()
     assert "사용" in str(ko["automatic_pattern"])
+
+
+def test_incomplete_manual_numeric_edit_remains_in_draft_for_validation(
+    tmp_path,
+) -> None:
+    _application()
+    _service, _session, workspace, *_rest = drilling_ui._workspace(tmp_path)
+    production = workspace.production_function_editor_session()
+    assert production is not None
+    state = FunctionEditorDraftState(
+        production.schema,
+        production.applied_mapping(),
+        validation_callback=production.validation_callback,
+        draft_transform_callback=production.draft_transform_callback,
+    )
+    state.edit("final_depth", "-")
+    assert state.values["final_depth"] == "-"
+    assert any(
+        item.field_id == "final_depth" and item.severity.name == "ERROR"
+        for item in state.validate()
+    )
+
+
+def test_resolved_reselection_restores_pattern_auto_eligibility(tmp_path) -> None:
+    _application()
+    service, _session, _workspace, *_rest = drilling_ui._workspace(tmp_path)
+    snapshot = service.cam_snapshot
+    job = snapshot.jobs[0]
+    setup = job.setups[0]
+    operation = setup.operation_tree.operations[0]
+    strategy = DrillingStrategy.from_operation_parameters(operation.parameters)
+    resolved = drilling_ui._resolved(strategy.geometry, strategy.depth)
+    assert resolved.region is not None
+    context = drilling_editor.DrillingFamilyEditorContext(
+        drilling_editor.DrillingFamilyEditorKind.DRILLING,
+        "Drilling",
+        operation,
+        setup,
+        snapshot.tool_assemblies,
+        snapshot.tool_definitions,
+        snapshot.holder_definitions,
+        snapshot.machine_definitions,
+        strategy.geometry.source,
+        False,
+        "stale before reselection",
+        None,
+    )
+    draft = drilling_editor.DrillingFamilyEditorDraftContext(
+        strategy.geometry.source,
+        resolved_pattern=resolved.region.pattern,
+    )
+    transformed = drilling_editor.drilling_family_draft_transform(
+        context,
+        draft,
+        drilling_editor.drilling_family_applied_values(context),
+    )
+    count_text, fingerprint = str(transformed["automatic_pattern"]).split(
+        " · ", 1
+    )
+    assert count_text.startswith("1 ")
+    assert len(fingerprint) == 64
+    assert all(character in "0123456789abcdef" for character in fingerprint)
