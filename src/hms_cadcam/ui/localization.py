@@ -369,6 +369,9 @@ UI_TRANSLATIONS = MappingProxyType(
         "No data": "Chưa có dữ liệu",
         "WP1 shell only": "Chỉ là khung giao diện WP1",
         "Status": "Trạng thái",
+        "Revision": "Phiên bản",
+        "Compare revision": "So sánh phiên bản",
+        "Blocked": "Bị chặn",
         # Workspace shell and shared panels.
         "HMS CAD/CAM — Design": "HMS CAD/CAM — Thiết kế",
         "Operation Manager": "Quản lý nguyên công",
