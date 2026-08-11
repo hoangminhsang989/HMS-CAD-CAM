@@ -2432,7 +2432,7 @@
   "Class":"분류",
   "Findings":"검출 항목",
   "Reviewer identity":"검토자 신원",
-  "Role":"역할",
+  "Reviewer role":"검토자 역할",
   "Compare revision":"리비전 비교",
   "Confirm operator":"작업자 확인",
   "Export dry-run package":"드라이런 패키지 내보내기"

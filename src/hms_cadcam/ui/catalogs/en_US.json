@@ -2432,7 +2432,7 @@
   "Class":"Class",
   "Findings":"Findings",
   "Reviewer identity":"Reviewer identity",
-  "Role":"Role",
+  "Reviewer role":"Reviewer role",
   "Compare revision":"Compare revision",
   "Confirm operator":"Confirm operator",
   "Export dry-run package":"Export dry-run package"

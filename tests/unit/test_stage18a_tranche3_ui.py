@@ -44,6 +44,8 @@ def test_tranche3_catalogs_have_key_order_parity_no_duplicates_and_utf8():
         "Compare revision", "Confirm operator", "Export dry-run package",
     }
     assert required <= {key for key, _ in pairs[0]}
+    assert "Role" not in {key for key, _ in pairs[0]}
+    assert "Reviewer role" in {key for key, _ in pairs[0]}
 
 
 def test_live_vi_en_ko_switch_preserves_release_identity(qtbot):

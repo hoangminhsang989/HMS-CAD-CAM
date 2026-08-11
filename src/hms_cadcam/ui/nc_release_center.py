@@ -126,7 +126,7 @@ class NCReleaseCenter(QWidget):
         self.reviewer_name = QLineEdit(self)
         self.reviewer_name.setPlaceholderText(ui_text("Reviewer identity"))
         self.reviewer_role = QLineEdit(self)
-        self.reviewer_role.setPlaceholderText(ui_text("Role"))
+        self.reviewer_role.setPlaceholderText(ui_text("Reviewer role"))
         reviewer.addWidget(self.reviewer_name)
         reviewer.addWidget(self.reviewer_role)
         root.addLayout(reviewer)

@@ -2432,7 +2432,7 @@
   "Class":"Phân loại",
   "Findings":"Phát hiện",
   "Reviewer identity":"Danh tính người rà soát",
-  "Role":"Vai trò",
+  "Reviewer role":"Vai trò người rà soát",
   "Compare revision":"So sánh phiên bản",
   "Confirm operator":"Xác nhận người vận hành",
   "Export dry-run package":"Xuất gói chạy thử"

@@ -372,6 +372,7 @@ UI_TRANSLATIONS = MappingProxyType(
         "Revision": "Phiên bản",
         "Compare revision": "So sánh phiên bản",
         "Blocked": "Bị chặn",
+        "Reviewer role": "Vai trò người rà soát",
         # Workspace shell and shared panels.
         "HMS CAD/CAM — Design": "HMS CAD/CAM — Thiết kế",
         "Operation Manager": "Quản lý nguyên công",
