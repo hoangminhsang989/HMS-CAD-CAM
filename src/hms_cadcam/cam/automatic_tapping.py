@@ -56,6 +56,7 @@ class TappingThreadEvidence:
     pitch: float
     hand: str
     source: str
+    thread_depth_source: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -70,6 +71,11 @@ class TappingThreadEvidence:
             raise ValueError("Authoritative thread hand is invalid")
         if not isinstance(self.source, str) or not self.source.strip():
             raise ValueError("Authoritative thread source is invalid")
+        if self.thread_depth_source is not None and (
+            not isinstance(self.thread_depth_source, str)
+            or not self.thread_depth_source.strip()
+        ):
+            raise ValueError("Authoritative threaded-depth source is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +160,10 @@ def resolve_tapping_automatic_contract(
         ("thread_nominal_diameter", None if evidence is None else evidence.nominal_diameter),
         ("thread_pitch", None if evidence is None else evidence.pitch),
         ("thread_hand", None if evidence is None else evidence.hand),
+        (
+            "thread_depth_source",
+            None if evidence is None else evidence.thread_depth_source,
+        ),
     )
     dependency = geometry_dependency(
         context.geometry,
@@ -186,8 +196,9 @@ def resolve_tapping_automatic_contract(
             usable_axial_capacity=capacity,
         )
         if evidence is not None
+        and evidence.thread_depth_source is not None
         and context.geometry.depth_source is not None
-        and "thread" in context.geometry.depth_source.lower()
+        and context.geometry.depth_source == evidence.thread_depth_source
         else NumericEvidence(
             None,
             None,

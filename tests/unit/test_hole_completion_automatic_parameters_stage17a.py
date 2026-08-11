@@ -193,7 +193,13 @@ def test_tapping_explicit_thread_metadata_and_thread_depth_are_conditional_auto(
         authoritative_depth_ranges=((0.0, -8.0), (0.0, -8.0)),
         depth_source="thread_feature_depth",
     )
-    evidence = TappingThreadEvidence(6.0, 1.0, "right", "cad_thread_feature_v1")
+    evidence = TappingThreadEvidence(
+        6.0,
+        1.0,
+        "right",
+        "cad_thread_feature_v1",
+        "thread_feature_depth",
+    )
     contract = resolve_tapping_automatic_contract(
         _tapping(geometry=geometry, thread_evidence=evidence)
     )
@@ -202,6 +208,47 @@ def test_tapping_explicit_thread_metadata_and_thread_depth_are_conditional_auto(
     assert contract.value("pitch").effective_value == 1.0
     assert contract.value("hand").effective_value == "right"
     assert contract.value("thread_source").effective_value == "cad_thread_feature_v1"
+
+
+def test_tapping_thread_metadata_cannot_relabel_unbound_plain_hole_depth() -> None:
+    geometry = _geometry(
+        authoritative_depth_ranges=((0.0, -8.0), (0.0, -8.0)),
+        depth_source="plain_hole_depth",
+    )
+    evidence = TappingThreadEvidence(
+        6.0,
+        1.0,
+        "right",
+        "cad_thread_feature_v1",
+        "thread_feature_depth",
+    )
+    contract = resolve_tapping_automatic_contract(
+        _tapping(geometry=geometry, thread_evidence=evidence)
+    )
+    assert contract.value("final_depth").has_manual_override
+    assert contract.value("depth_source").effective_value == "thread_depth_absent"
+    assert "not authoritative threaded-feature depth" in contract.value(
+        "final_depth"
+    ).reason
+
+
+def test_grouped_incompatible_threaded_depths_fail_closed() -> None:
+    geometry = _geometry(
+        authoritative_depth_ranges=((0.0, -8.0), (0.0, -9.0)),
+        depth_source="thread_feature_depth",
+    )
+    evidence = TappingThreadEvidence(
+        6.0,
+        1.0,
+        "right",
+        "cad_thread_feature_v1",
+        "thread_feature_depth",
+    )
+    contract = resolve_tapping_automatic_contract(
+        _tapping(geometry=geometry, thread_evidence=evidence)
+    )
+    assert contract.value("final_depth").has_manual_override
+    assert contract.value("depth_source").effective_value == "incompatible_group"
 
 
 @pytest.mark.parametrize(
@@ -296,6 +343,16 @@ def test_boring_target_uses_finished_feature_and_tool_range_only() -> None:
         )
     )
     assert out_of_range.value("finished_bore_diameter").has_manual_override
+
+
+def test_grouped_incompatible_finished_bores_fail_closed() -> None:
+    geometry = _geometry(
+        authoritative_finished_diameters=(20.0, 21.0),
+        diameter_source="finished_bore_feature",
+    )
+    contract = resolve_boring_automatic_contract(_boring(geometry=geometry))
+    assert contract.value("finished_bore_diameter").has_manual_override
+    assert contract.value("diameter_source").effective_value == "incompatible_group"
 
 
 def test_boring_missing_holder_or_tool_family_fails_closed_without_radial_inference() -> None:
