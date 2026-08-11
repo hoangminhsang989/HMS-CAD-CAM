@@ -1,3 +1,41 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY - R220 STAGE18A TRANCHE1 LEVEL1 FULL DELIVERY
+
+- Stage16A is **CLOSED** and Stage17A is **CLOSED**. Stage18A is **ACTIVE**.
+- Stage18A Tranche1 is `FULLY_DELIVERED_LEVEL1` for the exact FANUC ROBODRILL
+  alpha-D21MiB / FANUC 31i-B / BT30 profile.
+- Qualification capability is `LEVEL1_STATICALLY_VALIDATED`. Physical
+  qualification is `NOT_PERFORMED`; Level2 and Level3 are `NOT_ACHIEVED`;
+  `MACHINE_READY=false`.
+- Tapping is `NOT_QUALIFIED_FOR_MACHINE_READY_OUTPUT`. The static validator
+  preserves `TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED`, and the count of
+  owner-approved physical golden machine samples is `0`.
+- R219 final direct review approved product commit
+  `01aecc5878e61fe32556b0d01a4a648287be70ef`, tree
+  `b78fb46e119cc7cf944184f02226b2279048fc09`. R220 integrated that exact
+  identity by one `--ff-only` operation after exact-two ACL and standard-token
+  replacement proof.
+- The ACL bootstrap changed only the two authorized file DACLs before
+  integration. Raw bytes, Git blobs, ADS, owner, parent ACL, attributes and
+  reparse state remained unchanged; DELETE passed `2/2`, the complete
+  replacement/add probe passed `24/24`, and residue/staged content were `0`.
+- Fresh post-integration targeted certification passes **169/169**. The single
+  canonical full regression produced **4264 passed, 5 inherited failures,
+  8 skipped and 2 deselected**. The five nodes are an exact subset of the
+  trusted eight-node signature; three previously missing private Stage9A.7
+  artifact nodes now pass. Candidate-induced `0`, indeterminate `0`, and
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Push A delivered exact product commit `01aecc5878e61fe32556b0d01a4a648287be70ef`
+  to local/tracking/live `origin/main` at divergence `0/0`; force push count is
+  `0`. This docs/state-only commit is the sole Level1 delivery-state commit.
+- Stage18A remains active. This state does not claim physical setup safety,
+  Level2 dry-run qualification, Level3 machine acceptance, machine-ready
+  output, tapping qualification, or a next-tranche product definition.
+- Consolidated evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R220_STAGE18A_TRANCHE1_LEVEL1_FULL_DELIVERY_20260811`.
+
+The R218 and older sections below remain historical provenance and do not
+override this R220 fully-delivered Level1 state.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R218 STAGE18A TRANCHE 1 LOCAL CANDIDATE
 
 - Stage16A is **CLOSED** and Stage17A is **CLOSED**. Stage18A is **ACTIVE**;

@@ -1,3 +1,37 @@
+# CANONICAL CURRENT PROGRAMME STATE - R220 STAGE18A TRANCHE1 LEVEL1 FULL DELIVERY
+
+- Stage16A: **CLOSED**. Stage17A: **CLOSED**. Stage18A: **ACTIVE**.
+- Stage18A Tranche1 is **FULLY_DELIVERED_LEVEL1** for the exact
+  `fanuc_robodrill_alpha_d21mib_31ib_bt30` profile.
+- Qualification capability is `LEVEL1_STATICALLY_VALIDATED`. Physical
+  qualification is `NOT_PERFORMED`; Level2 and Level3 are `NOT_ACHIEVED`.
+  `MACHINE_READY=false`.
+- Production Tapping remains `NOT_QUALIFIED_FOR_MACHINE_READY_OUTPUT`; forced
+  Tapping input fails closed with
+  `TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED`. Owner-approved physical golden
+  machine samples remain `0`.
+- R219 directly reviewed and approved exact product commit
+  `01aecc5878e61fe32556b0d01a4a648287be70ef`, tree
+  `b78fb46e119cc7cf944184f02226b2279048fc09`. R220 granted exact-user DELETE
+  capability on only the two authorized legacy files, proved standard-token
+  DELETE `2/2`, replacement/add `24/24`, and residue `0`, then integrated the
+  reviewed candidate by one fast-forward.
+- Post-integration targeted certification passes **169/169**. The one canonical
+  full regression produced **4264 passed, 5 inherited failed, 8 skipped,
+  2 deselected**; all five failures are a subset of the trusted eight-node
+  Stage17A/R218 signature. Candidate-induced `0`, indeterminate `0`, and
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Push A delivered the exact product commit to local/tracking/live
+  `origin/main` at divergence `0/0`, without force. This docs/state-only commit
+  records the Level1 delivery boundary for Push B and final AI Sync.
+- Stage18A remains open. No Level2/Level3, physical machine acceptance, direct
+  CNC transfer, or next Stage18A tranche is inferred by this closure.
+- R220 evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R220_STAGE18A_TRANCHE1_LEVEL1_FULL_DELIVERY_20260811`.
+
+The R215 and older material below remains historical provenance and does not
+override this R220 Stage18A Tranche1 delivery state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R215 STAGE17A FORMAL CLOSURE
 
 - Stage16A: **CLOSED**.
