@@ -1,0 +1,80 @@
+{
+  "adversarial_matrix_cases": 24,
+  "baseline_r224": "3f73da82aaa2574bf9df4c965e27a81d3d367977",
+  "baseline_tree_r224": "80c376ecc181a47c9d3490642a326520d3dabcb8",
+  "candidate_head": "afb73604491451d3b73d3ed4eced831de7884eb9",
+  "candidate_tree": "257cf68c49ffb8e82a319b4f0427f4d9e39f0e5e",
+  "credential_findings": 0,
+  "files": [
+    {
+      "path": "docs/STAGE18A_POST_TRANCHE3_REMAINING_SOFTWARE_SCOPE_MATRIX.md",
+      "sha256": "9fbb8fbdb3ee98a54bf60ae2ed986653fb427321194b7dbfe29a66139872010e",
+      "size": 3113
+    },
+    {
+      "path": "docs/STAGE18A_TRANCHE4_PRODUCTION_RELEASE_GOVERNANCE_CONTRACT.md",
+      "sha256": "9f70ddb3311c306dd74ad966b5c9a75ad7d403bbebcd629e838f8104f8b5d802",
+      "size": 1659
+    },
+    {
+      "path": "src/hms_cadcam/cam/qualification/manufacturing_job.py",
+      "sha256": "2e7e60dfca112a768c95cee14ac32bfe29a9c3ea61add8183d57968355c3a125",
+      "size": 28009
+    },
+    {
+      "path": "src/hms_cadcam/cam/qualification/manufacturing_release.py",
+      "sha256": "adec4756fb64095fe2dde0862482b01d5585fff7edd2641b35e9f4e5a4153be1",
+      "size": 9728
+    },
+    {
+      "path": "src/hms_cadcam/cam/qualification/manufacturing_package.py",
+      "sha256": "e0a3d8aa3e2bd63e2bd3014f8a1c35007d9c2058f5dea37519c2fa9ee56e9472",
+      "size": 7318
+    },
+    {
+      "path": "src/hms_cadcam/cam/qualification/manufacturing_store.py",
+      "sha256": "e47765a4496a88f7ef8e0abfe2dd9909f5bc4c436152b2a56d7f10e3eb94d480",
+      "size": 2836
+    },
+    {
+      "path": "src/hms_cadcam/ui/manufacturing_release_center.py",
+      "sha256": "97698106cdfe95a5cf6ef343207c3221ee3dd860eee2f4bf6d59a8b7e8b3390e",
+      "size": 5025
+    },
+    {
+      "path": "tests/unit/test_stage18a_tranche4_manufacturing_job.py",
+      "sha256": "740fafece546b7e7c8c80a197afe563adaf46eaf13a290c6ef3e7f13e1d8351a",
+      "size": 7552
+    },
+    {
+      "path": "tests/unit/test_stage18a_tranche4_ui.py",
+      "sha256": "13a45336db8de01b3c1827a367b7710c1144aea702cdd7f9b33a3662317bec49",
+      "size": 1572
+    }
+  ],
+  "format": "R225_STAGE18A_TRANCHE4_LOCAL_REVIEW",
+  "format_version": 1,
+  "markers": [
+    "STAGE18A_POST_TRANCHE3_REMAINING_SOFTWARE_SCOPE_MATRIX_COMPLETE",
+    "STAGE18A_TRANCHE4_SCOPE_FROZEN",
+    "STAGE18A_MANUFACTURING_JOB_MODEL_IMPLEMENTED",
+    "STAGE18A_JOB_TOOL_RECONCILIATION_IMPLEMENTED",
+    "STAGE18A_JOB_SETUP_CONSISTENCY_IMPLEMENTED",
+    "STAGE18A_JOB_RELEASE_POLICY_IMPLEMENTED",
+    "STAGE18A_IMMUTABLE_JOB_RELEASE_IMPLEMENTED",
+    "STAGE18A_RELEASE_SUPERSEDE_HISTORY_IMPLEMENTED",
+    "STAGE18A_JOB_LEVEL_STRUCTURED_DIFF_IMPLEMENTED",
+    "STAGE18A_MANUFACTURING_JOB_HANDOFF_PACKAGE_IMPLEMENTED",
+    "STAGE18A_TRANCHE4_NO_CNC_CONTROL_BOUNDARY_PRESERVED",
+    "LEVEL2_NOT_ACHIEVED",
+    "LEVEL3_NOT_ACHIEVED",
+    "MACHINE_READY_FALSE"
+  ],
+  "verdict": "READY_FOR_STAGE18A_TRANCHE4_FINAL_DIRECT_REVIEW",
+  "verification": {
+    "bounded": "839 passed, 3 inherited missing-private-artifact failures, 6 skipped",
+    "candidate_induced": 0,
+    "focused": "8 passed",
+    "stage18a_tranche3": "30 passed"
+  }
+}
