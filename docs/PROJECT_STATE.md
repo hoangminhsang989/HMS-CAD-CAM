@@ -1,3 +1,92 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R218 STAGE18A TRANCHE 1 LOCAL CANDIDATE
+
+- Stage16A is **CLOSED** and Stage17A is **CLOSED**. Stage18A is **ACTIVE**;
+  Tranche1 software implementation is complete and certified locally for the
+  exact FANUC ROBODRILL α-D21MiB / FANUC 31i-B / BT30 target. This candidate
+  has not been directly reviewed, integrated or remotely delivered.
+- Protected production/local tracking/live remote remain at R218 baseline
+  `0bbaa5d8fab6424d059cb13adffa901b8a15a20c`, tree
+  `d1794883c34d8d1d500f0b9d94d9dced9de405ce`, divergence `0/0`. R218 does not
+  integrate, push, force-update or run production AI Sync.
+- Candidate branch/worktree:
+  `stage18a-tranche1-robodrill-machine-ready` at
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\CLONES\R218-STAGE18A-TRANCHE1-ROBODRILL`.
+  Implementation lineage is `f6c57a1` -> `aac7ee4` ->
+  `6403fe31d836f8043eb6c81c2a080b2aac98d675`, implementation tree
+  `49004247e11c5f345f403642bbd79677970918d4`, before this docs-only state
+  commit.
+- The typed canonical profile is
+  `fanuc_robodrill_alpha_d21mib_31ib_bt30`; its 32 qualified leaves retain
+  value, unit, source references, authority class, qualification state and
+  notes. Owner-, catalog- and repository-confirmed facts remain distinct and
+  deterministic profile/contract/report fingerprints detect drift.
+- Frozen static envelopes are X/Y/Z travel spans 500/400/330 mm, table
+  650 × 400 mm, spindle 24,000 rpm, cutting feed 30,000 mm/min, rapid
+  48,000 mm/min, BT30, 21 ATC positions, Tool diameter 80 mm and Tool length
+  250 mm. Travel spans are never relabelled as absolute machine-coordinate
+  endpoints.
+- Qualification is explicitly separated into `UNQUALIFIED`,
+  `STATICALLY_VALIDATED`, `DRY_RUN_QUALIFIED` and `MACHINE_ACCEPTED`. R218
+  reaches Level 1 only for bounded engineering scenarios; promotion to Levels
+  2 or 3 requires exact external physical evidence. `MACHINE_READY=false` at
+  Level 1 and only `MACHINE_ACCEPTED` can set it true.
+- Static validation fails closed for excessive axis/stock envelopes,
+  non-finite or excessive spindle/feed, incompatible or stale Tool bindings,
+  more than 21 assigned Tools, Tool geometry above confirmed limits,
+  conflicting T/H/D mappings, missing H/D references, unsupported work offsets,
+  modal contradictions, canned-cycle substitution and Tapping qualification.
+- G54 is the sole deterministic static work-offset path. Its physical transform,
+  exact axis endpoints, G28/G53 behavior, H/D controller namespaces,
+  Tool-change safe position, fixture/holder clearance, installed option set,
+  machine serial/configuration and exact physical controller behavior remain
+  unverified and visible in qualification findings.
+- Existing expanded-motion Standard/Spot/Peck delivery remains qualifiable;
+  G81/G82/G83 substitution is rejected. Production Tapping remains
+  `TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED`; no G84, pitch/feed
+  synchronization or rigid-tapping semantics are invented.
+- Deterministic qualification binds the CAM/program identity, ordered
+  operations, Tool fingerprints, machine contract/profile, Post identity and
+  exact managed-NC SHA-256. Read-back/tamper and source/profile/program/artifact
+  drift checks reject stale records.
+- Persistence is additive below `post/qualification/`; SQLite schema remains
+  **5** and Stage17A automatic-parameter persistence is unchanged. Unknown
+  forward JSON fields survive deterministic round-trip and malformed evidence
+  fails safely.
+- The compact Vietnamese-first Program Assembly qualification panel exposes
+  Level 1, blockers/warnings, exact machine/controller, profile fingerprint and
+  NC SHA, with Advanced detail and VI/EN/KO parity. It clears stale state on
+  project/profile changes and only reloads records matching the current managed
+  artifact.
+- Engineering golden infrastructure covers Facing/Planar, Contour, Pocket,
+  Standard/Spot/Peck Drilling, multi-Tool assembly and negative Tapping. These
+  are `ENGINEERING_REGRESSION_SAMPLE`; owner-approved golden bytes and physical
+  acceptance are not claimed.
+- Verification passes: new R218 **41/41**; focused **317 passed / 6 skipped**;
+  bounded **1546 passed / 6 skipped / 3 inherited-external failed** across 81
+  deterministic test files, manifest SHA-256
+  `9ad17e6a954b5328ecae145f9587cc47af40e6d659e3c478c9bc695feaeaf696`;
+  canonical full **4258 passed / 8 inherited-or-external failed / 8 skipped /
+  2 deselected**. Compile/import, `pip check`, catalog JSON/UTF-8,
+  localization and `git diff --check` pass.
+- The full eight exactly reproduce the Stage17A closure failure signature:
+  four CAD status-text expectations, one workspace-shell action reachability
+  expectation and three unavailable private historical Stage9A.7 R3 artifacts.
+  Candidate-induced `0`, indeterminate `0`, `NEW_FAILURE_DELTA_R218=0`.
+- The 24-cycle VI/EN/KO open/advanced/close lifecycle harness reports
+  top-level/hidden/modal/QThread deltas `0/0/0/0`, with no cumulative slowdown
+  pathology. Five ordinary remediation cycles are retained as evidence,
+  including the nonterminal first bounded harness cutoff and its completed
+  exact-manifest rerun.
+- Verdict boundary:
+  `PASS_R218_STAGE18A_TRANCHE1_ROBODRILL_STATIC_MACHINE_QUALIFICATION_LARGE_LOCAL_IMPLEMENTATION`.
+  Exact next action is a separate final direct review of this isolated
+  candidate; no integration or push is authorized by R218.
+- HMS CAD/CAM provisional total percentage is not recalculated without an
+  owner-approved programme formula.
+
+The R215 and older sections below remain historical provenance and do not
+override this R218 local-candidate summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R215 STAGE17A CLOSED
 
 - Stage16A is **CLOSED**. Stage17A is **CLOSED** with Tranches1–5 **FULLY
