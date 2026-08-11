@@ -1,6 +1,14 @@
 # Stage17A Tranche5 — Hole Completion Auto Setup
 
-Status: `STAGE17A_TRANCHE5_HOLE_COMPLETION_PRODUCT_CONTRACT_FROZEN`
+Status: `STAGE17A_TRANCHE5_FULLY_DELIVERED`
+
+R215 delivery closure: R212 directly reviewed and remediated the final product;
+R215 completed the exact-six ACL prerequisite, standard-user DELETE `13/13`,
+one-shot fast-forward integration, fresh focused `392`, bounded `1423`, zero-
+leak lifecycle and full `4217 passed / 8 inherited-or-external failed / 8
+skipped / 2 deselected`. Push A delivered exact product commit `5afefbb`.
+Candidate-induced and indeterminate failures are `0`; both integration and
+Stage17A closure new-failure deltas are `0`.
 
 Baseline: `b5866d6c2f660cb404afdcfa389b9543abc69a36` / tree
 `f96cc5b968bc5fde9b266c2c3d3b81e41abfe8af`.

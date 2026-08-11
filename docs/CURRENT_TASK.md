@@ -1,3 +1,53 @@
+# CANONICAL CURRENT PROGRAMME STATE — R215 STAGE17A FORMAL CLOSURE
+
+- Stage16A: **CLOSED**.
+- Stage17A: **CLOSED; TRANCHES 1-5 FULLY DELIVERED**.
+- Delivered matrix: Tranche1 Facing/Planar, Tranche2 Contour, Tranche3 Pocket,
+  Tranche4 Standard/Spot/Peck Drilling and Tranche5 Tapping/Reaming/Boring.
+- R212 directly reviewed the final Tranche5 candidate and approved it for
+  integration. Its exact remediation commit `5afefbb` binds Tapping depth only
+  to an authoritative thread-depth source; candidate-induced and indeterminate
+  failures remain `0`.
+- R215 granted the exact current-user SID `DELETE` on only the six legacy NTFS
+  files. Bytes, Git blobs, owner, ADS and parent ACLs remained unchanged;
+  standard-user replacement capability is `13/13`, add-only destinations are
+  `3/3`, and residue is `0`.
+- Protected `main` fast-forwarded exactly once from `b5866d6` to product HEAD
+  `5afefbb848f4f07e230c68ed9936442165c628ff`, tree
+  `19919aee02a4d2b31176790ba458582200290602`. Push A delivered this exact
+  product identity to live `origin/main` without force.
+- Fresh post-integration certification: focused **392/392**, bounded
+  **1423/1423**, lifecycle 24 Tapping/Reaming/Boring × VI/EN/KO cycles with
+  top/hidden/modal/QThread delta `0/0/0/0`, and canonical full
+  **4217 passed, 8 inherited-or-external failed, 8 skipped, 2 deselected**.
+  The eight nodes exactly match R212; `NEW_FAILURE_DELTA_INTEGRATION=0` and
+  `NEW_FAILURE_DELTA_STAGE17A_CLOSURE=0`.
+- One preliminary full invocation used an overlong evidence basetemp and was
+  invalidated by `PATH_TOO_LONG`; the preserved harness evidence is not a
+  product failure. The short-path canonical rerun produced the trusted result.
+- Stage17A retains one shared AUTO/manual/provenance/fingerprint model, additive
+  `automatic_parameter_contract`, reset-to-AUTO and stale-contract rejection.
+  SQLite remains schema **5**; legacy manual intent and VI/EN/KO compatibility
+  remain preserved.
+- `STAGE17A_SCOPE_EXHAUSTED`: no Tranche6 or unresolved product-definition
+  family remains inside Stage17A. Lathe/turning remains `OUTSIDE_STAGE17A`.
+- Formal review markers:
+  `STAGE17A_AUTOMATIC_PARAMETER_ARCHITECTURE_COHERENT`,
+  `STAGE17A_AUTOMATIC_PARAMETER_SAFETY_CONTRACT_PRESERVED`,
+  `STAGE17A_PERSISTENCE_BACKWARD_COMPATIBILITY_PRESERVED`,
+  `APPROVE_STAGE17A_FOR_FORMAL_CLOSURE`, and
+  `STAGE17A_FORMAL_CLOSURE_REVIEW_PASS`.
+- This R215 closure commit is docs/state-only. Push B and the final bounded AI
+  Sync snapshot are the remaining delivery mechanics; they do not reopen
+  Stage17A product scope.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R215_STAGE17A_FINAL_CLOSURE_20260811`.
+- Exact next product work belongs outside Stage17A. R215 may classify the next
+  canonical boundary after Push B and AI Sync, but must not implement it.
+
+The R210 and older material below remains historical provenance and does not
+override this R215 formal-closure state.
+
 # CANONICAL CURRENT PROGRAMME STATE — R210 STAGE17A TRANCHE 4 PRODUCTION DELIVERY
 
 - Stage16A: **CLOSED**.

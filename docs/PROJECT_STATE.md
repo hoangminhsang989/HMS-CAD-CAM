@@ -1,3 +1,53 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R215 STAGE17A CLOSED
+
+- Stage16A is **CLOSED**. Stage17A is **CLOSED** with Tranches1–5 **FULLY
+  DELIVERED**: Facing/Planar, Contour, Pocket, Standard/Spot/Peck Drilling, and
+  Tapping/Reaming/Boring Hole Completion Auto Setup.
+- Final Tranche5 product identity is
+  `5afefbb848f4f07e230c68ed9936442165c628ff`, tree
+  `19919aee02a4d2b31176790ba458582200290602`. R212 direct review approved this
+  exact identity; R215 integrated it by one fast-forward and delivered it by
+  one non-force Push A.
+- R215 exact-six NTFS remediation added only exact-user `DELETE` ACEs. Six of
+  six content/blob/owner/ADS/parent invariants passed, then the original
+  standard token proved modify-existing `13/13`, add-only `3/3` and residue
+  `0`. Protected dirty identities remained unchanged and staged content stayed
+  `0`.
+- Fresh integrated verification passed focused **392**, bounded **1423** and
+  the 24-cycle VI/EN/KO lifecycle harness with all leak deltas `0`. The final
+  canonical full result is **4217 passed, 8 inherited-or-external failed,
+  8 skipped, 2 deselected**; its failing-node set exactly equals R212.
+  Candidate-induced and indeterminate failures are `0`; both integration and
+  Stage17A closure failure deltas are `0`.
+- The retained overlong-basetemp full run is classified solely as an invalid
+  `PATH_TOO_LONG` harness invocation. No source or dependency changed during
+  its short-path remediation.
+- Architecture closure confirms one shared `AutomaticParameterMode`, additive
+  `automatic_parameter_contract`, provenance/fingerprints, explicit
+  reset-to-AUTO, dependency recomputation and generator stale-state rejection.
+  Operation-specific policy remains separated where product semantics differ.
+- Safety closure confirms no fabricated material/controller/machine/fixture
+  authority, no Tool capability guessing, no thread inference from plain-hole
+  diameter, and no Reaming/Boring design target inferred from Tool diameter.
+  Unsupported or stale evidence fails closed and legacy manual intent survives.
+- Persistence/UX closure confirms SQLite schema **5**, no destructive
+  migration, compatible AUTO/override round-trip, Vietnamese default,
+  VI/EN/KO parity, duplicate/untranslated production keys `0`, and Qt leak
+  deltas `0`.
+- `STAGE17A_SCOPE_EXHAUSTED`: no Tranche6 exists and no
+  `NEEDS_PRODUCT_DEFINITION` family remains inside Stage17A. Lathe/turning is
+  `OUTSIDE_STAGE17A`.
+- Formal decision: `APPROVE_STAGE17A_FOR_FORMAL_CLOSURE` and
+  `STAGE17A_FORMAL_CLOSURE_REVIEW_PASS`.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R215_STAGE17A_FINAL_CLOSURE_20260811`.
+- This is the one R215 docs/state closure commit. Push B and final AI Sync are
+  pending delivery mechanics at this commit boundary; next implementation
+  belongs outside Stage17A.
+
+The R211 and older sections below remain historical provenance and do not
+override this R215 formal-closure summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R211 STAGE17A TRANCHE 5 LOCAL CANDIDATE
 
 - Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranches1–4 are fully
