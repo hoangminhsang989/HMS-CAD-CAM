@@ -19,6 +19,7 @@ from hms_cadcam.cam.qualification import (
     tranche3_engineering_samples,
 )
 from tests.unit._stage18a_tranche3_fixtures import BASE_INPUT, BASE_REPORT, release_context
+from tests.unit._stage18a_tranche2_fixtures import acceptance_policy
 
 
 def test_exact_ten_engineering_samples_are_frozen_and_nonphysical():
@@ -50,6 +51,8 @@ def test_filename_replacement_cannot_preserve_release_identity():
     replacement = payload.replace(b"G01", b"G1 ", 1)
     assessment = service.assess_release(
         session=session, candidate=candidate, level1_report=BASE_REPORT,
+        current_nc_bytes=replacement, machine_contract=BASE_INPUT.machine_contract,
+        setup=setup,
         physical_readiness=readiness, review=review, acknowledgement=ack,
         current=current_sources(replacement, setup, BASE_INPUT.machine_contract),
     )
@@ -84,8 +87,11 @@ def test_manifest_edit_is_detected(tmp_path):
     _service, payload, setup, _ready, session, candidate, review, ack, assessment = release_context()
     root, _digest = DryRunHandoffPackageBuilder().build(
         tmp_path / "package", project_name="P", program_name="PROGRAM",
-        nc_filename="PROGRAM.fn", nc_bytes=payload, contract=BASE_INPUT.machine_contract,
-        setup=setup, session=session, candidate=candidate, review=review,
+        nc_filename="PROGRAM.nc", nc_bytes=payload, contract=BASE_INPUT.machine_contract,
+        setup=setup, level1_report=BASE_REPORT, physical_readiness=_ready,
+        current_sources=current_sources(payload, setup, BASE_INPUT.machine_contract),
+        level2_policy_fingerprint=acceptance_policy().fingerprint,
+        session=session, candidate=candidate, review=review,
         acknowledgement=ack, assessment=assessment,
     )
     manifest_path = root / "package-manifest.json"

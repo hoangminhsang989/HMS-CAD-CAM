@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -24,9 +26,12 @@ from hms_cadcam.cam.qualification.offline_model import (
     OfflineFindingSeverity,
     OfflineNCVerificationSession,
     OperatorAcknowledgement,
+    OperatorReview,
+    OperatorReviewResult,
     ReleaseAssessment,
     ReleaseState,
 )
+from hms_cadcam.cam.qualification.physical_model import MachineSetupQualification
 from hms_cadcam.cam.qualification.offline_reports import risk_summary
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localization import ui_text
@@ -47,6 +52,7 @@ class NCReleaseCenter(QWidget):
     inspect_requested = Signal(int)
     compare_requested = Signal()
     operator_review_requested = Signal(str, str)
+    operator_review_submitted = Signal(object, object)
     export_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -80,14 +86,25 @@ class NCReleaseCenter(QWidget):
         machine_form.addRow(ui_text("Controller"), self.controller)
         cards.addWidget(self.machine_group)
 
+        self.setup_group, setup_form = self._card("Setup")
+        self.setup_g54 = QLabel("—", self.setup_group)
+        self.setup_fixture = QLabel("—", self.setup_group)
+        self.setup_tools = QLabel("0", self.setup_group)
+        setup_form.addRow("G54", self.setup_g54)
+        setup_form.addRow(ui_text("Fixture evidence"), self.setup_fixture)
+        setup_form.addRow(ui_text("Tool changes"), self.setup_tools)
+        cards.addWidget(self.setup_group)
+
         self.status_group, status_form = self._card("Status")
         self.level1 = QLabel(ui_text("No verification session."), self.status_group)
         self.level2 = QLabel(ui_text("Physical evidence unavailable"), self.status_group)
         self.machine_ready = QLabel(ui_text("No"), self.status_group)
+        self.finding_status = QLabel(ui_text("No verification session."), self.status_group)
         self.machine_ready.setProperty("machineReady", False)
         status_form.addRow("Level1", self.level1)
         status_form.addRow("Level2", self.level2)
         status_form.addRow("MACHINE READY", self.machine_ready)
+        status_form.addRow(ui_text("Findings"), self.finding_status)
         cards.addWidget(self.status_group)
         root.addLayout(cards)
 
@@ -127,11 +144,20 @@ class NCReleaseCenter(QWidget):
         self.reviewer_name.setPlaceholderText(ui_text("Reviewer identity"))
         self.reviewer_role = QLineEdit(self)
         self.reviewer_role.setPlaceholderText(ui_text("Reviewer role"))
+        self.review_notes = QLineEdit(self)
+        self.review_notes.setPlaceholderText(ui_text("Review notes"))
+        self.review_result = QComboBox(self)
+        self.review_result.addItem(ui_text("Accept for external dry-run"), OperatorReviewResult.ACCEPT_FOR_EXTERNAL_DRY_RUN)
+        self.review_result.addItem(ui_text("Reject"), OperatorReviewResult.REJECT)
         reviewer.addWidget(self.reviewer_name)
         reviewer.addWidget(self.reviewer_role)
+        reviewer.addWidget(self.review_notes)
+        reviewer.addWidget(self.review_result)
         root.addLayout(reviewer)
+        self.findings_ack = QCheckBox(ui_text("Acknowledge all displayed findings"), self)
         self.software_ack = QCheckBox(OperatorAcknowledgement.REQUIRED_SOFTWARE_STATEMENT, self)
         self.machine_ack = QCheckBox(OperatorAcknowledgement.REQUIRED_MACHINE_READY_STATEMENT, self)
+        root.addWidget(self.findings_ack)
         root.addWidget(self.software_ack)
         root.addWidget(self.machine_ack)
 
@@ -166,6 +192,10 @@ class NCReleaseCenter(QWidget):
         self.level1.setText(ui_text("No verification session."))
         self.level2.setText(ui_text("Physical evidence unavailable"))
         self.machine_ready.setText(ui_text("No"))
+        self.finding_status.setText(ui_text("No verification session."))
+        self.setup_g54.setText("—")
+        self.setup_fixture.setText("—")
+        self.setup_tools.setText("0")
         self.machine_ready.setProperty("machineReady", False)
         for value in self.risk_values.values():
             value.setText("0")
@@ -181,6 +211,7 @@ class NCReleaseCenter(QWidget):
         assessment: ReleaseAssessment,
         *,
         filename: str,
+        setup: MachineSetupQualification | None = None,
     ) -> None:
         if candidate.verification_session_fingerprint != session.session_fingerprint:
             raise ValueError("Release candidate is stale for this verification session")
@@ -193,6 +224,14 @@ class NCReleaseCenter(QWidget):
         self.level1.setText(ui_text("Software verification passed") if not session.blocker_count else ui_text("Blocked"))
         self.level2.setText(ui_text("Physical evidence unavailable"))
         self.machine_ready.setText(ui_text("No"))
+        self.finding_status.setText(
+            f"{len(session.findings)} · {session.blocker_count} {ui_text('Blockers')}"
+        )
+        self.setup_g54.setText(session.g54_identity)
+        self.setup_fixture.setText(
+            "—" if setup is None or setup.fixture is None else setup.fixture.fixture_id
+        )
+        self.setup_tools.setText(str(len(setup.tools) if setup is not None else 0))
         for key, value in risk_summary(session).items():
             self.risk_values[key].setText(str(value))
         self._refresh_trace()
@@ -252,13 +291,29 @@ class NCReleaseCenter(QWidget):
     def _review(self) -> None:
         if (
             self._candidate is None or not self.reviewer_name.text().strip()
-            or not self.reviewer_role.text().strip() or not self.software_ack.isChecked()
+            or self._session is None or not self.reviewer_role.text().strip()
+            or not self.review_notes.text().strip() or not self.findings_ack.isChecked()
+            or not self.software_ack.isChecked()
             or not self.machine_ack.isChecked()
         ):
             return
+        reviewed_at = datetime.now().astimezone().replace(microsecond=0).isoformat()
+        review = OperatorReview(
+            self.reviewer_name.text().strip(), self.reviewer_role.text().strip(),
+            reviewed_at, self._candidate.candidate_fingerprint,
+            tuple(sorted(item.finding_id for item in self._session.findings)),
+            OperatorReviewResult(self.review_result.currentData()),
+            self.review_notes.text().strip(),
+        )
+        acknowledgement = OperatorAcknowledgement(
+            self._candidate.candidate_fingerprint, self.reviewer_name.text().strip(),
+            reviewed_at, OperatorAcknowledgement.REQUIRED_SOFTWARE_STATEMENT,
+            OperatorAcknowledgement.REQUIRED_MACHINE_READY_STATEMENT,
+        )
         self.operator_review_requested.emit(
             self.reviewer_name.text().strip(), self.reviewer_role.text().strip()
         )
+        self.operator_review_submitted.emit(review, acknowledgement)
 
     def retranslate_ui(self, _language: object = None) -> None:
         self.title.setText(ui_text("NC verification and handoff"))
@@ -267,6 +322,10 @@ class NCReleaseCenter(QWidget):
         self.compare_button.setText(ui_text("Compare revision"))
         self.review_button.setText(ui_text("Confirm operator"))
         self.export_button.setText(ui_text("Export dry-run package"))
+        self.review_notes.setPlaceholderText(ui_text("Review notes"))
+        self.findings_ack.setText(ui_text("Acknowledge all displayed findings"))
+        self.review_result.setItemText(0, ui_text("Accept for external dry-run"))
+        self.review_result.setItemText(1, ui_text("Reject"))
         for index, (label, _value) in enumerate(_FILTERS):
             self.filter_combo.setItemText(index, ui_text(label))
         self.trace.setHorizontalHeaderLabels(

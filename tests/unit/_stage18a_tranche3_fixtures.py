@@ -58,6 +58,8 @@ def release_context():
     )
     assessment = service.assess_release(
         session=session, candidate=candidate, level1_report=BASE_REPORT,
+        current_nc_bytes=payload, machine_contract=BASE_INPUT.machine_contract,
+        setup=setup,
         physical_readiness=readiness, review=review, acknowledgement=acknowledgement,
         current=current_sources(payload, setup, BASE_INPUT.machine_contract),
     )

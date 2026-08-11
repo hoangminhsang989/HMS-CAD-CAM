@@ -49,6 +49,8 @@ def test_every_current_source_drift_blocks_release():
     for field, value in changes.items():
         assessment = service.assess_release(
             session=session, candidate=candidate, level1_report=BASE_REPORT,
+            current_nc_bytes=payload, machine_contract=BASE_INPUT.machine_contract,
+            setup=setup,
             physical_readiness=readiness, review=review, acknowledgement=ack,
             current=replace(current, **{field: value}),
         )
@@ -61,6 +63,8 @@ def test_rejected_or_detached_operator_records_block_handoff():
     rejected = replace(review, result=OperatorReviewResult.REJECT)
     result = service.assess_release(
         session=session, candidate=candidate, level1_report=BASE_REPORT,
+        current_nc_bytes=payload, machine_contract=BASE_INPUT.machine_contract,
+        setup=setup,
         physical_readiness=readiness, review=rejected, acknowledgement=ack,
         current=current_sources(payload, setup, BASE_INPUT.machine_contract),
     )

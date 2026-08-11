@@ -64,11 +64,15 @@ def execution_trace(session: OfflineNCVerificationSession) -> list[dict[str, Any
     ]
 
 
-def motion_reviews(session: OfflineNCVerificationSession) -> dict[str, list[dict[str, Any]]]:
+def motion_reviews(
+    session: OfflineNCVerificationSession,
+    setup: MachineSetupQualification | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     rapids: list[dict[str, Any]] = []
     cutting: list[dict[str, Any]] = []
     tool_changes: list[dict[str, Any]] = []
-    for block in session.blocks:
+    setup_tools = {} if setup is None else {item.tool_number: item for item in setup.tools}
+    for block_index, block in enumerate(session.blocks):
         if block.motion_class is MotionClass.RAPID:
             rapids.append(
                 {
@@ -96,15 +100,36 @@ def motion_reviews(session: OfflineNCVerificationSession) -> dict[str, list[dict
                 }
             )
         if block.motion_class is MotionClass.TOOL_CHANGE:
+            destination = block.modal_after.tool
+            tool = None if destination is None else setup_tools.get(destination)
+            following = []
+            for candidate in session.blocks[block_index + 1:]:
+                if candidate.motion_class is MotionClass.TOOL_CHANGE:
+                    break
+                following.append(candidate)
+            resolved_h = next(
+                (item.modal_after.h_offset for item in following if item.modal_after.h_offset is not None),
+                None,
+            )
+            resolved_d = next(
+                (item.modal_after.d_offset for item in following if item.modal_after.d_offset is not None),
+                None,
+            )
             tool_changes.append(
                 {
                     "line": block.original_line_number,
                     "source_tool": block.modal_before.tool,
-                    "destination_tool": block.modal_after.tool,
+                    "destination_tool": destination,
+                    "logical_tool_id": None if destination is None else f"T{destination}",
+                    "tool_fingerprint": None if tool is None else tool.cutter_fingerprint.to_dict(),
+                    "holder_fingerprint": (
+                        None if tool is None or tool.holder_fingerprint is None
+                        else tool.holder_fingerprint.to_dict()
+                    ),
                     "spindle_before": block.modal_before.spindle_on,
                     "spindle_after": block.modal_after.spindle_on,
                     "coolant_after": block.modal_after.coolant_on,
-                    "h": block.modal_after.h_offset, "d": block.modal_after.d_offset,
+                    "h": resolved_h, "d": resolved_d,
                     "safe_sequence": (
                         "STATIC_SEQUENCE_VALID"
                         if not block.modal_before.spindle_on and not block.modal_before.coolant_on
@@ -117,7 +142,14 @@ def motion_reviews(session: OfflineNCVerificationSession) -> dict[str, list[dict
 
 
 def boundary_review(session: OfflineNCVerificationSession) -> dict[str, Any]:
-    first = session.blocks[0].modal_after if session.blocks else None
+    first_cutting = next(
+        (
+            item for item in session.blocks
+            if item.motion_class in {MotionClass.CUTTING_LINEAR, MotionClass.CUTTING_ARC}
+        ),
+        None,
+    )
+    first = None if first_cutting is None else first_cutting.modal_after
     last = session.blocks[-1].modal_after if session.blocks else None
     valid_static = not any(
         item.code == "POST_SEQUENCE_INVALID" and item.severity.value == "BLOCKER"
@@ -125,7 +157,9 @@ def boundary_review(session: OfflineNCVerificationSession) -> dict[str, Any]:
     )
     return {
         "start": None if first is None else {
-            "units": first.units, "positioning": first.positioning, "plane": first.plane,
+            "units": first.units or "QUALIFIED_POST_PROFILE_MM",
+            "units_source": "NC_MODAL" if first.units is not None else "LEVEL1_POST_PROFILE",
+            "positioning": first.positioning, "plane": first.plane,
             "compensation": first.compensation, "work_offset": first.work_offset,
             "tool": first.tool, "spindle_on": first.spindle_on, "coolant_on": first.coolant_on,
         },
@@ -139,7 +173,10 @@ def boundary_review(session: OfflineNCVerificationSession) -> dict[str, Any]:
     }
 
 
-def verification_report_payload(session: OfflineNCVerificationSession) -> dict[str, Any]:
+def verification_report_payload(
+    session: OfflineNCVerificationSession,
+    setup: MachineSetupQualification | None = None,
+) -> dict[str, Any]:
     return {
         "format": "HMS_STAGE18A_TRANCHE3_STATIC_VERIFICATION_REPORT",
         "format_version": 1,
@@ -148,7 +185,7 @@ def verification_report_payload(session: OfflineNCVerificationSession) -> dict[s
         "controller_emulator": False,
         "risk_summary": risk_summary(session),
         "boundary_review": boundary_review(session),
-        "motion_reviews": motion_reviews(session),
+        "motion_reviews": motion_reviews(session, setup),
         "execution_trace": execution_trace(session),
         "findings": [item.to_dict() for item in session.findings],
     }
@@ -165,6 +202,8 @@ def render_setup_sheet_vi(
 ) -> str:
     stock = setup.stock.dimensions
     fixture = setup.fixture
+    maximum_rpm = contract.leaf("spindle.maximum_rpm").value
+    feed_envelope = contract.leaf("spindle.feed_envelope").value
     lines = [
         "# PHIẾU THIẾT LẬP — BÀN GIAO CHẠY THỬ NGOÀI",
         "",
@@ -176,12 +215,22 @@ def render_setup_sheet_vi(
         f"- Gốc chi tiết X/Y/Z: {_value(setup.part_zero.x)} / {_value(setup.part_zero.y)} / {_value(setup.part_zero.z)}",
         f"- Phôi X/Y/Z: {stock.x_mm} / {stock.y_mm} / {stock.z_mm} mm",
         f"- Đồ gá: {_value(None if fixture is None else fixture.fixture_id)}",
+        f"- Giới hạn trục chính: {_value(maximum_rpm, ' rpm')}",
+        f"- Bao lượng chạy dao: {_value(feed_envelope, ' mm/min')}",
         f"- Trạng thái hành trình vật lý: Chưa đủ dữ liệu để xác minh hành trình tuyệt đối trên máy",
         f"- Trạng thái khoảng hở: {_value(None if setup.clearance_evidence is None else setup.clearance_evidence.result.value)}",
         f"- Qualification: {candidate.qualification_level}",
         "- Level2: CHƯA ĐẠT", "- Level3: CHƯA ĐẠT", "- MACHINE_READY: KHÔNG",
-        "", "## Cảnh báo / lỗi chặn",
+        "", "## Danh sách Tool",
     ]
+    for tool in setup.tools:
+        lines.append(
+            "- "
+            f"T{tool.tool_number}: đường kính {_value(tool.cutter_diameter_mm, ' mm')}; "
+            f"chiều dài {_value(tool.total_assembly_length_mm, ' mm')}; "
+            f"Holder {_value(None if tool.holder_fingerprint is None else tool.holder_fingerprint.digest)}"
+        )
+    lines.extend(("", "## Cảnh báo / lỗi chặn"))
     lines.extend(
         f"- [{item.severity.value}] {item.code}: {item.message}" for item in session.findings
     )
@@ -249,7 +298,9 @@ def _operation_group(order: int, tool: int | None, start: int | None, blocks: li
         "operation_order": order, "operation_type": UNKNOWN_VI,
         "tool": tool, "spindle_rpm": spindle, "feed_mm_min": feed,
         "path_metadata": {"block_count": len(blocks), "machining_time": UNKNOWN_VI},
-        "nc_block_range": [start, end], "qualification_status": "Đạt kiểm tra phần mềm",
+        "nc_block_range": [start, end],
+        "finding_ids": sorted({finding_id for item in blocks for finding_id in item.finding_ids}),
+        "qualification_status": "Đạt kiểm tra phần mềm",
     }
 
 

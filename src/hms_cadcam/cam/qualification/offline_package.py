@@ -7,11 +7,13 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from hms_cadcam.cam.domain.revision import ContentFingerprint
 from hms_cadcam.cam.qualification.model import (
     MachineQualificationContract,
+    QualificationReport,
     canonical_json_bytes,
     sha256_bytes,
 )
@@ -20,6 +22,7 @@ from hms_cadcam.cam.qualification.offline_model import (
     OfflineNCVerificationSession,
     OperatorAcknowledgement,
     OperatorReview,
+    OperatorReviewResult,
     PackageStatus,
     ReleaseAssessment,
     ReleaseState,
@@ -30,17 +33,46 @@ from hms_cadcam.cam.qualification.offline_reports import (
     render_tool_list_csv,
     verification_report_payload,
 )
-from hms_cadcam.cam.qualification.physical_model import MachineSetupQualification
+from hms_cadcam.cam.qualification.offline_service import (
+    CurrentReleaseSources,
+    OfflineNCVerificationService,
+)
+from hms_cadcam.cam.qualification.physical_model import (
+    MachineSetupQualification,
+    PhysicalReadinessResult,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 PACKAGE_FORMAT = "DRY_RUN_HANDOFF_PACKAGE"
 MANIFEST_NAME = "package-manifest.json"
 MANIFEST_SIDECAR = "package-manifest.json.sha256"
+_CREDENTIAL_PATTERNS = (
+    re.compile(r"(?i)(?:api[_-]?key|secret[_-]?key|password)\s*[:=]\s*\S+"),
+    re.compile(r"(?i)bearer\s+[a-z0-9._-]{12,}"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+)
 
 
 class HandoffPackageError(RuntimeError):
     """Raised when package bytes or inventory cannot be trusted."""
+
+
+def _assert_document_payload(relative: str, payload: bytes) -> None:
+    if payload.startswith((b"MZ", b"\x7fELF", b"#!")) or b"\x00" in payload:
+        raise HandoffPackageError(f"Executable/binary content is forbidden: {relative}")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise HandoffPackageError(f"Package content is not UTF-8 text: {relative}") from error
+    if any(pattern.search(text) for pattern in _CREDENTIAL_PATTERNS):
+        raise HandoffPackageError(f"Credential finding in package content: {relative}")
+    if Path(relative).suffix.casefold() == ".json":
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as error:
+            raise HandoffPackageError(f"Package JSON is invalid: {relative}") from error
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -71,6 +103,7 @@ def _package_identity(
     review: OperatorReview,
     acknowledgement: OperatorAcknowledgement,
     assessment: ReleaseAssessment,
+    level2_policy_fingerprint: ContentFingerprint,
 ) -> ContentFingerprint:
     return ContentFingerprint.from_payload(
         {
@@ -80,6 +113,7 @@ def _package_identity(
             "review": review.fingerprint.to_dict(),
             "acknowledgement": acknowledgement.fingerprint.to_dict(),
             "assessment": assessment.to_dict(),
+            "level2_policy_fingerprint": level2_policy_fingerprint.to_dict(),
         }
     )
 
@@ -131,6 +165,10 @@ class DryRunHandoffPackageBuilder:
         nc_bytes: bytes,
         contract: MachineQualificationContract,
         setup: MachineSetupQualification,
+        level1_report: QualificationReport,
+        physical_readiness: PhysicalReadinessResult,
+        current_sources: CurrentReleaseSources,
+        level2_policy_fingerprint: ContentFingerprint,
         session: OfflineNCVerificationSession,
         candidate: NCReleaseCandidate,
         review: OperatorReview,
@@ -141,21 +179,42 @@ class DryRunHandoffPackageBuilder:
             raise TypeError("target must be pathlib.Path")
         if target.exists() and (not target.is_dir() or any(target.iterdir())):
             raise HandoffPackageError("Package target must be absent or an empty directory")
-        if assessment.state is not ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF:
+        independently_assessed = OfflineNCVerificationService().assess_release(
+            session=session, candidate=candidate, level1_report=level1_report,
+            current_nc_bytes=nc_bytes, machine_contract=contract, setup=setup,
+            physical_readiness=physical_readiness, review=review,
+            acknowledgement=acknowledgement, current=current_sources,
+        )
+        if (
+            assessment.state is not ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF
+            or independently_assessed != assessment
+        ):
             raise HandoffPackageError("Release assessment does not authorize handoff packaging")
         if sha256_bytes(nc_bytes) != candidate.nc_sha256:
             raise HandoffPackageError("NC bytes do not match release candidate")
         if review.release_candidate_fingerprint != candidate.candidate_fingerprint:
             raise HandoffPackageError("Operator review is stale")
+        if review.result is not OperatorReviewResult.ACCEPT_FOR_EXTERNAL_DRY_RUN:
+            raise HandoffPackageError("Operator review rejected the release")
+        if set(review.acknowledged_finding_ids) != {
+            item.finding_id for item in session.findings
+        }:
+            raise HandoffPackageError("Operator finding acknowledgement is incomplete")
         if acknowledgement.release_candidate_fingerprint != candidate.candidate_fingerprint:
             raise HandoffPackageError("Operator acknowledgement is stale")
-        if Path(nc_filename).name != nc_filename or Path(nc_filename).suffix.casefold() not in {".nc", ".fn"}:
-            raise HandoffPackageError("NC filename is invalid")
+        if Path(nc_filename).name != nc_filename or Path(nc_filename).suffix.casefold() != ".nc":
+            raise HandoffPackageError("Handoff NC filename must use the .nc extension")
         target.mkdir(parents=True, exist_ok=True)
-        package_id = _package_identity(session, candidate, review, acknowledgement, assessment)
+        if not isinstance(level2_policy_fingerprint, ContentFingerprint):
+            raise HandoffPackageError("Level2 policy fingerprint is invalid")
+        package_id = _package_identity(
+            session, candidate, review, acknowledgement, assessment,
+            level2_policy_fingerprint,
+        )
         release_identity = {
             "format": "HMS_STAGE18A_TRANCHE3_RELEASE_IDENTITY", "format_version": 1,
             "package_id": package_id.to_dict(), "candidate": candidate.to_dict(),
+            "level2_policy_fingerprint": level2_policy_fingerprint.to_dict(),
             "operator_review": review.to_dict(), "operator_acknowledgement": acknowledgement.to_dict(),
             "release_assessment": assessment.to_dict(), "level2_achieved": False,
             "level3_achieved": False, "machine_ready": False,
@@ -166,6 +225,10 @@ class DryRunHandoffPackageBuilder:
             "handoff_package_id": package_id.to_dict(), "nc_sha256": candidate.nc_sha256,
             "setup_fingerprint": candidate.setup_fingerprint.to_dict(),
             "machine_profile_fingerprint": candidate.machine_profile_fingerprint.to_dict(),
+            "tool_set_fingerprint": candidate.tool_set_fingerprint.to_dict(),
+            "qualification_policy_fingerprint": level2_policy_fingerprint.to_dict(),
+            "qualification_contract_version": session.qualification_contract_version,
+            "verification_session_fingerprint": session.session_fingerprint.to_dict(),
             "physical_evidence": None, "level2_achieved": False, "machine_ready": False,
         }
         contents: dict[str, tuple[str, bytes]] = {
@@ -181,7 +244,10 @@ class DryRunHandoffPackageBuilder:
                 "format": "HMS_STAGE18A_OPERATION_SUMMARY", "format_version": 1,
                 "operations": operation_summary(session), "machining_time": "Chưa xác minh",
             })),
-            "static-verification-report.json": ("STATIC_VERIFICATION", canonical_json_bytes(verification_report_payload(session))),
+            "static-verification-report.json": (
+                "STATIC_VERIFICATION",
+                canonical_json_bytes(verification_report_payload(session, setup)),
+            ),
             "finding-manifest.json": ("FINDINGS", canonical_json_bytes({
                 "format": "HMS_STAGE18A_STATIC_FINDING_MANIFEST", "format_version": 1,
                 "findings": [item.to_dict() for item in session.findings],
@@ -190,6 +256,8 @@ class DryRunHandoffPackageBuilder:
             "dry-run-checklist.md": ("DRY_RUN_CHECKLIST", _checklist(package_id, candidate).encode("utf-8")),
             "level2-evidence-intake-template.json": ("LEVEL2_EVIDENCE_INTAKE", canonical_json_bytes(level2_template)),
         }
+        for relative, (_role, payload) in contents.items():
+            _assert_document_payload(relative, payload)
         for relative, (_role, payload) in sorted(contents.items()):
             _atomic_write(target / relative, payload)
         entries = [
@@ -238,6 +306,11 @@ class DryRunHandoffPackageBuilder:
             raise HandoffPackageError("Package manifest is malformed")
         expected = {MANIFEST_NAME, MANIFEST_SIDECAR}
         seen: set[str] = set()
+        entries_by_role: dict[str, list[dict[str, Any]]] = {}
+        forbidden_extensions = {
+            ".exe", ".dll", ".ps1", ".psm1", ".bat", ".cmd", ".sh", ".com",
+            ".scr", ".msi", ".vbs", ".js", ".jar", ".py", ".pyw",
+        }
         for entry in manifest["entries"]:
             if not isinstance(entry, dict) or set(entry) != {"path", "role", "size", "sha256"}:
                 raise HandoffPackageError("Package manifest entry is malformed")
@@ -245,6 +318,9 @@ class DryRunHandoffPackageBuilder:
             if not isinstance(relative, str) or Path(relative).name != relative or relative in seen:
                 raise HandoffPackageError("Package inventory path is invalid")
             seen.add(relative)
+            entries_by_role.setdefault(entry["role"], []).append(entry)
+            if Path(relative).suffix.casefold() in forbidden_extensions:
+                raise HandoffPackageError(f"Executable content is forbidden: {relative}")
             expected.add(relative)
             path = root / relative
             try:
@@ -255,9 +331,110 @@ class DryRunHandoffPackageBuilder:
                 raise HandoffPackageError(f"Package file is unreadable: {relative}") from error
             if len(payload) != entry["size"] or hashlib.sha256(payload).hexdigest() != entry["sha256"]:
                 raise HandoffPackageError(f"Package file checksum mismatch: {relative}")
+            _assert_document_payload(relative, payload)
         actual = {item.name for item in root.iterdir()}
         if actual != expected:
             raise HandoffPackageError("Package has missing or unexpected files")
+        fixed_paths = {
+            "machine-profile-summary.json", "setup-sheet.vi.md", "tool-list.csv",
+            "operation-summary.json", "static-verification-report.json",
+            "finding-manifest.json", "release-identity.json", "dry-run-checklist.md",
+            "level2-evidence-intake-template.json",
+        }
+        nc_entries = entries_by_role.get("EXACT_NC", [])
+        sha_entries = entries_by_role.get("NC_SHA256", [])
+        if (
+            len(nc_entries) != 1 or len(sha_entries) != 1
+            or Path(nc_entries[0]["path"]).suffix.casefold() != ".nc"
+            or sha_entries[0]["path"] != f"{nc_entries[0]['path']}.sha256"
+            or seen != fixed_paths | {nc_entries[0]["path"], sha_entries[0]["path"]}
+        ):
+            raise HandoffPackageError("Package semantic inventory is invalid")
+        nc_payload = (root / nc_entries[0]["path"]).read_bytes()
+        expected_nc_sidecar = (
+            f"{sha256_bytes(nc_payload)}  {nc_entries[0]['path']}\n".encode("utf-8")
+        )
+        if (root / sha_entries[0]["path"]).read_bytes() != expected_nc_sidecar:
+            raise HandoffPackageError("NC SHA sidecar does not bind the exact NC bytes")
+        try:
+            release_identity = json.loads(
+                (root / "release-identity.json").read_text(encoding="utf-8")
+            )
+            level2_intake = json.loads(
+                (root / "level2-evidence-intake-template.json").read_text(encoding="utf-8")
+            )
+            machine_summary = json.loads(
+                (root / "machine-profile-summary.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HandoffPackageError("Package semantic payload is unreadable") from error
+        package_id = manifest["package_id"]
+        candidate_payload = release_identity.get("candidate", {})
+        candidate_fingerprint = candidate_payload.get("candidate_fingerprint")
+        if (
+            release_identity.get("package_id") != package_id
+            or release_identity.get("machine_ready") is not False
+            or release_identity.get("level2_achieved") is not False
+            or release_identity.get("level3_achieved") is not False
+            or release_identity.get("release_assessment", {}).get("state")
+            != ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF.value
+            or level2_intake.get("handoff_package_id") != package_id
+            or level2_intake.get("release_candidate_fingerprint") != candidate_fingerprint
+            or level2_intake.get("qualification_policy_fingerprint")
+            != release_identity.get("level2_policy_fingerprint")
+            or level2_intake.get("tool_set_fingerprint")
+            != candidate_payload.get("tool_set_fingerprint")
+            or level2_intake.get("setup_fingerprint")
+            != candidate_payload.get("setup_fingerprint")
+            or level2_intake.get("machine_profile_fingerprint")
+            != candidate_payload.get("machine_profile_fingerprint")
+            or level2_intake.get("nc_sha256") != sha256_bytes(nc_payload)
+            or level2_intake.get("level2_achieved") is not False
+            or level2_intake.get("machine_ready") is not False
+            or machine_summary.get("machine_ready") is not False
+        ):
+            raise HandoffPackageError("Package semantic identity/boundary mismatch")
+        return manifest
+
+    def validate_current(
+        self,
+        root: Path,
+        *,
+        candidate: NCReleaseCandidate,
+        session: OfflineNCVerificationSession,
+        current_sources: CurrentReleaseSources,
+        level1_report: QualificationReport,
+    ) -> dict[str, Any]:
+        """Validate inventory plus current project/release identity."""
+
+        manifest = self.validate(root)
+        try:
+            release_identity = json.loads(
+                (root / "release-identity.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HandoffPackageError("Release identity is unreadable") from error
+        reasons = package_stale_reasons(
+            candidate, nc_sha256=current_sources.nc_sha256,
+            setup_fingerprint=current_sources.setup_fingerprint,
+            tool_set_fingerprint=current_sources.tool_set_fingerprint,
+            machine_profile_fingerprint=current_sources.machine_profile_fingerprint,
+            post_fingerprint=current_sources.post_fingerprint,
+        )
+        if current_sources.qualification_contract_version != session.qualification_contract_version:
+            reasons = (*reasons, "QUALIFICATION_CONTRACT_CHANGED")
+        if level1_report.report_fingerprint != candidate.qualification_report_fingerprint:
+            reasons = (*reasons, "LEVEL1_QUALIFICATION_CHANGED")
+        if (
+            candidate.verification_session_fingerprint != session.session_fingerprint
+            or release_identity.get("candidate") != candidate.to_dict()
+            or release_identity.get("package_id") != manifest["package_id"]
+        ):
+            reasons = (*reasons, "RELEASE_IDENTITY_CHANGED")
+        if reasons:
+            raise HandoffPackageError(
+                "DRY_RUN_HANDOFF_PACKAGE_STALE:" + ",".join(sorted(set(reasons)))
+            )
         return manifest
 
 

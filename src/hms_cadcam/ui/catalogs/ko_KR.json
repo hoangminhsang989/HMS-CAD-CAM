@@ -2435,5 +2435,9 @@
   "Reviewer role":"검토자 역할",
   "Compare revision":"리비전 비교",
   "Confirm operator":"작업자 확인",
-  "Export dry-run package":"드라이런 패키지 내보내기"
+  "Export dry-run package":"드라이런 패키지 내보내기",
+  "Review notes":"검토 메모",
+  "Acknowledge all displayed findings":"표시된 모든 검출 항목 검토 확인",
+  "Accept for external dry-run":"외부 드라이런 준비 수락",
+  "Reject":"거부"
 }

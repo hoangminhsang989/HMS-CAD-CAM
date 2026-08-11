@@ -17,8 +17,10 @@ from hms_cadcam.cam.qualification.offline_model import (
     OfflineNCVerificationSession,
     OperatorAcknowledgement,
     OperatorReview,
+    OperatorReviewResult,
     PackageStatus,
     ReleaseAssessment,
+    ReleaseState,
 )
 
 
@@ -62,12 +64,34 @@ class OfflineReleaseRecord:
             raise CamInvariantError("Operator review is detached from release candidate")
         if self.acknowledgement.release_candidate_fingerprint != self.candidate.candidate_fingerprint:
             raise CamInvariantError("Operator acknowledgement is detached from release candidate")
+        if self.review.result is not OperatorReviewResult.ACCEPT_FOR_EXTERNAL_DRY_RUN:
+            raise CamInvariantError("A released record requires accepted operator review")
+        if set(self.review.acknowledged_finding_ids) != {
+            item.finding_id for item in self.session.findings
+        }:
+            raise CamInvariantError("Operator finding acknowledgement is incomplete")
         if not isinstance(self.assessment, ReleaseAssessment):
             raise CamValidationError("Offline release assessment is invalid")
         if not isinstance(self.package_id, ContentFingerprint) or not isinstance(self.package_status, PackageStatus):
             raise CamValidationError("Offline handoff package identity is invalid")
         if tuple(sorted(set(self.stale_reasons))) != self.stale_reasons:
             raise CamInvariantError("Offline stale reasons must be unique and ordered")
+        if self.assessment.release_candidate_fingerprint != self.candidate.candidate_fingerprint:
+            raise CamInvariantError("Release assessment is detached from candidate")
+        if self.assessment.verification_session_fingerprint != self.session.session_fingerprint:
+            raise CamInvariantError("Release assessment is detached from verification session")
+        if self.assessment.operator_review_fingerprint != self.review.fingerprint:
+            raise CamInvariantError("Release assessment is detached from operator review")
+        if self.assessment.operator_acknowledgement_fingerprint != self.acknowledgement.fingerprint:
+            raise CamInvariantError("Release assessment is detached from acknowledgement")
+        released = self.package_status is PackageStatus.RELEASED_FOR_EXTERNAL_DRY_RUN
+        if released != (
+            self.assessment.state is ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF
+            and not self.stale_reasons
+        ):
+            raise CamInvariantError("Package release state is inconsistent with assessment/staleness")
+        if self.package_status is PackageStatus.STALE and not self.stale_reasons:
+            raise CamInvariantError("A stale package requires explicit stale reasons")
         calculated = ContentFingerprint.from_payload(self.identity_payload())
         if self.record_fingerprint is None:
             object.__setattr__(self, "record_fingerprint", calculated)

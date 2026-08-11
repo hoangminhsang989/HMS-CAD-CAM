@@ -114,6 +114,20 @@ def _m_codes(tokens: tuple[str, ...]) -> set[int]:
     return result
 
 
+def _ordered_integer_codes(tokens: tuple[str, ...], letter: str) -> tuple[int, ...]:
+    values: list[int] = []
+    for token in tokens:
+        if not token.startswith(letter):
+            continue
+        try:
+            value = float(token[1:])
+        except ValueError:
+            continue
+        if value.is_integer():
+            values.append(int(value))
+    return tuple(values)
+
+
 def _normalize_line(line: str) -> tuple[tuple[str, ...], str]:
     without_semicolon = line.split(";", 1)[0]
     code = _PAREN_COMMENT.sub("", without_semicolon).strip().upper().replace(" ", "").replace("\t", "")
@@ -255,6 +269,38 @@ def analyze_nc_bytes(payload: bytes, policy: AnalysisPolicy | None = None) -> NC
         after = _advance(before, tokens)
         block_findings: list[str] = []
         code_text = "".join(tokens)
+        g_sequence = _ordered_integer_codes(tokens, "G")
+        m_sequence = _ordered_integer_codes(tokens, "M")
+        modal_groups = (
+            ({0, 1, 2, 3}, "motion"), ({17, 18, 19}, "plane"),
+            ({20, 21}, "units"), ({40, 41, 42}, "compensation"),
+            ({54, 55, 56, 57, 58, 59}, "work offset"), ({90, 91}, "positioning"),
+        )
+        control_groups = (
+            ({3, 4, 5}, "spindle"), ({7, 8, 9}, "coolant"), ({2, 30}, "program end"),
+        )
+        for sequence, groups in ((g_sequence, modal_groups), (m_sequence, control_groups)):
+            for members, group_name in groups:
+                selected_codes = tuple(code for code in sequence if code in members)
+                if len(set(selected_codes)) > 1:
+                    item = add(
+                        "CONFLICTING_MODAL_WORDS", OfflineFindingSeverity.BLOCKER,
+                        f"Conflicting {group_name} words share one NC block.",
+                        line=line_number,
+                        remediation="Split the controls into an unambiguous qualified sequence.",
+                        impact="HANDOFF_BLOCKED",
+                    )
+                    block_findings.append(item.finding_id)
+                    category = MotionClass.UNRESOLVED
+                elif len(selected_codes) > 1:
+                    item = add(
+                        "REPEATED_MODAL_WORD", OfflineFindingSeverity.INFO,
+                        f"Repeated identical {group_name} word is preserved.",
+                        line=line_number,
+                        remediation="No remediation is required; retain for operator review.",
+                        impact="VISIBLE_INFO",
+                    )
+                    block_findings.append(item.finding_id)
         if after.work_offset == "G54" or "G54" in tokens:
             g54_seen = True
         if residue or category is MotionClass.UNRESOLVED:

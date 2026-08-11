@@ -50,6 +50,19 @@ class CurrentReleaseSources:
     post_fingerprint: ContentFingerprint
     qualification_contract_version: int
 
+    @property
+    def fingerprint(self) -> ContentFingerprint:
+        return ContentFingerprint.from_payload(
+            {
+                "nc_sha256": self.nc_sha256,
+                "machine_profile_fingerprint": self.machine_profile_fingerprint.to_dict(),
+                "setup_fingerprint": self.setup_fingerprint.to_dict(),
+                "tool_set_fingerprint": self.tool_set_fingerprint.to_dict(),
+                "post_fingerprint": self.post_fingerprint.to_dict(),
+                "qualification_contract_version": self.qualification_contract_version,
+            }
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class NCLineDiff:
@@ -196,6 +209,9 @@ class OfflineNCVerificationService:
         session: OfflineNCVerificationSession,
         candidate: NCReleaseCandidate,
         level1_report: QualificationReport,
+        current_nc_bytes: bytes,
+        machine_contract: MachineQualificationContract,
+        setup: MachineSetupQualification,
         physical_readiness: PhysicalReadinessResult,
         review: OperatorReview | None,
         acknowledgement: OperatorAcknowledgement | None,
@@ -210,8 +226,40 @@ class OfflineNCVerificationService:
             item.code for item in session.findings
             if item.severity is OfflineFindingSeverity.WARNING
         }
-        if session.state in {VerificationSessionState.STALE, VerificationSessionState.INVALID}:
+        fresh_analysis = self.analyze(
+            current_nc_bytes, contract=machine_contract, setup=setup,
+            physical_readiness=physical_readiness,
+        )
+        if (
+            fresh_analysis.nc_sha256 != session.nc_sha256
+            or fresh_analysis.blocks != session.blocks
+            or fresh_analysis.findings != session.findings
+        ):
+            blockers.add("VERIFICATION_ANALYSIS_MISMATCH")
+        derived_current = current_sources(current_nc_bytes, setup, machine_contract)
+        if derived_current != current:
+            blockers.add("CURRENT_SOURCE_CLAIM_MISMATCH")
+        if session.state is not VerificationSessionState.READY_FOR_OPERATOR_REVIEW:
             blockers.add("VERIFICATION_SESSION_NOT_CURRENT")
+        candidate_bindings = (
+            (
+                candidate.verification_session_fingerprint,
+                session.session_fingerprint,
+                "RELEASE_SESSION_BINDING_MISMATCH",
+            ),
+            (candidate.nc_sha256, session.nc_sha256, "RELEASE_NC_BINDING_MISMATCH"),
+            (
+                candidate.machine_profile_fingerprint,
+                session.machine_profile_fingerprint,
+                "RELEASE_MACHINE_BINDING_MISMATCH",
+            ),
+            (candidate.setup_fingerprint, session.setup_fingerprint, "RELEASE_SETUP_BINDING_MISMATCH"),
+            (candidate.tool_set_fingerprint, session.tool_set_fingerprint, "RELEASE_TOOL_BINDING_MISMATCH"),
+            (candidate.post_fingerprint, session.post_fingerprint, "RELEASE_POST_BINDING_MISMATCH"),
+        )
+        for frozen, analyzed, code in candidate_bindings:
+            if frozen != analyzed:
+                blockers.add(code)
         if level1_report.qualification_level is not QualificationLevel.STATICALLY_VALIDATED:
             blockers.add("LEVEL1_STATIC_QUALIFICATION_INVALID")
         if level1_report.has_errors:
@@ -237,12 +285,24 @@ class OfflineNCVerificationService:
                 blockers.add("OPERATOR_REVIEW_STALE")
             elif review.result is not OperatorReviewResult.ACCEPT_FOR_EXTERNAL_DRY_RUN:
                 blockers.add("OPERATOR_REVIEW_REJECTED")
+            elif set(review.acknowledged_finding_ids) != {
+                item.finding_id for item in session.findings
+            }:
+                blockers.add("OPERATOR_FINDING_ACKNOWLEDGEMENT_INCOMPLETE")
         if acknowledgement is None:
             blockers.add("OPERATOR_ACKNOWLEDGEMENT_MISSING")
         elif acknowledgement.release_candidate_fingerprint != candidate.candidate_fingerprint:
             blockers.add("OPERATOR_ACKNOWLEDGEMENT_STALE")
         state = ReleaseState.BLOCKED if blockers else ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF
-        return ReleaseAssessment(state, tuple(sorted(blockers)), tuple(sorted(warnings)))
+        return ReleaseAssessment(
+            state, tuple(sorted(blockers)), tuple(sorted(warnings)),
+            candidate.candidate_fingerprint, session.session_fingerprint,
+            None if review is None else review.fingerprint,
+            None if acknowledgement is None else acknowledgement.fingerprint,
+            level1_report.report_fingerprint,
+            ContentFingerprint.from_payload(physical_readiness.to_dict()),
+            current.fingerprint,
+        )
 
 
 def current_sources(

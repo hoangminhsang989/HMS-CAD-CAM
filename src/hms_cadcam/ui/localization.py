@@ -373,6 +373,10 @@ UI_TRANSLATIONS = MappingProxyType(
         "Compare revision": "So sánh phiên bản",
         "Blocked": "Bị chặn",
         "Reviewer role": "Vai trò người rà soát",
+        "Review notes": "Ghi chú rà soát",
+        "Acknowledge all displayed findings": "Xác nhận đã rà soát mọi phát hiện hiển thị",
+        "Accept for external dry-run": "Chấp nhận để chuẩn bị chạy thử bên ngoài",
+        "Reject": "Từ chối",
         # Workspace shell and shared panels.
         "HMS CAD/CAM — Design": "HMS CAD/CAM — Thiết kế",
         "Operation Manager": "Quản lý nguyên công",

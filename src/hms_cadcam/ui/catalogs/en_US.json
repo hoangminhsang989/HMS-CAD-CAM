@@ -2435,5 +2435,9 @@
   "Reviewer role":"Reviewer role",
   "Compare revision":"Compare revision",
   "Confirm operator":"Confirm operator",
-  "Export dry-run package":"Export dry-run package"
+  "Export dry-run package":"Export dry-run package",
+  "Review notes":"Review notes",
+  "Acknowledge all displayed findings":"Acknowledge all displayed findings",
+  "Accept for external dry-run":"Accept for external dry-run",
+  "Reject":"Reject"
 }

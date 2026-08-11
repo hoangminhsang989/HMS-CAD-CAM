@@ -10,20 +10,26 @@ from hms_cadcam.cam.qualification import (
     HandoffPackageError,
     OfflineReleaseRecord,
     OfflineReleaseStore,
+    OfflineReleaseStoreError,
     PackageStatus,
+    current_sources,
     dumps_release_record,
     loads_release_record,
     package_stale_reasons,
 )
-from tests.unit._stage18a_tranche3_fixtures import BASE_INPUT, release_context
+from tests.unit._stage18a_tranche2_fixtures import acceptance_policy
+from tests.unit._stage18a_tranche3_fixtures import BASE_INPUT, BASE_REPORT, release_context
 
 
 def _build(target):
     _service, payload, setup, _ready, session, candidate, review, ack, assessment = release_context()
     path, digest = DryRunHandoffPackageBuilder().build(
         target, project_name="R223 engineering", program_name="PROGRAM",
-        nc_filename="PROGRAM.fn", nc_bytes=payload, contract=BASE_INPUT.machine_contract,
-        setup=setup, session=session, candidate=candidate, review=review,
+        nc_filename="PROGRAM.nc", nc_bytes=payload, contract=BASE_INPUT.machine_contract,
+        setup=setup, level1_report=BASE_REPORT, physical_readiness=_ready,
+        current_sources=current_sources(payload, setup, BASE_INPUT.machine_contract),
+        level2_policy_fingerprint=acceptance_policy().fingerprint,
+        session=session, candidate=candidate, review=review,
         acknowledgement=ack, assessment=assessment,
     )
     return path, digest, session, candidate, review, ack, assessment
@@ -49,7 +55,7 @@ def test_package_rebuild_is_deterministic_and_operator_readable(tmp_path):
 def test_package_tamper_missing_and_unexpected_files_fail_closed(tmp_path, tamper):
     root, _digest, *_ = _build(tmp_path / "package")
     if tamper == "edit":
-        (root / "PROGRAM.fn").write_bytes((root / "PROGRAM.fn").read_bytes() + b"\n")
+        (root / "PROGRAM.nc").write_bytes((root / "PROGRAM.nc").read_bytes() + b"\n")
     elif tamper == "remove":
         (root / "tool-list.csv").unlink()
     else:
@@ -73,11 +79,28 @@ def test_release_record_round_trip_and_schema5_additive_store(tmp_path):
     project.mkdir()
     store = OfflineReleaseStore()
     store.save(project, record)
-    assert store.load(project) == (record,)
+    assert OfflineReleaseStore().load(project) == (record,)
     persisted_manifest = json.loads(
         (project / "post" / "qualification" / "tranche3" / "manifest.json").read_text(encoding="utf-8")
     )
     assert persisted_manifest["sqlite_schema"] == 5
+
+
+def test_tranche3_persistence_rejects_corrupt_manifest_sidecar_after_reopen(tmp_path):
+    root, _digest, session, candidate, review, ack, assessment = _build(tmp_path / "package")
+    manifest = json.loads((root / "package-manifest.json").read_text(encoding="utf-8"))
+    package_id = ContentFingerprint.from_dict(manifest["package_id"])
+    record = OfflineReleaseRecord(
+        "r224-release", session, candidate, review, ack, assessment,
+        package_id, PackageStatus.RELEASED_FOR_EXTERNAL_DRY_RUN, (),
+    )
+    project = tmp_path / "Reopen.HMS"
+    project.mkdir()
+    OfflineReleaseStore().save(project, record)
+    sidecar = project / "post" / "qualification" / "tranche3" / "manifest.json.sha256"
+    sidecar.write_text("0" * 64 + "  manifest.json\n", encoding="utf-8")
+    with pytest.raises(OfflineReleaseStoreError, match="sidecar mismatch"):
+        OfflineReleaseStore().load(project)
 
 
 def test_package_staleness_detects_nc_setup_tool_machine_and_post():

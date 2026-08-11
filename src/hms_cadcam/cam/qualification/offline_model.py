@@ -307,11 +307,36 @@ class OfflineNCVerificationSession:
         if len({item.finding_id for item in self.findings}) != len(self.findings):
             raise CamInvariantError("Verification finding IDs must be unique")
         object.__setattr__(self, "finalized_at", _timestamp(self.finalized_at, "Finalization timestamp"))
+        has_blocker = any(
+            item.severity is OfflineFindingSeverity.BLOCKER for item in self.findings
+        )
         if self.state in {VerificationSessionState.DRAFT, VerificationSessionState.ANALYSIS_IN_PROGRESS}:
             if self.finalized_at is not None:
                 raise CamInvariantError("An unfinished verification session cannot be finalized")
         elif self.finalized_at is None:
             raise CamInvariantError("A terminal analysis state requires finalization time")
+        if self.state is VerificationSessionState.DRAFT and (self.blocks or self.findings):
+            raise CamInvariantError("A draft verification session cannot contain analysis results")
+        if self.state is VerificationSessionState.PRECHECK_FAILED and not has_blocker:
+            raise CamInvariantError("PRECHECK_FAILED requires a blocking finding")
+        if self.state is VerificationSessionState.READY_FOR_OPERATOR_REVIEW and (
+            has_blocker or not self.blocks
+        ):
+            raise CamInvariantError("Operator review readiness requires analyzed blocks and no blocker")
+        if self.state in {
+            VerificationSessionState.OPERATOR_REVIEWED,
+            VerificationSessionState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF,
+        }:
+            raise CamInvariantError(
+                "Post-analysis workflow states require separately bound review/release evidence"
+            )
+        if self.state is VerificationSessionState.STALE and not any(
+            item.code == "SOURCE_DRIFT" and item.severity is OfflineFindingSeverity.BLOCKER
+            for item in self.findings
+        ):
+            raise CamInvariantError("STALE requires an explicit SOURCE_DRIFT blocker")
+        if self.state is VerificationSessionState.INVALID and not has_blocker:
+            raise CamInvariantError("INVALID requires a blocking finding")
         calculated = ContentFingerprint.from_payload(self.identity_payload())
         if self.session_fingerprint is None:
             object.__setattr__(self, "session_fingerprint", calculated)
@@ -584,30 +609,100 @@ class ReleaseAssessment:
     state: ReleaseState
     blocker_codes: tuple[str, ...]
     warning_codes: tuple[str, ...]
+    release_candidate_fingerprint: ContentFingerprint | None = None
+    verification_session_fingerprint: ContentFingerprint | None = None
+    operator_review_fingerprint: ContentFingerprint | None = None
+    operator_acknowledgement_fingerprint: ContentFingerprint | None = None
+    qualification_report_fingerprint: ContentFingerprint | None = None
+    tranche2_readiness_fingerprint: ContentFingerprint | None = None
+    current_sources_fingerprint: ContentFingerprint | None = None
     level2_achieved: bool = False
     level3_achieved: bool = False
     machine_ready: bool = False
+    assessment_fingerprint: ContentFingerprint | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.state, ReleaseState):
             raise CamValidationError("Release assessment state is invalid")
+        if tuple(sorted(set(self.blocker_codes))) != self.blocker_codes:
+            raise CamInvariantError("Release blocker codes must be unique and ordered")
+        if tuple(sorted(set(self.warning_codes))) != self.warning_codes:
+            raise CamInvariantError("Release warning codes must be unique and ordered")
+        evidence_names = (
+            "release_candidate_fingerprint", "verification_session_fingerprint",
+            "operator_review_fingerprint", "operator_acknowledgement_fingerprint",
+            "qualification_report_fingerprint", "tranche2_readiness_fingerprint",
+            "current_sources_fingerprint",
+        )
+        for name in evidence_names:
+            value = getattr(self, name)
+            if value is not None:
+                _fingerprint(value, name)
         if self.level2_achieved or self.level3_achieved or self.machine_ready:
             raise CamInvariantError("Tranche3 cannot promote Level2, Level3, or MACHINE READY")
         if self.state is ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF and self.blocker_codes:
             raise CamInvariantError("Ready handoff assessment cannot contain blockers")
+        if self.state is ReleaseState.READY_FOR_EXTERNAL_DRY_RUN_HANDOFF and any(
+            getattr(self, name) is None for name in evidence_names
+        ):
+            raise CamInvariantError("Ready handoff assessment requires complete bound evidence")
+        calculated = ContentFingerprint.from_payload(self.identity_payload())
+        if self.assessment_fingerprint is None:
+            object.__setattr__(self, "assessment_fingerprint", calculated)
+        elif self.assessment_fingerprint != calculated:
+            raise CamInvariantError("Release assessment fingerprint mismatch")
+
+    def identity_payload(self) -> dict[str, Any]:
+        return {
+            "state": self.state.value, "blocker_codes": list(self.blocker_codes),
+            "warning_codes": list(self.warning_codes),
+            "release_candidate_fingerprint": (
+                None if self.release_candidate_fingerprint is None
+                else self.release_candidate_fingerprint.to_dict()
+            ),
+            "verification_session_fingerprint": (
+                None if self.verification_session_fingerprint is None
+                else self.verification_session_fingerprint.to_dict()
+            ),
+            "operator_review_fingerprint": (
+                None if self.operator_review_fingerprint is None
+                else self.operator_review_fingerprint.to_dict()
+            ),
+            "operator_acknowledgement_fingerprint": (
+                None if self.operator_acknowledgement_fingerprint is None
+                else self.operator_acknowledgement_fingerprint.to_dict()
+            ),
+            "qualification_report_fingerprint": (
+                None if self.qualification_report_fingerprint is None
+                else self.qualification_report_fingerprint.to_dict()
+            ),
+            "tranche2_readiness_fingerprint": (
+                None if self.tranche2_readiness_fingerprint is None
+                else self.tranche2_readiness_fingerprint.to_dict()
+            ),
+            "current_sources_fingerprint": (
+                None if self.current_sources_fingerprint is None
+                else self.current_sources_fingerprint.to_dict()
+            ),
+            "level2_achieved": False,
+            "level3_achieved": False, "machine_ready": False,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "state": self.state.value, "blocker_codes": list(self.blocker_codes),
-            "warning_codes": list(self.warning_codes), "level2_achieved": False,
-            "level3_achieved": False, "machine_ready": False,
+            **self.identity_payload(),
+            "assessment_fingerprint": self.assessment_fingerprint.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ReleaseAssessment":
         fields = {
             "state", "blocker_codes", "warning_codes", "level2_achieved",
-            "level3_achieved", "machine_ready",
+            "level3_achieved", "machine_ready", "release_candidate_fingerprint",
+            "verification_session_fingerprint", "operator_review_fingerprint",
+            "operator_acknowledgement_fingerprint", "qualification_report_fingerprint",
+            "tranche2_readiness_fingerprint", "current_sources_fingerprint",
+            "assessment_fingerprint",
         }
         if not isinstance(data, dict) or set(data) != fields:
             raise CamValidationError("Release assessment payload is malformed")
@@ -615,9 +710,20 @@ class ReleaseAssessment:
             state = ReleaseState(data["state"])
         except (TypeError, ValueError) as error:
             raise CamValidationError("Release assessment state is invalid") from error
+        def optional_fingerprint(name: str) -> ContentFingerprint | None:
+            return None if data[name] is None else ContentFingerprint.from_dict(data[name])
+
         return cls(
             state, tuple(data["blocker_codes"]), tuple(data["warning_codes"]),
+            optional_fingerprint("release_candidate_fingerprint"),
+            optional_fingerprint("verification_session_fingerprint"),
+            optional_fingerprint("operator_review_fingerprint"),
+            optional_fingerprint("operator_acknowledgement_fingerprint"),
+            optional_fingerprint("qualification_report_fingerprint"),
+            optional_fingerprint("tranche2_readiness_fingerprint"),
+            optional_fingerprint("current_sources_fingerprint"),
             data["level2_achieved"], data["level3_achieved"], data["machine_ready"],
+            ContentFingerprint.from_dict(data["assessment_fingerprint"]),
         )
 
 
