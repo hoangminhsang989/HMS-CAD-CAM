@@ -23,6 +23,14 @@ class ManufacturingJobStore:
         self.path = self.root / "manufacturing_jobs.json"
 
     def save(self, jobs: tuple[ManufacturingJob, ...], releases: tuple[ManufacturingJobRelease, ...]) -> None:
+        if len({job.job_id for job in jobs}) != len(jobs):
+            raise ManufacturingStoreError("Duplicate manufacturing job ID")
+        if len({release.release_id for release in releases}) != len(releases):
+            raise ManufacturingStoreError("Duplicate manufacturing release ID")
+        release_ids = {release.release_id for release in releases}
+        for release in releases:
+            if release.supersedes_release_id is not None and release.supersedes_release_id not in release_ids:
+                raise ManufacturingStoreError("Superseded release reference is detached")
         payload = {"format": "HMS_STAGE18A_MANUFACTURING_JOB_STORE", "format_version": STORE_FORMAT_VERSION,
                    "sqlite_schema": SQLITE_SCHEMA_VERSION, "jobs": [job.to_dict() for job in jobs],
                    "releases": [release.to_dict() for release in releases]}

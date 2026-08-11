@@ -35,11 +35,11 @@ def make_job(*, changed_tool: bool = False, stale_program: bool = False) -> Manu
                            "ROBODRILL_D21MIB", (1,), ("P1",), JobQualificationState.CURRENT,
                            ("physical fixture dimensions unknown",))
     program = JobProgramBinding("P1", fp({"release": 1}), hashlib.sha256(NC_A).hexdigest(), "S1", "G54",
-                                "ROBODRILL_D21MIB", fp({"machine": 1}), fp({"post": 1}), (1,),
+                                "ROBODRILL_D21MIB", fp({"machine": 1}), "FANUC_31I_B_BT30", fp({"post": 1}), (1,),
                                 JobQualificationState.STALE if stale_program else JobQualificationState.CURRENT, 1)
     return ManufacturingJob("PROJECT", "JOB-1", "PART", "R1", fp({"project": 1}), "ROBODRILL_D21MIB",
                             fp({"machine": 1}), "FANUC_31I_B_BT30", (program,), (setup,), (tool,),
-                            JobReleasePolicy(require_handoff_package=False), ManufacturingJobState.DRAFT,
+                            JobReleasePolicy(require_handoff_package=False), ManufacturingJobState.READY_FOR_RELEASE_REVIEW,
                             (("source", "R224"),))
 
 
@@ -56,7 +56,7 @@ def test_reconciliation_and_release_gate_are_fail_closed():
     release = create_job_release(job, review_for(job), release_id="REL-1", released_at="2026-08-11T15:01:00+07:00",
                                  package_fingerprint=fp({"package": 1}))
     assert release.state is ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN
-    assert release.job.state is ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN
+    assert release.job.state is ManufacturingJobState.RELEASE_APPROVED
 
 
 def test_stale_program_and_tool_change_block_release():
@@ -117,7 +117,7 @@ def test_structured_diff_detects_nc_tool_setup_and_policy_changes():
                              package_fingerprint=fp({"package": 1}))
     changed = make_job(changed_tool=True)
     changed_program = JobProgramBinding("P1", fp({"release": 2}), hashlib.sha256(NC_B).hexdigest(), "S1", "G54",
-                                        "ROBODRILL_D21MIB", fp({"machine": 1}), fp({"post": 2}), (1,),
+                                        "ROBODRILL_D21MIB", fp({"machine": 1}), "FANUC_31I_B_BT30", fp({"post": 2}), (1,),
                                         JobQualificationState.CURRENT, 2)
     changed = ManufacturingJob(changed.project_id, changed.job_id, changed.part_id, changed.part_revision,
                                changed.project_fingerprint, changed.machine_profile_id, changed.machine_profile_fingerprint,

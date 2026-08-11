@@ -1491,6 +1491,32 @@ DISPLAY_SOURCE_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+STAGE18A_TRANCHE4_UI_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("stage18a.tranche4.title", "Quản lý phát hành sản xuất", "Production release governance", "생산 릴리스 관리"),
+    ("stage18a.tranche4.job", "Mã công việc", "Job", "작업"),
+    ("stage18a.tranche4.part_revision", "Chi tiết / phiên bản", "Part / revision", "부품 / 리비전"),
+    ("stage18a.tranche4.machine", "Máy", "Machine", "기계"),
+    ("stage18a.tranche4.status", "Trạng thái", "Status", "상태"),
+    ("stage18a.tranche4.risk", "Rủi ro", "Risk", "위험"),
+    ("stage18a.tranche4.all", "Tất cả", "All", "전체"),
+    ("stage18a.tranche4.programs", "Chương trình", "Programs", "프로그램"),
+    ("stage18a.tranche4.setups", "Thiết lập", "Setups", "설정"),
+    ("stage18a.tranche4.tools", "Dao", "Tools", "공구"),
+    ("stage18a.tranche4.warnings", "Cảnh báo", "Warnings", "경고"),
+    ("stage18a.tranche4.blockers", "Lỗi chặn", "Blockers", "차단 항목"),
+    ("stage18a.tranche4.old_revision", "Phiên bản cũ", "Old revision", "이전 리비전"),
+    ("stage18a.tranche4.search", "Tìm chương trình / thiết lập / dao / phiên bản", "Search program / setup / tool / revision", "프로그램 / 설정 / 공구 / 리비전 검색"),
+    ("stage18a.tranche4.validate", "Kiểm tra toàn bộ", "Validate all", "전체 검증"),
+    ("stage18a.tranche4.compare", "So sánh phiên bản", "Compare revision", "리비전 비교"),
+    ("stage18a.tranche4.approve", "Xác nhận phát hành", "Approve release", "릴리스 승인"),
+    ("stage18a.tranche4.export", "Xuất gói sản xuất", "Export manufacturing package", "제조 패키지 내보내기"),
+    ("stage18a.tranche4.not_prepared", "Chưa chuẩn bị", "Not prepared", "준비되지 않음"),
+    ("stage18a.tranche4.not_machine_accepted", "Chưa nghiệm thu trên máy", "Not accepted on machine", "기계에서 승인되지 않음"),
+    ("stage18a.tranche4.blocked", "Có lỗi chặn", "Blocked", "차단됨"),
+    ("stage18a.tranche4.ready_review", "Sẵn sàng duyệt phát hành", "Ready for release review", "릴리스 검토 준비됨"),
+)
+
+
 TECHNICAL_GLOSSARY: tuple[GlossaryEntry, ...] = tuple(
     GlossaryEntry(term, term, term, term)
     for term in (
@@ -1646,6 +1672,10 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         vi_entries[source] = vietnamese
         en_entries[source] = english
         ko_entries[source] = korean
+    for key, vietnamese, english, korean in STAGE18A_TRANCHE4_UI_TRANSLATIONS:
+        vi_entries[key] = vietnamese
+        en_entries[key] = english
+        ko_entries[key] = korean
     for term in TECHNICAL_GLOSSARY:
         vi_entries[term.source] = term.vietnamese
         en_entries[term.source] = term.english
@@ -1860,6 +1890,7 @@ __all__ = [
     "format_geometry_update_message",
     "language_display_name",
     "set_translation_service",
+    "STAGE18A_TRANCHE4_UI_TRANSLATIONS",
     "translation_service",
     "validate_glossary",
 ]

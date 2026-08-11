@@ -73,10 +73,33 @@ class ManufacturingHandoffPackageBuilder:
         expected_names = {f"nc/{program.program_id}.nc" for program in release.job.programs}
         if not expected_names.issubset(files):
             raise ManufacturingPackageError("Handoff package is missing one or more exact NC programs")
+        for program in release.job.programs:
+            payload = files[f"nc/{program.program_id}.nc"]
+            if _sha(payload) != program.nc_sha256:
+                raise ManufacturingPackageError("NC package bytes do not match the released SHA-256")
+            files[f"nc/{program.program_id}.nc.sha256"] = f"{program.nc_sha256}  {program.program_id}.nc\n".encode("ascii")
         files["job/job_manifest.json"] = json.dumps(release.job.to_dict(), ensure_ascii=False,
                                                       sort_keys=True, separators=(",", ":")).encode("utf-8")
         files["release/release_record.json"] = json.dumps(release.to_dict(), ensure_ascii=False,
                                                             sort_keys=True, separators=(",", ":")).encode("utf-8")
+        files["release/review_record.json"] = json.dumps(release.review.to_dict(), ensure_ascii=False,
+                                                           sort_keys=True, separators=(",", ":")).encode("utf-8")
+        files["machine/machine_summary.json"] = self._json_bytes({
+            "machine_profile_id": release.job.machine_profile_id,
+            "machine_profile_fingerprint": release.job.machine_profile_fingerprint.to_dict(),
+            "controller_contract": release.job.controller_contract,
+            "physical_qualification": "LEVEL2_NOT_ACHIEVED; LEVEL3_NOT_ACHIEVED; MACHINE_READY_FALSE",
+        })
+        files["setup/setup_pack.json"] = self._json_bytes({"setups": [item.to_dict() for item in release.job.setups]})
+        files["tools/master_tool_list.json"] = self._json_bytes({"tools": [item.to_dict() for item in release.job.tools],
+                                                                    "reconciliation": release.tool_report.to_dict()})
+        files["reports/job_risk_summary.json"] = self._json_bytes({
+            "programs": len(release.job.programs), "setups": len(release.job.setups), "tools": len(release.job.tools),
+            "warnings": 0, "blockers": len(release.tool_report.issues), "stale_releases": 0,
+        })
+        files["history/revision_history.json"] = self._json_bytes({"release_id": release.release_id,
+                                                                     "supersedes_release_id": release.supersedes_release_id,
+                                                                     "state": release.state.value})
         files["release/dry_run_checklist.txt"] = self._checklist(release).encode("utf-8")
         files["level2/returned_evidence_intake.txt"] = (
             "Attach attributable physical evidence to the exact release, NC SHA-256, setup and machine.\n"
@@ -104,6 +127,10 @@ class ManufacturingHandoffPackageBuilder:
         return HandoffPackage(package_dir, manifest, package_fp)
 
     @staticmethod
+    def _json_bytes(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @staticmethod
     def _checklist(release: ManufacturingJobRelease) -> str:
         lines = ["MANUFACTURING_JOB_HANDOFF_PACKAGE", f"Release: {release.release_id}",
                  "Physical machine acceptance: UNKNOWN / NOT CLAIMED", "CNC control: NOT INCLUDED", ""]
@@ -123,10 +150,29 @@ class ManufacturingHandoffPackageBuilder:
             raise ManufacturingPackageError("Package manifest is unreadable") from error
         if manifest.get("no_cnc_control") != TRANCHE4_NO_CNC_MARKER or manifest.get("credential_findings") != 0:
             raise ManufacturingPackageError("Package boundary/security marker is invalid")
-        for item in manifest.get("files", ()):
-            path = package.root / item["path"]
-            if not path.is_file() or _sha(path.read_bytes()) != item["sha256"]:
-                raise ManufacturingPackageError(f"Package tamper detected: {item['path']}")
+        required = {"format", "format_version", "release_id", "release_fingerprint", "files", "no_cnc_control", "credential_findings", "package_fingerprint"}
+        if set(manifest) != required or not isinstance(manifest.get("files"), list):
+            raise ManufacturingPackageError("Package manifest structure is invalid")
+        paths = [item.get("path") for item in manifest["files"] if isinstance(item, dict)]
+        if len(paths) != len(manifest["files"]) or len(paths) != len(set(paths)):
+            raise ManufacturingPackageError("Package manifest contains duplicate or malformed paths")
+        identity = {key: value for key, value in manifest.items() if key != "package_fingerprint"}
+        if ContentFingerprint.from_payload(identity).to_dict() != manifest["package_fingerprint"]:
+            raise ManufacturingPackageError("Package manifest fingerprint mismatch")
+        if manifest["package_fingerprint"] != package.package_fingerprint.to_dict():
+            raise ManufacturingPackageError("Package handle fingerprint is stale")
+        for item in manifest["files"]:
+            try:
+                relative = _safe_relative(item["path"])
+                expected_sha = item["sha256"]
+                expected_size = item["size"]
+            except (KeyError, TypeError, ManufacturingPackageError) as error:
+                raise ManufacturingPackageError("Package manifest inventory is malformed") from error
+            if type(expected_size) is not int or expected_size < 0:
+                raise ManufacturingPackageError("Package manifest size is invalid")
+            path = package.root / relative
+            if not path.is_file() or path.stat().st_size != expected_size or _sha(path.read_bytes()) != expected_sha:
+                raise ManufacturingPackageError(f"Package tamper detected: {relative}")
         unexpected = [p for p in package.root.rglob("*") if p.is_file() and p.name != "package_manifest.json"
                       and p.relative_to(package.root).as_posix() not in {item["path"] for item in manifest["files"]}]
         if unexpected:

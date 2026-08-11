@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
-
 from hms_cadcam.cam.domain.revision import ContentFingerprint
 from hms_cadcam.cam.qualification.manufacturing_job import (
     JobReleaseDiff,
@@ -77,12 +75,22 @@ def assess_job(job: ManufacturingJob, *, tool_report: JobToolReconciliationRepor
     warnings: list[str] = []
     if job.state in {ManufacturingJobState.STALE, ManufacturingJobState.SUPERSEDED, ManufacturingJobState.INVALID}:
         blockers.append(f"JOB_{job.state.value}")
+    if job.state in {ManufacturingJobState.DRAFT, ManufacturingJobState.IN_VERIFICATION}:
+        blockers.append("JOB_NOT_READY_FOR_RELEASE_REVIEW")
+    if job.state is ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN:
+        blockers.append("JOB_ALREADY_RELEASED")
     if not job.programs:
         blockers.append("NO_PROGRAMS")
     if not job.setups:
         blockers.append("NO_SETUPS")
     if any(program.machine_profile_id != job.machine_profile_id for program in job.programs):
         blockers.append("MIXED_MACHINE_PROFILE")
+    if any(program.controller_contract != job.controller_contract for program in job.programs):
+        blockers.append("MIXED_CONTROLLER_CONTRACT")
+    if len({program.post_fingerprint for program in job.programs}) != 1:
+        blockers.append("MISMATCHED_POST")
+    if len({program.nc_release_fingerprint for program in job.programs}) != len(job.programs):
+        blockers.append("DUPLICATE_NC_RELEASE")
     if any(program.qualification_state is not JobQualificationState.CURRENT for program in job.programs):
         if job.release_policy.require_current_programs:
             blockers.append("PROGRAM_NOT_CURRENT")
@@ -100,6 +108,9 @@ def assess_job(job: ManufacturingJob, *, tool_report: JobToolReconciliationRepor
     # These boundaries are permanent and cannot be overridden through policy.
     if any(program.g54_identity != "G54" for program in job.programs):
         blockers.append("UNSUPPORTED_WORK_OFFSET")
+    forbidden = {"TAPPING", "G84", "UNQUALIFIED_CANNED_CYCLE"}
+    if any(forbidden & set(program.qualification_blockers) for program in job.programs):
+        blockers.append("UNQUALIFIED_PROGRAM_SEMANTICS")
     state = ManufacturingJobState.BLOCKED if blockers else ManufacturingJobState.READY_FOR_RELEASE_REVIEW
     return JobReleaseAssessment(state, tuple(sorted(set(blockers))), tuple(sorted(set(warnings))), report)
 
@@ -114,6 +125,8 @@ def create_job_release(job: ManufacturingJob, review: JobReleaseReview, *, relea
     assessment = assess_job(job, tool_report=report, handoff_package_ready=handoff_package_ready)
     if not assessment.passed:
         raise ValueError(f"Manufacturing job is not releasable: {', '.join(assessment.blockers)}")
+    if job.state not in {ManufacturingJobState.READY_FOR_RELEASE_REVIEW, ManufacturingJobState.RELEASE_APPROVED}:
+        raise ValueError("Job state does not permit release")
     if review.job_fingerprint != job.job_fingerprint:
         raise ValueError("Release review is stale for the current job")
     if not review.program_release_fingerprints or any(
@@ -122,13 +135,13 @@ def create_job_release(job: ManufacturingJob, review: JobReleaseReview, *, relea
         raise ValueError("Release review does not cover every program release")
     if review.decision.value != "APPROVE_FOR_EXTERNAL_DRY_RUN_HANDOFF":
         raise ValueError("Release review did not approve external dry-run handoff")
-    return ManufacturingJobRelease(release_id, job.with_state(ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN),
+    return ManufacturingJobRelease(release_id, job.with_state(ManufacturingJobState.RELEASE_APPROVED),
                                    report, review, released_at, package_fingerprint,
                                    supersedes_release_id=supersedes_release_id)
 
 
 def supersede_release(previous: ManufacturingJobRelease, replacement: ManufacturingJobRelease,
-                      *, reason: str) -> tuple[ManufacturingJobRelease, ManufacturingJobRelease]:
+                      *, reason: str, superseded_at: str) -> tuple[ManufacturingJobRelease, ManufacturingJobRelease]:
     if replacement.supersedes_release_id != previous.release_id:
         raise ValueError("Replacement release does not identify the previous release")
     if not reason.strip():
@@ -140,7 +153,11 @@ def supersede_release(previous: ManufacturingJobRelease, replacement: Manufactur
         previous.review,
         previous.released_at,
         previous.package_fingerprint,
+        ManufacturingJobState.SUPERSEDED,
         supersedes_release_id=previous.supersedes_release_id,
+        superseded_by_release_id=replacement.release_id,
+        superseded_reason=reason,
+        superseded_at=superseded_at,
     )
     return stale_previous, replacement
 

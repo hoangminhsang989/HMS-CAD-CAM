@@ -205,10 +205,12 @@ class JobProgramBinding:
     g54_identity: str
     machine_profile_id: str
     machine_profile_fingerprint: ContentFingerprint
+    controller_contract: str
     post_fingerprint: ContentFingerprint
     tool_numbers: tuple[int, ...]
     qualification_state: JobQualificationState
     release_revision: int
+    qualification_blockers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", _text(self.program_id, "Program ID"))
@@ -219,6 +221,7 @@ class JobProgramBinding:
             raise CamValidationError("Program G54 identity is invalid")
         object.__setattr__(self, "machine_profile_id", _text(self.machine_profile_id, "Machine profile ID"))
         _fp(self.machine_profile_fingerprint, "Machine profile fingerprint")
+        object.__setattr__(self, "controller_contract", _text(self.controller_contract, "Controller contract"))
         _fp(self.post_fingerprint, "Post fingerprint")
         if tuple(sorted(set(self.tool_numbers))) != self.tool_numbers or any(type(v) is not int or v <= 0 for v in self.tool_numbers):
             raise CamValidationError("Program Tool numbers are invalid")
@@ -226,22 +229,26 @@ class JobProgramBinding:
             raise CamValidationError("Program qualification state is invalid")
         if type(self.release_revision) is not int or self.release_revision <= 0:
             raise CamValidationError("Program release revision is invalid")
+        object.__setattr__(self, "qualification_blockers", _sorted_unique(self.qualification_blockers, "Qualification blocker"))
 
     def to_dict(self) -> dict[str, Any]:
         return {"program_id": self.program_id, "nc_release_fingerprint": self.nc_release_fingerprint.to_dict(),
                 "nc_sha256": self.nc_sha256, "setup_id": self.setup_id, "g54_identity": self.g54_identity,
                 "machine_profile_id": self.machine_profile_id,
                 "machine_profile_fingerprint": self.machine_profile_fingerprint.to_dict(),
+                "controller_contract": self.controller_contract,
                 "post_fingerprint": self.post_fingerprint.to_dict(), "tool_numbers": list(self.tool_numbers),
-                "qualification_state": self.qualification_state.value, "release_revision": self.release_revision}
+                "qualification_state": self.qualification_state.value, "release_revision": self.release_revision,
+                "qualification_blockers": list(self.qualification_blockers)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "JobProgramBinding":
         return cls(data["program_id"], ContentFingerprint.from_dict(data["nc_release_fingerprint"]), data["nc_sha256"],
                    data["setup_id"], data["g54_identity"], data["machine_profile_id"],
                    ContentFingerprint.from_dict(data["machine_profile_fingerprint"]),
-                   ContentFingerprint.from_dict(data["post_fingerprint"]), tuple(data["tool_numbers"]),
-                   JobQualificationState(data["qualification_state"]), data["release_revision"])
+                   data["controller_contract"], ContentFingerprint.from_dict(data["post_fingerprint"]),
+                   tuple(data["tool_numbers"]), JobQualificationState(data["qualification_state"]),
+                   data["release_revision"], tuple(data.get("qualification_blockers", ())))
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +304,10 @@ class ManufacturingJob:
             raise CamInvariantError("Setup IDs must be unique")
         if any(v.machine_profile_id != self.machine_profile_id for v in self.programs + self.setups):
             raise CamInvariantError("Manufacturing job cannot mix machine profiles")
+        if any(v.controller_contract != self.controller_contract for v in self.programs):
+            raise CamInvariantError("Manufacturing job cannot mix controller contracts")
+        if len({v.nc_release_fingerprint for v in self.programs}) != len(self.programs):
+            raise CamInvariantError("Program NC release identities must be unique")
         if any(not isinstance(v, JobToolBinding) for v in self.tools):
             raise CamValidationError("Manufacturing job tools are invalid")
         if len({v.tool_number for v in self.tools}) != len(self.tools):
@@ -457,6 +468,9 @@ class ManufacturingJobRelease:
     package_fingerprint: ContentFingerprint
     state: ManufacturingJobState = ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN
     supersedes_release_id: str | None = None
+    superseded_by_release_id: str | None = None
+    superseded_reason: str | None = None
+    superseded_at: str | None = None
     release_fingerprint: ContentFingerprint | None = None
 
     def __post_init__(self) -> None:
@@ -467,8 +481,15 @@ class ManufacturingJobRelease:
             raise CamInvariantError("Review is bound to a different job fingerprint")
         _fp(self.package_fingerprint, "Package fingerprint")
         object.__setattr__(self, "released_at", _text(self.released_at, "Release timestamp", maximum=64))
-        if self.state is not ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN:
-            raise CamValidationError("Release state may only represent external dry-run handoff")
+        if self.state not in {ManufacturingJobState.RELEASED_FOR_EXTERNAL_DRY_RUN, ManufacturingJobState.SUPERSEDED}:
+            raise CamValidationError("Release state is invalid")
+        if self.state is ManufacturingJobState.SUPERSEDED:
+            if self.superseded_by_release_id is None or self.superseded_reason is None or self.superseded_at is None:
+                raise CamInvariantError("Superseded release requires replacement, reason, and timestamp")
+        for name in ("supersedes_release_id", "superseded_by_release_id", "superseded_reason", "superseded_at"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _text(value, name, maximum=4096 if name.endswith("reason") else 64))
         calculated = ContentFingerprint.from_payload(self.identity_payload())
         if self.release_fingerprint is None:
             object.__setattr__(self, "release_fingerprint", calculated)
@@ -480,7 +501,10 @@ class ManufacturingJobRelease:
                 "job": self.job.to_dict(), "tool_report": self.tool_report.to_dict(),
                 "review": self.review.to_dict(), "released_at": self.released_at,
                 "package_fingerprint": self.package_fingerprint.to_dict(), "state": self.state.value,
-                "supersedes_release_id": self.supersedes_release_id, "no_cnc_control": TRANCHE4_NO_CNC_MARKER}
+                "supersedes_release_id": self.supersedes_release_id,
+                "superseded_by_release_id": self.superseded_by_release_id,
+                "superseded_reason": self.superseded_reason, "superseded_at": self.superseded_at,
+                "no_cnc_control": TRANCHE4_NO_CNC_MARKER}
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.identity_payload(), "release_fingerprint": self.release_fingerprint.to_dict()}
@@ -494,6 +518,7 @@ class ManufacturingJobRelease:
                    JobReleaseReview.from_dict(data["review"]), data["released_at"],
                    ContentFingerprint.from_dict(data["package_fingerprint"]),
                    ManufacturingJobState(data["state"]), data.get("supersedes_release_id"),
+                   data.get("superseded_by_release_id"), data.get("superseded_reason"), data.get("superseded_at"),
                    ContentFingerprint.from_dict(data["release_fingerprint"]))
 
 
