@@ -66,6 +66,7 @@ from hms_cadcam.cam.qualification.physical_model import (
     ToolReachState,
     WorkOffsetTransform,
     calculate_physical_readiness,
+    clearance_state_for_setup,
     validate_physical_travel,
     validate_stock_and_fixture_placement,
 )
@@ -120,7 +121,7 @@ __all__ = [
     "StockPlacementEvidence", "ToolHolderQualification", "ToolQualificationInput",
     "ToolReachState", "Tranche2QualificationService", "Tranche2QualificationStore",
     "ROBODRILL_CHECKLIST_KEYS", "RobodrillPhysicalChecklist", "Tranche2StoreError",
-    "WorkOffsetTransform", "assess_level2_readiness",
+    "WorkOffsetTransform", "assess_level2_readiness", "clearance_state_for_setup",
     "calculate_physical_readiness", "dumps", "dumps_level2_record", "loads",
     "loads_level2_record", "level2_status_vi", "qualification_status_vi", "qualify_static_nc",
     "engineering_sample_fixtures",

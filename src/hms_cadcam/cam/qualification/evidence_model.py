@@ -159,6 +159,8 @@ class EvidenceAttachment:
         """Re-hash local bytes; missing or changed references are never PASS."""
 
         path = Path(self.reference)
+        if path.name != self.filename:
+            return EvidenceState.STALE
         try:
             if not path.is_file():
                 return EvidenceState.INVALID
@@ -336,6 +338,7 @@ class DryRunQualificationEvidence:
     tool_set_fingerprint: ContentFingerprint
     post_fingerprint: ContentFingerprint
     qualification_contract_fingerprint: ContentFingerprint
+    acceptance_policy_fingerprint: ContentFingerprint
     work_offset: str
     performed_at: str
     operator: str
@@ -356,6 +359,7 @@ class DryRunQualificationEvidence:
         for name in (
             "machine_profile_fingerprint", "setup_fingerprint", "tool_set_fingerprint",
             "post_fingerprint", "qualification_contract_fingerprint",
+            "acceptance_policy_fingerprint",
         ):
             if not isinstance(getattr(self, name), ContentFingerprint):
                 raise CamValidationError(f"Evidence {name} is invalid")
@@ -381,13 +385,19 @@ class DryRunQualificationEvidence:
             raise CamValidationError("Evidence attachments are invalid")
         if len({(item.reference, item.sha256) for item in self.attachments}) != len(self.attachments):
             raise CamInvariantError("Evidence attachments must be unique")
+        if len({item.role for item in self.attachments}) != len(self.attachments):
+            raise CamInvariantError("Evidence attachment roles must be unique")
         if not isinstance(self.acceptance, OwnerAcceptanceRecord):
             raise CamValidationError("Evidence acceptance is invalid")
         object.__setattr__(self, "remediation", _optional_text(self.remediation, "Evidence remediation"))
         if self.result is EvidenceState.PASS and self.blockers:
             raise CamInvariantError("PASS evidence cannot retain blockers")
+        if self.result is EvidenceState.PASS and not self.attachments:
+            raise CamInvariantError("PASS evidence requires at least one attachment")
         if self.acceptance.result is not self.result:
             raise CamInvariantError("Evidence and acceptance results must agree")
+        if self.acceptance.operator != self.operator:
+            raise CamInvariantError("Evidence and acceptance operators must agree")
 
     @property
     def fingerprint(self) -> ContentFingerprint:
@@ -405,15 +415,20 @@ class DryRunQualificationEvidence:
         self,
         *,
         setup: MachineSetupQualification,
+        controller_identity: str,
         qualification_contract_fingerprint: ContentFingerprint,
+        acceptance_policy_fingerprint: ContentFingerprint,
     ) -> bool:
         return (
             self.nc_sha256 == setup.nc_sha256
+            and self.machine_identity == setup.machine_profile_id
+            and self.controller_identity == controller_identity
             and self.machine_profile_fingerprint == setup.machine_profile_fingerprint
             and self.setup_fingerprint == setup.fingerprint
             and self.tool_set_fingerprint == setup.tool_set_fingerprint
             and self.post_fingerprint == setup.post_fingerprint
             and self.qualification_contract_fingerprint == qualification_contract_fingerprint
+            and self.acceptance_policy_fingerprint == acceptance_policy_fingerprint
             and self.work_offset == setup.work_offset_transform.work_offset
         )
 
@@ -426,6 +441,7 @@ class DryRunQualificationEvidence:
             "tool_set_fingerprint": self.tool_set_fingerprint.to_dict(),
             "post_fingerprint": self.post_fingerprint.to_dict(),
             "qualification_contract_fingerprint": self.qualification_contract_fingerprint.to_dict(),
+            "acceptance_policy_fingerprint": self.acceptance_policy_fingerprint.to_dict(),
             "work_offset": self.work_offset, "performed_at": self.performed_at,
             "operator": self.operator, "authority": self.authority,
             "run_mode": self.run_mode.value, "result": self.result.value,
@@ -439,7 +455,8 @@ class DryRunQualificationEvidence:
         fields = {
             "evidence_id", "machine_identity", "controller_identity", "nc_sha256",
             "machine_profile_fingerprint", "setup_fingerprint", "tool_set_fingerprint",
-            "post_fingerprint", "qualification_contract_fingerprint", "work_offset",
+            "post_fingerprint", "qualification_contract_fingerprint",
+            "acceptance_policy_fingerprint", "work_offset",
             "performed_at", "operator", "authority", "run_mode", "result",
             "observations", "blockers", "attachments", "acceptance", "remediation",
         }
@@ -461,6 +478,7 @@ class DryRunQualificationEvidence:
             _fingerprint(data["tool_set_fingerprint"], "Tool set fingerprint"),
             _fingerprint(data["post_fingerprint"], "Post fingerprint"),
             _fingerprint(data["qualification_contract_fingerprint"], "Qualification contract fingerprint"),
+            _fingerprint(data["acceptance_policy_fingerprint"], "Acceptance policy fingerprint"),
             data["work_offset"], data["performed_at"], data["operator"], data["authority"],
             mode, result, data["observations"], tuple(data["blockers"]),
             tuple(EvidenceAttachment.from_dict(item) for item in data["attachments"]),
@@ -503,6 +521,44 @@ class Level2Readiness:
             "level2_achieved": self.level2_achieved, "machine_ready": self.machine_ready,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Level2Readiness":
+        fields = {
+            "workflow_state", "ready", "missing", "blockers", "stale_reasons",
+            "required_modes", "satisfied_modes", "level2_achieved", "machine_ready",
+        }
+        if (
+            not isinstance(data, dict)
+            or set(data) != fields
+            or any(
+                not isinstance(data[name], list)
+                for name in (
+                    "ready", "missing", "blockers", "stale_reasons",
+                    "required_modes", "satisfied_modes",
+                )
+            )
+        ):
+            raise CamValidationError("Level2 readiness payload is malformed")
+        try:
+            state = Level2WorkflowState(data["workflow_state"])
+            required = tuple(DryRunMode(item) for item in data["required_modes"])
+            satisfied = tuple(DryRunMode(item) for item in data["satisfied_modes"])
+        except (TypeError, ValueError) as error:
+            raise CamValidationError("Level2 readiness enum payload is invalid") from error
+        expected_achieved = state is Level2WorkflowState.DRY_RUN_QUALIFIED
+        if data["level2_achieved"] is not expected_achieved:
+            raise CamInvariantError("Level2 achieved flag is derived and cannot be mutated")
+        return cls(
+            state,
+            tuple(data["ready"]),
+            tuple(data["missing"]),
+            tuple(data["blockers"]),
+            tuple(data["stale_reasons"]),
+            required,
+            satisfied,
+            data["machine_ready"],
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Level2QualificationRecord:
@@ -528,8 +584,8 @@ class Level2QualificationRecord:
         if len({item.evidence_id for item in self.attempts}) != len(self.attempts):
             raise CamInvariantError("Evidence attempt IDs must be unique")
         timestamps = [datetime.fromisoformat(item.performed_at) for item in self.attempts]
-        if timestamps != sorted(timestamps):
-            raise CamInvariantError("Evidence attempts must preserve chronology")
+        if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+            raise CamInvariantError("Evidence attempt timestamps must be strictly increasing")
         for index, attempt in enumerate(self.attempts):
             earlier_failed = any(
                 previous.run_mode is attempt.run_mode and previous.result is EvidenceState.FAIL
@@ -602,6 +658,7 @@ def assess_level2_readiness(
     current_machine_profile_fingerprint: ContentFingerprint,
     current_post_fingerprint: ContentFingerprint,
     current_qualification_contract_fingerprint: ContentFingerprint,
+    current_controller_identity: str,
 ) -> Level2Readiness:
     """Derive Level2 state; callers cannot manually mutate promotion flags."""
 
@@ -637,23 +694,33 @@ def assess_level2_readiness(
         missing.append("OWNER_DEFINED_EVIDENCE_POLICY")
     required = record.policy.required_modes
     latest: dict[DryRunMode, DryRunQualificationEvidence] = {}
-    any_pending = False
+    latest_issue: dict[DryRunMode, str] = {}
     for attempt in record.attempts:
         if not attempt.is_current(
             setup=setup,
+            controller_identity=current_controller_identity,
             qualification_contract_fingerprint=current_qualification_contract_fingerprint,
+            acceptance_policy_fingerprint=record.policy.fingerprint,
         ):
-            stale.append(f"{attempt.evidence_id}:PHYSICAL_EVIDENCE_STALE")
+            latest.pop(attempt.run_mode, None)
+            latest_issue[attempt.run_mode] = (
+                f"{attempt.evidence_id}:PHYSICAL_EVIDENCE_STALE"
+            )
             continue
         attachment_state = attempt.attachment_state()
         if attachment_state is EvidenceState.INVALID:
-            stale.append(f"{attempt.evidence_id}:ATTACHMENT_INVALID")
+            latest.pop(attempt.run_mode, None)
+            latest_issue[attempt.run_mode] = f"{attempt.evidence_id}:ATTACHMENT_INVALID"
             continue
         if attachment_state is EvidenceState.STALE:
-            stale.append(f"{attempt.evidence_id}:ATTACHMENT_BYTES_CHANGED")
+            latest.pop(attempt.run_mode, None)
+            latest_issue[attempt.run_mode] = (
+                f"{attempt.evidence_id}:ATTACHMENT_BYTES_CHANGED"
+            )
             continue
         latest[attempt.run_mode] = attempt
-        any_pending = any_pending or attempt.result is EvidenceState.PENDING
+        latest_issue.pop(attempt.run_mode, None)
+    stale.extend(latest_issue[mode] for mode in required if mode in latest_issue)
     satisfied: list[DryRunMode] = []
     for mode in required:
         attempt = latest.get(mode)
@@ -684,7 +751,7 @@ def assess_level2_readiness(
         state = Level2WorkflowState.LEVEL2_EVIDENCE_FAILED
     elif record.policy.confirmed and not normalized_missing and set(satisfied) == set(required):
         state = Level2WorkflowState.DRY_RUN_QUALIFIED
-    elif record.attempts or any_pending:
+    elif record.attempts:
         state = Level2WorkflowState.LEVEL2_EVIDENCE_PENDING
     elif not physical_readiness.blockers and not physical_readiness.missing and record.policy.confirmed:
         state = Level2WorkflowState.READY_FOR_EXTERNAL_LEVEL2_EVIDENCE

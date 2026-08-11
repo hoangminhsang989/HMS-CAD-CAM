@@ -26,6 +26,7 @@ from hms_cadcam.cam.qualification.evidence_model import (
     Level2Readiness,
     Level2WorkflowState,
 )
+from hms_cadcam.cam.qualification.physical_model import PhysicalReadinessResult
 from hms_cadcam.ui.i18n import translation_service
 from hms_cadcam.ui.localization import localize_widget_tree, ui_text
 
@@ -86,6 +87,7 @@ class PhysicalQualificationWizard(QWizard):
         self.setOption(QWizard.WizardOption.HaveCustomButton2, True)
         self._record: Level2QualificationRecord | None = None
         self._readiness: Level2Readiness | None = None
+        self._physical_readiness: PhysicalReadinessResult | None = None
 
         self.machine_page = _SummaryPage(
             _PAGE_TITLES[0], "Select and verify the exact machine profile.", self
@@ -221,15 +223,17 @@ class PhysicalQualificationWizard(QWizard):
         self,
         record: Level2QualificationRecord,
         readiness: Level2Readiness,
+        physical_readiness: PhysicalReadinessResult,
     ) -> None:
         """Project immutable typed state; this widget never promotes a level."""
 
         if not isinstance(record, Level2QualificationRecord) or not isinstance(
             readiness, Level2Readiness
-        ):
+        ) or not isinstance(physical_readiness, PhysicalReadinessResult):
             raise TypeError("Wizard record/readiness is invalid")
         self._record = record
         self._readiness = readiness
+        self._physical_readiness = physical_readiness
         setup = record.setup
         self.machine_identity.setText(setup.machine_profile_id)
         self.machine_fingerprint.setText(setup.machine_profile_fingerprint.digest)
@@ -268,12 +272,8 @@ class PhysicalQualificationWizard(QWizard):
             self.fixture_envelope.setText(
                 "—" if envelope is None else f"{envelope.x_mm:g} × {envelope.y_mm:g} × {envelope.z_mm:g} mm"
             )
-        self.travel_state.setText(readiness.workflow_state.value)
-        self.clearance_state.setText(
-            "HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED"
-            if "HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED" in readiness.missing
-            else "BOUND_TO_CURRENT_SETUP"
-        )
+        self.travel_state.setText(physical_readiness.travel_state.value)
+        self.clearance_state.setText(physical_readiness.clearance_state.value)
         self._refresh_result()
 
     @staticmethod

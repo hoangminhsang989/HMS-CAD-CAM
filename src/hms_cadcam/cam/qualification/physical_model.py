@@ -77,6 +77,7 @@ class ClearanceState(StrEnum):
     )
     HOLDER_FIXTURE_COLLISION_DETECTED = "HOLDER_FIXTURE_COLLISION_DETECTED"
     HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED = "HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED"
+    HOLDER_CLEARANCE_UNVERIFIED = "HOLDER_CLEARANCE_UNVERIFIED"
 
 
 def _text(value: str, name: str, *, maximum: int = 1024) -> str:
@@ -877,14 +878,33 @@ def validate_stock_and_fixture_placement(
         states.append(PlacementState.STOCK_PLACEMENT_UNVERIFIED)
     else:
         origin = setup.stock.origin_machine_mm.to_coordinate()
-        angle = math.radians(setup.stock.orientation_deg.z_deg)
-        x_footprint = abs(setup.stock.dimensions.x_mm * math.cos(angle)) + abs(
-            setup.stock.dimensions.y_mm * math.sin(angle)
+        orientation = setup.stock.orientation_deg
+        rx, ry, rz = (
+            math.radians(orientation.x_deg),
+            math.radians(orientation.y_deg),
+            math.radians(orientation.z_deg),
         )
-        y_footprint = abs(setup.stock.dimensions.x_mm * math.sin(angle)) + abs(
-            setup.stock.dimensions.y_mm * math.cos(angle)
-        )
-        if origin.x < 0.0 or origin.y < 0.0 or origin.x + x_footprint > width or origin.y + y_footprint > depth:
+        corners: list[tuple[float, float]] = []
+        for x in (0.0, setup.stock.dimensions.x_mm):
+            for y in (0.0, setup.stock.dimensions.y_mm):
+                for z in (0.0, setup.stock.dimensions.z_mm):
+                    rotated_y = y * math.cos(rx) - z * math.sin(rx)
+                    rotated_z = y * math.sin(rx) + z * math.cos(rx)
+                    rotated_x = x * math.cos(ry) + rotated_z * math.sin(ry)
+                    rotated_z = -x * math.sin(ry) + rotated_z * math.cos(ry)
+                    final_x = rotated_x * math.cos(rz) - rotated_y * math.sin(rz)
+                    final_y = rotated_x * math.sin(rz) + rotated_y * math.cos(rz)
+                    corners.append((final_x, final_y))
+        minimum_x = min(point[0] for point in corners)
+        maximum_x = max(point[0] for point in corners)
+        minimum_y = min(point[1] for point in corners)
+        maximum_y = max(point[1] for point in corners)
+        if (
+            origin.x + minimum_x < 0.0
+            or origin.y + minimum_y < 0.0
+            or origin.x + maximum_x > width
+            or origin.y + maximum_y > depth
+        ):
             states.append(PlacementState.PLACEMENT_OUTSIDE_TABLE_ENVELOPE)
         else:
             states.append(PlacementState.PLACEMENT_STATICALLY_VALIDATED)
@@ -896,6 +916,11 @@ def validate_stock_and_fixture_placement(
 def clearance_state_for_setup(setup: MachineSetupQualification) -> ClearanceState:
     """Accept only current evidence from the existing collision/physical surface."""
 
+    if any(
+        tool.holder_fingerprint is None or tool.holder_max_diameter_mm is None
+        for tool in setup.tools
+    ):
+        return ClearanceState.HOLDER_CLEARANCE_UNVERIFIED
     evidence = setup.clearance_evidence
     fixture = setup.fixture
     if evidence is None or fixture is None:
@@ -942,7 +967,10 @@ def calculate_physical_readiness(
             missing.append(token)
     if clearance is ClearanceState.HOLDER_FIXTURE_COLLISION_DETECTED:
         blockers.append(clearance.value)
-    elif clearance is ClearanceState.HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED:
+    elif clearance in {
+        ClearanceState.HOLDER_FIXTURE_CLEARANCE_NOT_VERIFIED,
+        ClearanceState.HOLDER_CLEARANCE_UNVERIFIED,
+    }:
         missing.append(clearance.value)
     return PhysicalReadinessResult(
         travel_state, placements, reach, clearance, machine_points,

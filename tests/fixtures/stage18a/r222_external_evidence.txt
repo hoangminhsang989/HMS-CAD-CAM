@@ -1,0 +1,2 @@
+Engineering-only external-evidence shape for deterministic R222 gate tests.
+This file is never production physical evidence and never changes actual Level2 state.

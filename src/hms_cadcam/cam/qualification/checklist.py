@@ -59,7 +59,7 @@ class PhysicalChecklistItem:
 
 
 ROBODRILL_CHECKLIST_KEYS = (
-    "machine_identity", "tool_setup", "offsets", "work_origin", "stock",
+    "machine_identity", "tool_setup", "offsets", "g54", "work_origin", "stock",
     "fixture", "spindle", "coolant", "safe_retract", "tool_change",
     "first_motion", "drilling", "end_sequence",
 )
@@ -78,7 +78,7 @@ class RobodrillPhysicalChecklist:
     @classmethod
     def default(cls) -> "RobodrillPhysicalChecklist":
         labels = (
-            "Machine identity", "Tool setup", "Offsets", "Work origin", "Stock",
+            "Machine identity", "Tool setup", "Offsets", "G54", "Work origin", "Stock",
             "Fixture", "Spindle", "Coolant", "Safe retract", "Tool change",
             "First motion", "Drilling", "End sequence",
         )
@@ -120,6 +120,8 @@ class RobodrillPhysicalChecklist:
 @dataclass(frozen=True, slots=True)
 class GoldenSampleApproval:
     sample_id: str
+    sample_fingerprint: ContentFingerprint
+    nc_sha256: str
     source_authority: SampleAuthority
     target_authority: SampleAuthority
     owner_acceptance: OwnerAcceptanceRecord
@@ -128,6 +130,14 @@ class GoldenSampleApproval:
     def __post_init__(self) -> None:
         if not isinstance(self.sample_id, str) or not self.sample_id.strip():
             raise CamValidationError("Golden sample ID is invalid")
+        if not isinstance(self.sample_fingerprint, ContentFingerprint):
+            raise CamValidationError("Golden sample fingerprint is invalid")
+        if (
+            not isinstance(self.nc_sha256, str)
+            or len(self.nc_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in self.nc_sha256)
+        ):
+            raise CamValidationError("Golden sample NC SHA-256 is invalid")
         if self.source_authority is not SampleAuthority.ENGINEERING_REGRESSION_SAMPLE:
             raise CamInvariantError("Only engineering samples can enter owner approval")
         if self.target_authority is not SampleAuthority.OWNER_APPROVED_MACHINE_SAMPLE:
@@ -141,14 +151,49 @@ class GoldenSampleApproval:
     def fingerprint(self) -> ContentFingerprint:
         return ContentFingerprint.from_payload(self.to_dict())
 
+    def is_current(
+        self,
+        sample_fingerprint: ContentFingerprint,
+        nc_sha256: str,
+    ) -> bool:
+        return (
+            self.sample_fingerprint == sample_fingerprint
+            and self.nc_sha256 == nc_sha256
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "sample_id": self.sample_id,
+            "sample_fingerprint": self.sample_fingerprint.to_dict(),
+            "nc_sha256": self.nc_sha256,
             "source_authority": self.source_authority.value,
             "target_authority": self.target_authority.value,
             "owner_acceptance": self.owner_acceptance.to_dict(),
             "approved_at": self.approved_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GoldenSampleApproval":
+        fields = {
+            "sample_id", "sample_fingerprint", "nc_sha256", "source_authority",
+            "target_authority", "owner_acceptance", "approved_at",
+        }
+        if not isinstance(data, dict) or set(data) != fields:
+            raise CamValidationError("Golden sample approval payload is malformed")
+        try:
+            source = SampleAuthority(data["source_authority"])
+            target = SampleAuthority(data["target_authority"])
+        except (TypeError, ValueError) as error:
+            raise CamValidationError("Golden sample authority payload is invalid") from error
+        return cls(
+            data["sample_id"],
+            ContentFingerprint.from_dict(data["sample_fingerprint"]),
+            data["nc_sha256"],
+            source,
+            target,
+            OwnerAcceptanceRecord.from_dict(data["owner_acceptance"]),
+            data["approved_at"],
+        )
 
 
 __all__ = [

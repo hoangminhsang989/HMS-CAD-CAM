@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from hms_cadcam.cam.domain import ContentFingerprint
 from hms_cadcam.cam.qualification import (
@@ -13,6 +14,8 @@ from hms_cadcam.cam.qualification import (
     DryRunMode,
     DryRunQualificationEvidence,
     EnvelopeDimensions,
+    EvidenceAttachment,
+    EvidenceAttachmentRole,
     EvidenceState,
     FixtureEvidence,
     FixtureVerificationState,
@@ -37,6 +40,9 @@ from tests.unit._stage18a_qualification_fixtures import qualification_input
 NOW = "2026-08-11T10:00:00+07:00"
 BASE_INPUT = qualification_input()
 BASE_REPORT = qualify_static_nc(BASE_INPUT)
+TEST_EVIDENCE_PATH = (
+    Path(__file__).parents[1] / "fixtures" / "stage18a" / "r222_external_evidence.txt"
+)
 
 
 def fingerprint(name: str) -> ContentFingerprint:
@@ -180,11 +186,23 @@ def dry_run_attempt(
     performed_at: str = "2026-08-11T10:10:00+07:00",
     remediation: str | None = None,
     attachments=(),
+    policy: PhysicalAcceptancePolicy | None = None,
 ) -> DryRunQualificationEvidence:
     value = BASE_INPUT
+    selected_policy = policy or acceptance_policy()
+    selected_attachments = tuple(attachments)
+    if result is EvidenceState.PASS and not selected_attachments:
+        selected_attachments = (
+            EvidenceAttachment.from_local_file(
+                TEST_EVIDENCE_PATH,
+                role=EvidenceAttachmentRole.NOTES,
+                captured_at=NOW,
+                provenance="engineering-only R222 evidence-shape fixture",
+            ),
+        )
     return DryRunQualificationEvidence(
         evidence_id,
-        "FANUC ROBODRILL α-D21MiB",
+        setup.machine_profile_id,
         "FANUC 31i-B",
         setup.nc_sha256,
         setup.machine_profile_fingerprint,
@@ -192,6 +210,7 @@ def dry_run_attempt(
         setup.tool_set_fingerprint,
         setup.post_fingerprint,
         value.machine_contract.fingerprint,
+        selected_policy.fingerprint,
         "G54",
         performed_at,
         "operator-r221",
@@ -200,7 +219,7 @@ def dry_run_attempt(
         result,
         "External dry-run record; engineering test fixture only",
         () if result is EvidenceState.PASS else ("Observed motion blocker",),
-        tuple(attachments),
+        selected_attachments,
         OwnerAcceptanceRecord(
             "operator-r221", "verifier-r221", "owner-r221", result,
             performed_at, "Attributable approval record; not a digital signature",

@@ -57,6 +57,7 @@ class Tranche2QualificationService:
         current_machine_profile_fingerprint: ContentFingerprint,
         current_post_fingerprint: ContentFingerprint,
         current_qualification_contract_fingerprint: ContentFingerprint,
+        current_controller_identity: str,
     ) -> Level2Readiness:
         """Run the sole programmatic Level2 promotion gate."""
 
@@ -68,6 +69,7 @@ class Tranche2QualificationService:
             current_machine_profile_fingerprint=current_machine_profile_fingerprint,
             current_post_fingerprint=current_post_fingerprint,
             current_qualification_contract_fingerprint=current_qualification_contract_fingerprint,
+            current_controller_identity=current_controller_identity,
         )
 
     def save(self, project_root: Path, record: Level2QualificationRecord) -> Level2QualificationRecord:

@@ -18,6 +18,8 @@ from hms_cadcam.cam.qualification.model import canonical_json_bytes, sha256_byte
 
 _logger = logging.getLogger(__name__)
 _MANIFEST_FORMAT = "HMS_STAGE18A_LEVEL2_QUALIFICATION_MANIFEST"
+_MANIFEST_NAME = "manifest.json"
+_MANIFEST_SIDECAR_NAME = "manifest.json.sha256"
 
 
 class Tranche2StoreError(RuntimeError):
@@ -76,6 +78,10 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             _logger.warning("Could not remove Tranche2 temporary file", exc_info=True)
 
 
+def _manifest_sidecar(payload: bytes) -> bytes:
+    return f"{sha256_bytes(payload)}  {_MANIFEST_NAME}\n".encode("utf-8")
+
+
 class Tranche2QualificationStore:
     """Persist immutable snapshots without changing SQLite schema 5."""
 
@@ -114,16 +120,26 @@ class Tranche2QualificationStore:
             "format_version": LEVEL2_RECORD_VERSION,
             "entries": entries,
         }
-        _atomic_write(root / "manifest.json", canonical_json_bytes(manifest))
+        manifest_payload = canonical_json_bytes(manifest)
+        _atomic_write(root / _MANIFEST_NAME, manifest_payload)
+        _atomic_write(root / _MANIFEST_SIDECAR_NAME, _manifest_sidecar(manifest_payload))
         return record
 
     def load(self, project_root: Path) -> tuple[Level2QualificationRecord, ...]:
         root = _qualification_root(project_root)
-        manifest_path = root / "manifest.json"
+        manifest_path = root / _MANIFEST_NAME
+        sidecar_path = root / _MANIFEST_SIDECAR_NAME
         if not manifest_path.exists():
+            if sidecar_path.exists():
+                raise Tranche2StoreError("Orphan Tranche2 manifest sidecar exists")
             return ()
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_payload = manifest_path.read_bytes()
+            if not sidecar_path.is_file():
+                raise Tranche2StoreError("Tranche2 manifest sidecar is missing")
+            if sidecar_path.read_bytes() != _manifest_sidecar(manifest_payload):
+                raise Tranche2StoreError("Tranche2 manifest sidecar mismatch")
+            manifest = json.loads(manifest_payload.decode("utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise Tranche2StoreError("Tranche2 manifest is unreadable") from error
         if (

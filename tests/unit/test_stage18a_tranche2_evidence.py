@@ -39,6 +39,7 @@ def assess(record, readiness=None, **changes):
         "current_machine_profile_fingerprint": setup.machine_profile_fingerprint,
         "current_post_fingerprint": setup.post_fingerprint,
         "current_qualification_contract_fingerprint": qualification_input().machine_contract.fingerprint,
+        "current_controller_identity": "FANUC 31i-B",
     }
     values.update(changes)
     return assess_level2_readiness(**values)

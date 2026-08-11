@@ -2,6 +2,7 @@
 
 import pytest
 
+from hms_cadcam.cam.domain import ContentFingerprint
 from hms_cadcam.cam.domain.errors import CamInvariantError, CamValidationError
 from hms_cadcam.cam.qualification import (
     EvidenceState,
@@ -36,17 +37,23 @@ def test_checklist_fail_is_visible_and_unknown_key_is_rejected():
 
 
 def test_engineering_sample_requires_explicit_owner_acceptance_before_conversion():
+    sample_fingerprint = ContentFingerprint.from_payload({"sample": "r222"})
+    nc_sha256 = "1" * 64
     acceptance = OwnerAcceptanceRecord(
         "operator", "verifier", "owner", EvidenceState.PASS,
         "2026-08-11T10:00:00+07:00", "approved for machine sample review",
     )
     approval = GoldenSampleApproval(
-        "sample-r221", SampleAuthority.ENGINEERING_REGRESSION_SAMPLE,
+        "sample-r221", sample_fingerprint, nc_sha256,
+        SampleAuthority.ENGINEERING_REGRESSION_SAMPLE,
         SampleAuthority.OWNER_APPROVED_MACHINE_SAMPLE, acceptance,
         "2026-08-11T10:00:00+07:00",
     )
     assert approval.target_authority is SampleAuthority.OWNER_APPROVED_MACHINE_SAMPLE
     assert approval.fingerprint.digest
+    assert approval.is_current(sample_fingerprint, nc_sha256)
+    assert not approval.is_current(ContentFingerprint.from_payload({"stale": True}), nc_sha256)
+    assert GoldenSampleApproval.from_dict(approval.to_dict()) == approval
 
     failed = OwnerAcceptanceRecord(
         "operator", "verifier", None, EvidenceState.PASS,
@@ -54,7 +61,8 @@ def test_engineering_sample_requires_explicit_owner_acceptance_before_conversion
     )
     with pytest.raises(CamInvariantError, match="Owner approval"):
         GoldenSampleApproval(
-            "sample-r221", SampleAuthority.ENGINEERING_REGRESSION_SAMPLE,
+            "sample-r221", sample_fingerprint, nc_sha256,
+            SampleAuthority.ENGINEERING_REGRESSION_SAMPLE,
             SampleAuthority.OWNER_APPROVED_MACHINE_SAMPLE, failed,
             "2026-08-11T10:00:00+07:00",
         )

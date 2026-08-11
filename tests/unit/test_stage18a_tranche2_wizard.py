@@ -1,12 +1,14 @@
 """VI/EN/KO, status-boundary, and lifecycle tests for the R221 wizard."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 
 from PySide6.QtWidgets import QApplication, QLabel, QWizard
 
 from hms_cadcam.cam.qualification import Level2WorkflowState, assess_level2_readiness
+from hms_cadcam.cam.qualification import PhysicalAcceptancePolicy
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from hms_cadcam.ui.localization_audit import _is_mixed
 from hms_cadcam.ui.physical_qualification_wizard import PhysicalQualificationWizard
@@ -33,6 +35,7 @@ def readiness(record):
         current_machine_profile_fingerprint=setup.machine_profile_fingerprint,
         current_post_fingerprint=setup.post_fingerprint,
         current_qualification_contract_fingerprint=qualification_input().machine_contract.fingerprint,
+        current_controller_identity="FANUC 31i-B",
     )
 
 
@@ -60,7 +63,7 @@ def test_ready_context_is_truthful_and_never_displays_machine_ready(qtbot):
     state = readiness(record)
     wizard = PhysicalQualificationWizard()
     qtbot.addWidget(wizard)
-    wizard.set_context(record, state)
+    wizard.set_context(record, state, physical_readiness(record.setup))
 
     assert state.workflow_state is Level2WorkflowState.READY_FOR_EXTERNAL_LEVEL2_EVIDENCE
     assert wizard.record is record
@@ -73,13 +76,16 @@ def test_ready_context_is_truthful_and_never_displays_machine_ready(qtbot):
     visible_text = "\n".join(label.text() for label in wizard.findChildren(QLabel))
     assert "Machine Ready" not in visible_text
     assert "MACHINE_READY=true" not in visible_text
+    physical = physical_readiness(record.setup)
+    assert wizard.travel_state.text() == physical.travel_state.value
+    assert wizard.clearance_state.text() == physical.clearance_state.value
 
 
 def test_save_and_export_buttons_emit_typed_record_without_mutation(qtbot):
     record = level2_record()
     wizard = PhysicalQualificationWizard()
     qtbot.addWidget(wizard)
-    wizard.set_context(record, readiness(record))
+    wizard.set_context(record, readiness(record), physical_readiness(record.setup))
     saved = []
     exported = []
     wizard.save_requested.connect(saved.append)
@@ -98,7 +104,7 @@ def test_runtime_vi_en_ko_switch_preserves_record_and_readiness(qtbot):
     state = readiness(record)
     wizard = PhysicalQualificationWizard()
     qtbot.addWidget(wizard)
-    wizard.set_context(record, state)
+    wizard.set_context(record, state, physical_readiness(record.setup))
     service = translation_service()
     previous = service.language
     observed = []
@@ -116,6 +122,65 @@ def test_runtime_vi_en_ko_switch_preserves_record_and_readiness(qtbot):
         ("Step 1 — Machine", "Ready for machine verification"),
         ("1단계 — 기계", "기계 검증 준비 완료"),
     ]
+
+
+def test_incomplete_fail_and_stale_states_are_visibly_distinct(qtbot):
+    service = translation_service()
+    previous = service.language
+    try:
+        service.set_language(UiLanguage.EN_US)
+        record = level2_record(policy=PhysicalAcceptancePolicy("undecided", 1))
+        incomplete = readiness(record)
+        wizard = PhysicalQualificationWizard()
+        qtbot.addWidget(wizard)
+        physical = physical_readiness(record.setup)
+        wizard.set_context(record, incomplete, physical)
+        assert wizard.result_status.text() == "Statically validated"
+        assert wizard.missing_list.count() > 0
+
+        failed = replace(
+            incomplete,
+            workflow_state=Level2WorkflowState.LEVEL2_EVIDENCE_FAILED,
+            blockers=("DRY_RUN_FAILED",),
+        )
+        wizard.set_context(record, failed, physical)
+        assert wizard.result_status.text() == "Dry-run failed"
+        assert wizard.blocker_list.item(0).text() == "DRY_RUN_FAILED"
+
+        stale = replace(
+            incomplete,
+            workflow_state=Level2WorkflowState.LEVEL2_EVIDENCE_STALE,
+            stale_reasons=("NC_SHA_CHANGED",),
+        )
+        wizard.set_context(record, stale, physical)
+        assert wizard.result_status.text() == "Evidence is stale"
+        assert "Machine Ready" not in "\n".join(
+            label.text() for label in wizard.findChildren(QLabel)
+        )
+    finally:
+        service.set_language(previous)
+
+
+def test_resize_dark_palette_and_long_identity_do_not_change_typed_state(qtbot):
+    record = level2_record()
+    long_setup = replace(record.setup, machine_profile_id="machine-profile-" + "x" * 700)
+    long_record = replace(record, setup=long_setup)
+    state = readiness(long_record)
+    physical = physical_readiness(long_setup)
+    wizard = PhysicalQualificationWizard()
+    qtbot.addWidget(wizard)
+    wizard.setStyleSheet("QWizard { background: #202020; color: #f0f0f0; }")
+    wizard.resize(520, 360)
+    wizard.set_context(long_record, state, physical)
+    wizard.show()
+    QApplication.processEvents()
+    wizard.resize(1100, 760)
+    QApplication.processEvents()
+
+    assert wizard.record is long_record
+    assert wizard.readiness is state
+    assert wizard.machine_identity.text() == long_setup.machine_profile_id
+    assert not state.machine_ready
 
 
 def test_tranche2_catalogs_have_order_parity_no_duplicates_and_utf8():
@@ -148,6 +213,7 @@ def test_24_wizard_cycles_have_zero_modal_and_qthread_delta(qapp, record_testsui
     record = level2_record()
     state = readiness(record)
     durations = []
+    saved = []
     service = translation_service()
     previous = service.language
     try:
@@ -155,10 +221,15 @@ def test_24_wizard_cycles_have_zero_modal_and_qthread_delta(qapp, record_testsui
             started = perf_counter()
             service.set_language(tuple(UiLanguage)[index % 3])
             wizard = PhysicalQualificationWizard()
-            wizard.set_context(record, state)
+            wizard.save_requested.connect(saved.append)
+            physical = physical_readiness(record.setup)
+            wizard.set_context(record, state, physical)
             wizard.resize(720, 520)
             wizard.show()
             wizard.next()
+            wizard.back()
+            wizard._custom_button_clicked(QWizard.WizardButton.CustomButton1)
+            wizard.set_context(record, state, physical)
             qapp.processEvents()
             wizard.close()
             wizard.deleteLater()
@@ -177,6 +248,7 @@ def test_24_wizard_cycles_have_zero_modal_and_qthread_delta(qapp, record_testsui
     assert final.modal_top_levels <= stable.modal_top_levels
     assert final.running_app_threads == 0
     assert max(durations[-6:]) <= max(1.0, max(durations[:6]) * 5.0)
+    assert saved == [record] * 24
     record_testsuite_property("r221_cycles", "24")
     record_testsuite_property("r221_top_level_delta", str(final.top_levels - stable.top_levels))
     record_testsuite_property("r221_hidden_delta", str(final.hidden_top_levels - stable.hidden_top_levels))
