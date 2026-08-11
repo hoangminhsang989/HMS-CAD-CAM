@@ -2,8 +2,8 @@
   "adversarial_matrix_cases": 24,
   "baseline_r224": "3f73da82aaa2574bf9df4c965e27a81d3d367977",
   "baseline_tree_r224": "80c376ecc181a47c9d3490642a326520d3dabcb8",
-  "candidate_head": "431bbf429804e96adc3be7dbd581f8b3a99d5042",
-  "candidate_tree": "1dfff9ddde6df23247428408bb058b758e370c1a",
+  "candidate_head": "afb73604491451d3b73d3ed4eced831de7884eb9",
+  "candidate_tree": "257cf68c49ffb8e82a319b4f0427f4d9e39f0e5e",
   "credential_findings": 0,
   "files": [
     {
@@ -74,7 +74,7 @@
   "verification": {
     "bounded": "839 passed, 3 inherited missing-private-artifact failures, 6 skipped",
     "candidate_induced": 0,
-    "focused": "8 passed",
+    "focused": "9 passed",
     "stage18a_tranche3": "30 passed"
   }
 }

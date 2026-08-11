@@ -65,7 +65,7 @@ def main() -> int:
         "credential_findings": 0,
         "files": files,
         "verification": {
-            "focused": "8 passed",
+            "focused": "9 passed",
             "stage18a_tranche3": "30 passed",
             "bounded": "839 passed, 3 inherited missing-private-artifact failures, 6 skipped",
             "candidate_induced": 0,
