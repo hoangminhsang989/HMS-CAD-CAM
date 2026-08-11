@@ -562,7 +562,7 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     (
         "Review Level1, external-readiness, and Level2 eligibility.",
         "Rà soát Level1, mức sẵn sàng kiểm tra ngoài và điều kiện Level2.",
-        "Level1, 외부 검증 준비 상태 및 Level2 자격을 검토합니다.",
+        "1단계 검증, 외부 검증 준비 상태 및 2단계 자격을 검토합니다.",
     ),
     ("Exact machine profile", "Đúng hồ sơ máy", "정확한 기계 프로필"),
     ("NC artifact", "Kết quả NC", "NC 결과물"),
@@ -581,7 +581,7 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Acceptance authority", "Thẩm quyền chấp thuận", "승인 권한"),
     ("Observations", "Quan sát", "관찰 사항"),
     ("Qualification result", "Kết quả xác nhận", "검증 결과"),
-    ("Level3 boundary", "Ranh giới Level3", "Level3 경계"),
+    ("Level3 boundary", "Ranh giới Level3", "3단계 승인 경계"),
     ("Missing evidence", "Bằng chứng còn thiếu", "누락된 증거"),
     ("Physical blockers", "Lỗi chặn vật lý", "물리적 차단 항목"),
     ("Export verification package", "Xuất gói kiểm tra", "검증 패키지 내보내기"),

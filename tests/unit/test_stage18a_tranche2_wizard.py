@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWizard
 
 from hms_cadcam.cam.qualification import Level2WorkflowState, assess_level2_readiness
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
+from hms_cadcam.ui.localization_audit import _is_mixed
 from hms_cadcam.ui.physical_qualification_wizard import PhysicalQualificationWizard
 from tests.unit._stage18a_qualification_fixtures import qualification_input
 from tests.unit._stage18a_tranche2_fixtures import (
@@ -137,6 +138,8 @@ def test_tranche2_catalogs_have_order_parity_no_duplicates_and_utf8():
     }
     assert required <= set(catalogs[0])
     assert all("�" not in json.dumps(item, ensure_ascii=False) for item in catalogs)
+    for language, catalog in zip(UiLanguage, catalogs):
+        assert all(not _is_mixed(catalog[key], language) for key in required)
 
 
 def test_24_wizard_cycles_have_zero_modal_and_qthread_delta(qapp, record_testsuite_property):
