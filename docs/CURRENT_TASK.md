@@ -1,3 +1,40 @@
+# CANONICAL CURRENT PROGRAMME STATE - R227 STAGE18A SOFTWARE CLOSURE
+
+- R227 verdict: `PASS_R227_STAGE18A_SOFTWARE_SCOPE_EXHAUSTED_AND_PHYSICAL_QUALIFICATION_PENDING`.
+- Stage16A and Stage17A remain **CLOSED**. Stage18A remains
+  `ACTIVE_AWAITING_PHYSICAL_QUALIFICATION`; it is not fully closed.
+- Tranche1 is `FULLY_DELIVERED_LEVEL1`. Tranche2, Tranche3 and Tranche4 are
+  `FULLY_DELIVERED_SOFTWARE`. Stage18A software scope is `COMPLETE`.
+- Current capabilities remain `PRODUCTION_RELEASE_GOVERNANCE_AVAILABLE` and
+  `READY_FOR_CONTROLLED_EXTERNAL_DRY_RUN_HANDOFF`.
+- Physical Level2 is `NOT_ACHIEVED`; physical Level3 is `NOT_ACHIEVED`;
+  `MACHINE_READY=false`; Tapping is `NOT_QUALIFIED`.
+- Owner-approved physical machine samples remain `0`. This is
+  `PHYSICAL_EVIDENCE_ONLY`, because the existing attributable sample-promotion
+  and Level2 evidence-intake architecture is complete.
+- Remaining Stage18A blockers are physical evidence, controller authority,
+  owner input, future machine profiles or future-stage product work. No
+  canonical Tranche5 exists and R227 does not invent one.
+- The exact remaining-scope and closure audit is
+  `docs/STAGE18A_POST_TRANCHE4_REMAINING_SCOPE_MATRIX.md`.
+- Fresh R227 targeted certification: **25 passed**. No product/source/test file
+  changed, so R226 full regression is inherited as **4400 passed / 5 inherited
+  failed / 8 skipped / 2 deselected**, with
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- `STAGE18A_TRANCHES1_4_DELIVERY_COVERAGE_RECONCILED`
+- `STAGE18A_SOFTWARE_SCOPE_EXHAUSTED`
+- `STAGE18A_SOFTWARE_DELIVERY_COMPLETE`
+- `STAGE18A_AWAITING_EXTERNAL_LEVEL2_EVIDENCE`
+- `STAGE18A_PHYSICAL_LEVEL2_PENDING`
+- `STAGE18A_PHYSICAL_LEVEL3_PENDING`
+- `MACHINE_READY_FALSE`
+- `STAGE18A_NO_CNC_CONTROL_BOUNDARY_PRESERVED`
+
+The next action is owner-operated external Level2 evidence collection against
+the exact released job/NC/setup/Tool/policy/handoff identities. R227 does not
+authorize a physical run, Level2/Level3 promotion, CNC connectivity, Tapping,
+second-machine qualification, Tranche5 implementation or a future stage.
+
 # CANONICAL CURRENT PROGRAMME STATE - R224 STAGE18A TRANCHE3 SOFTWARE DELIVERY
 
 - Stage16A: **CLOSED**. Stage17A: **CLOSED**. Stage18A: **ACTIVE**.

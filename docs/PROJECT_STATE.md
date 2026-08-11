@@ -1,3 +1,60 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY - R227 STAGE18A SOFTWARE CLOSURE
+
+- R227 selects Outcome A:
+  `PASS_R227_STAGE18A_SOFTWARE_SCOPE_EXHAUSTED_AND_PHYSICAL_QUALIFICATION_PENDING`.
+- Stage16A and Stage17A remain **CLOSED**. Stage18A is
+  `ACTIVE_AWAITING_PHYSICAL_QUALIFICATION`, not fully closed.
+- Delivery state is Tranche1 `FULLY_DELIVERED_LEVEL1`; Tranche2, Tranche3 and
+  Tranche4 `FULLY_DELIVERED_SOFTWARE`; Stage18A software scope `COMPLETE`.
+- Current software capability is `PRODUCTION_RELEASE_GOVERNANCE_AVAILABLE` and
+  `READY_FOR_CONTROLLED_EXTERNAL_DRY_RUN_HANDOFF`.
+- Level2 is `NOT_ACHIEVED`, Level3 is `NOT_ACHIEVED`,
+  `MACHINE_READY=false`, Tapping is `NOT_QUALIFIED`, and owner-approved
+  physical machine sample count is `0`.
+- Tranches1-4 were reconciled from source, tests, contracts, stores, release
+  records and deterministic package builders, rather than accepted from state
+  labels alone.
+- The layered physical-evidence path binds machine/controller, NC release and
+  SHA, G54 setup, stock/fixture, ordered Tool/Holder set, Post, acceptance
+  policy, verification session, handoff package and manufacturing job release.
+  It can accept future attributable Level2 evidence while stale or tampered
+  identities fail closed.
+- Level3 is represented only by explicit machine-acceptance evidence after
+  external dry-run/single-block/air-cut PASS with authority and exact record
+  reference. Only `MACHINE_ACCEPTED` derives `machine_ready=true`; no such
+  evidence exists in the current programme state.
+- Exact H/D namespaces, G28/G53/reference-return behavior, safe Tool-change
+  position, canned cycles, rigid Tapping, installed controller options,
+  physical coolant and additional offsets remain controller-authority gaps,
+  not unfinished software.
+- Absolute X/Y/Z endpoints are not inferred from the confirmed 500/400/330 mm
+  travel spans. They require owner/manual/measurement input and physical
+  confirmation.
+- D21MiA is `IDENTITY_REFERENCE_ONLY` and remains a future machine profile.
+  No Doosan/other FANUC milling contract is present in current repository
+  authority. SMEC/turning, general CAM 3D/CAD expansion and machine simulation
+  remain future-stage work.
+- No canonical Tranche5 was found. Release rollback/archive/search/import,
+  multi-job dashboards and expanded operator reporting are non-essential
+  future workflow conveniences, not Stage18A closure blockers.
+- Fresh targeted certification is **25 passed**. Because R227 changes no
+  product/source/test file, it inherits R226 full certification:
+  **4400 passed / 5 inherited failed / 8 skipped / 2 deselected** and
+  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Canonical audit: `docs/STAGE18A_POST_TRANCHE4_REMAINING_SCOPE_MATRIX.md`.
+- `STAGE18A_POST_TRANCHE4_REMAINING_SCOPE_MATRIX_COMPLETE`
+- `STAGE18A_SOFTWARE_SCOPE_EXHAUSTED`
+- `STAGE18A_SOFTWARE_DELIVERY_COMPLETE`
+- `STAGE18A_AWAITING_EXTERNAL_LEVEL2_EVIDENCE`
+- `STAGE18A_PHYSICAL_LEVEL2_PENDING`
+- `STAGE18A_PHYSICAL_LEVEL3_PENDING`
+- `MACHINE_READY_FALSE`
+- `STAGE18A_NO_CNC_CONTROL_BOUNDARY_PRESERVED`
+
+The exact next action is a separately authorized, owner-operated controlled
+external Level2 evidence cycle. Stage18A may close only after genuine Level2
+and Level3 physical acceptance; R227 grants no physical-run authority.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY - R224 STAGE18A TRANCHE3 SOFTWARE DELIVERY
 
 - Stage16A is **CLOSED** and Stage17A is **CLOSED**. Stage18A is **ACTIVE**.
