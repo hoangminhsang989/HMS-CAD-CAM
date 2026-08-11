@@ -1,36 +1,37 @@
-# CANONICAL CURRENT PROGRAMME STATE - R222 STAGE18A TRANCHE2 SOFTWARE DELIVERY
+# CANONICAL CURRENT PROGRAMME STATE - R224 STAGE18A TRANCHE3 SOFTWARE DELIVERY
 
 - Stage16A: **CLOSED**. Stage17A: **CLOSED**. Stage18A: **ACTIVE**.
-- Stage18A Tranche1 remains **FULLY_DELIVERED_LEVEL1**. Stage18A Tranche2 is
-  **FULLY_DELIVERED_SOFTWARE** for setup transform, physical-readiness and the
-  external dry-run evidence workflow.
-- Maximum software capability is `READY_FOR_EXTERNAL_LEVEL2_EVIDENCE`.
-  Physical evidence is `NOT_SUPPLIED`; actual Level2 and Level3 are
-  `NOT_ACHIEVED`; `MACHINE_READY=false`.
-- Owner-approved golden machine samples remain `0`. Tapping physical
-  qualification is `NOT_QUALIFIED`; no Tranche2 behavior connects to a CNC,
-  uploads NC, issues machine commands or modifies controller data.
-- R222 directly reviewed and remediated the R221 candidate to exact product
-  commit `fa7c8f5d9ef4a33e38bcfe5c3b0baec60675d956`, tree
-  `e830f0275bcf1eddd8e18c57b4a2a6682bde8fce`. Standard-token DELETE capability
-  passed `5/5` without ACL/UAC remediation, then one `--ff-only` operation
-  integrated that exact identity.
-- Production targeted certification passes **94/94**. The one canonical full
-  regression produced **4314 passed, 5 inherited failed, 8 skipped,
-  2 deselected**; the failures exactly match the trusted production signature.
-  Candidate-induced `0`, indeterminate `0`, and
-  `NEW_FAILURE_DELTA_INTEGRATION=0`.
+- Stage18A Tranche1 remains **FULLY_DELIVERED_LEVEL1**. Stage18A Tranche2 and
+  Stage18A Tranche3 are **FULLY_DELIVERED_SOFTWARE**.
+- Maximum software capability is
+  `READY_FOR_CONTROLLED_EXTERNAL_DRY_RUN_HANDOFF`. This means only that the NC
+  package is software-reviewed, revision-locked and setup-bound for a future
+  controlled external dry-run process.
+- Actual Level2 and Level3 remain `NOT_ACHIEVED`; `MACHINE_READY=false`.
+  Owner-approved physical machine samples remain `0`. Tapping remains
+  `NOT_QUALIFIED`.
+- R224 directly reviewed and remediated the R223 candidate to exact product
+  commit `80c376ecc181a47c9d3490642a326520d3dabcb8`, tree
+  `d695bddde9f0935e509fa44df93c04f57df77705`. Standard-user replacement
+  capability passed `7/7` after one exact-path ACL-only UAC remediation; one
+  `--ff-only` operation integrated that exact identity.
+- Fresh production certification passes **70/70** focused/adversarial and
+  **7/7** affected UI/I18N tests. The one canonical full regression produced
+  **4384 passed, 5 inherited failed, 8 skipped, 2 deselected**; the five nodes
+  exactly match the trusted R222 production signature. Candidate-induced `0`,
+  indeterminate `0`, and `NEW_FAILURE_DELTA_INTEGRATION=0`.
 - Push A delivered the exact product commit to local/tracking/live
   `origin/main` at divergence `0/0`, without force. This is the sole
-  docs/state-only Tranche2 delivery commit for Push B and final AI Sync.
-- Stage18A remains open. No dry-run qualification, Level2/Level3, physical
-  machine acceptance, machine-ready output or Tapping qualification is inferred
-  from software delivery.
-- R222 evidence root:
-  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R222_STAGE18A_TRANCHE2_FULL_SOFTWARE_DELIVERY`.
+  docs/state-only Tranche3 delivery commit for Push B and final AI Sync.
+- Stage18A remains open. No external dry-run completion, Level2/Level3,
+  physical machine acceptance, machine-ready output or Tapping qualification
+  is inferred from software delivery. No CNC/controller communication path was
+  introduced.
+- R224 evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R224_STAGE18A_TRANCHE3_FULL_SOFTWARE_DELIVERY`.
 
-The R220 and older material below remains historical provenance and does not
-override this R222 Stage18A Tranche2 software-delivery state.
+The R222 and older material below remains historical provenance and does not
+override this R224 Stage18A Tranche3 software-delivery state.
 
 # CANONICAL CURRENT PROGRAMME STATE — R215 STAGE17A FORMAL CLOSURE
 
