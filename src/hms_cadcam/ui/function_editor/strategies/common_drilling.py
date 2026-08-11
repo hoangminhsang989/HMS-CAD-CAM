@@ -57,6 +57,28 @@ from hms_cadcam.cam.automatic_drilling import (
     merge_drilling_automatic_intent,
     resolve_drilling_automatic_contract,
 )
+from hms_cadcam.cam.automatic_boring import (
+    BORING_AUTOMATIC_POLICY_KEY,
+    BORING_AUTOMATIC_USER_KEYS,
+    BoringAutomaticContext,
+    merge_boring_automatic_intent,
+    resolve_boring_automatic_contract,
+)
+from hms_cadcam.cam.automatic_hole_geometry import HoleGeometryContext
+from hms_cadcam.cam.automatic_reaming import (
+    REAMING_AUTOMATIC_POLICY_KEY,
+    REAMING_AUTOMATIC_USER_KEYS,
+    ReamingAutomaticContext,
+    merge_reaming_automatic_intent,
+    resolve_reaming_automatic_contract,
+)
+from hms_cadcam.cam.automatic_tapping import (
+    TAPPING_AUTOMATIC_POLICY_KEY,
+    TAPPING_AUTOMATIC_USER_KEYS,
+    TappingAutomaticContext,
+    merge_tapping_automatic_intent,
+    resolve_tapping_automatic_contract,
+)
 from hms_cadcam.cam.automatic_parameters import (
     AUTOMATIC_PARAMETER_CONTRACT_KEY,
     AutomaticParameterContract,
@@ -270,6 +292,38 @@ _DRILLING_AUTO_FIELD_IDS = frozenset(
         "retract_height_mode",
     }
 )
+_HOLE_COMPLETION_AUTO_FIELD_IDS = frozenset(
+    {
+        "automatic_summary",
+        "automatic_pattern",
+        "automatic_target_depth",
+        "automatic_reference_plane",
+        "automatic_safe_plane",
+        "automatic_target_feature",
+        "automatic_provenance",
+        "final_depth_mode",
+        "top_z_mode",
+        "clearance_height_mode",
+        "retract_height_mode",
+    }
+)
+_HOLE_COMPLETION_TARGET_MODE_FIELDS = {
+    DrillingFamilyEditorKind.TAPPING: frozenset(
+        {"nominal_diameter_mode", "pitch_mode", "hand_mode"}
+    ),
+    DrillingFamilyEditorKind.REAMING: frozenset({"nominal_diameter_mode"}),
+    DrillingFamilyEditorKind.BORING: frozenset({"finished_bore_diameter_mode"}),
+}
+_HOLE_COMPLETION_USER_KEYS = {
+    DrillingFamilyEditorKind.TAPPING: TAPPING_AUTOMATIC_USER_KEYS,
+    DrillingFamilyEditorKind.REAMING: REAMING_AUTOMATIC_USER_KEYS,
+    DrillingFamilyEditorKind.BORING: BORING_AUTOMATIC_USER_KEYS,
+}
+_HOLE_COMPLETION_POLICY_KEYS = {
+    DrillingFamilyEditorKind.TAPPING: TAPPING_AUTOMATIC_POLICY_KEY,
+    DrillingFamilyEditorKind.REAMING: REAMING_AUTOMATIC_POLICY_KEY,
+    DrillingFamilyEditorKind.BORING: BORING_AUTOMATIC_POLICY_KEY,
+}
 
 
 def strategy_from_operation(context: DrillingFamilyEditorContext) -> HoleStrategy:
@@ -434,17 +488,24 @@ def _selected_resources_for_id(
 def _stored_drilling_automatic_contract(
     context: DrillingFamilyEditorContext,
 ) -> AutomaticParameterContract | None:
+    return _stored_automatic_contract(context, "drilling.geometry_setup")
+
+
+def _stored_automatic_contract(
+    context: DrillingFamilyEditorContext,
+    expected_policy_key: str,
+) -> AutomaticParameterContract | None:
     raw = dict(context.operation.parameters.values).get(AUTOMATIC_PARAMETER_CONTRACT_KEY)
     if raw is None:
         return None
     if not isinstance(raw, str):
-        raise ValueError("Drilling automatic metadata is invalid.")
+        raise ValueError("Hole-operation automatic metadata is invalid.")
     try:
         contract = AutomaticParameterContract.from_json(raw)
     except ValueError as error:
-        raise ValueError("Drilling automatic metadata is malformed.") from error
-    if contract.policy_key != "drilling.geometry_setup":
-        raise ValueError("Drilling automatic policy identity is invalid.")
+        raise ValueError("Hole-operation automatic metadata is malformed.") from error
+    if contract.policy_key != expected_policy_key:
+        raise ValueError("Hole-operation automatic policy identity is invalid.")
     return contract
 
 
@@ -559,6 +620,189 @@ def _drilling_automatic_contract(
     )
 
 
+def _hole_completion_geometry_context(
+    context: DrillingFamilyEditorContext,
+    strategy: HoleStrategy,
+    source: HoleSource,
+    values: Mapping[str, PresentationValue] | None,
+    resolved_pattern: HolePattern | None,
+) -> HoleGeometryContext:
+    """Build the shared typed view without inventing depth/diameter semantics."""
+    unit = strategy.unit
+    pattern = (
+        resolved_pattern
+        or context.resolved_pattern
+        or (source if isinstance(source, HolePattern) else None)
+    )
+    tolerance = strategy.tolerance.value
+    if values is not None and "tolerance" in values:
+        try:
+            tolerance = _number(values["tolerance"], "tolerance")
+        except ValueError:
+            pass
+    return HoleGeometryContext(
+        unit=unit,
+        hole_locations=() if pattern is None else pattern.locations,
+        geometry_fingerprint=source.fingerprint.digest,
+        geometry_resolved=context.geometry_resolved or resolved_pattern is not None,
+        tolerance=tolerance,
+        # HoleLocation.diameter is intentionally unqualified.  No current
+        # production field supplies feature/thread depth or finished diameter.
+        authoritative_depth_ranges=(),
+        depth_source=None,
+        authoritative_finished_diameters=(),
+        diameter_source=None,
+    )
+
+
+def _length_value(value: object, unit: object) -> float | None:
+    if value is None or not hasattr(value, "to"):
+        return None
+    converted = value.to(unit)
+    return float(converted.value)
+
+
+def _hole_completion_automatic_contract(
+    context: DrillingFamilyEditorContext,
+    source: HoleSource | None = None,
+    values: Mapping[str, PresentationValue] | None = None,
+    resolved_pattern: HolePattern | None = None,
+) -> AutomaticParameterContract:
+    """Dispatch shared geometry evidence into one operation-specific policy."""
+    if context.kind is DrillingFamilyEditorKind.DRILLING:
+        return _drilling_automatic_contract(context, source, values, resolved_pattern)
+    strategy = strategy_from_operation(context)
+    source = context.hole_source if source is None else source
+    geometry_context = _hole_completion_geometry_context(
+        context, strategy, source, values, resolved_pattern
+    )
+    assembly_id = None if values is None else values.get("tool_assembly_id")
+    assembly, tool, holder = _selected_resources_for_id(context, assembly_id)
+    tool_geometry = None if tool is None else tool.cutting_geometry
+    unit = strategy.unit
+
+    def candidate(key: str, fallback: str | float) -> str | float:
+        if values is None or key not in values:
+            return fallback
+        if isinstance(fallback, str):
+            try:
+                return _text(values[key], key)
+            except ValueError:
+                return fallback
+        try:
+            return _number(values[key], key)
+        except ValueError:
+            return fallback
+
+    common = {
+        "manual_top_z": float(candidate("top_z", strategy.top_z.value)),
+        "manual_final_depth": float(candidate("final_depth", strategy.final_depth.value)),
+        "manual_clearance_height": float(
+            candidate("clearance_height", strategy.clearance_height.value)
+        ),
+        "manual_retract_height": float(
+            candidate("retract_height", strategy.retract_height.value)
+        ),
+    }
+    if isinstance(strategy, TappingStrategy):
+        hand = getattr(tool_geometry, "hand", None)
+        base = resolve_tapping_automatic_contract(
+            TappingAutomaticContext(
+                geometry_context,
+                None if tool is None else tool.family,
+                None if tool is None else tool.content_fingerprint.digest,
+                _length_value(getattr(tool_geometry, "nominal_diameter", None), unit),
+                _length_value(getattr(tool_geometry, "pitch", None), unit),
+                None if hand is None else hand.value,
+                _length_value(getattr(tool_geometry, "threaded_length", None), unit),
+                None if assembly is None else assembly.stickout.to(unit).value,
+                **common,
+                manual_nominal_diameter=float(
+                    candidate("nominal_diameter", strategy.nominal_diameter.value)
+                ),
+                manual_pitch=float(candidate("pitch", strategy.pitch.value)),
+                manual_hand=str(candidate("hand", strategy.hand.value)),
+            )
+        )
+        merge = merge_tapping_automatic_intent
+    elif isinstance(strategy, ReamingStrategy):
+        base = resolve_reaming_automatic_contract(
+            ReamingAutomaticContext(
+                geometry_context,
+                None if tool is None else tool.family,
+                None if tool is None else tool.content_fingerprint.digest,
+                _length_value(getattr(tool_geometry, "diameter", None), unit),
+                _length_value(getattr(tool_geometry, "axial_cutting_length", None), unit),
+                None if assembly is None else assembly.stickout.to(unit).value,
+                **common,
+                manual_nominal_diameter=float(
+                    candidate("nominal_diameter", strategy.nominal_diameter.value)
+                ),
+            )
+        )
+        merge = merge_reaming_automatic_intent
+    else:
+        assert isinstance(strategy, BoringStrategy)
+        base = resolve_boring_automatic_contract(
+            BoringAutomaticContext(
+                geometry_context,
+                None if tool is None else tool.family,
+                None if tool is None else tool.content_fingerprint.digest,
+                None if holder is None else holder.content_fingerprint.digest,
+                _length_value(
+                    getattr(tool_geometry, "minimum_bore_diameter", None), unit
+                ),
+                _length_value(
+                    getattr(tool_geometry, "maximum_bore_diameter", None), unit
+                ),
+                _length_value(getattr(tool_geometry, "axial_cutting_length", None), unit),
+                None if assembly is None else assembly.stickout.to(unit).value,
+                **common,
+                manual_finished_bore_diameter=float(
+                    candidate(
+                        "finished_bore_diameter",
+                        strategy.finished_bore_diameter.value,
+                    )
+                ),
+            )
+        )
+        merge = merge_boring_automatic_intent
+    stored = _stored_automatic_contract(
+        context, _HOLE_COMPLETION_POLICY_KEYS[context.kind]
+    )
+    user_keys = _HOLE_COMPLETION_USER_KEYS[context.kind]
+    manual_values: dict[str, str | int | float | bool | None] = {}
+    for key in user_keys:
+        manual_values[key] = base.value(key).effective_value
+        if values is None or key not in values:
+            continue
+        if key == "hand":
+            try:
+                manual_values[key] = _text(values[key], key)
+            except ValueError:
+                pass
+        else:
+            try:
+                manual_values[key] = _number(values[key], key)
+            except ValueError:
+                pass
+    modes: dict[str, AutomaticParameterMode] = {}
+    if values is not None:
+        for key in user_keys:
+            raw = values.get(f"{key}_mode")
+            if raw is not None:
+                try:
+                    modes[key] = AutomaticParameterMode(str(raw))
+                except ValueError:
+                    pass
+    return merge(
+        base,
+        stored,
+        manual_values,
+        requested_modes=modes,
+    )
+
+
 def _automatic_reason(value: AutomaticParameterValue) -> str:
     prefix = "AUTO intent preserved while current evidence is unavailable: "
     if value.reason.startswith(prefix):
@@ -626,6 +870,73 @@ def _drilling_automatic_presentation(
             for key in DRILLING_AUTOMATIC_USER_KEYS
         },
     }
+
+
+def _hole_completion_automatic_presentation(
+    context: DrillingFamilyEditorContext,
+    contract: AutomaticParameterContract,
+    unit: str,
+) -> dict[str, PresentationValue]:
+    """Present compact Basic status and human-readable Advanced provenance."""
+    pattern = contract.value("pattern_count")
+    pattern_text = (
+        f"{pattern.effective_value} {ui_text('lỗ')} · "
+        f"{contract.value('pattern_fingerprint').effective_value}"
+        if pattern.status is AutomaticParameterStatus.RESOLVED
+        else f"{ui_text('không khả dụng')} · {_automatic_reason(pattern)}"
+    )
+    user_keys = _HOLE_COMPLETION_USER_KEYS[context.kind]
+    auto_count = sum(
+        contract.value(key).mode is AutomaticParameterMode.AUTO
+        and contract.value(key).status is AutomaticParameterStatus.RESOLVED
+        for key in user_keys
+    )
+    manual_count = sum(contract.value(key).has_manual_override for key in user_keys)
+    unavailable_count = len(user_keys) - auto_count - manual_count
+    if context.kind is DrillingFamilyEditorKind.TAPPING:
+        target_keys = ("nominal_diameter", "pitch", "hand")
+        target_label = ui_text("Định nghĩa ren")
+    elif context.kind is DrillingFamilyEditorKind.REAMING:
+        target_keys = ("nominal_diameter",)
+        target_label = ui_text("Đường kính hoàn thiện")
+    else:
+        target_keys = ("finished_bore_diameter",)
+        target_label = ui_text("Đường kính doa đích")
+    target_text = " · ".join(
+        _automatic_text(contract.value(key), "" if key == "hand" else unit)
+        for key in target_keys
+    )
+    result: dict[str, PresentationValue] = {
+        "automatic_summary": (
+            f"{auto_count} AUTO · {manual_count} {ui_text('tùy chỉnh')} · "
+            f"{unavailable_count} {ui_text('không khả dụng')}"
+        ),
+        "automatic_pattern": pattern_text,
+        "automatic_target_depth": _automatic_text(
+            contract.value("final_depth"), unit
+        ),
+        "automatic_reference_plane": _automatic_text(contract.value("top_z"), unit),
+        "automatic_safe_plane": (
+            f"{ui_text('Retract')} "
+            f"{_automatic_text(contract.value('retract_height'), unit)} · "
+            f"{ui_text('Clearance')} "
+            f"{_automatic_text(contract.value('clearance_height'), unit)}"
+        ),
+        "automatic_target_feature": f"{target_label}: {target_text}",
+        "automatic_provenance": (
+            f"{ui_text('Mẫu lỗ')}: {_automatic_reason(pattern)}; "
+            f"{ui_text('Chiều sâu')}: "
+            f"{_automatic_reason(contract.value('final_depth'))}; "
+            f"{target_label}: {_automatic_reason(contract.value(target_keys[0]))}"
+        ),
+    }
+    result.update(
+        {
+            f"{key}_mode": contract.value(key).mode.value
+            for key in user_keys
+        }
+    )
+    return result
 
 
 def _tool_summaries(context: DrillingFamilyEditorContext) -> tuple[str, str, str]:
@@ -785,6 +1096,14 @@ def drilling_family_applied_values(
                 "dwell_seconds": str(strategy.dwell_seconds),
                 "retract_policy": strategy.retract_policy.value,
             }
+        )
+    if context.kind is not DrillingFamilyEditorKind.DRILLING:
+        values.update(
+            _hole_completion_automatic_presentation(
+                context,
+                _hole_completion_automatic_contract(context),
+                context.setup.wcs.origin.unit.value,
+            )
         )
     return values
 
@@ -959,17 +1278,26 @@ def drilling_family_draft_transform(
     draft: DrillingFamilyEditorDraftContext,
     values: Mapping[str, PresentationValue],
 ) -> dict[str, PresentationValue]:
-    """Recompute Drilling AUTO fields after Tool, geometry, cycle or depth edits."""
-    if context.kind is not DrillingFamilyEditorKind.DRILLING:
-        return {}
+    """Recompute hole-family AUTO fields after Tool, geometry or depth edits."""
     source = _source_for_values(context, draft, values)
-    contract = _drilling_automatic_contract(
+    contract = _hole_completion_automatic_contract(
         context, source, values, draft.resolved_pattern
     )
-    result = _drilling_automatic_presentation(
-        contract, context.setup.wcs.origin.unit.value
+    result = (
+        _drilling_automatic_presentation(
+            contract, context.setup.wcs.origin.unit.value
+        )
+        if context.kind is DrillingFamilyEditorKind.DRILLING
+        else _hole_completion_automatic_presentation(
+            context, contract, context.setup.wcs.origin.unit.value
+        )
     )
-    for key in DRILLING_AUTOMATIC_USER_KEYS:
+    user_keys = (
+        DRILLING_AUTOMATIC_USER_KEYS
+        if context.kind is DrillingFamilyEditorKind.DRILLING
+        else _HOLE_COMPLETION_USER_KEYS[context.kind]
+    )
+    for key in user_keys:
         automatic = contract.value(key)
         value = automatic.effective_value
         if (
@@ -989,16 +1317,19 @@ def prepare_drilling_family_update(
     """Build one legacy-equivalent candidate without mutating project state."""
     complete = _complete_values(context, values)
     source = _source_for_values(context, draft, complete)
-    automatic: AutomaticParameterContract | None = None
-    if context.kind is DrillingFamilyEditorKind.DRILLING:
-        automatic = _drilling_automatic_contract(
-            context, source, complete, draft.resolved_pattern
-        )
-        complete = dict(complete)
-        for key in DRILLING_AUTOMATIC_USER_KEYS:
-            effective = automatic.value(key).effective_value
-            if effective is not None:
-                complete[key] = str(effective)
+    automatic = _hole_completion_automatic_contract(
+        context, source, complete, draft.resolved_pattern
+    )
+    user_keys = (
+        DRILLING_AUTOMATIC_USER_KEYS
+        if context.kind is DrillingFamilyEditorKind.DRILLING
+        else _HOLE_COMPLETION_USER_KEYS[context.kind]
+    )
+    complete = dict(complete)
+    for key in user_keys:
+        effective = automatic.value(key).effective_value
+        if effective is not None:
+            complete[key] = str(effective)
     strategy = _strategy_from_values(context, source, complete)
     assembly_id = _text(complete["tool_assembly_id"], "tool_assembly_id")
     assembly = next(
@@ -1036,23 +1367,27 @@ def prepare_drilling_family_update(
     geometry_inputs = _geometry_inputs(context.operation.geometry_inputs, source, draft)
     base_parameters = strategy.to_operation_parameters()
     persist_automatic = False
-    if automatic is not None:
-        previous = drilling_family_applied_values(context)
-        automatic_changed = any(
-            complete.get(key) != previous.get(key)
-            for key in (
-                *DRILLING_AUTOMATIC_USER_KEYS,
-                *(f"{key}_mode" for key in DRILLING_AUTOMATIC_USER_KEYS),
-            )
+    previous = drilling_family_applied_values(context)
+    automatic_changed = any(
+        complete.get(key) != previous.get(key)
+        for key in (
+            *user_keys,
+            *(f"{key}_mode" for key in user_keys),
         )
-        persist_automatic = (
-            _stored_drilling_automatic_contract(context) is not None
-            or automatic_changed
-            or any(
-                automatic.value(key).mode is AutomaticParameterMode.AUTO
-                for key in DRILLING_AUTOMATIC_USER_KEYS
-            )
+    )
+    expected_policy = (
+        "drilling.geometry_setup"
+        if context.kind is DrillingFamilyEditorKind.DRILLING
+        else _HOLE_COMPLETION_POLICY_KEYS[context.kind]
+    )
+    persist_automatic = (
+        _stored_automatic_contract(context, expected_policy) is not None
+        or automatic_changed
+        or any(
+            automatic.value(key).mode is AutomaticParameterMode.AUTO
+            for key in user_keys
         )
+    )
     parameter_set = (
         OperationParameterSet(
             base_parameters.strategy_key,
@@ -1061,7 +1396,7 @@ def prepare_drilling_family_update(
             + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic.to_json()),),
             base_parameters.schema_version,
         )
-        if automatic is not None and persist_automatic
+        if persist_automatic
         else base_parameters
     )
     tool_reference = ToolAssemblyReference.from_assembly(assembly)
@@ -1504,6 +1839,7 @@ def _advanced_fields(
                 order=10, level=ParameterDisclosureLevel.ADVANCED,
             ),
             dwell,
+            *_hole_completion_advanced_fields(context, values, unit, order=100),
         )
     retract_value = values["retract_policy"]
     return (
@@ -1518,7 +1854,59 @@ def _advanced_fields(
             "retract_policy", "Chế độ rút dao", retract_value, order=50,
             level=ParameterDisclosureLevel.ADVANCED,
         ),
+        *_hole_completion_advanced_fields(context, values, unit, order=100),
     )
+
+
+def _hole_completion_advanced_fields(
+    context: DrillingFamilyEditorContext,
+    values: Mapping[str, PresentationValue],
+    unit: str,
+    *,
+    order: int,
+) -> tuple[FunctionEditorField, ...]:
+    """Expose reset-to-AUTO and compact provenance for Tranche5 operations."""
+    del unit
+    automatic = _hole_completion_automatic_contract(context)
+    fields: list[FunctionEditorField] = [
+        _read_only(
+            "automatic_safe_plane",
+            "Mặt phẳng an toàn",
+            values["automatic_safe_plane"],
+            order=order,
+            level=ParameterDisclosureLevel.ADVANCED,
+        ),
+    ]
+    labels = {
+        "top_z": "Chế độ Top",
+        "final_depth": "Chế độ độ sâu",
+        "retract_height": "Chế độ Retract",
+        "clearance_height": "Chế độ Clearance",
+        "nominal_diameter": "Chế độ đường kính",
+        "pitch": "Chế độ bước ren",
+        "hand": "Chế độ hướng ren",
+        "finished_bore_diameter": "Chế độ đường kính doa",
+    }
+    for index, key in enumerate(_HOLE_COMPLETION_USER_KEYS[context.kind]):
+        fields.append(
+            _automatic_mode_field(
+                f"{key}_mode",
+                labels[key],
+                values[f"{key}_mode"],
+                auto_available=(automatic.value(key).resolved_value is not None),
+                order=order + 10 + index * 10,
+            )
+        )
+    fields.append(
+        _read_only(
+            "automatic_provenance",
+            "Nguồn gốc thiết lập tự động",
+            values["automatic_provenance"],
+            order=order + 100,
+            level=ParameterDisclosureLevel.ADVANCED,
+        )
+    )
+    return tuple(fields)
 
 
 def build_drilling_family_schema(
@@ -1596,12 +1984,38 @@ def build_drilling_family_schema(
                 ),
                 *(
                     (
-                        _read_only("automatic_summary", "Auto Setup", values["automatic_summary"], order=70),
+                        _read_only(
+                            "automatic_summary",
+                            (
+                                "Auto Setup"
+                                if context.kind is DrillingFamilyEditorKind.DRILLING
+                                else "Hole Completion Auto Setup"
+                            ),
+                            values["automatic_summary"],
+                            order=70,
+                        ),
                         _read_only("automatic_pattern", "Mẫu lỗ tự động", values["automatic_pattern"], order=80),
                         _read_only("automatic_target_depth", "Độ sâu đích", values["automatic_target_depth"], order=90),
                         _read_only("automatic_reference_plane", "Mặt phẳng tham chiếu", values["automatic_reference_plane"], order=100),
+                        *(
+                            (
+                                _read_only(
+                                    "automatic_target_feature",
+                                    "Feature đích",
+                                    values["automatic_target_feature"],
+                                    order=110,
+                                ),
+                            )
+                            if context.kind is not DrillingFamilyEditorKind.DRILLING
+                            else ()
+                        ),
                     )
-                    if context.kind is DrillingFamilyEditorKind.DRILLING
+                    if context.kind in {
+                        DrillingFamilyEditorKind.DRILLING,
+                        DrillingFamilyEditorKind.TAPPING,
+                        DrillingFamilyEditorKind.REAMING,
+                        DrillingFamilyEditorKind.BORING,
+                    }
                     else ()
                 ),
             ),
@@ -1791,6 +2205,9 @@ def validate_drilling_family_schema_contract(
     expected = _COMMON_FIELD_IDS | _VARIANT_FIELD_IDS[kind]
     if kind is DrillingFamilyEditorKind.DRILLING:
         expected |= _DRILLING_AUTO_FIELD_IDS
+    else:
+        expected |= _HOLE_COMPLETION_AUTO_FIELD_IDS
+        expected |= _HOLE_COMPLETION_TARGET_MODE_FIELDS[kind]
     actual = {field.field_id for field in schema.fields}
     if actual != expected:
         raise ValueError(

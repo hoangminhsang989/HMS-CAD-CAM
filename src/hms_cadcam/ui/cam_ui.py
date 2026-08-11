@@ -2107,10 +2107,8 @@ class CamWorkspace(QWidget):
             field_action_callback=lambda action_id, values: self._drilling_family_field_action(
                 context, draft, action_id, values
             ),
-            draft_transform_callback=(
-                (lambda values: drilling_family_draft_transform(context, draft, values))
-                if kind is DrillingFamilyEditorKind.DRILLING
-                else None
+            draft_transform_callback=lambda values: drilling_family_draft_transform(
+                context, draft, values
             ),
             tool_profile_interaction_callback=(
                 (

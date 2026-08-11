@@ -304,6 +304,8 @@ class BoringStrategy:
             )
         data = dict(value.values)
         try:
+            # Stage17A automatic setup is additive metadata, not a domain field.
+            data.pop("automatic_parameter_contract", None)
             chunk_count = data.pop("geometry_chunk_count")
             if type(chunk_count) is not int or not 1 <= chunk_count <= 1024:
                 raise ValueError("invalid geometry chunk count")

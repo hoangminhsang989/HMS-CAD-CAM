@@ -6,6 +6,18 @@ import math
 from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
+from hms_cadcam.cam.automatic_hole_geometry import HoleGeometryContext
+from hms_cadcam.cam.automatic_parameters import (
+    AUTOMATIC_PARAMETER_CONTRACT_KEY,
+    AutomaticParameterContract,
+)
+from hms_cadcam.cam.automatic_tapping import (
+    TAPPING_AUTOMATIC_POLICY_KEY,
+    TappingAutomaticContext,
+    resolve_tapping_automatic_contract,
+    validate_tapping_automatic_contract,
+)
+
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
     ComputationToken,
@@ -143,6 +155,9 @@ class TappingGenerator:
         holes = self._holes_in_setup(region, setup, strategy)
         assembly_value, tool_value = self._validate_tool(
             operation, strategy, holes, assembly, tool
+        )
+        self._validate_automatic_setup(
+            operation, strategy, region, assembly_value, tool_value
         )
         machine_value = self._validate_machine(operation, strategy, machine)
         event_estimate = len(holes) * 12 + 6
@@ -567,6 +582,60 @@ class TappingGenerator:
                     "Known hole diameter does not match the tapping strategy",
                 )
         return assembly, tool
+
+    @staticmethod
+    def _validate_automatic_setup(
+        operation: Operation,
+        strategy: TappingStrategy,
+        region: DrillingRegion,
+        assembly: ToolAssembly,
+        tool: ToolDefinition,
+    ) -> None:
+        """Recompute persisted Tapping AUTO dependencies before emission."""
+        raw = dict(operation.parameters.values).get(AUTOMATIC_PARAMETER_CONTRACT_KEY)
+        if raw is None:
+            return
+        try:
+            if not isinstance(raw, str):
+                raise ValueError("invalid payload")
+            stored = AutomaticParameterContract.from_json(raw)
+            if stored.policy_key != TAPPING_AUTOMATIC_POLICY_KEY:
+                raise ValueError("wrong policy")
+            geometry = tool.cutting_geometry
+            if not isinstance(geometry, TapGeometry):
+                raise ValueError("invalid Tap geometry")
+            current = resolve_tapping_automatic_contract(
+                TappingAutomaticContext(
+                    HoleGeometryContext(
+                        strategy.unit,
+                        region.pattern.locations,
+                        strategy.geometry.source.fingerprint.digest,
+                        True,
+                        strategy.tolerance.value,
+                    ),
+                    tool.family,
+                    tool.content_fingerprint.digest,
+                    geometry.nominal_diameter.to(strategy.unit).value,
+                    geometry.pitch.to(strategy.unit).value,
+                    geometry.hand.value,
+                    geometry.threaded_length.to(strategy.unit).value,
+                    assembly.stickout.to(strategy.unit).value,
+                    strategy.top_z.value,
+                    strategy.final_depth.value,
+                    strategy.clearance_height.value,
+                    strategy.retract_height.value,
+                    strategy.nominal_diameter.value,
+                    strategy.pitch.value,
+                    strategy.hand.value,
+                ),
+                quality_profile=stored.quality_profile,
+            )
+            validate_tapping_automatic_contract(stored, current)
+        except (TypeError, ValueError) as error:
+            raise TappingGenerationError(
+                DiagnosticCode.TAP_INVALID_PARAMETERS,
+                "Persisted Tapping Auto Setup is stale or malformed",
+            ) from error
 
     @staticmethod
     def _validate_machine(

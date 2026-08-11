@@ -14,6 +14,10 @@ from hms_cadcam.cam.automatic_parameters import (
     AutomaticValidationResult,
     CamQualityProfile,
 )
+from hms_cadcam.cam.automatic_hole_geometry import (
+    HoleGeometryContext,
+    analyze_hole_geometry,
+)
 from hms_cadcam.cam.domain import (
     DependencyFingerprint,
     DrillingCycle,
@@ -153,74 +157,28 @@ def analyze_drilling_pattern(
     context: DrillingAutomaticContext,
 ) -> DrillingPatternAnalysis:
     """Validate and normalize the current resolved 2D +Z hole pattern."""
-    if not context.geometry_resolved:
-        return _ineligible("Hole geometry is missing, stale or unresolved.")
-    if not context.hole_locations:
-        return _ineligible("At least one resolved hole location is required.")
-    if context.geometry_fingerprint is None:
-        return _ineligible("A stable hole-geometry fingerprint is required.")
-    ordered: list[tuple[tuple[float, float, float], str, HoleLocation]] = []
-    first = context.hole_locations[0]
-    if first.unit is not context.unit:
-        return _ineligible("Hole-pattern unit does not match the operation.")
-    axis = (first.axis.x, first.axis.y, first.axis.z)
-    if (
-        abs(axis[0]) > _AXIS_TOLERANCE
-        or abs(axis[1]) > _AXIS_TOLERANCE
-        or axis[2] < 1.0 - _AXIS_TOLERANCE
-    ):
-        return _ineligible("The current drilling generator supports only the setup +Z axis.")
-    plane_z = first.plane_origin.z
-    for location in context.hole_locations:
-        centre = (location.position.x, location.position.y, location.position.z)
-        numeric = (*centre, location.axis.x, location.axis.y, location.axis.z)
-        if location.unit is not context.unit or any(not math.isfinite(v) for v in numeric):
-            return _ineligible("Hole centres, axes and units must be finite and consistent.")
-        if (
-            abs(location.axis.x - axis[0]) > _AXIS_TOLERANCE
-            or abs(location.axis.y - axis[1]) > _AXIS_TOLERANCE
-            or abs(location.axis.z - axis[2]) > _AXIS_TOLERANCE
-        ):
-            return _ineligible("Selected holes have mixed incompatible drilling axes.")
-        if abs(location.plane_origin.z - plane_z) > context.tolerance:
-            return _ineligible("Selected holes do not share one machining plane.")
-        ordered.append((centre, location.fingerprint.digest, location))
-    ordered.sort(key=lambda item: (*item[0], item[1]))
-    centres = tuple(item[0] for item in ordered)
-    identities = tuple(item[1] for item in ordered)
-    minimum_spacing: float | None = None
-    for index, centre in enumerate(centres):
-        for other in centres[index + 1 :]:
-            distance = math.dist(centre, other)
-            if distance <= context.tolerance:
-                return _ineligible("Duplicate or ambiguous hole centres are not eligible.")
-            minimum_spacing = (
-                distance if minimum_spacing is None else min(minimum_spacing, distance)
-            )
-    xs = tuple(item[0] for item in centres)
-    ys = tuple(item[1] for item in centres)
-    bounding = (min(xs), min(ys), max(xs), max(ys))
-    dependency = DependencyFingerprint.from_payload(
-        {
-            "unit": context.unit.value,
-            "geometry_fingerprint": context.geometry_fingerprint,
-            "centres": centres,
-            "identities": identities,
-            "axis": axis,
-            "plane_z": plane_z,
-        }
+    shared = analyze_hole_geometry(
+        HoleGeometryContext(
+            unit=context.unit,
+            hole_locations=context.hole_locations,
+            geometry_fingerprint=context.geometry_fingerprint,
+            geometry_resolved=context.geometry_resolved,
+            tolerance=context.tolerance,
+            authoritative_depth_ranges=context.authoritative_depth_ranges,
+            depth_source=("feature_geometry" if context.authoritative_depth_ranges else None),
+        )
     )
     return DrillingPatternAnalysis(
-        True,
-        "Resolved finite hole pattern with one setup-compatible axis and plane.",
-        centres,
-        identities,
-        len(centres),
-        axis,
-        plane_z,
-        bounding,
-        minimum_spacing,
-        dependency.digest,
+        shared.eligible,
+        shared.reason,
+        shared.normalized_centres,
+        shared.ordered_hole_identity,
+        shared.count,
+        shared.axis,
+        shared.plane_z,
+        shared.bounding_box,
+        shared.minimum_spacing,
+        shared.fingerprint,
     )
 
 
