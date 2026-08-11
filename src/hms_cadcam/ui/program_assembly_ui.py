@@ -63,6 +63,13 @@ from hms_cadcam.cam.post import (
     validate_assembly_request,
 )
 from hms_cadcam.cam.post.lowering import PostSourceSnapshot
+from hms_cadcam.cam.qualification.model import (
+    MachineQualificationContract,
+    QualificationReport,
+)
+from hms_cadcam.cam.qualification.profile import robodrill_alpha_d21mib_contract
+from hms_cadcam.cam.qualification.service import MachineQualificationService
+from hms_cadcam.cam.qualification.store import QualificationStoreError
 from hms_cadcam.project.exceptions import ProjectError
 from hms_cadcam.ui.post_ui import (
     ExternalExportUiStatus,
@@ -71,6 +78,7 @@ from hms_cadcam.ui.post_ui import (
     build_production_post_request,
     sanitize_post_filename,
 )
+from hms_cadcam.ui.machine_qualification_panel import MachineQualificationPanel
 from hms_cadcam.ui.localization import (
     LocalizedComboBox,
     localize_widget_tree,
@@ -354,6 +362,7 @@ class ProgramAssemblyPanel(QWidget):
         self.setObjectName("CamProgramAssemblyPanel")
         self._service = service
         self._assembly_service = assembly_service or ProgramAssemblyService()
+        self._machine_qualification_service = MachineQualificationService()
         self._project_id: object | None = None
         self._project_root: Path | None = None
         self._project_name = ""
@@ -448,6 +457,9 @@ class ProgramAssemblyPanel(QWidget):
         ):
             source_form.addRow(label, widget)
         root.addWidget(source_group)
+
+        self.machine_qualification_panel = MachineQualificationPanel(self)
+        root.addWidget(self.machine_qualification_panel)
 
         context_group = QGroupBox("Shared program context")
         context_form = QFormLayout(context_group)
@@ -742,6 +754,7 @@ class ProgramAssemblyPanel(QWidget):
         self._last_export = None
         self._external_status = ExternalExportUiStatus.NEVER_EXPORTED
         self._navigation = ()
+        self.machine_qualification_panel.clear_report()
         self.state = replace(
             self.state,
             assembly_status=ProgramAssemblyUiStatus.MISSING,
@@ -771,7 +784,51 @@ class ProgramAssemblyPanel(QWidget):
         self._set_project_enabled(True)
         self._set_status(ProgramAssemblyUiStatus.MISSING)
         self._refresh_managed_entry()
+        self.refresh_machine_qualification()
         self._refresh_projection()
+
+    def set_machine_qualification_report(
+        self,
+        report: QualificationReport,
+        contract: MachineQualificationContract,
+    ) -> None:
+        """Render an application-owned Stage18A report without starting work."""
+
+        self.machine_qualification_panel.set_report(report, contract)
+
+    def clear_machine_qualification_report(self) -> None:
+        """Clear qualification presentation when machine/profile identity changes."""
+
+        self.machine_qualification_panel.clear_report()
+
+    def refresh_machine_qualification(self) -> None:
+        """Reload only a verified record bound to the current managed artifact."""
+
+        if self._project_root is None or self._managed_entry is None:
+            self.machine_qualification_panel.clear_report()
+            return
+        try:
+            artifacts = self._machine_qualification_service.load(self._project_root)
+        except QualificationStoreError:
+            logger.exception("Machine qualification persistence is invalid")
+            self.machine_qualification_panel.clear_report()
+            return
+        matching = tuple(
+            item
+            for item in artifacts
+            if item.managed_nc_artifact_id == str(self._managed_entry.artifact_id)
+            and item.managed_nc_artifact_fingerprint
+            == self._managed_entry.artifact_fingerprint
+        )
+        if not matching:
+            self.machine_qualification_panel.clear_report()
+            return
+        selected = sorted(matching, key=lambda item: item.artifact_id)[-1]
+        contract = robodrill_alpha_d21mib_contract()
+        if selected.report.machine_contract_fingerprint != contract.fingerprint:
+            self.machine_qualification_panel.clear_report()
+            return
+        self.machine_qualification_panel.set_report(selected.report, contract)
 
     def set_selected_operation(
         self,

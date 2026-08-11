@@ -70,6 +70,7 @@ APPROVED_LATIN_TOKENS = frozenset(
         "CAD",
         "CAM",
         "CNC",
+        "NC",
         "TOOL",
         "HOLDER",
         "POST",
@@ -110,6 +111,8 @@ APPROVED_LATIN_TOKENS = frozenset(
         "FAIL-CLOSED",
         "MACHINE-READY",
         "PID",
+        # LATIN_WORD captures the technical token SHA-256 as ``SHA-``.
+        "SHA-",
     }
 )
 LATIN_WORD = re.compile(r"[A-Za-z][A-Za-z-]+")
