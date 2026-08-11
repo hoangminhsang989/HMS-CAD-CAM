@@ -1,40 +1,37 @@
-# CANONICAL CURRENT PROGRAMME SUMMARY - R220 STAGE18A TRANCHE1 LEVEL1 FULL DELIVERY
+# CANONICAL CURRENT PROGRAMME SUMMARY - R222 STAGE18A TRANCHE2 SOFTWARE DELIVERY
 
 - Stage16A is **CLOSED** and Stage17A is **CLOSED**. Stage18A is **ACTIVE**.
-- Stage18A Tranche1 is `FULLY_DELIVERED_LEVEL1` for the exact FANUC ROBODRILL
-  alpha-D21MiB / FANUC 31i-B / BT30 profile.
-- Qualification capability is `LEVEL1_STATICALLY_VALIDATED`. Physical
-  qualification is `NOT_PERFORMED`; Level2 and Level3 are `NOT_ACHIEVED`;
-  `MACHINE_READY=false`.
-- Tapping is `NOT_QUALIFIED_FOR_MACHINE_READY_OUTPUT`. The static validator
-  preserves `TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED`, and the count of
-  owner-approved physical golden machine samples is `0`.
-- R219 final direct review approved product commit
-  `01aecc5878e61fe32556b0d01a4a648287be70ef`, tree
-  `b78fb46e119cc7cf944184f02226b2279048fc09`. R220 integrated that exact
-  identity by one `--ff-only` operation after exact-two ACL and standard-token
-  replacement proof.
-- The ACL bootstrap changed only the two authorized file DACLs before
-  integration. Raw bytes, Git blobs, ADS, owner, parent ACL, attributes and
-  reparse state remained unchanged; DELETE passed `2/2`, the complete
-  replacement/add probe passed `24/24`, and residue/staged content were `0`.
-- Fresh post-integration targeted certification passes **169/169**. The single
-  canonical full regression produced **4264 passed, 5 inherited failures,
-  8 skipped and 2 deselected**. The five nodes are an exact subset of the
-  trusted eight-node signature; three previously missing private Stage9A.7
-  artifact nodes now pass. Candidate-induced `0`, indeterminate `0`, and
+- Stage18A Tranche1 remains `FULLY_DELIVERED_LEVEL1`; Stage18A Tranche2 is
+  `FULLY_DELIVERED_SOFTWARE` for setup transform, physical-readiness and the
+  external dry-run evidence workflow.
+- Maximum software capability is `READY_FOR_EXTERNAL_LEVEL2_EVIDENCE`.
+  Physical evidence is `NOT_SUPPLIED`; Level2 is `NOT_ACHIEVED`, Level3 is
+  `NOT_ACHIEVED`, and `MACHINE_READY=false`.
+- Owner-approved golden machine samples remain `0`. Tapping physical
+  qualification is `NOT_QUALIFIED`. No direct CNC connection, NC upload,
+  machine command or controller mutation path was introduced.
+- R222 final direct review approved exact product commit
+  `fa7c8f5d9ef4a33e38bcfe5c3b0baec60675d956`, tree
+  `e830f0275bcf1eddd8e18c57b4a2a6682bde8fce`, after permanent adversarial
+  regressions. Standard-token DELETE passed `5/5` with unchanged bytes and no
+  ACL/UAC remediation; one `--ff-only` operation integrated the exact identity.
+- Fresh production targeted certification passes **94/94**. The single
+  canonical full regression produced **4314 passed, 5 inherited failures,
+  8 skipped and 2 deselected**. The five failure nodes exactly match the trusted
+  production signature; the three private Stage9A.7 artifact nodes pass.
+  Candidate-induced `0`, indeterminate `0`, and
   `NEW_FAILURE_DELTA_INTEGRATION=0`.
-- Push A delivered exact product commit `01aecc5878e61fe32556b0d01a4a648287be70ef`
+- Push A delivered exact product commit `fa7c8f5d9ef4a33e38bcfe5c3b0baec60675d956`
   to local/tracking/live `origin/main` at divergence `0/0`; force push count is
-  `0`. This docs/state-only commit is the sole Level1 delivery-state commit.
+  `0`. This is the sole docs/state-only Tranche2 delivery-state commit.
 - Stage18A remains active. This state does not claim physical setup safety,
-  Level2 dry-run qualification, Level3 machine acceptance, machine-ready
-  output, tapping qualification, or a next-tranche product definition.
+  external dry-run completion, Level2 qualification, Level3 machine acceptance,
+  machine-ready output or Tapping qualification.
 - Consolidated evidence root:
-  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R220_STAGE18A_TRANCHE1_LEVEL1_FULL_DELIVERY_20260811`.
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R222_STAGE18A_TRANCHE2_FULL_SOFTWARE_DELIVERY`.
 
-The R218 and older sections below remain historical provenance and do not
-override this R220 fully-delivered Level1 state.
+The R220 and older sections below remain historical provenance and do not
+override this R222 fully-delivered Tranche2 software state.
 
 # CANONICAL CURRENT PROGRAMME SUMMARY — R218 STAGE18A TRANCHE 1 LOCAL CANDIDATE
 

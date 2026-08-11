@@ -1,36 +1,36 @@
-# CANONICAL CURRENT PROGRAMME STATE - R220 STAGE18A TRANCHE1 LEVEL1 FULL DELIVERY
+# CANONICAL CURRENT PROGRAMME STATE - R222 STAGE18A TRANCHE2 SOFTWARE DELIVERY
 
 - Stage16A: **CLOSED**. Stage17A: **CLOSED**. Stage18A: **ACTIVE**.
-- Stage18A Tranche1 is **FULLY_DELIVERED_LEVEL1** for the exact
-  `fanuc_robodrill_alpha_d21mib_31ib_bt30` profile.
-- Qualification capability is `LEVEL1_STATICALLY_VALIDATED`. Physical
-  qualification is `NOT_PERFORMED`; Level2 and Level3 are `NOT_ACHIEVED`.
-  `MACHINE_READY=false`.
-- Production Tapping remains `NOT_QUALIFIED_FOR_MACHINE_READY_OUTPUT`; forced
-  Tapping input fails closed with
-  `TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED`. Owner-approved physical golden
-  machine samples remain `0`.
-- R219 directly reviewed and approved exact product commit
-  `01aecc5878e61fe32556b0d01a4a648287be70ef`, tree
-  `b78fb46e119cc7cf944184f02226b2279048fc09`. R220 granted exact-user DELETE
-  capability on only the two authorized legacy files, proved standard-token
-  DELETE `2/2`, replacement/add `24/24`, and residue `0`, then integrated the
-  reviewed candidate by one fast-forward.
-- Post-integration targeted certification passes **169/169**. The one canonical
-  full regression produced **4264 passed, 5 inherited failed, 8 skipped,
-  2 deselected**; all five failures are a subset of the trusted eight-node
-  Stage17A/R218 signature. Candidate-induced `0`, indeterminate `0`, and
+- Stage18A Tranche1 remains **FULLY_DELIVERED_LEVEL1**. Stage18A Tranche2 is
+  **FULLY_DELIVERED_SOFTWARE** for setup transform, physical-readiness and the
+  external dry-run evidence workflow.
+- Maximum software capability is `READY_FOR_EXTERNAL_LEVEL2_EVIDENCE`.
+  Physical evidence is `NOT_SUPPLIED`; actual Level2 and Level3 are
+  `NOT_ACHIEVED`; `MACHINE_READY=false`.
+- Owner-approved golden machine samples remain `0`. Tapping physical
+  qualification is `NOT_QUALIFIED`; no Tranche2 behavior connects to a CNC,
+  uploads NC, issues machine commands or modifies controller data.
+- R222 directly reviewed and remediated the R221 candidate to exact product
+  commit `fa7c8f5d9ef4a33e38bcfe5c3b0baec60675d956`, tree
+  `e830f0275bcf1eddd8e18c57b4a2a6682bde8fce`. Standard-token DELETE capability
+  passed `5/5` without ACL/UAC remediation, then one `--ff-only` operation
+  integrated that exact identity.
+- Production targeted certification passes **94/94**. The one canonical full
+  regression produced **4314 passed, 5 inherited failed, 8 skipped,
+  2 deselected**; the failures exactly match the trusted production signature.
+  Candidate-induced `0`, indeterminate `0`, and
   `NEW_FAILURE_DELTA_INTEGRATION=0`.
 - Push A delivered the exact product commit to local/tracking/live
-  `origin/main` at divergence `0/0`, without force. This docs/state-only commit
-  records the Level1 delivery boundary for Push B and final AI Sync.
-- Stage18A remains open. No Level2/Level3, physical machine acceptance, direct
-  CNC transfer, or next Stage18A tranche is inferred by this closure.
-- R220 evidence root:
-  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R220_STAGE18A_TRANCHE1_LEVEL1_FULL_DELIVERY_20260811`.
+  `origin/main` at divergence `0/0`, without force. This is the sole
+  docs/state-only Tranche2 delivery commit for Push B and final AI Sync.
+- Stage18A remains open. No dry-run qualification, Level2/Level3, physical
+  machine acceptance, machine-ready output or Tapping qualification is inferred
+  from software delivery.
+- R222 evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R222_STAGE18A_TRANCHE2_FULL_SOFTWARE_DELIVERY`.
 
-The R215 and older material below remains historical provenance and does not
-override this R220 Stage18A Tranche1 delivery state.
+The R220 and older material below remains historical provenance and does not
+override this R222 Stage18A Tranche2 software-delivery state.
 
 # CANONICAL CURRENT PROGRAMME STATE — R215 STAGE17A FORMAL CLOSURE
 
