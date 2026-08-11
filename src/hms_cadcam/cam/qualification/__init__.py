@@ -146,10 +146,55 @@ from hms_cadcam.cam.qualification.offline_samples import (
     OfflineEngineeringSample,
     tranche3_engineering_samples,
 )
+from hms_cadcam.cam.qualification.manufacturing_job import (
+    JobProgramBinding,
+    JobReleaseDiff,
+    JobReleasePolicy,
+    JobReleaseReview,
+    JobQualificationState,
+    JobSetupBinding,
+    JobToolBinding,
+    JobToolReconciliationReport,
+    ManufacturingJob,
+    ManufacturingJobRelease,
+    ManufacturingJobState,
+    ReleaseDecision,
+    ToolReconciliationIssue,
+    TRANCHE4_COUNTERFACTUAL_MARKER,
+    TRANCHE4_ADVERSARIAL_CASES,
+    TRANCHE4_IMPLEMENTATION_MARKERS,
+    TRANCHE4_NO_CNC_MARKER,
+    TRANCHE4_SCOPE_MARKER,
+)
+from hms_cadcam.cam.qualification.manufacturing_release import (
+    JobReleaseAssessment,
+    assess_job,
+    create_job_release,
+    diff_job_releases,
+    reconcile_job_tools,
+    supersede_release,
+)
+from hms_cadcam.cam.qualification.manufacturing_package import (
+    HandoffPackage,
+    ManufacturingHandoffPackageBuilder,
+    ManufacturingPackageError,
+)
+from hms_cadcam.cam.qualification.manufacturing_store import (
+    ManufacturingJobStore,
+    ManufacturingStoreError,
+)
 
 
 __all__ = [
     "AnalysisPolicy",
+    "JobProgramBinding", "JobReleaseAssessment", "JobReleaseDiff", "JobReleasePolicy", "JobReleaseReview",
+    "JobQualificationState", "JobSetupBinding", "JobToolBinding", "JobToolReconciliationReport",
+    "ManufacturingJob", "ManufacturingJobRelease", "ManufacturingJobState", "ReleaseDecision",
+    "ToolReconciliationIssue", "HandoffPackage", "ManufacturingHandoffPackageBuilder", "ManufacturingPackageError",
+    "ManufacturingJobStore", "ManufacturingStoreError", "TRANCHE4_COUNTERFACTUAL_MARKER",
+    "TRANCHE4_ADVERSARIAL_CASES", "TRANCHE4_IMPLEMENTATION_MARKERS",
+    "TRANCHE4_NO_CNC_MARKER", "TRANCHE4_SCOPE_MARKER", "assess_job", "create_job_release",
+    "diff_job_releases", "reconcile_job_tools", "supersede_release",
     "AuthorityClass", "AxisTravelLimit", "ClearanceState", "Coordinate3D",
     "CurrentReleaseSources", "DryRunHandoffPackageBuilder",
     "DryRunMode", "DryRunQualificationEvidence", "EnvelopeDimensions",
