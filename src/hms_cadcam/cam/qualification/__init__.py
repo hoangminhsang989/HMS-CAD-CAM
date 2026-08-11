@@ -90,6 +90,12 @@ from hms_cadcam.cam.qualification.tranche2_store import (
     dumps_level2_record,
     loads_level2_record,
 )
+from hms_cadcam.cam.qualification.checklist import (
+    GoldenSampleApproval,
+    PhysicalChecklistItem,
+    ROBODRILL_CHECKLIST_KEYS,
+    RobodrillPhysicalChecklist,
+)
 
 
 __all__ = [
@@ -98,12 +104,13 @@ __all__ = [
     "EvidenceAttachment", "EvidenceAttachmentRole", "EvidenceReference",
     "EvidenceResult", "EvidenceState", "FindingCode",
     "FindingSeverity", "GoldenSampleFixture", "GoldenSampleResult",
-    "FixtureEvidence", "FixtureVerificationState", "HolderFixtureClearanceEvidence",
+    "FixtureEvidence", "FixtureVerificationState", "GoldenSampleApproval",
+    "HolderFixtureClearanceEvidence",
     "Level2QualificationRecord", "Level2Readiness", "Level2WorkflowState",
     "MachineQualificationContract", "MachineQualificationService",
     "MachineSetupQualification", "MachineTravelContract", "Orientation3D",
     "OwnerAcceptanceRecord", "PartialCoordinate3D", "PhysicalAcceptancePolicy",
-    "PhysicalEvidence", "PhysicalReadinessResult", "PhysicalTravelState",
+    "PhysicalChecklistItem", "PhysicalEvidence", "PhysicalReadinessResult", "PhysicalTravelState",
     "PlacementState",
     "QualificationArtifactStore", "QualificationFinding", "QualificationLevel",
     "QualificationReport", "QualificationState", "QualificationStoreError",
@@ -112,7 +119,8 @@ __all__ = [
     "SetupQualificationState", "StaticQualificationInput", "StockEnvelope",
     "StockPlacementEvidence", "ToolHolderQualification", "ToolQualificationInput",
     "ToolReachState", "Tranche2QualificationService", "Tranche2QualificationStore",
-    "Tranche2StoreError", "WorkOffsetTransform", "assess_level2_readiness",
+    "ROBODRILL_CHECKLIST_KEYS", "RobodrillPhysicalChecklist", "Tranche2StoreError",
+    "WorkOffsetTransform", "assess_level2_readiness",
     "calculate_physical_readiness", "dumps", "dumps_level2_record", "loads",
     "loads_level2_record", "level2_status_vi", "qualification_status_vi", "qualify_static_nc",
     "engineering_sample_fixtures",
