@@ -97,18 +97,75 @@ from hms_cadcam.cam.qualification.checklist import (
     ROBODRILL_CHECKLIST_KEYS,
     RobodrillPhysicalChecklist,
 )
+from hms_cadcam.cam.qualification.offline_analyzer import (
+    AnalysisPolicy,
+    NCAnalysisResult,
+    analyze_nc_bytes,
+)
+from hms_cadcam.cam.qualification.offline_model import (
+    ModalSnapshot,
+    MotionClass,
+    NCBlockRecord,
+    NCReleaseCandidate,
+    NO_CNC_CONTROL_MARKER,
+    OfflineFindingSeverity,
+    OfflineNCVerificationSession,
+    OperatorAcknowledgement,
+    OperatorReview,
+    OperatorReviewResult,
+    PackageStatus,
+    ReleaseAssessment,
+    ReleaseComparison,
+    ReleaseState,
+    StaticSafetyFinding,
+    TRANCHE3_COUNTERFACTUAL_MARKER,
+    TRANCHE3_SCOPE_MARKER,
+    VerificationSessionState,
+)
+from hms_cadcam.cam.qualification.offline_service import (
+    CurrentReleaseSources,
+    NCLineDiff,
+    OfflineNCVerificationService,
+    compare_releases,
+    current_sources,
+    diff_nc_text,
+)
+from hms_cadcam.cam.qualification.offline_package import (
+    DryRunHandoffPackageBuilder,
+    HandoffPackageError,
+    package_stale_reasons,
+)
+from hms_cadcam.cam.qualification.offline_store import (
+    OfflineReleaseRecord,
+    OfflineReleaseStore,
+    OfflineReleaseStoreError,
+    dumps_release_record,
+    loads_release_record,
+)
+from hms_cadcam.cam.qualification.offline_samples import (
+    OfflineEngineeringSample,
+    tranche3_engineering_samples,
+)
 
 
 __all__ = [
+    "AnalysisPolicy",
     "AuthorityClass", "AxisTravelLimit", "ClearanceState", "Coordinate3D",
+    "CurrentReleaseSources", "DryRunHandoffPackageBuilder",
     "DryRunMode", "DryRunQualificationEvidence", "EnvelopeDimensions",
     "EvidenceAttachment", "EvidenceAttachmentRole", "EvidenceReference",
     "EvidenceResult", "EvidenceState", "FindingCode",
     "FindingSeverity", "GoldenSampleFixture", "GoldenSampleResult",
     "FixtureEvidence", "FixtureVerificationState", "GoldenSampleApproval",
     "HolderFixtureClearanceEvidence",
+    "HandoffPackageError",
     "Level2QualificationRecord", "Level2Readiness", "Level2WorkflowState",
     "MachineQualificationContract", "MachineQualificationService",
+    "ModalSnapshot", "MotionClass", "NCAnalysisResult", "NCBlockRecord", "NCLineDiff",
+    "NCReleaseCandidate", "NO_CNC_CONTROL_MARKER", "OfflineFindingSeverity",
+    "OfflineEngineeringSample", "OfflineNCVerificationService", "OfflineNCVerificationSession",
+    "OfflineReleaseRecord", "OfflineReleaseStore", "OfflineReleaseStoreError",
+    "OperatorAcknowledgement", "OperatorReview", "OperatorReviewResult", "PackageStatus",
     "MachineSetupQualification", "MachineTravelContract", "Orientation3D",
     "OwnerAcceptanceRecord", "PartialCoordinate3D", "PhysicalAcceptancePolicy",
     "PhysicalChecklistItem", "PhysicalEvidence", "PhysicalReadinessResult", "PhysicalTravelState",
@@ -121,10 +178,15 @@ __all__ = [
     "StockPlacementEvidence", "ToolHolderQualification", "ToolQualificationInput",
     "ToolReachState", "Tranche2QualificationService", "Tranche2QualificationStore",
     "ROBODRILL_CHECKLIST_KEYS", "RobodrillPhysicalChecklist", "Tranche2StoreError",
+    "ReleaseAssessment", "ReleaseComparison", "ReleaseState", "StaticSafetyFinding",
+    "TRANCHE3_COUNTERFACTUAL_MARKER", "TRANCHE3_SCOPE_MARKER",
+    "VerificationSessionState",
     "WorkOffsetTransform", "assess_level2_readiness", "clearance_state_for_setup",
     "calculate_physical_readiness", "dumps", "dumps_level2_record", "loads",
     "loads_level2_record", "level2_status_vi", "qualification_status_vi", "qualify_static_nc",
-    "engineering_sample_fixtures",
+    "analyze_nc_bytes", "compare_releases", "current_sources", "diff_nc_text",
+    "dumps_release_record", "engineering_sample_fixtures", "loads_release_record",
+    "package_stale_reasons", "tranche3_engineering_samples",
     "render_qualification_report_vi", "robodrill_alpha_d21mib_contract",
     "run_deterministic_sample", "validate_fanuc_modal_sequence",
     "validate_physical_travel", "validate_stock_and_fixture_placement",
