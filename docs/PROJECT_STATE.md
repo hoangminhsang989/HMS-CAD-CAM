@@ -1,3 +1,85 @@
+# CANONICAL CURRENT PROGRAMME SUMMARY — R211 STAGE17A TRANCHE 5 LOCAL CANDIDATE
+
+- Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranches1–4 are fully
+  production-delivered; Tranche5 `Hole Completion Auto Setup` is implemented
+  and certified locally. Stage17A is not closed before direct review and
+  integration of this candidate.
+- Frozen product contract and existing-operation authority matrix:
+  `docs/STAGE17A_TRANCHE5_HOLE_COMPLETION_AUTO_SETUP.md`.
+- Protected production/local tracking/live remote remain at R210 baseline
+  `b5866d6c2f660cb404afdcfa389b9543abc69a36`, tree
+  `f96cc5b968bc5fde9b266c2c3d3b81e41abfe8af`, divergence `0/0`. R211 did not
+  integrate, push, force-update or run production AI Sync.
+- Candidate branch/worktree: `stage17a-tranche5-hole-completion-auto` at
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\CLONES\R211-STAGE17A-TRANCHE5-HOLE-COMPLETION`.
+  Contract commit is `5637ddc`; certified implementation commit is
+  `f2cd52e01dcd072030bcf03a4d35642fcdf01c74`, tree
+  `25fc29d2b13fa36f045e301f9af57030da0ead03`, before this docs-only state
+  commit.
+- One shared native-free hole geometry adapter now owns deterministic pattern
+  ordering/identity/fingerprint, common +Z axis/plane, count, bounds, minimum
+  spacing, depth/diameter evidence classification and dependency provenance.
+  Drilling Tranche4 reuses this analyzer without changing its public policy
+  API or test behavior.
+- Tapping supports AUTO pattern/reference plane and conditional thread
+  metadata/thread depth only when an explicit authoritative threaded feature
+  exists and matches the selected `TAP` Tool. Current production has no such
+  CAD metadata, so nominal diameter, pitch, hand and tapping depth remain
+  manual/unavailable. Plain-hole diameter/depth and Tool names are never used
+  to invent thread intent; spindle/feed/synchronization/cycle remain process
+  intent.
+- Reaming supports AUTO pattern/reference plane plus conditional feature depth
+  and finished diameter. Current `HoleLocation.diameter` is unqualified, so it
+  is classified as source-hole evidence and never silently becomes the design
+  target. `REAMER` diameter validates an authoritative target but cannot create
+  one; allowance/feed/spindle/retract process behavior remains manual.
+- Boring supports AUTO pattern/reference plane plus conditional feature depth
+  and finished bore diameter. `BORING_BAR` min/max range, axial cutting length,
+  stickout and holder fingerprint are feasibility evidence only. Source-hole
+  diameter, adjustable-head/radial setting and generic allowance are not
+  inferred.
+- All three enforce positive finite geometry, exact grouped consensus, usable
+  axial capacity, Tool-family/fingerprint compatibility and explicit
+  stock/fixture safe-plane authority. Without safe-plane authority,
+  clearance/retract remain manual; no diameter/Tool-length offset is invented.
+- `AUTO`, `MANUAL_OVERRIDE`, legacy `MANUAL` and `NOT_APPLICABLE` reuse the
+  Stage17A `automatic_parameter_contract`. Legacy numerics stay manual,
+  reset-to-AUTO is explicit, temporary evidence loss preserves unresolved AUTO
+  intent, and generator-side recomputation rejects stale/malformed Tool,
+  holder, pattern, axis, plane, depth and diameter provenance.
+- Persistence is additive; SQLite remains schema **5**. Basic/Advanced editor
+  integration covers Tapping/Reaming/Boring summaries, unavailable states,
+  target/thread authority, mode controls and provenance. VI remains default;
+  VI/EN/KO catalogs retain exact key-order parity, UTF-8 and duplicate keys
+  `0`.
+- Verification: focused **389/389**, bounded **1420/1420** across 74
+  deterministic files, lifecycle 24 Tapping/Reaming/Boring × VI/EN/KO cycles
+  with top/hidden/modal/QThread delta `0/0/0/0`, and canonical full
+  **4214 passed, 8 failed, 8 skipped, 2 deselected**.
+- The full eight exactly match the inherited/external baseline signature: four
+  CAD status-text expectations, one workspace-shell action expectation and
+  three unavailable private historical R3 artifacts. Candidate-induced `0`,
+  indeterminate `0`, `NEW_FAILURE_DELTA_R211=0`.
+- Compile/import, module provenance, JSON/UTF-8, localization, diff and path
+  audits pass. The inherited environment-only `flet 0.24.0` / `packaging 26.2`
+  `pip check` conflict remains; tracked dependency changes are `0`.
+- Evidence root:
+  `E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R211_STAGE17A_TRANCHE5_HOLE_COMPLETION_AUTO_20260811`.
+- Stage17A scope audit finds no remaining frozen automatic-parameter family:
+  shared families, Contour, Pocket, Drilling and Tapping/Reaming/Boring are now
+  covered; Lathe/turning remains outside Stage17A. Therefore:
+  `STAGE17A_SCOPE_EXHAUSTED_AFTER_TRANCHE5_PENDING_FINAL_DIRECT_REVIEW`.
+  This is not Stage17A closure and no Tranche6 is invented.
+- Verdict boundary:
+  `PASS_R211_STAGE17A_TRANCHE5_HOLE_COMPLETION_AUTO_SETUP_LARGE_LOCAL_IMPLEMENTATION`.
+  Exact next action is a separate Stage17A Tranche5 final direct review and
+  integration authority, followed by formal Stage17A closure review.
+- HMS CAD/CAM provisional total percentage is not recalculated without an
+  owner-approved programme formula.
+
+The R210 and older sections below remain historical provenance and do not
+override this R211 local-candidate summary.
+
 # CANONICAL CURRENT PROGRAMME SUMMARY — R210 STAGE17A TRANCHE 4 DELIVERY
 
 - Stage16A is **CLOSED**. Stage17A is **ACTIVE**: Tranches 1-4 are product-
