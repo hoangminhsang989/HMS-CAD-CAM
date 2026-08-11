@@ -137,6 +137,12 @@ def build_package(
                 "fix": "preserve typed fingerprint kind and reuse exact Level1 fixture identity",
                 "regression": "deterministic round-trip and stale-binding tests",
             },
+            {
+                "issue": "Korean Level1/2/3 Latin tokens failed mixed-language audit",
+                "classification": "candidate implementation",
+                "fix": "use Korean-only level wording in catalog and fallback tuple",
+                "regression": "new-key mixed-language regression and full canonical rerun",
+            },
         ]
     }
     wizard = {
@@ -175,6 +181,19 @@ def build_package(
         ],
     }
     contract = (root / _PRODUCT_PATHS[0]).read_bytes()
+    evidence_sources = {
+        "logs/focused_final.txt": output.parent / "logs" / "focused_final.txt",
+        "logs/bounded.txt": output.parent / "logs" / "bounded.txt",
+        "logs/full_initial.txt": output.parent / "logs" / "full.txt",
+        "logs/full_rerun.txt": output.parent / "logs" / "full_rerun.txt",
+        "bounded_manifest.txt": output.parent / "bounded_manifest.txt",
+    }
+    evidence_files: dict[str, bytes] = {}
+    for name, source in evidence_sources.items():
+        try:
+            evidence_files[name] = source.read_bytes()
+        except OSError as error:
+            raise RuntimeError(f"Required verification evidence is unavailable: {source}") from error
     files = {
         "frozen_contract.md": contract,
         "candidate_identity.json": _json_bytes(identity),
@@ -194,6 +213,7 @@ def build_package(
             {"credential_findings": len(findings), "findings": findings}
         ),
         "status.json": _json_bytes(status),
+        **evidence_files,
     }
     for name, payload in files.items():
         _atomic_write(output / name, payload)

@@ -1,7 +1,9 @@
 # Stage18A Tranche2 — Setup transform and external dry-run qualification
 
-Frozen scope: `STAGE18A_TRANCHE2_SETUP_TRANSFORM_AND_DRY_RUN_QUALIFICATION`  
-Baseline: `661ba163d7b99272ce50252352daf5f3e7358bee`  
+Frozen scope: `STAGE18A_TRANCHE2_SETUP_TRANSFORM_AND_DRY_RUN_QUALIFICATION`
+
+Baseline: `661ba163d7b99272ce50252352daf5f3e7358bee`
+
 Baseline tree: `e6a6d509c78ffa78ba1668c056f8fdda1d2a0b28`
 
 ## Delivery boundary
