@@ -61,6 +61,7 @@ def test_vietnamese_report_distinguishes_static_from_machine_acceptance():
     assert text.startswith("BÁO CÁO XÁC NHẬN NC")
     assert "Mức xác nhận: Đạt kiểm tra tĩnh" in text
     assert "MACHINE_READY: false" in text
+    assert "Post mapping: repository-confirmed ROBODRILL 21i mapping; not physical FANUC 31i-B certification" in text
     assert "Physical acceptance: NOT_PERFORMED" in text
     assert "TAPPING_MACHINE_READY_OUTPUT_NOT_QUALIFIED" in text
 

@@ -34,8 +34,9 @@ from hms_cadcam.cam.qualification.profile import ROBODRILL_ALPHA_D21MIB_PROFILE_
 _TOOL = re.compile(r"M06T([1-9]\d{0,3})")
 _LENGTH = re.compile(r"G43Z-?(?:\d+(?:\.\d*)?|\.\d+)H([1-9]\d{0,3})")
 _CUTTER = re.compile(r"G4[12]D([1-9]\d{0,3})")
-_CANNED = re.compile(r"(?:^|[^0-9])G8([1-9])(?:[^0-9]|$)")
-_UNSUPPORTED_OFFSET = re.compile(r"G5[5-9](?!\d)")
+_CANNED = re.compile(r"G8[1-9](?!\d)", re.IGNORECASE)
+_TAPPING_CYCLE = re.compile(r"G84(?!\d)", re.IGNORECASE)
+_UNSUPPORTED_OFFSET = re.compile(r"G5[5-9](?!\d)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +150,7 @@ def validate_fanuc_modal_sequence(text: str) -> tuple[QualificationFinding, ...]
         findings.append(
             _finding(FindingSeverity.ERROR, FindingCode.CANNED_CYCLE_SUBSTITUTION_UNQUALIFIED)
         )
-    if any("G84" in line for line in lines):
+    if any(_TAPPING_CYCLE.search(line) for line in lines):
         findings.append(
             _finding(
                 FindingSeverity.ERROR,

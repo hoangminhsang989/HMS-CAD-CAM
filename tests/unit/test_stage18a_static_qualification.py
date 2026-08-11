@@ -28,6 +28,7 @@ from hms_cadcam.cam.qualification import (
     ToolQualificationInput,
     qualify_static_nc,
     robodrill_alpha_d21mib_contract,
+    validate_fanuc_modal_sequence,
 )
 from hms_cadcam.cam.qualification.codec import report_from_dict
 from tests.unit._stage18a_qualification_fixtures import (
@@ -207,6 +208,18 @@ def test_g55_and_canned_cycle_substitution_are_rejected():
     assert FindingCode.CANNED_CYCLE_SUBSTITUTION_UNQUALIFIED in _codes(
         qualify_static_nc(qualification_input(g81))
     )
+
+
+@pytest.mark.parametrize("cycle", ("G90G81", "g90g81", "N120G90G81"))
+def test_canned_cycle_adjacency_and_case_cannot_bypass_modal_validator(cycle):
+    result = assembly_result()
+    mutated = result.canonical_text.replace("G90G40G54", f"{cycle}G40G54", 1)
+
+    findings = validate_fanuc_modal_sequence(mutated)
+
+    assert FindingCode.CANNED_CYCLE_SUBSTITUTION_UNQUALIFIED in {
+        item.code for item in findings
+    }
 
 
 def test_tapping_strategy_remains_unqualified_even_if_ir_is_forced():

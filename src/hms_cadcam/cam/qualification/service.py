@@ -87,6 +87,7 @@ def render_qualification_report_vi(
             f"Nguồn project: {report.project_id}",
             f"Program fingerprint: {report.program_fingerprint.digest}",
             f"NC SHA-256: {report.nc_sha256}",
+            "Post mapping: repository-confirmed ROBODRILL 21i mapping; not physical FANUC 31i-B certification",
             f"Operations: {operations}",
             "Work offset: G54 — physical transform UNVERIFIED",
             "Spindle envelope: 24000 rpm",
