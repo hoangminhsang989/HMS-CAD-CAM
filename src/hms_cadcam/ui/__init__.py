@@ -67,10 +67,12 @@ from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyTableRole,
     UnifiedPostAssemblyPanel,
 )
+from hms_cadcam.ui.nc_release_center import NCReleaseCenter
 
 __all__ = [
     "ExternalExportUiStatus",
     "ManagedArtifactUiStatus",
+    "NCReleaseCenter",
     "PostGenerationStatus",
     "PostPanelDraft",
     "PostPanelState",

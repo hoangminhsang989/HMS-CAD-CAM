@@ -79,6 +79,7 @@ from hms_cadcam.ui.post_ui import (
     sanitize_post_filename,
 )
 from hms_cadcam.ui.machine_qualification_panel import MachineQualificationPanel
+from hms_cadcam.ui.nc_release_center import NCReleaseCenter
 from hms_cadcam.ui.localization import (
     LocalizedComboBox,
     localize_widget_tree,
@@ -460,6 +461,12 @@ class ProgramAssemblyPanel(QWidget):
 
         self.machine_qualification_panel = MachineQualificationPanel(self)
         root.addWidget(self.machine_qualification_panel)
+
+        # Tranche3 remains a projection-only surface here.  Application code
+        # supplies an immutable session/candidate/assessment after managed NC
+        # generation; the widget itself cannot run Post, release, or CNC I/O.
+        self.nc_release_center = NCReleaseCenter(self)
+        root.addWidget(self.nc_release_center)
 
         context_group = QGroupBox("Shared program context")
         context_form = QFormLayout(context_group)
