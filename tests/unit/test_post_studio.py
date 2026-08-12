@@ -95,20 +95,22 @@ def test_worknc_provider_fails_cleanly_without_configured_chain(tmp_path) -> Non
     assert not Path(run.workspace).exists()
 
 
-def test_real_r233_worknc_lineage_import_is_exact_and_never_global_write() -> None:
-    original_path = Path(r"C:\ProgramData\WORKNC\2021.0\pospro\FANUC-SHL.dat")
+def test_real_r233_worknc_active_lineage_is_exact_and_never_written_by_import() -> None:
+    active_path = Path(r"C:\ProgramData\WORKNC\2021.0\pospro\FANUC-SHL.dat")
     candidate_path = Path(r"E:\FILE\FILE-CHAY-TEST-HMS-CAD-CAM\EVIDENCE\R233_FANUC_SHL_COMPLETE_CONTEXT_AND_ISOLATED_G40_REMEDIATION\R233_CANDIDATE\FANUC-SHL.dat")
-    if not original_path.is_file() or not candidate_path.is_file():
+    backup_path = Path(r"C:\ProgramData\HMS-CADCAM\PostStudio\production-backups\fanuc-shl\deploy.r239.fanuc-shl.owner-window\fanuc-shl__fanuc-shl.original__d0aa7518d669283be8aad6e92ffdec4dae8785abb7fdb2895cac0ab46cb51da3__deploy.r239.fanuc-shl.owner-window.dat")
+    if not active_path.is_file() or not candidate_path.is_file() or not backup_path.is_file():
         pytest.skip("R237 real WorkNC lineage is unavailable")
-    original, candidate = original_path.read_bytes(), candidate_path.read_bytes()
-    before = original_path.read_bytes()
+    active, candidate, original = active_path.read_bytes(), candidate_path.read_bytes(), backup_path.read_bytes()
+    before = active_path.read_bytes()
     assert __import__("hashlib").sha256(original).hexdigest() == "d0aa7518d669283be8aad6e92ffdec4dae8785abb7fdb2895cac0ab46cb51da3"
+    assert active == candidate
     assert __import__("hashlib").sha256(candidate).hexdigest() == "1160411dea6a5f104085747b4deac151fbd6b103b5930f39b11e8be358b67039"
     service = PostStudioService()
     root = service.import_source(_definition(), original, revision_id="fanuc-shl.real-original", created_at=AT, created_by="R237 import", notes="Immutable active source reference")
     child = service.create_candidate(root.revision_id, candidate, revision_id="fanuc-shl.real-r233-g40", created_at=AT, created_by="R233 recovery", notes="Isolated G40 candidate")
     assert "G40_CANCELLATION" in service.source_diff(child.revision_id).semantic_changes
-    assert original_path.read_bytes() == before
+    assert active_path.read_bytes() == before
 
 
 def test_real_r233_generated_nc_is_consumed_for_validation_and_regression() -> None:

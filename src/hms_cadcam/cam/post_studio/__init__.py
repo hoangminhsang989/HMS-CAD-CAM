@@ -7,3 +7,4 @@ from hms_cadcam.cam.post_studio.sandbox import *
 from hms_cadcam.cam.post_studio.rules import *
 from hms_cadcam.cam.post_studio.deployment import *
 from hms_cadcam.cam.post_studio.production_workflow import *
+from hms_cadcam.cam.post_studio.active_lifecycle import *

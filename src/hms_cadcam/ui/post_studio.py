@@ -12,8 +12,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from hms_cadcam.cam.post_studio import PostLifecycleStatus, PostStudioService
+from hms_cadcam.cam.post_studio import ActiveLifecycleProjection, ManagedActiveStatus, PostLifecycleStatus, PostStudioService
 from hms_cadcam.ui.i18n import translation_service
+from hms_cadcam.ui.post_active_status import PostActiveStatusPanel
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,7 @@ class PostProcessorStudioPanel(QWidget):
         super().__init__(parent)
         self._service = service or PostStudioService()
         self._state = PostStudioViewState()
+        self._active_lifecycle: ActiveLifecycleProjection | None = None
         self.setObjectName("PostProcessorStudioPanel")
         self._build()
         translation_service().language_changed.connect(self._retranslate)
@@ -75,6 +77,7 @@ class PostProcessorStudioPanel(QWidget):
         center_layout.addWidget(self.search); center_layout.addWidget(self.source_editor, 3); center_layout.addWidget(self.diff, 2)
         self.properties = QTableWidget(0, 2); self.properties.setHorizontalHeaderLabels(["Thuộc tính", "Giá trị"]); self.properties.verticalHeader().hide(); self.properties.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         splitter.addWidget(self.library); splitter.addWidget(center); splitter.addWidget(self.properties); splitter.setSizes([240, 550, 260]); layout.addWidget(splitter, 1)
+        self.active_status = PostActiveStatusPanel(); self.active_status.setVisible(False); layout.addWidget(self.active_status)
         self.new_button.clicked.connect(lambda: self.message.emit("Tạo Post yêu cầu siêu dữ liệu và nguồn hợp lệ."))
         self.import_button.clicked.connect(lambda: self.message.emit("Nhập Post chỉ tạo phiên bản bất biến trong vùng làm việc cô lập."))
         self.validate_button.clicked.connect(self._validate_selected); self.diff_button.clicked.connect(self._show_selected)
@@ -98,7 +101,9 @@ class PostProcessorStudioPanel(QWidget):
         revision = self._service.revision(revision_id); source = self._service.source_bytes(revision_id)
         self.source_editor.setPlainText(source.decode(revision.source_encoding, errors="replace"))
         diff = self._service.source_diff(revision_id); self.diff.setPlainText("\n".join(diff.text_lines) or "(Không có parent diff)")
-        entries = (("Phiên bản", revision.revision_id), ("SHA-256", revision.source_sha256), ("Trạng thái", self._service.lifecycle_status(revision_id).value), ("Mã hóa", revision.source_encoding), ("Kết thúc dòng", revision.line_ending), ("Triển khai", "NOT_ACTIVE_GLOBALLY"), ("Giai đoạn 1", "CHUẨN BỊ KÍCH HOẠT — Sẵn sàng chờ phê duyệt"), ("Giai đoạn 2", "CHƯA ĐƯỢC PHÉP KÍCH HOẠT"), ("Rollback", "Chỉ Post managed có activation record đã xác minh"), ("Thay đổi ngoài HMS", "Kiểm tra lại trước mọi thao tác; không ghi đè bytes ngoài HMS"))
+        active = self._active_lifecycle
+        is_active_revision = bool(active and active.active_revision_id == revision_id and active.status is ManagedActiveStatus.ACTIVE_MANAGED_REVISION)
+        entries = (("Phiên bản", revision.revision_id), ("SHA-256", revision.source_sha256), ("Trạng thái", self._service.lifecycle_status(revision_id).value), ("Mã hóa", revision.source_encoding), ("Kết thúc dòng", revision.line_ending), ("Triển khai", "ACTIVE_MANAGED_REVISION" if is_active_revision else "NOT_ACTIVE_GLOBALLY"), ("Giai đoạn 1", "ĐÃ HOÀN TẤT" if is_active_revision else "CHUẨN BỊ KÍCH HOẠT — Sẵn sàng chờ phê duyệt"), ("Giai đoạn 2", "ĐÃ KÍCH HOẠT" if is_active_revision else "CHƯA ĐƯỢC PHÉP KÍCH HOẠT"), ("Rollback", "SẴN SÀNG" if is_active_revision and active and active.rollback_ready else "Chỉ Post managed có activation record đã xác minh"), ("Thay đổi ngoài HMS", "KHÔNG PHÁT HIỆN" if is_active_revision and active and not active.drift_detected else "Kiểm tra lại trước mọi thao tác; không ghi đè bytes ngoài HMS"))
         for key, value in entries:
             row = self.properties.rowCount(); self.properties.insertRow(row); self.properties.setItem(row, 0, QTableWidgetItem(key)); self.properties.setItem(row, 1, QTableWidgetItem(value))
         self.state_changed.emit(self._state)
@@ -131,6 +136,14 @@ class PostProcessorStudioPanel(QWidget):
             "FAILED": "Chuẩn bị kích hoạt thất bại",
         }
         self.status.setText(labels.get(state, "Đang kiểm tra..."))
+
+    def set_active_lifecycle(self, state: ActiveLifecycleProjection) -> None:
+        """Project a service-reconstructed active state into the compact Studio."""
+
+        self.active_status.project(state)
+        self.active_status.setVisible(True)
+        self._active_lifecycle = state
+        self._show_selected()
 
 
 __all__ = ["PostProcessorStudioPanel", "PostStudioViewState"]
