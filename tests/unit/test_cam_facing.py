@@ -559,6 +559,7 @@ def test_recompute_store_failure_keeps_previous_artifact(tmp_path, monkeypatch) 
         lambda tree: tree.add_operation(tree.root_id, "Facing", operation)))
     first = service.compute_facing(operation_id)
     assert first.accepted
+    assert tuple(service._cam_application._calculation_cache.root(service.current_project.root_path).rglob("*.manifest.json"))
     old_metadata = service.cam_snapshot.artifacts
     old_artifact = service.load_toolpath_artifact(operation_id)
 
@@ -572,6 +573,158 @@ def test_recompute_store_failure_keeps_previous_artifact(tmp_path, monkeypatch) 
     restored = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
     assert restored.artifact_state.status is ArtifactStatus.VALID
     assert service.load_toolpath_artifact(operation_id).artifact_fingerprint == old_artifact.artifact_fingerprint
+
+
+def test_r247_facing_final_cache_hit_skips_generator(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    service.new_project(tmp_path, "Facing R247 Cache")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    node_id, operation_id = CamNodeId.new(), OperationId.new()
+    requirement = MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                                     machine.unit, (OperationCapability.MILLING,))
+    operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (), _parameters(target=49).to_operation_parameters(), requirement)
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Facing", operation)))
+    first = service.compute_facing(operation_id)
+    assert first.accepted
+    cache_root = service._cam_application._calculation_cache.root(service.current_project.root_path)
+    assert tuple(cache_root.rglob("*.manifest.json"))
+
+    def fail_generate(*_args, **_kwargs):
+        raise AssertionError("R247 cache hit unexpectedly regenerated Facing")
+
+    monkeypatch.setattr(FacingGenerator, "generate", fail_generate)
+    second = service.compute_facing(operation_id)
+    assert second.accepted
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None and timing.phases[-1].cache_status == "CACHE_HIT"
+
+
+def test_r248_corrupt_facing_cache_recalculates_without_silent_reuse(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    service.new_project(tmp_path, "Facing R248 Corruption")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    operation_id, node_id = OperationId.new(), CamNodeId.new()
+    operation = Operation(operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (), _parameters(target=49).to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)))
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Facing", operation)))
+    assert service.compute_facing(operation_id).accepted
+    cache_root = service._cam_application._calculation_cache.root(service.current_project.root_path)
+    payload = next(cache_root.rglob("*.bin"))
+    payload.write_bytes(b"truncated")
+    calls = 0
+    original_generate = FacingGenerator.generate
+
+    def counted_generate(generator, inputs):
+        nonlocal calls
+        calls += 1
+        return original_generate(generator, inputs)
+
+    monkeypatch.setattr(FacingGenerator, "generate", counted_generate)
+    assert service.compute_facing(operation_id).accepted
+    assert calls == 1
+
+
+def test_r249_planar_geometry_phase_reuses_after_fresh_service_reopen(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r249")
+    session = service.new_project(tmp_path, "Planar R249 Reopen")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (20, 0), (20, 15), (0, 15)))
+    descriptor, geometry_input = _descriptor(points)
+    operation_id, node_id = OperationId.new(), CamNodeId.new()
+    operation = Operation(
+        operation_id, node_id, OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        replace(_parameters(target=49), boundary_source=FacingBoundarySource.PLANAR_FACE).to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Planar Facing", operation)))
+    calls = 0
+
+    def resolve(_reference):
+        nonlocal calls
+        calls += 1
+        return ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor)
+
+    first = service.compute_facing(operation_id, face_resolver=resolve)
+    assert first.accepted and calls == 1
+    service.save()
+    root = session.root_path
+    service.close_project()
+
+    reopened = ProjectService.create_default(tmp_path / "config-r249-reopen")
+    reopened.open_project(root)
+    second = reopened.compute_facing(operation_id, face_resolver=None)
+    assert second.accepted and second.artifact is not None
+    timing = reopened._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert tuple((phase.phase, phase.cache_status) for phase in timing.phases) == (
+        ("geometry", "CACHE_HIT"), ("final_assembly", "CACHE_HIT")
+    )
+
+
+def test_r249_two_operations_share_one_content_addressed_geometry_artifact(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r249-shared")
+    session = service.new_project(tmp_path, "Planar R249 Shared")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    points = tuple(Point3(x, y, 49, LengthUnit.MM)
+                   for x, y in ((0, 0), (20, 0), (20, 15), (0, 15)))
+    descriptor, geometry_input = _descriptor(points)
+    requirement = MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                                     machine.unit, (OperationCapability.MILLING,))
+    operation_ids = (OperationId.new(), OperationId.new())
+    for index, operation_id in enumerate(operation_ids):
+        operation = Operation(
+            operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+            ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+            replace(_parameters(target=49), boundary_source=FacingBoundarySource.PLANAR_FACE).to_operation_parameters(),
+            requirement,
+        )
+        service.execute_cam_command(lambda app, operation=operation: app.update_tree(
+            job_id, setup.setup_id,
+            lambda tree: tree.add_operation(tree.root_id, f"Planar {index}", operation),
+        ))
+    calls = 0
+
+    def resolve(_reference):
+        nonlocal calls
+        calls += 1
+        return ResolvedMachiningGeometry(GeometryResolutionStatus.RESOLVED, descriptor)
+
+    assert service.compute_facing(operation_ids[0], face_resolver=resolve).accepted
+    assert service.compute_facing(operation_ids[1], face_resolver=None).accepted
+    assert calls == 1
+    shared_root = session.root_path / ".hms" / "cam" / "shared" / "geometry"
+    assert len(tuple(shared_root.glob("*.bin"))) == 1
+    second_timing = service._cam_application.calculation_timing(operation_ids[1])
+    assert second_timing is not None and second_timing.phases[0].cache_status == "CACHE_HIT"
 
 
 def test_stock_change_invalidates_and_operation_delete_prunes_artifact_metadata(tmp_path) -> None:

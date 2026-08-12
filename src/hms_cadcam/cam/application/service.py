@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import threading
+import json
+import logging
+from time import monotonic_ns
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -12,7 +15,7 @@ from hms_cadcam.cam.domain import (
     ArtifactStatus, CamChildNotFoundError, CamJob, CamJobId, CamNodeId,
     ContourParameters, DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
     DrillGeometryInput, DrillDepthDefinition, DrillingStrategy, DrillValidationError,
-    FacingParameters,
+    FacingParameters, FacingRegion,
     FixtureInstance, GeometryReference, Operation,
     HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
@@ -30,7 +33,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot
-from hms_cadcam.cam.toolpath import ToolpathArtifact
+from hms_cadcam.cam.toolpath import ToolpathArtifact, artifact_from_dict, artifact_to_dict
 from hms_cadcam.cam.toolpath.validation import ToolpathPublishResult, publish_toolpath
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import (
@@ -65,6 +68,16 @@ from hms_cadcam.cam.simulation.service import SimulationRuntimeService
 from hms_cadcam.cam.post.service import PostRuntimeService
 from hms_cadcam.cam.cam3d.parallel import ParallelFinishingComputeResult
 from hms_cadcam.cam.cam3d.zlevel import ZLevelFinishingComputeResult
+from hms_cadcam.cam.optimization import (
+    CalculationArtifactStore,
+    CacheLookupStatus,
+    CalculationTiming,
+    PhaseTiming,
+    facing_region_from_dict,
+    facing_region_to_dict,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class CamApplicationService:
@@ -72,6 +85,8 @@ class CamApplicationService:
 
     def __init__(self, artifact_store: ToolpathArtifactStore | None = None) -> None:
         self._artifact_store = artifact_store or ToolpathArtifactStore()
+        self._calculation_cache = CalculationArtifactStore()
+        self._calculation_timings: dict[OperationId, CalculationTiming] = {}
         self._lock = threading.RLock()
         self._snapshot = CamProjectSnapshot()
         self._persisted = CamProjectSnapshot()
@@ -928,6 +943,79 @@ class CamApplicationService:
             except ToolpathArtifactStoreError:
                 return None
 
+    def calculation_timing(self, operation_id: OperationId) -> CalculationTiming | None:
+        """Return the last production calculation timing snapshot, if any."""
+        with self._lock:
+            return self._calculation_timings.get(operation_id)
+
+    def _optimization_cache_hit(
+        self,
+        project_root: Path,
+        operation: Operation,
+        input_fingerprint: DependencyFingerprint,
+    ) -> ToolpathArtifact | None:
+        """Load a final artifact only when all provenance checks pass."""
+        lookup = self._calculation_cache.lookup(
+            project_root,
+            operation_id=operation.operation_id.value.hex,
+            phase="final_assembly",
+            fingerprint=input_fingerprint.digest,
+        )
+        if lookup.status is not CacheLookupStatus.HIT or lookup.payload is None:
+            return None
+        try:
+            artifact = artifact_from_dict(json.loads(lookup.payload.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if (
+            artifact.source_operation_id != operation.operation_id
+            or artifact.operation_revision != operation.revision
+            or artifact.input_fingerprint != input_fingerprint
+            or artifact.artifact_fingerprint is None
+        ):
+            return None
+        return artifact
+
+    def _publish_optimization_cache(self, project_root: Path, artifact: ToolpathArtifact) -> None:
+        """Publish a complete final artifact after normal Toolpath validation."""
+        if artifact.artifact_fingerprint is None:
+            return
+        try:
+            payload = json.dumps(
+                artifact_to_dict(artifact), ensure_ascii=False, allow_nan=False,
+                sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+            self._calculation_cache.publish(
+                project_root,
+                operation_id=artifact.source_operation_id.value.hex,
+                phase="final_assembly",
+                fingerprint=artifact.input_fingerprint.digest,
+                payload=payload,
+                artifact_type="toolpath.final",
+            )
+        except (OSError, TypeError, ValueError) as error:
+            # The correctness path remains the existing ToolpathArtifactStore;
+            # optional optimization cache failure must never reject a toolpath.
+            logger.debug("R247 calculation cache publish skipped: %s", error, exc_info=True)
+            return
+
+    def _restore_optimization_hit(
+        self,
+        operation: Operation,
+        artifact: ToolpathArtifact,
+    ) -> Operation:
+        state = replace(
+            operation.artifact_state,
+            status=ArtifactStatus.VALID,
+            generation=artifact.computation_token.generation,
+            token=None,
+            input_fingerprint=artifact.input_fingerprint,
+            artifact_fingerprint=artifact.artifact_fingerprint,
+            dirty_reasons=(),
+            diagnostics=(),
+        )
+        return replace(operation, artifact_state=state)
+
     def invalidate_operation(self, operation_id: OperationId,
                              reason: DirtyReason) -> CamProjectSnapshot:
         with self._lock:
@@ -966,21 +1054,90 @@ class CamApplicationService:
                         DiagnosticCode.FACING_INVALID_PARAMETERS, str(error)
                     ) from error
                 resolved_face = None
+                geometry_phase_status = "BYPASS_CACHE"
+                geometry_phase_fingerprint = None
                 if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
-                    if len(operation.geometry_inputs) != 1 or face_resolver is None:
+                    if len(operation.geometry_inputs) != 1:
                         raise FacingGenerationError(
                             DiagnosticCode.FACING_FACE_REFERENCE_MISSING,
                             "Planar Facing requires one resolvable persistent FACE reference.",
                         )
-                    try:
-                        resolved_face = face_resolver(operation.geometry_inputs[0].reference)
-                    except (RuntimeError, TypeError, ValueError) as error:
-                        raise FacingGenerationError(
-                            DiagnosticCode.FACING_GEOMETRY_RESOLUTION_FAILED,
-                            str(error) or "Planar FACE resolution failed.",
-                        ) from error
+                    reference = operation.geometry_inputs[0].reference
+                    geometry_phase_fingerprint = ContentFingerprint.from_payload({
+                        "format": "HMS_R249_FACING_GEOMETRY_INPUT",
+                        "format_version": 1,
+                        "reference": reference.to_dict(),
+                        "wcs": setup.wcs.to_dict(),
+                        "algorithm_version": "facing.region.v1",
+                        "precision_policy": {"planarity": 1.0e-8},
+                    }).digest
+                    loaded_phase = self._calculation_cache.lookup_shared(
+                        project_root, phase="geometry", fingerprint=geometry_phase_fingerprint,
+                    )
+                    allow_geometry_reuse = (
+                        face_resolver is None
+                        or operation.artifact_state.status is not ArtifactStatus.VALID
+                    )
+                    if (allow_geometry_reuse and loaded_phase.status is CacheLookupStatus.HIT
+                            and loaded_phase.payload is not None):
+                        try:
+                            resolved_face = facing_region_from_dict(
+                                json.loads(loaded_phase.payload.decode("utf-8"))
+                            )
+                            geometry_phase_status = "CACHE_HIT"
+                        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                            resolved_face = None
+                    if resolved_face is None:
+                        geometry_phase_status = loaded_phase.status.value
+                        if face_resolver is None:
+                            raise FacingGenerationError(
+                                DiagnosticCode.FACING_FACE_REFERENCE_MISSING,
+                                "Planar Facing requires a resolver when geometry cache is unavailable.",
+                            )
+                        try:
+                            resolved_face = face_resolver(reference)
+                        except (RuntimeError, TypeError, ValueError) as error:
+                            raise FacingGenerationError(
+                                DiagnosticCode.FACING_GEOMETRY_RESOLUTION_FAILED,
+                                str(error) or "Planar FACE resolution failed.",
+                            ) from error
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
                                                   machine=machine, resolved_face=resolved_face)
+                if geometry_phase_fingerprint is not None and geometry_phase_status != "CACHE_HIT":
+                    try:
+                        phase_payload = json.dumps(
+                            facing_region_to_dict(inputs.region), ensure_ascii=False, allow_nan=False,
+                            sort_keys=True, separators=(",", ":"),
+                        ).encode("utf-8")
+                        self._calculation_cache.publish_shared(
+                            project_root, phase="geometry",
+                            fingerprint=geometry_phase_fingerprint, payload=phase_payload,
+                        )
+                    except (OSError, TypeError, ValueError):
+                        logger.debug("R249 Facing geometry phase publish skipped", exc_info=True)
+                started_ns = monotonic_ns()
+                cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(
+                        self._snapshot,
+                        artifacts=tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id) + (metadata,),
+                    )
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        # A concurrently refreshed project snapshot may already
+                        # have removed the operation; the verified artifact is
+                        # still returned without mutating unrelated state.
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (
+                            PhaseTiming("geometry", 0, geometry_phase_status),
+                            PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),
+                        )
+                    )
+                    return FacingComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
                         DirtyReason.PARAMETERS_CHANGED))
@@ -997,6 +1154,13 @@ class CamApplicationService:
                         DiagnosticCode.FACING_STALE_RESULT, "Kết quả Facing đã stale và không được publish.")
                     return FacingComputeResult(publish.operation, None, False, (diagnostic,))
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
+                self._publish_optimization_cache(project_root, publish.artifact)
+                self._calculation_timings[operation_id] = CalculationTiming(
+                    str(operation_id), (
+                        PhaseTiming("geometry", 0, geometry_phase_status),
+                        PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),
+                    )
+                )
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
@@ -1061,6 +1225,23 @@ class CamApplicationService:
                                                  str(error) or "2D Contour profile resolution failed.") from error
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
                                                   machine=machine, resolved_profile=resolved)
+                started_ns = monotonic_ns()
+                cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(
+                        self._snapshot,
+                        artifacts=tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id) + (metadata,),
+                    )
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),)
+                    )
+                    return ContourComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
                         DirtyReason.PARAMETERS_CHANGED))
@@ -1078,6 +1259,10 @@ class CamApplicationService:
                         "Kết quả 2D Contour đã stale và không được publish.")
                     return ContourComputeResult(publish.operation, None, False, (diagnostic,))
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
+                self._publish_optimization_cache(project_root, publish.artifact)
+                self._calculation_timings[operation_id] = CalculationTiming(
+                    str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),)
+                )
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
@@ -1139,6 +1324,23 @@ class CamApplicationService:
                     ) from error
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
                                                   machine=machine, resolved_geometry=resolved)
+                started_ns = monotonic_ns()
+                cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(
+                        self._snapshot,
+                        artifacts=tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id) + (metadata,),
+                    )
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),)
+                    )
+                    return PocketComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
                         DirtyReason.PARAMETERS_CHANGED))
@@ -1158,6 +1360,10 @@ class CamApplicationService:
                     )
                     return PocketComputeResult(publish.operation, None, False, (diagnostic,))
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
+                self._publish_optimization_cache(project_root, publish.artifact)
+                self._calculation_timings[operation_id] = CalculationTiming(
+                    str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),)
+                )
                 artifacts = tuple(item for item in self._snapshot.artifacts
                                   if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
@@ -1243,6 +1449,23 @@ class CamApplicationService:
                     operation, setup, assembly=assembly, tool=tool, machine=machine,
                     resolved_geometry=resolved,
                 )
+                cached = None if operation.artifact_state.status is ArtifactStatus.VALID else self._optimization_cache_hit(
+                    project_root, operation, inputs.input_fingerprint
+                )
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(self._snapshot, artifacts=tuple(
+                        item for item in self._snapshot.artifacts if item.operation_id != operation_id
+                    ) + (metadata,))
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", 0, "CACHE_HIT"),)
+                    )
+                    return DrillingComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(
                         operation,
@@ -1272,6 +1495,7 @@ class CamApplicationService:
                         publish.operation, None, False, (diagnostic,)
                     )
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
+                self._publish_optimization_cache(project_root, publish.artifact)
                 artifacts = tuple(
                     item for item in self._snapshot.artifacts
                     if item.operation_id != operation_id
@@ -1377,6 +1601,23 @@ class CamApplicationService:
                     machine=machine,
                     resolved_geometry=resolved,
                 )
+                cached = None if operation.artifact_state.status is ArtifactStatus.VALID else self._optimization_cache_hit(
+                    project_root, operation, inputs.input_fingerprint
+                )
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(self._snapshot, artifacts=tuple(
+                        item for item in self._snapshot.artifacts if item.operation_id != operation_id
+                    ) + (metadata,))
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", 0, "CACHE_HIT"),)
+                    )
+                    return TappingComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(
                         operation,
@@ -1410,6 +1651,7 @@ class CamApplicationService:
                 metadata = self._artifact_store.publish(
                     project_root, publish.artifact
                 )
+                self._publish_optimization_cache(project_root, publish.artifact)
                 artifacts = tuple(
                     item for item in self._snapshot.artifacts
                     if item.operation_id != operation_id
@@ -1517,6 +1759,23 @@ class CamApplicationService:
                     machine=machine,
                     resolved_geometry=resolved,
                 )
+                cached = None if operation.artifact_state.status is ArtifactStatus.VALID else self._optimization_cache_hit(
+                    project_root, operation, inputs.input_fingerprint
+                )
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(self._snapshot, artifacts=tuple(
+                        item for item in self._snapshot.artifacts if item.operation_id != operation_id
+                    ) + (metadata,))
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", 0, "CACHE_HIT"),)
+                    )
+                    return ReamingComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(
                         operation,
@@ -1550,6 +1809,7 @@ class CamApplicationService:
                 metadata = self._artifact_store.publish(
                     project_root, publish.artifact
                 )
+                self._publish_optimization_cache(project_root, publish.artifact)
                 artifacts = tuple(
                     item for item in self._snapshot.artifacts
                     if item.operation_id != operation_id
@@ -1662,6 +1922,23 @@ class CamApplicationService:
                     machine=machine,
                     resolved_geometry=resolved,
                 )
+                cached = None if operation.artifact_state.status is ArtifactStatus.VALID else self._optimization_cache_hit(
+                    project_root, operation, inputs.input_fingerprint
+                )
+                if cached is not None:
+                    metadata = self._artifact_store.publish(project_root, cached)
+                    restored = self._restore_optimization_hit(operation, cached)
+                    staged = replace(self._snapshot, artifacts=tuple(
+                        item for item in self._snapshot.artifacts if item.operation_id != operation_id
+                    ) + (metadata,))
+                    try:
+                        self._snapshot = _replace_operation(staged, restored)
+                    except CamChildNotFoundError:
+                        self._snapshot = staged
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (PhaseTiming("final_assembly", 0, "CACHE_HIT"),)
+                    )
+                    return BoringComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(
                         operation,
@@ -1695,6 +1972,7 @@ class CamApplicationService:
                 metadata = self._artifact_store.publish(
                     project_root, publish.artifact
                 )
+                self._publish_optimization_cache(project_root, publish.artifact)
                 artifacts = tuple(
                     item for item in self._snapshot.artifacts
                     if item.operation_id != operation_id
