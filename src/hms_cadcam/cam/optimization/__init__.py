@@ -38,8 +38,20 @@ from hms_cadcam.cam.optimization.checkpoint import (
     CheckpointState,
 )
 from hms_cadcam.cam.optimization.phases import (
+    contour_geometry_from_dict,
+    contour_geometry_to_dict,
     facing_region_from_dict,
     facing_region_to_dict,
+    pocket_geometry_from_dict,
+    pocket_geometry_to_dict,
+)
+from hms_cadcam.cam.optimization.semantic import (
+    semantic_toolpath_fingerprint,
+    semantic_toolpath_payload,
+)
+from hms_cadcam.cam.optimization.progress import (
+    CamCalculationProgress,
+    CamPhaseState,
 )
 
 __all__ = [
@@ -51,6 +63,8 @@ __all__ = [
     "CacheLookup",
     "CacheLookupStatus",
     "CacheManifest",
+    "CamCalculationProgress",
+    "CamPhaseState",
     "CheckpointRecord",
     "CheckpointState",
     "CheckpointStore",
@@ -62,6 +76,12 @@ __all__ = [
     "ResourcePressure",
     "TimingRecorder",
     "deterministic_parallel_map",
+    "contour_geometry_from_dict",
+    "contour_geometry_to_dict",
     "facing_region_from_dict",
     "facing_region_to_dict",
+    "pocket_geometry_from_dict",
+    "pocket_geometry_to_dict",
+    "semantic_toolpath_fingerprint",
+    "semantic_toolpath_payload",
 ]

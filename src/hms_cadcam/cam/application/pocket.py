@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from typing import Callable
 from uuid import UUID, uuid5
 
 from hms_cadcam.cam.application.contour import (
@@ -63,7 +64,9 @@ from hms_cadcam.cam.domain import (
     Vector3,
 )
 from hms_cadcam.cam.toolpath import (
+    ArcMove,
     FeedMode,
+    LinearMove,
     MotionClass,
     Pose,
     SpindleState,
@@ -109,6 +112,32 @@ class PocketComputeResult:
     artifact: ToolpathArtifact | None
     accepted: bool
     diagnostics: tuple[ValidationDiagnostic, ...] = ()
+
+
+def pocket_feed_independent_fingerprint(inputs: PocketInputs) -> ContentFingerprint:
+    """Identify every Pocket dependency except cutting and plunge feed values."""
+    if not isinstance(inputs, PocketInputs):
+        raise TypeError("Pocket incremental input is invalid")
+    strategy = inputs.strategy.to_dict()
+    strategy.pop("cutting_feed_rate")
+    strategy.pop("plunge_feed_rate")
+    return ContentFingerprint.from_payload({
+        "format": "HMS_R251_POCKET_FEED_INDEPENDENT_INPUT",
+        "format_version": 1,
+        "operation_id": str(inputs.operation.operation_id),
+        "operation_enabled": inputs.operation.enabled,
+        "geometry_inputs": [item.to_dict() for item in inputs.operation.geometry_inputs],
+        "strategy": strategy,
+        "region": inputs.region.fingerprint.to_dict(),
+        "offset_loops": [loop.to_dict() for loop in inputs.offset_loops],
+        "depth_levels": list(inputs.depth_levels),
+        "setup_id": str(inputs.setup.setup_id),
+        "stock": inputs.setup.stock.to_dict(),
+        "wcs": inputs.setup.wcs.to_dict(),
+        "assembly": inputs.assembly.to_dict(),
+        "tool": inputs.tool.to_dict(),
+        "machine": inputs.machine.to_dict(),
+    })
 
 
 def build_pocket_offset_loops(
@@ -494,6 +523,9 @@ class PocketGenerator:
         tool: ToolDefinition | None,
         machine: MachineDefinition | None,
         resolved_geometry: ResolvedPocketGeometry | None,
+        geometry_provider: Callable[[
+            PocketRegion, Setup, float, float, float, float, PocketCuttingDirection
+        ], tuple[ContourPath, tuple[ContourLoop, ...]]] | None = None,
     ) -> PocketInputs:
         geometry_inputs = tuple(value for value in operation.geometry_inputs
                                 if value.role is GeometryInputRole.BOUNDARY)
@@ -593,15 +625,22 @@ class PocketGenerator:
             raise PocketGenerationError(DiagnosticCode.POCKET_ENTRY_UNSAFE,
                                         "Pocket entry policy is not supported safely")
 
-        path, loops = prepare_pocket_machining_geometry(
-            region,
-            setup,
-            tool_diameter=diameter.value,
-            radial_stock_allowance=strategy.radial_stock_allowance.value,
-            stepover=strategy.stepover.value,
-            tolerance=strategy.tolerance.value,
-            cutting_direction=strategy.cutting_direction,
-        )
+        if geometry_provider is None:
+            path, loops = prepare_pocket_machining_geometry(
+                region,
+                setup,
+                tool_diameter=diameter.value,
+                radial_stock_allowance=strategy.radial_stock_allowance.value,
+                stepover=strategy.stepover.value,
+                tolerance=strategy.tolerance.value,
+                cutting_direction=strategy.cutting_direction,
+            )
+        else:
+            path, loops = geometry_provider(
+                region, setup, diameter.value, strategy.radial_stock_allowance.value,
+                strategy.stepover.value, strategy.tolerance.value,
+                strategy.cutting_direction,
+            )
         if any(abs(segment.start.z - strategy.top_z.value) > strategy.tolerance.value
                for segment in path.loop.segments):
             raise PocketGenerationError(DiagnosticCode.POCKET_INVALID_DEPTH,
@@ -763,6 +802,75 @@ class PocketGenerator:
         except Exception as error:
             builder.abort()
             raise PocketGenerationError(DiagnosticCode.POCKET_GENERATION_FAILED, str(error)) from error
+
+    def regenerate_feed_only(
+        self,
+        inputs: PocketInputs,
+        template: ToolpathArtifact,
+    ) -> ToolpathArtifact:
+        """Reuse one validated Pocket event topology while replacing feed semantics."""
+        operation, strategy = inputs.operation, inputs.strategy
+        token = operation.artifact_state.token
+        if (
+            operation.artifact_state.status is not ArtifactStatus.COMPUTING
+            or token is None
+            or not isinstance(template, ToolpathArtifact)
+            or template.source_operation_id != operation.operation_id
+            or template.unit is not strategy.unit
+        ):
+            raise PocketGenerationError(
+                DiagnosticCode.POCKET_GENERATION_FAILED,
+                "Pocket feed-only template is stale or invalid",
+            )
+        events = []
+        for event in template.events:
+            if isinstance(event, (LinearMove, ArcMove)):
+                if event.motion_class is MotionClass.CUTTING:
+                    events.append(replace(event, feed_rate=strategy.cutting_feed_rate))
+                elif isinstance(event, LinearMove) and event.motion_class in {
+                    MotionClass.LINK,
+                    MotionClass.RETRACT,
+                }:
+                    events.append(replace(event, feed_rate=strategy.plunge_feed_rate))
+                else:
+                    raise PocketGenerationError(
+                        DiagnosticCode.POCKET_GENERATION_FAILED,
+                        "Pocket feed-only template contains an unsupported motion",
+                    )
+            else:
+                events.append(event)
+        artifact_uuid = uuid5(
+            _ARTIFACT_NAMESPACE,
+            f"{operation.operation_id}|{inputs.input_fingerprint.digest}|{token.generation}",
+        )
+        try:
+            return ToolpathArtifact.create(
+                artifact_id=ToolpathArtifactId(artifact_uuid),
+                source_operation_id=operation.operation_id,
+                operation_revision=operation.revision,
+                computation_token=token,
+                input_fingerprint=inputs.input_fingerprint,
+                coordinate_space=template.coordinate_space,
+                unit=strategy.unit,
+                setup_id=inputs.setup.setup_id,
+                setup_revision=inputs.setup.revision,
+                wcs_fingerprint=ContentFingerprint.from_payload(inputs.setup.wcs.to_dict()),
+                tool_assembly_id=inputs.assembly.assembly_id,
+                tool_assembly_fingerprint=ContentFingerprint.from_payload(
+                    inputs.assembly.to_dict()
+                ),
+                machine_id=inputs.machine.machine_id,
+                machine_fingerprint=inputs.machine.content_fingerprint,
+                initial_pose=template.initial_pose,
+                events=tuple(events),
+                diagnostics=template.diagnostics,
+                completion_status=template.completion_status,
+            )
+        except (TypeError, ValueError) as error:
+            raise PocketGenerationError(
+                DiagnosticCode.POCKET_GENERATION_FAILED,
+                "Pocket feed-only artifact validation failed",
+            ) from error
 
 
 def _rapid_if_needed(builder: ToolpathBuilder, end: Pose, rapid_rate, provenance: str) -> None:

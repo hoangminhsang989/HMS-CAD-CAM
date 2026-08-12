@@ -8,6 +8,8 @@ import pytest
 
 from hms_cadcam.cam.application import ContourGenerationError, ContourGenerator, basic_mill_resources, offset_contour
 from hms_cadcam.cam.application.contour import _canonical_start, _safe_lead_point, _sample_loop
+from hms_cadcam.cam.application import service as cam_service_module
+from hms_cadcam.cam.optimization import semantic_toolpath_fingerprint
 from hms_cadcam.cam.domain import (
     ArtifactStatus, CamNodeId, ContourBounds, ContourCurveKind, ContourCutDirection, ContourLoop,
     ContourOrientation, ContourParameters, ContourProfileDescriptor, ContourProfileSource, DirtyReason,
@@ -278,6 +280,196 @@ def test_project_recompute_persistence_and_failed_recompute_keeps_valid(tmp_path
     autosaved = CamSqliteRepository().load(autosave.path / "project.db")
     autosaved_operation = autosaved.jobs[0].setups[0].operation_tree.operations[0]
     assert ContourParameters.from_operation_parameters(autosaved_operation.parameters) == edited_parameters
+
+
+def test_r250_contour_lead_change_reuses_real_geometry_phase(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-contour")
+    session = service.new_project(tmp_path, "Contour R250 Incremental")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    descriptor, geometry_input = _descriptor(source_id=setup.source_scope.primary_source_id)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        _parameters().to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "2D Contour", operation)))
+    resolver = lambda _reference: ResolvedContourProfile(
+        GeometryResolutionStatus.RESOLVED, descriptor
+    )
+    cold = service.compute_contour(operation_id, profile_resolver=resolver)
+    assert cold.accepted
+    phase_root = session.root_path / ".hms" / "cam" / "shared" / "contour_geometry"
+    assert len(tuple(phase_root.glob("*.bin"))) == 1
+
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    changed_parameters = _parameters(lead_length=Length(2, LengthUnit.MM))
+    changed = replace(
+        current,
+        parameters=changed_parameters.to_operation_parameters(),
+        revision=current.revision.next(),
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(changed)
+    ))
+    calls = 0
+    original = cam_service_module.prepare_contour_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_contour_machining_geometry", counted_prepare)
+    incremental = service.compute_contour(operation_id, profile_resolver=resolver)
+    assert incremental.accepted and calls == 0
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert tuple((phase.phase, phase.cache_status) for phase in timing.phases) == (
+        ("contour_geometry", "CACHE_HIT"), ("final_assembly", "CACHE_MISS")
+    )
+    assert len(tuple(phase_root.glob("*.bin"))) == 1
+
+
+def test_r250_contour_final_cache_preserves_semantic_fingerprint(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-semantic")
+    service.new_project(tmp_path, "Contour R250 Semantic")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    descriptor, geometry_input = _descriptor(source_id=setup.source_scope.primary_source_id)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        _parameters().to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "2D Contour", operation)))
+    resolver = lambda _reference: ResolvedContourProfile(
+        GeometryResolutionStatus.RESOLVED, descriptor
+    )
+    cold = service.compute_contour(operation_id, profile_resolver=resolver)
+    cached = service.compute_contour(operation_id, profile_resolver=resolver)
+    assert cold.accepted and cached.accepted
+    assert semantic_toolpath_fingerprint(cold.artifact) == semantic_toolpath_fingerprint(cached.artifact)
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None and timing.phases[-1].cache_status == "CACHE_HIT"
+
+
+def test_r250_corrupt_contour_phase_recomputes_only_that_phase(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-corrupt")
+    session = service.new_project(tmp_path, "Contour R250 Corrupt")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    descriptor, geometry_input = _descriptor(source_id=setup.source_scope.primary_source_id)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        _parameters().to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "2D Contour", operation)))
+    resolver = lambda _reference: ResolvedContourProfile(
+        GeometryResolutionStatus.RESOLVED, descriptor
+    )
+    assert service.compute_contour(operation_id, profile_resolver=resolver).accepted
+    payload = next((session.root_path / ".hms" / "cam" / "shared" / "contour_geometry").glob("*.bin"))
+    payload.write_bytes(b"truncated")
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    changed = replace(
+        current,
+        parameters=_parameters(lead_length=Length(2, LengthUnit.MM)).to_operation_parameters(),
+        revision=current.revision.next(),
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(changed)
+    ))
+    calls = 0
+    original = cam_service_module.prepare_contour_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_contour_machining_geometry", counted_prepare)
+    result = service.compute_contour(operation_id, profile_resolver=resolver)
+    assert result.accepted and calls == 1
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None and timing.phases[0].cache_status == "CACHE_CORRUPT"
+
+
+def test_r250_contour_phase_reuses_in_fresh_service_context(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-reopen")
+    session = service.new_project(tmp_path, "Contour R250 Reopen")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    descriptor, geometry_input = _descriptor(source_id=setup.source_scope.primary_source_id)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        _parameters().to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "2D Contour", operation)))
+    resolver = lambda _reference: ResolvedContourProfile(
+        GeometryResolutionStatus.RESOLVED, descriptor
+    )
+    cold = service.compute_contour(operation_id, profile_resolver=resolver)
+    assert cold.accepted
+    cold_semantic = semantic_toolpath_fingerprint(cold.artifact)
+    service.save()
+    root = session.root_path
+    service.close_project()
+
+    reopened = ProjectService.create_default(tmp_path / "config-r250-reopen-new")
+    reopened.open_project(root)
+    calls = 0
+    original = cam_service_module.prepare_contour_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_contour_machining_geometry", counted_prepare)
+    cached = reopened.compute_contour(operation_id, profile_resolver=resolver)
+    assert cached.accepted and calls == 0
+    assert semantic_toolpath_fingerprint(cached.artifact) == cold_semantic
+    timing = reopened._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert timing.phases[0].cache_status == "CACHE_HIT"
+    assert timing.phases[-1].cache_status == "CACHE_HIT"
 
 
 def test_contour_ui_bind_invalid_draft_apply_generate_and_visibility(tmp_path) -> None:

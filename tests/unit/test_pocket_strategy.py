@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import math
+import shutil
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,13 @@ from hms_cadcam.cam.application import (
     build_pocket_offset_loops,
     pocket_depth_levels,
 )
+from hms_cadcam.cam.application import service as cam_service_module
+from hms_cadcam.cam.optimization import (
+    CamCalculationProgress,
+    CamPhaseState,
+    semantic_toolpath_fingerprint,
+    semantic_toolpath_payload,
+)
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
     BoxStock,
@@ -23,6 +31,7 @@ from hms_cadcam.cam.domain import (
     ContourOrientation,
     ContourProfileSource,
     ContourSegment,
+    ContentFingerprint,
     DiagnosticCode,
     DiagnosticSeverity,
     DirtyReason,
@@ -468,3 +477,495 @@ def test_recompute_publish_keeps_previous_valid_artifact_on_resolution_failure(t
     assert PocketStrategy.from_operation_parameters(
         restored.parameters, restored.geometry_inputs[0].reference) == strategy
     assert restored.artifact_state.status is ArtifactStatus.VALID
+
+
+def test_r250_pocket_feed_change_reuses_real_offset_phase(tmp_path, monkeypatch) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-pocket")
+    session = service.new_project(tmp_path, "Pocket R250 Incremental")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    strategy = _strategy(reference)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        strategy.to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket", operation)))
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(), reference)
+    )
+    resolver = lambda _reference: resolved
+    cold = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert cold.accepted and cold.artifact is not None
+    phase_root = session.root_path / ".hms" / "cam" / "shared" / "pocket_geometry"
+    assert len(tuple(phase_root.glob("*.bin"))) == 1
+
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    changed_strategy = replace(
+        strategy,
+        cutting_feed_rate=FeedRate(
+            strategy.cutting_feed_rate.value * 0.8,
+            strategy.cutting_feed_rate.unit,
+        ),
+    )
+    changed = replace(
+        current,
+        parameters=changed_strategy.to_operation_parameters(),
+        revision=current.revision.next(),
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(changed)
+    ))
+    calls = 0
+    original = cam_service_module.prepare_pocket_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_pocket_machining_geometry", counted_prepare)
+    generation_calls = 0
+    original_generate = PocketGenerator.generate
+
+    def counted_generate(generator, inputs):
+        nonlocal generation_calls
+        generation_calls += 1
+        return original_generate(generator, inputs)
+
+    monkeypatch.setattr(PocketGenerator, "generate", counted_generate)
+    incremental = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert incremental.accepted and incremental.artifact is not None
+    assert calls == 0 and generation_calls == 0
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert tuple((phase.phase, phase.cache_status) for phase in timing.phases) == (
+        ("pocket_geometry", "CACHE_HIT"), ("final_assembly", "INCREMENTAL_HIT")
+    )
+    assert len(tuple(phase_root.glob("*.bin"))) == 1
+    incremental_semantic = semantic_toolpath_fingerprint(incremental.artifact)
+
+    service._cam_application._pocket_incremental_templates.clear()
+    final_root = (
+        session.root_path / ".hms" / "cam" / "operations"
+        / operation_id.value.hex / "final_assembly"
+    )
+    shutil.rmtree(final_root)
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.replace_operation(replace(
+            current,
+            artifact_state=current.artifact_state.mark_dirty(
+                DirtyReason.PARAMETERS_CHANGED
+            ),
+        )),
+    ))
+    full = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert full.accepted and full.artifact is not None
+    assert generation_calls == 1
+    assert semantic_toolpath_fingerprint(full.artifact) == incremental_semantic
+
+
+def test_r251_pocket_progress_is_immediate_coalesced_and_phase_truthful(tmp_path) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r251-progress")
+    service.new_project(tmp_path, "Pocket R251 Progress")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        _strategy(reference).to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket", operation),
+    ))
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(), reference)
+    )
+    events: list[CamCalculationProgress] = []
+    result = service.compute_pocket(
+        operation_id, geometry_resolver=lambda _reference: resolved,
+        progress=events.append,
+    )
+    assert result.accepted
+    assert 3 <= len(events) <= 5
+    assert events[0].phase == "pocket_geometry"
+    assert events[0].state is CamPhaseState.RUNNING
+    assert events[0].percentage == 0.0
+    assert events[-1].phase == "final_assembly"
+    assert events[-1].state is CamPhaseState.COMPLETE
+    assert events[-1].percentage == 100.0
+    assert tuple(item.percentage for item in events) == tuple(
+        sorted(item.percentage for item in events)
+    )
+    assert all(item.strategy == "pocket" for item in events)
+
+
+def test_r251_incremental_template_fails_closed_for_non_feed_change(
+    tmp_path, monkeypatch,
+) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r251-incremental-safe")
+    service.new_project(tmp_path, "Pocket R251 Incremental Safe")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    strategy = _strategy(reference)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        strategy.to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket", operation),
+    ))
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(), reference)
+    )
+    resolver = lambda _reference: resolved
+    assert service.compute_pocket(operation_id, geometry_resolver=resolver).accepted
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    changed_strategy = replace(
+        strategy,
+        stepdown=Length(strategy.stepdown.value * 0.5, strategy.stepdown.unit),
+    )
+    changed = replace(
+        current,
+        parameters=changed_strategy.to_operation_parameters(),
+        revision=current.revision.next(),
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(changed)
+    ))
+    generation_calls = 0
+    original_generate = PocketGenerator.generate
+
+    def counted_generate(generator, inputs):
+        nonlocal generation_calls
+        generation_calls += 1
+        return original_generate(generator, inputs)
+
+    monkeypatch.setattr(PocketGenerator, "generate", counted_generate)
+    result = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert result.accepted and generation_calls == 1
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert timing.phases[-1].cache_status != "INCREMENTAL_HIT"
+
+
+def test_r251_incremental_templates_are_event_bounded_lru(
+    tmp_path, monkeypatch,
+) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r251-template-lru")
+    cam = service._cam_application
+    generator, inputs, _setup, _resolved = _inputs()
+    computing, _token = generator.begin(inputs)
+    artifact = generator.generate(computing)
+    budget = len(artifact.events) * 2
+    monkeypatch.setattr(
+        cam_service_module, "_POCKET_INCREMENTAL_TEMPLATE_MAX_EVENTS", budget
+    )
+    operation_ids = tuple(OperationId.new() for _index in range(3))
+    for index, operation_id in enumerate(operation_ids):
+        cam._remember_pocket_incremental_template(operation_id, (
+            ContentFingerprint.from_payload({"geometry": index}),
+            ContentFingerprint.from_payload({"strategy": index}),
+            artifact,
+        ))
+    assert sum(
+        len(value[2].events) for value in cam._pocket_incremental_templates.values()
+    ) <= budget
+    assert tuple(cam._pocket_incremental_templates) == operation_ids[1:]
+
+
+def test_r251_large_pocket_bypasses_unhelpful_final_cache_but_keeps_phase_cache(
+    tmp_path, monkeypatch,
+) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r251-bypass")
+    session = service.new_project(tmp_path, "Pocket R251 Bypass")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    strategy = _strategy(
+        reference,
+        stepover=Length(0.5, LengthUnit.MM),
+        stepdown=Length(0.5, LengthUnit.MM),
+    )
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        strategy.to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket lớn", operation),
+    ))
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(240, 180), reference)
+    )
+    cold = service.compute_pocket(
+        operation_id, geometry_resolver=lambda _reference: resolved
+    )
+    assert cold.accepted and cold.artifact is not None
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert timing.phases[-1].cache_status == "BYPASS_CACHE"
+    final_root = (
+        session.root_path / ".hms" / "cam" / "operations"
+        / operation_id.value.hex / "final_assembly"
+    )
+    assert not final_root.exists()
+    assert tuple(
+        (session.root_path / ".hms" / "cam" / "shared" / "pocket_geometry").glob("*.bin")
+    )
+    calls = 0
+    original = cam_service_module.prepare_pocket_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cam_service_module, "prepare_pocket_machining_geometry", counted_prepare
+    )
+    repeated = service.compute_pocket(
+        operation_id, geometry_resolver=lambda _reference: resolved
+    )
+    assert repeated.accepted and repeated.artifact is not None
+    assert calls == 0
+    assert semantic_toolpath_fingerprint(repeated.artifact) == semantic_toolpath_fingerprint(
+        cold.artifact
+    )
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None
+    assert tuple((phase.phase, phase.cache_status) for phase in timing.phases) == (
+        ("pocket_geometry", "CACHE_HIT"),
+        ("final_assembly", "BYPASS_CACHE"),
+    )
+    assert not final_root.exists()
+
+def test_r250_pocket_cancel_resumes_complete_checkpoint_with_identical_semantics(
+    tmp_path, monkeypatch
+) -> None:
+    service = ProjectService.create_default(tmp_path / "config-r250-checkpoint")
+    session = service.new_project(tmp_path, "Pocket R250 Checkpoint")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    strategy = _strategy(reference)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        strategy.to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket", operation)))
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(), reference)
+    )
+    resolver = lambda _reference: resolved
+
+    cancelled = service.compute_pocket(
+        operation_id, geometry_resolver=resolver, cancellation=lambda: True
+    )
+    assert not cancelled.accepted and cancelled.artifact is None
+    assert cancelled.operation.artifact_state.status is ArtifactStatus.FAILED
+    assert not service.cam_snapshot.artifacts
+    checkpoint_root = (
+        session.root_path / ".hms" / "cam" / "operations"
+        / operation_id.value.hex / "checkpoints"
+    )
+    assert len(tuple(checkpoint_root.glob("pocket_geometry.json"))) == 1
+    shared_root = session.root_path / ".hms" / "cam" / "shared" / "pocket_geometry"
+    for path in shared_root.glob("*"):
+        path.unlink()
+
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    retryable = replace(
+        current,
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(retryable)
+    ))
+    calls = 0
+    original = cam_service_module.prepare_pocket_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_pocket_machining_geometry", counted_prepare)
+    resumed = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert resumed.accepted and calls == 0
+    resumed_payload = semantic_toolpath_payload(resumed.artifact)
+    resumed_semantic = semantic_toolpath_fingerprint(resumed.artifact)
+    timing = service._cam_application.calculation_timing(operation_id)
+    assert timing is not None and timing.phases[0].cache_status == "CHECKPOINT_HIT"
+
+    final_cache = session.root_path / ".hms" / "cam" / "operations" / operation_id.value.hex
+    for path in final_cache.rglob("*"):
+        if path.is_file():
+            path.unlink()
+    for path in shared_root.glob("*"):
+        path.unlink()
+    current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    full = replace(
+        current,
+        artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id, lambda tree: tree.replace_operation(full)
+    ))
+    # Remove the checkpoint too, forcing the real expensive phase to run.
+    for path in checkpoint_root.glob("*"):
+        path.unlink()
+    calls = 0
+    uninterrupted = service.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert uninterrupted.accepted and calls == 1
+    assert semantic_toolpath_payload(uninterrupted.artifact) == resumed_payload
+    assert semantic_toolpath_fingerprint(uninterrupted.artifact) == resumed_semantic
+
+
+def test_r251_repeated_cancel_then_fresh_service_resumes_without_scratch(
+    tmp_path, monkeypatch
+) -> None:
+    config = tmp_path / "config-r251-fresh-resume"
+    service = ProjectService.create_default(config)
+    session = service.new_project(tmp_path, "Pocket R251 Fresh Resume")
+    service.execute_cam_command(lambda app: app.create_job("Job"))
+    job_id = service.cam_snapshot.active_job_id
+    setup = _default_setup(uuid4(), LengthUnit.MM, 1)
+    service.execute_cam_command(lambda app: app.add_setup(job_id, setup))
+    tool, holder, assembly, machine = basic_mill_resources(LengthUnit.MM)
+    service.execute_cam_command(lambda app: app.add_basic_resources(tool, holder, assembly, machine))
+    reference = _reference(setup.source_scope.primary_source_id)
+    geometry_input = OperationGeometryInput(
+        GeometryInputId.new(), GeometryInputRole.BOUNDARY, reference,
+        True, GeometryReferenceKind.FACE, 0,
+    )
+    strategy = _strategy(reference)
+    operation_id = OperationId.new()
+    operation = Operation(
+        operation_id, CamNodeId.new(), OperationFamily.MILLING, setup.setup_id,
+        ToolAssemblyReference.from_assembly(assembly), (geometry_input,),
+        strategy.to_operation_parameters(),
+        MachineRequirement(machine.machine_id, machine.revision, machine.content_fingerprint,
+                           machine.unit, (OperationCapability.MILLING,)),
+    )
+    service.execute_cam_command(lambda app: app.update_tree(
+        job_id, setup.setup_id,
+        lambda tree: tree.add_operation(tree.root_id, "Pocket", operation),
+    ))
+    service.save()
+    root = session.root_path
+    resolved = ResolvedPocketGeometry(
+        GeometryResolutionStatus.RESOLVED, _region(_rectangle(), reference)
+    )
+    resolver = lambda _reference: resolved
+
+    for _attempt in range(2):
+        cancelled = service.compute_pocket(
+            operation_id, geometry_resolver=resolver, cancellation=lambda: True
+        )
+        assert not cancelled.accepted
+        assert cancelled.operation.artifact_state.status is ArtifactStatus.FAILED
+        current = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+        retryable = replace(
+            current,
+            artifact_state=current.artifact_state.mark_dirty(DirtyReason.PARAMETERS_CHANGED),
+        )
+        service.execute_cam_command(lambda app, value=retryable: app.update_tree(
+            job_id, setup.setup_id, lambda tree: tree.replace_operation(value)
+        ))
+
+    checkpoint_root = (
+        root / ".hms" / "cam" / "operations" / operation_id.value.hex / "checkpoints"
+    )
+    assert len(tuple(checkpoint_root.glob("pocket_geometry.json"))) == 1
+    service.close_project(discard_changes=True)
+
+    shared_root = root / ".hms" / "cam" / "shared" / "pocket_geometry"
+    for path in shared_root.glob("*"):
+        path.unlink()
+    reopened = ProjectService.create_default(config)
+    reopened.open_project(root)
+    calls = 0
+    original = cam_service_module.prepare_pocket_machining_geometry
+
+    def counted_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cam_service_module, "prepare_pocket_machining_geometry", counted_prepare)
+    resumed = reopened.compute_pocket(operation_id, geometry_resolver=resolver)
+    assert resumed.accepted and calls == 0
+    timing = reopened._cam_application.calculation_timing(operation_id)
+    assert timing is not None and timing.phases[0].cache_status == "CHECKPOINT_HIT"
+    assert not tuple((root / ".hms" / "cam").rglob(".*.tmp"))
+    reopened.close_project(discard_changes=True)

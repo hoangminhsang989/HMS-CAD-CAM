@@ -59,14 +59,17 @@ from hms_cadcam.cam.application import (
     AutomaticParameterMode,
     BoringGenerationError,
     BoringGenerator,
+    ContourComputeResult,
     ContourGenerationError,
     ContourGenerator,
     FacingGenerationError,
     FacingGenerator,
+    FacingComputeResult,
     DrillingGenerationError,
     DrillingGenerator,
     PocketGenerationError,
     PocketGenerator,
+    PocketComputeResult,
     ReamingGenerationError,
     ReamingGenerator,
     TappingGenerationError,
@@ -181,6 +184,8 @@ from hms_cadcam.cam.cam3d.zlevel import (
 from hms_cadcam.cam.domain import MachiningZone3DId
 from hms_cadcam.ui.parallel_finishing_worker import ParallelFinishingTask
 from hms_cadcam.ui.zlevel_finishing_worker import ZLevelFinishingTask
+from hms_cadcam.ui.cam_calculation_worker import CamCalculationTask
+from hms_cadcam.cam.optimization import CamCalculationProgress, CamPhaseState
 from hms_cadcam.ui.localization import (
     display_value,
     localize_widget_tree,
@@ -264,6 +269,10 @@ class CamWorkspace(QWidget):
         self._z_level_reports: dict[OperationId, object] = {}
         self._z_level_task: ZLevelFinishingTask | None = None
         self._z_level_task_generation: int | None = None
+        self._cam_calculation_task: CamCalculationTask | None = None
+        self._cam_calculation_generation: int | None = None
+        self._cam_calculation_operation_id: OperationId | None = None
+        self._cam_calculation_strategy: str | None = None
         self._simulation_policies: dict[
             OperationId, tuple[SimulationSamplingPolicy, SimulationDisplayPolicy]
         ] = {}
@@ -435,6 +444,13 @@ class CamWorkspace(QWidget):
             self._z_level_task = None
             self.parallel_calculation_active.emit(False)
         self._z_level_task_generation = None
+        if self._cam_calculation_task is not None:
+            self._cam_calculation_task.abandon()
+            self._cam_calculation_task = None
+            self.parallel_calculation_active.emit(False)
+        self._cam_calculation_generation = None
+        self._cam_calculation_operation_id = None
+        self._cam_calculation_strategy = None
         self._z_level_drafts.clear()
         self._z_level_draft_evidence.clear()
         self._z_level_reports.clear()
@@ -727,6 +743,9 @@ class CamWorkspace(QWidget):
                 schema, context, draft, variant, request
             ),
             calculate_callback=lambda values: self._calculate_facing_production(
+                context, variant, values
+            ),
+            calculate_task_callback=lambda values: self._start_facing_production(
                 context, variant, values
             ),
             field_action_callback=lambda action_id, values: self._facing_field_action(
@@ -1813,6 +1832,9 @@ class CamWorkspace(QWidget):
 
     def cancel_parallel_calculation(self) -> None:
         """Cancel the active CAM 3D finishing task without partial publication."""
+        if self._cam_calculation_task is not None:
+            self._cam_calculation_task.cancel()
+            self.message.emit("Đang hủy tính toán đường chạy dao…")
         if self._parallel_task is not None:
             self._parallel_task.cancel()
             self.message.emit("Đang hủy tính toán Gia công tinh song song…")
@@ -1922,6 +1944,9 @@ class CamWorkspace(QWidget):
                 schema, context, draft, request
             ),
             calculate_callback=lambda values: self._calculate_contour_production(
+                context, values
+            ),
+            calculate_task_callback=lambda values: self._start_contour_production(
                 context, values
             ),
             field_action_callback=lambda action_id, values: self._contour_field_action(
@@ -2045,6 +2070,9 @@ class CamWorkspace(QWidget):
                 schema, context, draft, request
             ),
             calculate_callback=lambda values: self._calculate_pocket_production(
+                context, values
+            ),
+            calculate_task_callback=lambda values: self._start_pocket_production(
                 context, values
             ),
             field_action_callback=lambda action_id, values: self._pocket_field_action(
@@ -3024,6 +3052,31 @@ class CamWorkspace(QWidget):
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
+    def _start_facing_production(
+        self,
+        context: FacingEditorContext,
+        variant: FacingEditorVariant,
+        _values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._generation is None or not self._facing_context_is_current(context):
+            raise RuntimeError("Applied Facing state đã stale; hãy mở lại editor.")
+        generation = self._generation
+        return self._start_cam_calculation(
+            context.operation.operation_id,
+            "facing",
+            lambda cancelled, progress: self._service.compute_facing(
+                context.operation.operation_id,
+                expected_generation=generation,
+                face_resolver=(
+                    self._face_resolver
+                    if variant is FacingEditorVariant.PLANAR_FACE
+                    else None
+                ),
+                cancellation=cancelled,
+                progress=progress,
+            ),
+        )
+
     @staticmethod
     def _contour_error_target(message: str, code: str) -> str | None:
         folded = f"{code} {message}".casefold()
@@ -3356,6 +3409,28 @@ class CamWorkspace(QWidget):
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
 
+    def _start_contour_production(
+        self,
+        context: ContourEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._generation is None or not self._contour_context_is_current(context):
+            raise RuntimeError("Applied Contour state đã stale; hãy mở lại editor.")
+        if self._profile_resolver is None:
+            raise RuntimeError("Contour geometry resolver chưa sẵn sàng.")
+        generation = self._generation
+        return self._start_cam_calculation(
+            context.operation.operation_id,
+            "contour",
+            lambda cancelled, progress: self._service.compute_contour(
+                context.operation.operation_id,
+                expected_generation=generation,
+                profile_resolver=self._profile_resolver,
+                cancellation=cancelled,
+                progress=progress,
+            ),
+        )
+
     @staticmethod
     def _pocket_error_target(message: str, code: str) -> str | None:
         folded = f"{code} {message}".casefold()
@@ -3663,6 +3738,108 @@ class CamWorkspace(QWidget):
         self.message.emit("Hốc 2.5D đã tính toán và công bố kết quả hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
         return True
+
+    def _start_pocket_production(
+        self,
+        context: PocketEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._generation is None or not self._pocket_context_is_current(context):
+            raise RuntimeError("Applied Pocket state đã stale; hãy mở lại editor.")
+        if self._pocket_resolver is None:
+            raise RuntimeError("Pocket geometry resolver chưa sẵn sàng.")
+        generation = self._generation
+        return self._start_cam_calculation(
+            context.operation.operation_id,
+            "pocket",
+            lambda cancelled, progress: self._service.compute_pocket(
+                context.operation.operation_id,
+                expected_generation=generation,
+                geometry_resolver=self._pocket_resolver,
+                cancellation=cancelled,
+                progress=progress,
+            ),
+        )
+
+    def _start_cam_calculation(
+        self,
+        operation_id: OperationId,
+        strategy: str,
+        calculate: Callable[[Callable[[], bool], Callable[[CamCalculationProgress], None]], object],
+    ) -> str:
+        """Start one 2D production calculation without blocking the GUI thread."""
+        if (
+            self._cam_calculation_task is not None
+            or self._parallel_task is not None
+            or self._z_level_task is not None
+        ):
+            raise RuntimeError("Một tác vụ tính đường dao đang chạy.")
+        generation = self._generation
+        if generation is None:
+            raise RuntimeError("Ngữ cảnh dự án CAM không còn hiện hành.")
+        task = CamCalculationTask(calculate)
+        self._cam_calculation_task = task
+        self._cam_calculation_generation = generation
+        self._cam_calculation_operation_id = operation_id
+        self._cam_calculation_strategy = strategy
+        task.signals.progress.connect(self._cam_calculation_progress)
+        task.signals.completed.connect(self._cam_calculation_completed)
+        task.signals.failed.connect(self._cam_calculation_failed)
+        task.signals.finished.connect(self._cam_calculation_finished)
+        self.parallel_calculation_active.emit(True)
+        self.parallel_progress_changed.emit(CamCalculationProgress(
+            operation_id.value.hex, strategy, "geometry",
+            CamPhaseState.RUNNING, 0.0,
+        ))
+        QThreadPool.globalInstance().start(task)
+        return "Đã bắt đầu tính đường chạy dao"
+
+    def _cam_calculation_progress(self, value: CamCalculationProgress) -> None:
+        if self._cam_calculation_task is not None:
+            self.parallel_progress_changed.emit(value)
+
+    def _cam_calculation_completed(self, result: object) -> None:
+        operation_id = self._cam_calculation_operation_id
+        if operation_id is None or self._cam_calculation_generation != self._generation:
+            return
+        if not isinstance(result, (FacingComputeResult, ContourComputeResult, PocketComputeResult)):
+            self._error("Tác vụ CAM trả về kết quả không hợp lệ.")
+            return
+        if result.operation.operation_id != operation_id:
+            self._error("Kết quả CAM không khớp nguyên công đang tính.")
+            return
+        if not result.accepted or result.artifact is None:
+            self._error(
+                result.diagnostics[0].message
+                if result.diagnostics
+                else "Tính đường chạy dao thất bại an toàn."
+            )
+            return
+        selected = self._selected_operation()
+        if (
+            selected is not None
+            and selected.operation_id == operation_id
+            and self._toolpath_display is not None
+        ):
+            displayed = self._toolpath_display(result.artifact)
+            if displayed is not False:
+                self.editor.show_toolpath_metadata(
+                    ToolpathPresentation.from_artifact(result.artifact)
+                )
+                self._displayed_operation_id = operation_id
+                self._toolpath_visibility[operation_id] = True
+        self.message.emit("Đường chạy dao đã tính toán và công bố hợp lệ.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+
+    def _cam_calculation_failed(self, error: object) -> None:
+        self._error(str(error) or "Tính đường chạy dao thất bại an toàn.")
+
+    def _cam_calculation_finished(self) -> None:
+        self._cam_calculation_task = None
+        self._cam_calculation_generation = None
+        self._cam_calculation_operation_id = None
+        self._cam_calculation_strategy = None
+        self.parallel_calculation_active.emit(False)
 
     def clear_selection(self) -> None:
         """Clear transient CAM selection without mutating project or CAD data."""

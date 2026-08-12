@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import threading
 import json
 import logging
@@ -47,10 +48,12 @@ from hms_cadcam.cam.application.facing import (
     FacingComputeResult, FacingGenerationError, FacingGenerator,
 )
 from hms_cadcam.cam.application.contour import (
-    ContourComputeResult, ContourGenerationError, ContourGenerator,
+    ContourComputeResult, ContourGenerationError, ContourGenerator, ContourPath,
+    prepare_contour_machining_geometry,
 )
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult, PocketGenerationError, PocketGenerator,
+    pocket_feed_independent_fingerprint, prepare_pocket_machining_geometry,
 )
 from hms_cadcam.cam.application.drilling import (
     DrillingComputeResult, DrillingGenerationError, DrillingGenerator,
@@ -70,14 +73,36 @@ from hms_cadcam.cam.cam3d.parallel import ParallelFinishingComputeResult
 from hms_cadcam.cam.cam3d.zlevel import ZLevelFinishingComputeResult
 from hms_cadcam.cam.optimization import (
     CalculationArtifactStore,
+    CheckpointStore,
     CacheLookupStatus,
     CalculationTiming,
+    CamCalculationProgress,
+    CamPhaseState,
     PhaseTiming,
+    contour_geometry_from_dict,
+    contour_geometry_to_dict,
     facing_region_from_dict,
     facing_region_to_dict,
+    pocket_geometry_from_dict,
+    pocket_geometry_to_dict,
 )
 
 logger = logging.getLogger(__name__)
+_POCKET_FINAL_CACHE_MAX_EVENT_ESTIMATE = 5_000
+_POCKET_INCREMENTAL_TEMPLATE_MAX_EVENTS = 100_000
+
+
+def _report_calculation_progress(
+    callback: Callable[[CamCalculationProgress], None] | None,
+    value: CamCalculationProgress,
+) -> None:
+    """Keep optional UI observation outside the machining correctness path."""
+    if callback is None:
+        return
+    try:
+        callback(value)
+    except Exception:
+        logger.warning("CAM calculation progress observer failed", exc_info=True)
 
 
 class CamApplicationService:
@@ -86,7 +111,12 @@ class CamApplicationService:
     def __init__(self, artifact_store: ToolpathArtifactStore | None = None) -> None:
         self._artifact_store = artifact_store or ToolpathArtifactStore()
         self._calculation_cache = CalculationArtifactStore()
+        self._checkpoint_store = CheckpointStore()
         self._calculation_timings: dict[OperationId, CalculationTiming] = {}
+        self._pocket_incremental_templates: OrderedDict[
+            OperationId,
+            tuple[ContentFingerprint, ContentFingerprint, ToolpathArtifact],
+        ] = OrderedDict()
         self._lock = threading.RLock()
         self._snapshot = CamProjectSnapshot()
         self._persisted = CamProjectSnapshot()
@@ -112,6 +142,8 @@ class CamApplicationService:
             self._snapshot = _clone_snapshot(snapshot)
             self._persisted = _clone_snapshot(snapshot)
             self._selection = CamSelection()
+            self._pocket_incremental_templates.clear()
+            self._calculation_timings.clear()
             self._generation += 1
             self._simulation.bind_project(self._generation, self._generation)
             self._post.clear()
@@ -125,6 +157,11 @@ class CamApplicationService:
             operation_ids = {operation.operation_id for job in candidate.jobs
                              for setup in job.setups
                              for operation in setup.operation_tree.operations}
+            self._pocket_incremental_templates = OrderedDict(
+                (operation_id, value)
+                for operation_id, value in self._pocket_incremental_templates.items()
+                if operation_id in operation_ids
+            )
             candidate = replace(candidate, artifacts=tuple(
                 metadata for metadata in candidate.artifacts
                 if metadata.operation_id in operation_ids
@@ -144,6 +181,8 @@ class CamApplicationService:
             persisted = _clone_snapshot(self._persisted)
             selection = self._selection
             generation = self._generation
+            incremental_templates = OrderedDict(self._pocket_incremental_templates)
+            calculation_timings = dict(self._calculation_timings)
             try:
                 changed = command(self)
                 if not isinstance(changed, CamProjectSnapshot):
@@ -153,6 +192,8 @@ class CamApplicationService:
                 self._persisted = persisted
                 self._selection = selection
                 self._generation = generation
+                self._pocket_incremental_templates = incremental_templates
+                self._calculation_timings = calculation_timings
                 raise
             return _clone_snapshot(self._snapshot)
 
@@ -199,6 +240,8 @@ class CamApplicationService:
             self._snapshot = empty
             self._persisted = empty
             self._selection = CamSelection()
+            self._pocket_incremental_templates.clear()
+            self._calculation_timings.clear()
             self._generation += 1
             self._simulation.clear()
             self._post.clear()
@@ -948,6 +991,44 @@ class CamApplicationService:
         with self._lock:
             return self._calculation_timings.get(operation_id)
 
+    def recover_calculation_cache(self, project_root: Path) -> int:
+        """Remove abandoned atomic scratch without touching reusable artifacts."""
+        with self._lock:
+            return self._calculation_cache.recover_abandoned_scratch(project_root)
+
+    def cleanup_calculation_cache(
+        self,
+        project_root: Path,
+        *,
+        max_bytes: int,
+        max_age_seconds: float | None = None,
+    ) -> int:
+        """Apply quota/age cleanup while preserving live operation references."""
+        with self._lock:
+            live = frozenset(
+                operation.operation_id.value.hex
+                for job in self._snapshot.jobs
+                for setup in job.setups
+                for operation in setup.operation_tree.operations
+            )
+            return self._calculation_cache.cleanup(
+                project_root,
+                max_bytes=max_bytes,
+                max_age_seconds=max_age_seconds,
+                live_operation_ids=live,
+            )
+
+    def release_calculation_cache_references(
+        self, project_root: Path, operation_id: OperationId
+    ) -> int:
+        """Release one deleted operation from shared calculation artifacts."""
+        if not isinstance(operation_id, OperationId):
+            raise TypeError("CAM operation identity is invalid")
+        with self._lock:
+            return self._calculation_cache.release_operation_references(
+                project_root, operation_id.value.hex
+            )
+
     def _optimization_cache_hit(
         self,
         project_root: Path,
@@ -1031,6 +1112,8 @@ class CamApplicationService:
         operation_id: OperationId,
         *,
         face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
+        cancellation: Callable[[], bool] | None = None,
+        progress: Callable[[CamCalculationProgress], None] | None = None,
     ) -> FacingComputeResult:
         """Synchronously compute and publish Facing while retaining stale-token contracts."""
         with self._lock:
@@ -1046,6 +1129,11 @@ class CamApplicationService:
             machine = next((item for item in self._snapshot.machine_definitions
                             if item.machine_id == machine_id), None)
             generator = FacingGenerator()
+            operation_key = operation.operation_id.value.hex
+            geometry_started_ns = monotonic_ns()
+            _report_calculation_progress(progress, CamCalculationProgress(
+                operation_key, "facing", "geometry", CamPhaseState.RUNNING, 0.0
+            ))
             try:
                 try:
                     parameters = FacingParameters.from_operation_parameters(operation.parameters)
@@ -1073,6 +1161,7 @@ class CamApplicationService:
                     }).digest
                     loaded_phase = self._calculation_cache.lookup_shared(
                         project_root, phase="geometry", fingerprint=geometry_phase_fingerprint,
+                        algorithm_version="facing.geometry.v1",
                     )
                     allow_geometry_reuse = (
                         face_resolver is None
@@ -1083,6 +1172,11 @@ class CamApplicationService:
                         try:
                             resolved_face = facing_region_from_dict(
                                 json.loads(loaded_phase.payload.decode("utf-8"))
+                            )
+                            self._calculation_cache.retain_shared_reference(
+                                project_root, phase="geometry",
+                                fingerprint=geometry_phase_fingerprint,
+                                operation_id=operation.operation_id.value.hex,
                             )
                             geometry_phase_status = "CACHE_HIT"
                         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
@@ -1103,6 +1197,20 @@ class CamApplicationService:
                             ) from error
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
                                                   machine=machine, resolved_face=resolved_face)
+                geometry_elapsed_ns = monotonic_ns() - geometry_started_ns
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "facing", "geometry", CamPhaseState.COMPLETE, 45.0,
+                    geometry_elapsed_ns, geometry_phase_status,
+                ))
+                if cancellation is not None and cancellation():
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "facing", "final_assembly", CamPhaseState.CANCELLED,
+                        45.0, 0, "CANCELLED",
+                    ))
+                    raise FacingGenerationError(
+                        DiagnosticCode.FACING_GENERATION_FAILED,
+                        "Facing calculation cancelled after a safe geometry boundary.",
+                    )
                 if geometry_phase_fingerprint is not None and geometry_phase_status != "CACHE_HIT":
                     try:
                         phase_payload = json.dumps(
@@ -1112,11 +1220,18 @@ class CamApplicationService:
                         self._calculation_cache.publish_shared(
                             project_root, phase="geometry",
                             fingerprint=geometry_phase_fingerprint, payload=phase_payload,
+                            algorithm_version="facing.geometry.v1",
+                            operation_references=(operation.operation_id.value.hex,),
                         )
                     except (OSError, TypeError, ValueError):
                         logger.debug("R249 Facing geometry phase publish skipped", exc_info=True)
                 started_ns = monotonic_ns()
-                cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "facing", "final_assembly", CamPhaseState.RUNNING, 55.0
+                ))
+                cached = self._optimization_cache_hit(
+                    project_root, operation, inputs.input_fingerprint
+                )
                 if cached is not None:
                     metadata = self._artifact_store.publish(project_root, cached)
                     restored = self._restore_optimization_hit(operation, cached)
@@ -1137,6 +1252,10 @@ class CamApplicationService:
                             PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),
                         )
                     )
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "facing", "final_assembly", CamPhaseState.COMPLETE,
+                        100.0, monotonic_ns() - started_ns, "CACHE_HIT",
+                    ))
                     return FacingComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
@@ -1161,6 +1280,10 @@ class CamApplicationService:
                         PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),
                     )
                 )
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "facing", "final_assembly", CamPhaseState.COMPLETE,
+                    100.0, monotonic_ns() - started_ns, "CACHE_MISS",
+                ))
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
@@ -1195,6 +1318,8 @@ class CamApplicationService:
         operation_id: OperationId,
         *,
         profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
+        cancellation: Callable[[], bool] | None = None,
+        progress: Callable[[CamCalculationProgress], None] | None = None,
     ) -> ContourComputeResult:
         """Synchronously compute/publish 2D Contour with the shared stale-token contract."""
         with self._lock:
@@ -1210,6 +1335,11 @@ class CamApplicationService:
             machine = next((item for item in self._snapshot.machine_definitions
                             if item.machine_id == machine_id), None)
             generator = ContourGenerator()
+            operation_key = operation.operation_id.value.hex
+            geometry_started_ns = monotonic_ns()
+            _report_calculation_progress(progress, CamCalculationProgress(
+                operation_key, "contour", "contour_geometry", CamPhaseState.RUNNING, 0.0
+            ))
             try:
                 try:
                     ContourParameters.from_operation_parameters(operation.parameters)
@@ -1223,9 +1353,84 @@ class CamApplicationService:
                 except (RuntimeError, TypeError, ValueError) as error:
                     raise ContourGenerationError(DiagnosticCode.CONTOUR_PROFILE_MISSING,
                                                  str(error) or "2D Contour profile resolution failed.") from error
+                contour_phase_status = "CACHE_MISS"
+
+                def contour_geometry_provider(descriptor, current_setup, parameters, diameter):
+                    nonlocal contour_phase_status
+                    fingerprint = ContentFingerprint.from_payload({
+                        "format": "HMS_R250_CONTOUR_GEOMETRY_INPUT",
+                        "format_version": 1,
+                        "geometry": descriptor.geometry_fingerprint.to_dict(),
+                        "reference": descriptor.reference.to_dict(),
+                        "wcs": current_setup.wcs.to_dict(),
+                        "side": parameters.side.value,
+                        "direction": parameters.direction.value,
+                        "radial_stock_allowance": parameters.radial_stock_allowance.value,
+                        "tool_diameter": diameter,
+                        "precision_policy": {"tolerance": 1.0e-8},
+                        "algorithm_version": "contour.geometry.v1",
+                    }).digest
+                    loaded = self._calculation_cache.lookup_shared(
+                        project_root, phase="contour_geometry", fingerprint=fingerprint,
+                        algorithm_version="contour.geometry.v1",
+                    )
+                    if loaded.status is CacheLookupStatus.HIT and loaded.payload is not None:
+                        try:
+                            decoded = contour_geometry_from_dict(
+                                json.loads(loaded.payload.decode("utf-8"))
+                            )
+                            self._calculation_cache.retain_shared_reference(
+                                project_root, phase="contour_geometry",
+                                fingerprint=fingerprint,
+                                operation_id=operation.operation_id.value.hex,
+                            )
+                            contour_phase_status = "CACHE_HIT"
+                            return ContourPath(decoded[0], decoded[1]), decoded[2], decoded[3]
+                        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                            pass
+                    result = prepare_contour_machining_geometry(
+                        descriptor, current_setup, parameters, diameter
+                    )
+                    contour_phase_status = loaded.status.value
+                    try:
+                        payload = json.dumps(
+                            contour_geometry_to_dict(
+                                result[0].loop, result[0].source_fingerprint,
+                                result[1], result[2],
+                            ), ensure_ascii=False,
+                            allow_nan=False, sort_keys=True, separators=(",", ":"),
+                        ).encode("utf-8")
+                        self._calculation_cache.publish_shared(
+                            project_root, phase="contour_geometry",
+                            fingerprint=fingerprint, payload=payload,
+                            algorithm_version="contour.geometry.v1",
+                            operation_references=(operation.operation_id.value.hex,),
+                        )
+                    except (OSError, TypeError, ValueError):
+                        logger.debug("R250 Contour phase publish skipped", exc_info=True)
+                    return result
+
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
-                                                  machine=machine, resolved_profile=resolved)
+                                                  machine=machine, resolved_profile=resolved,
+                                                  geometry_provider=contour_geometry_provider)
+                geometry_elapsed_ns = monotonic_ns() - geometry_started_ns
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "contour", "contour_geometry", CamPhaseState.COMPLETE,
+                    45.0, geometry_elapsed_ns, contour_phase_status,
+                ))
+                if cancellation is not None and cancellation():
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "contour", "final_assembly", CamPhaseState.CANCELLED,
+                        45.0, 0, "CANCELLED",
+                    ))
+                    raise ContourGenerationError(
+                        DiagnosticCode.CONTOUR_GENERATION_FAILED,
+                        "Contour calculation cancelled after a safe geometry boundary.",
+                    )
                 started_ns = monotonic_ns()
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "contour", "final_assembly", CamPhaseState.RUNNING, 55.0
+                ))
                 cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
                 if cached is not None:
                     metadata = self._artifact_store.publish(project_root, cached)
@@ -1239,8 +1444,15 @@ class CamApplicationService:
                     except CamChildNotFoundError:
                         self._snapshot = staged
                     self._calculation_timings[operation_id] = CalculationTiming(
-                        str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),)
+                        str(operation_id), (
+                            PhaseTiming("contour_geometry", 0, contour_phase_status),
+                            PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),
+                        )
                     )
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "contour", "final_assembly", CamPhaseState.COMPLETE,
+                        100.0, monotonic_ns() - started_ns, "CACHE_HIT",
+                    ))
                     return ContourComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
@@ -1261,8 +1473,15 @@ class CamApplicationService:
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
                 self._publish_optimization_cache(project_root, publish.artifact)
                 self._calculation_timings[operation_id] = CalculationTiming(
-                    str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),)
+                    str(operation_id), (
+                        PhaseTiming("contour_geometry", 0, contour_phase_status),
+                        PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),
+                    )
                 )
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "contour", "final_assembly", CamPhaseState.COMPLETE,
+                    100.0, monotonic_ns() - started_ns, "CACHE_MISS",
+                ))
                 artifacts = tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
@@ -1294,6 +1513,8 @@ class CamApplicationService:
         operation_id: OperationId,
         *,
         geometry_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+        cancellation: Callable[[], bool] | None = None,
+        progress: Callable[[CamCalculationProgress], None] | None = None,
     ) -> PocketComputeResult:
         """Synchronously compute/publish Pocket with the shared stale-token contract."""
         with self._lock:
@@ -1309,6 +1530,11 @@ class CamApplicationService:
             machine = next((item for item in self._snapshot.machine_definitions
                             if item.machine_id == machine_id), None)
             generator = PocketGenerator()
+            operation_key = operation.operation_id.value.hex
+            geometry_started_ns = monotonic_ns()
+            _report_calculation_progress(progress, CamCalculationProgress(
+                operation_key, "pocket", "pocket_geometry", CamPhaseState.RUNNING, 0.0
+            ))
             try:
                 if len(operation.geometry_inputs) != 1 or geometry_resolver is None:
                     raise PocketGenerationError(
@@ -1322,11 +1548,141 @@ class CamApplicationService:
                         DiagnosticCode.POCKET_PROFILE_INVALID,
                         str(error) or "Pocket geometry resolution failed.",
                     ) from error
+                pocket_phase_status = "CACHE_MISS"
+
+                def pocket_geometry_provider(region, current_setup, diameter, allowance,
+                                             stepover, tolerance, direction):
+                    nonlocal pocket_phase_status
+                    fingerprint = ContentFingerprint.from_payload({
+                        "format": "HMS_R250_POCKET_GEOMETRY_INPUT",
+                        "format_version": 1,
+                        "region": region.fingerprint.to_dict(),
+                        "wcs": current_setup.wcs.to_dict(),
+                        "tool_diameter": diameter,
+                        "radial_stock_allowance": allowance,
+                        "stepover": stepover,
+                        "tolerance": tolerance,
+                        "direction": direction.value,
+                        "algorithm_version": "pocket.geometry.v1",
+                    }).digest
+                    loaded = self._calculation_cache.lookup_shared(
+                        project_root, phase="pocket_geometry", fingerprint=fingerprint,
+                        algorithm_version="pocket.geometry.v1",
+                    )
+                    if loaded.status is CacheLookupStatus.HIT and loaded.payload is not None:
+                        try:
+                            decoded = pocket_geometry_from_dict(
+                                json.loads(loaded.payload.decode("utf-8"))
+                            )
+                            self._calculation_cache.retain_shared_reference(
+                                project_root, phase="pocket_geometry",
+                                fingerprint=fingerprint,
+                                operation_id=operation.operation_id.value.hex,
+                            )
+                            pocket_phase_status = "CACHE_HIT"
+                            return ContourPath(decoded[0], decoded[1]), decoded[2]
+                        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                            pass
+                    checkpoint = self._checkpoint_store.load(
+                        project_root, operation.operation_id.value.hex,
+                        "pocket_geometry", fingerprint,
+                    )
+                    if checkpoint is not None:
+                        try:
+                            decoded = pocket_geometry_from_dict(
+                                json.loads(checkpoint[1].decode("utf-8"))
+                            )
+                            pocket_phase_status = "CHECKPOINT_HIT"
+                            return ContourPath(decoded[0], decoded[1]), decoded[2]
+                        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                            pass
+                    result = prepare_pocket_machining_geometry(
+                        region, current_setup, tool_diameter=diameter,
+                        radial_stock_allowance=allowance, stepover=stepover,
+                        tolerance=tolerance, cutting_direction=direction,
+                    )
+                    pocket_phase_status = loaded.status.value
+                    try:
+                        payload = json.dumps(
+                            pocket_geometry_to_dict(
+                                result[0].loop, result[0].source_fingerprint, result[1]
+                            ), ensure_ascii=False,
+                            allow_nan=False, sort_keys=True, separators=(",", ":"),
+                        ).encode("utf-8")
+                        self._calculation_cache.publish_shared(
+                            project_root, phase="pocket_geometry",
+                            fingerprint=fingerprint, payload=payload,
+                            algorithm_version="pocket.geometry.v1",
+                            operation_references=(operation.operation_id.value.hex,),
+                        )
+                        self._checkpoint_store.publish(
+                            project_root, operation.operation_id.value.hex,
+                            "pocket_geometry", fingerprint, payload,
+                        )
+                    except (OSError, TypeError, ValueError):
+                        logger.debug("R250 Pocket phase publish skipped", exc_info=True)
+                    return result
+
                 inputs = generator.resolve_inputs(operation, setup, assembly=assembly, tool=tool,
-                                                  machine=machine, resolved_geometry=resolved)
+                                                  machine=machine, resolved_geometry=resolved,
+                                                  geometry_provider=pocket_geometry_provider)
+                geometry_elapsed_ns = monotonic_ns() - geometry_started_ns
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "pocket", "pocket_geometry", CamPhaseState.COMPLETE,
+                    45.0, geometry_elapsed_ns, pocket_phase_status,
+                ))
+                if cancellation is not None and cancellation():
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), (
+                            PhaseTiming("pocket_geometry", 0, pocket_phase_status),
+                            PhaseTiming("final_assembly", 0, "CANCELLED"),
+                        )
+                    )
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "pocket", "final_assembly", CamPhaseState.CANCELLED,
+                        45.0, 0, "CANCELLED",
+                    ))
+                    raise PocketGenerationError(
+                        DiagnosticCode.POCKET_GENERATION_FAILED,
+                        "Pocket calculation cancelled after a complete geometry checkpoint.",
+                    )
                 started_ns = monotonic_ns()
-                cached = self._optimization_cache_hit(project_root, operation, inputs.input_fingerprint)
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "pocket", "final_assembly", CamPhaseState.RUNNING, 55.0
+                ))
+                final_cache_eligible = (
+                    len(inputs.depth_levels)
+                    * sum(len(loop.segments) + 3 for loop in inputs.offset_loops)
+                    + 4
+                    <= _POCKET_FINAL_CACHE_MAX_EVENT_ESTIMATE
+                )
+                template = self._pocket_incremental_templates.get(operation_id)
+                memory_cached = (
+                    template[2]
+                    if (
+                        template is not None
+                        and template[2].source_operation_id == operation.operation_id
+                        and template[2].operation_revision == operation.revision
+                        and template[2].input_fingerprint == inputs.input_fingerprint
+                    )
+                    else None
+                )
+                if memory_cached is not None:
+                    self._pocket_incremental_templates.move_to_end(operation_id)
+                cached = (
+                    memory_cached
+                    or self._optimization_cache_hit(
+                        project_root, operation, inputs.input_fingerprint
+                    )
+                    if final_cache_eligible
+                    else None
+                )
                 if cached is not None:
+                    self._remember_pocket_incremental_template(operation_id, (
+                        pocket_feed_independent_fingerprint(inputs),
+                        inputs.strategy.fingerprint,
+                        cached,
+                    ))
                     metadata = self._artifact_store.publish(project_root, cached)
                     restored = self._restore_optimization_hit(operation, cached)
                     staged = replace(
@@ -1338,8 +1694,15 @@ class CamApplicationService:
                     except CamChildNotFoundError:
                         self._snapshot = staged
                     self._calculation_timings[operation_id] = CalculationTiming(
-                        str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),)
+                        str(operation_id), (
+                            PhaseTiming("pocket_geometry", 0, pocket_phase_status),
+                            PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_HIT"),
+                        )
                     )
+                    _report_calculation_progress(progress, CamCalculationProgress(
+                        operation_key, "pocket", "final_assembly", CamPhaseState.COMPLETE,
+                        100.0, monotonic_ns() - started_ns, "CACHE_HIT",
+                    ))
                     return PocketComputeResult(restored, cached, True)
                 if operation.artifact_state.status is ArtifactStatus.VALID:
                     operation = replace(operation, artifact_state=operation.artifact_state.mark_dirty(
@@ -1348,7 +1711,20 @@ class CamApplicationService:
                     self._snapshot = _replace_operation(self._snapshot, operation)
                 computing, token = generator.begin(inputs)
                 self._snapshot = _replace_operation(self._snapshot, computing.operation)
-                candidate = generator.generate(computing)
+                template = self._pocket_incremental_templates.get(operation_id)
+                if template is not None:
+                    self._pocket_incremental_templates.move_to_end(operation_id)
+                incremental_hit = (
+                    template is not None
+                    and template[0] == pocket_feed_independent_fingerprint(computing)
+                    and template[1] != computing.strategy.fingerprint
+                    and template[2].input_fingerprint != computing.input_fingerprint
+                )
+                candidate = (
+                    generator.regenerate_feed_only(computing, template[2])
+                    if incremental_hit and template is not None
+                    else generator.generate(computing)
+                )
                 current = _find_operation(self._snapshot, operation_id)
                 publish = publish_toolpath(current, candidate, token, inputs.input_fingerprint)
                 if not publish.accepted or publish.artifact is None:
@@ -1360,14 +1736,35 @@ class CamApplicationService:
                     )
                     return PocketComputeResult(publish.operation, None, False, (diagnostic,))
                 metadata = self._artifact_store.publish(project_root, publish.artifact)
-                self._publish_optimization_cache(project_root, publish.artifact)
-                self._calculation_timings[operation_id] = CalculationTiming(
-                    str(operation_id), (PhaseTiming("final_assembly", monotonic_ns() - started_ns, "CACHE_MISS"),)
+                if final_cache_eligible:
+                    self._publish_optimization_cache(project_root, publish.artifact)
+                final_cache_status = (
+                    "INCREMENTAL_HIT"
+                    if incremental_hit
+                    else ("CACHE_MISS" if final_cache_eligible else "BYPASS_CACHE")
                 )
+                self._calculation_timings[operation_id] = CalculationTiming(
+                    str(operation_id), (
+                        PhaseTiming("pocket_geometry", 0, pocket_phase_status),
+                        PhaseTiming(
+                            "final_assembly", monotonic_ns() - started_ns,
+                            final_cache_status,
+                        ),
+                    )
+                )
+                _report_calculation_progress(progress, CamCalculationProgress(
+                    operation_key, "pocket", "final_assembly", CamPhaseState.COMPLETE,
+                    100.0, monotonic_ns() - started_ns, final_cache_status,
+                ))
                 artifacts = tuple(item for item in self._snapshot.artifacts
                                   if item.operation_id != operation_id)
                 staged = replace(self._snapshot, artifacts=(*artifacts, metadata))
                 self._snapshot = _replace_operation(staged, publish.operation)
+                self._remember_pocket_incremental_template(operation_id, (
+                    pocket_feed_independent_fingerprint(inputs),
+                    inputs.strategy.fingerprint,
+                    publish.artifact,
+                ))
                 self._post.mark_stale(operation_id)
                 return PocketComputeResult(publish.operation, publish.artifact, True)
             except (PocketGenerationError, ToolpathArtifactStoreError) as error:
@@ -1390,6 +1787,25 @@ class CamApplicationService:
                                  diagnostics=(*current.diagnostics, diagnostic))
                 self._snapshot = _replace_operation(self._snapshot, failed)
                 return PocketComputeResult(failed, None, False, (diagnostic,))
+
+    def _remember_pocket_incremental_template(
+        self,
+        operation_id: OperationId,
+        value: tuple[ContentFingerprint, ContentFingerprint, ToolpathArtifact],
+    ) -> None:
+        """Retain bounded validated Pocket topology for feed-only recalculation."""
+        self._pocket_incremental_templates.pop(operation_id, None)
+        event_count = len(value[2].events)
+        if event_count > _POCKET_INCREMENTAL_TEMPLATE_MAX_EVENTS:
+            return
+        self._pocket_incremental_templates[operation_id] = value
+        total = sum(
+            len(template[2].events)
+            for template in self._pocket_incremental_templates.values()
+        )
+        while total > _POCKET_INCREMENTAL_TEMPLATE_MAX_EVENTS:
+            _removed_id, removed = self._pocket_incremental_templates.popitem(last=False)
+            total -= len(removed[2].events)
 
     def compute_drilling(
         self,

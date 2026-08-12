@@ -30,7 +30,7 @@ class ToolpathBuilder:
     """Mutable construction boundary that publishes exactly one frozen artifact."""
 
     __slots__ = ("_aborted", "_artifact_id", "_coordinate_space", "_created_at", "_diagnostics",
-        "_events", "_feed_mode", "_finalized", "_initial_pose", "_input_fingerprint",
+        "_events", "_event_ids", "_feed_mode", "_finalized", "_initial_pose", "_input_fingerprint",
         "_machine_fingerprint", "_machine_id", "_operation_id", "_operation_revision",
         "_setup_id", "_setup_revision", "_spindle", "_coolant", "_token", "_tool_fingerprint",
         "_tool_id", "_unit", "_wcs_fingerprint", "_current_pose")
@@ -78,6 +78,7 @@ class ToolpathBuilder:
         self._initial_pose: Pose | None = None
         self._current_pose: Pose | None = None
         self._events: list[AnyToolpathEvent] = []
+        self._event_ids: set[ToolpathEventId] = set()
         self._diagnostics: tuple[ToolpathDiagnostic, ...] = ()
         self._spindle: tuple[SpindleState, SpindleSpeed | None] | None = None
         self._coolant: CoolantState | None = None
@@ -221,6 +222,7 @@ class ToolpathBuilder:
     def abort(self) -> None:
         self._ensure_open()
         self._events.clear()
+        self._event_ids.clear()
         self._current_pose = None
         self._initial_pose = None
         self._aborted = True
@@ -232,9 +234,10 @@ class ToolpathBuilder:
                 "source_operation_id": self._operation_id, "provenance": provenance}
 
     def _append(self, event: AnyToolpathEvent) -> None:
-        if any(item.event_id == event.event_id for item in self._events):
+        if event.event_id in self._event_ids:
             raise CamInvariantError("Duplicate toolpath event ID")
         self._events.append(event)
+        self._event_ids.add(event.event_id)
 
     def _ensure_position(self) -> Pose:
         self._ensure_open()

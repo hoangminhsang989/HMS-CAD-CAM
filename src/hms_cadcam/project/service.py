@@ -96,6 +96,7 @@ from hms_cadcam.cam.domain import (
     ResolvedPocketGeometry,
 )
 from hms_cadcam.cam.application.contour import ContourComputeResult
+from hms_cadcam.cam.optimization import CamCalculationProgress
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import ContentFingerprint, DependencyFingerprint
 from hms_cadcam.cad.models import CadDocumentId
@@ -1470,6 +1471,8 @@ class ProjectService:
     def compute_facing(self, operation_id: OperationId,
                        *, expected_generation: int | None = None,
                        face_resolver: Callable[[GeometryReference], ResolvedMachiningGeometry] | None = None,
+                       cancellation: Callable[[], bool] | None = None,
+                       progress: Callable[[CamCalculationProgress], None] | None = None,
                        ) -> FacingComputeResult:
         """Generate/publish one Facing operation through the project lifecycle gateway."""
         session = self._require_current()
@@ -1478,7 +1481,8 @@ class ProjectService:
         before = self._cam_application.snapshot
         with self._background_foreground("toolpath_calculation"):
             result = self._cam_application.compute_facing(
-                session.root_path, operation_id, face_resolver=face_resolver
+                session.root_path, operation_id, face_resolver=face_resolver,
+                cancellation=cancellation, progress=progress,
             )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
@@ -1492,6 +1496,8 @@ class ProjectService:
     def compute_contour(self, operation_id: OperationId,
                         *, expected_generation: int | None = None,
                         profile_resolver: Callable[[GeometryReference], ResolvedContourProfile] | None = None,
+                        cancellation: Callable[[], bool] | None = None,
+                        progress: Callable[[CamCalculationProgress], None] | None = None,
                         ) -> ContourComputeResult:
         """Generate/publish one 2D Contour through the project lifecycle gateway."""
         session = self._require_current()
@@ -1500,7 +1506,9 @@ class ProjectService:
         before = self._cam_application.snapshot
         with self._background_foreground("toolpath_calculation"):
             result = self._cam_application.compute_contour(
-                session.root_path, operation_id, profile_resolver=profile_resolver
+                session.root_path, operation_id,
+                profile_resolver=profile_resolver, cancellation=cancellation,
+                progress=progress,
             )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
@@ -1514,6 +1522,8 @@ class ProjectService:
     def compute_pocket(self, operation_id: OperationId,
                        *, expected_generation: int | None = None,
                        geometry_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+                       cancellation: Callable[[], bool] | None = None,
+                       progress: Callable[[CamCalculationProgress], None] | None = None,
                        ) -> PocketComputeResult:
         """Generate/publish one Pocket operation through the project lifecycle gateway."""
         session = self._require_current()
@@ -1522,7 +1532,9 @@ class ProjectService:
         before = self._cam_application.snapshot
         with self._background_foreground("toolpath_calculation"):
             result = self._cam_application.compute_pocket(
-                session.root_path, operation_id, geometry_resolver=geometry_resolver
+                session.root_path, operation_id, geometry_resolver=geometry_resolver,
+                cancellation=cancellation,
+                progress=progress,
             )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
@@ -1963,6 +1975,16 @@ class ProjectService:
         }
         for operation_id in sorted(before_ids - after_ids, key=str):
             self._simulation_runs.clear_result(operation_id)
+            try:
+                self._cam_application.release_calculation_cache_references(
+                    session.root_path, operation_id
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.warning(
+                    "Không thể release shared CAM cache của operation %s",
+                    operation_id,
+                    exc_info=True,
+                )
             try:
                 self._simulation_cache.delete_operation(session.root_path, operation_id)
             except (OSError, RuntimeError):
@@ -2651,6 +2673,10 @@ class ProjectService:
         if session.persisted_cam3d_config is None:
             session.persisted_cam3d_config = session.cam3d_config
         self._cam_application.load(session.cam_snapshot)
+        try:
+            self._cam_application.recover_calculation_cache(session.root_path)
+        except OSError:
+            logger.warning("Không thể dọn scratch cache CAM bị bỏ dở", exc_info=True)
         self._simulation_runs.bind_project(
             session.manifest.project_id,
             self._cam_application.generation,

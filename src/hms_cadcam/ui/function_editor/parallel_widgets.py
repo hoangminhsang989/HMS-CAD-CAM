@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from hms_cadcam.cam.cam3d.parallel import ParallelProgress, ParallelSafetyReport
 from hms_cadcam.cam.cam3d.zlevel import ZLevelProgress
 from hms_cadcam.cam.domain import ValidationDiagnostic
+from hms_cadcam.cam.optimization import CamCalculationProgress, CamPhaseState
 from hms_cadcam.ui.localization import (
     display_value,
     translate_progress_phase,
@@ -93,9 +94,46 @@ class ParallelCalculationProgressWidget(QWidget):
                 "Hạng mục: 0 / 0 · Đang chuẩn bị ảnh chụp trạng thái đã áp dụng bất biến"
             )
 
-    def update_progress(self, value: ParallelProgress | ZLevelProgress) -> None:
+    def update_progress(
+        self, value: ParallelProgress | ZLevelProgress | CamCalculationProgress
+    ) -> None:
         """Render one monotonic worker report with text, not color alone."""
-        if not isinstance(value, (ParallelProgress, ZLevelProgress)):
+        if not isinstance(value, (ParallelProgress, ZLevelProgress, CamCalculationProgress)):
+            return
+        if isinstance(value, CamCalculationProgress):
+            labels = {
+                "geometry": "Chuẩn bị hình học",
+                "contour_geometry": "Tạo biên dạng và offset",
+                "pocket_geometry": "Xác định vùng và tạo offset",
+                "final_assembly": "Tạo, liên kết và xác minh đường cắt",
+            }
+            states = {
+                CamPhaseState.RUNNING: "Đang tính",
+                CamPhaseState.COMPLETE: "Hoàn thành",
+                CamPhaseState.CANCELLED: "Đã hủy",
+                CamPhaseState.FAILED: "Thất bại",
+            }
+            phase_label = labels.get(value.phase, value.phase)
+            self.phase.setText(f"Giai đoạn: {phase_label}")
+            self.percentage.setText(f"Tổng thể: {value.percentage:.0f}%")
+            self.progress.setValue(round(value.percentage))
+            cache = value.cache_status or "Đang xử lý"
+            if cache == "CACHE_HIT" or cache == "CHECKPOINT_HIT":
+                cache = "Đã có sẵn"
+            elif cache == "CACHE_MISS":
+                cache = "Tính mới"
+            elif cache == "INCREMENTAL_HIT":
+                cache = "Tái sử dụng gia tăng"
+            elif cache == "BYPASS_CACHE":
+                cache = "Bỏ qua bộ nhớ đệm"
+            elapsed = value.elapsed_ns / 1_000_000_000.0
+            self.detail.setText(
+                f"{states[value.state]} · {cache} · {elapsed:.3f} giây"
+            )
+            self.setAccessibleName(
+                f"Đang tính đường dao {value.strategy} · {phase_label}"
+            )
+            self.setVisible(True)
             return
         label = translate_progress_phase(value.phase)
         self.phase.setText(f"Giai đoạn: {label}")

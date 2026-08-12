@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -197,9 +197,12 @@ class ToolpathArtifact:
     artifact_fingerprint: ContentFingerprint | None
     created_at: str | None = None
     schema_version: int = TOOLPATH_VERSION
+    verify_derived: InitVar[bool] = True
     SERIALIZATION_VERSION: ClassVar[int] = TOOLPATH_VERSION
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, verify_derived: bool) -> None:
+        if type(verify_derived) is not bool:
+            raise CamValidationError("Toolpath derived verification flag is invalid")
         if type(self.schema_version) is not int or self.schema_version != TOOLPATH_VERSION:
             from hms_cadcam.cam.domain.errors import UnsupportedCamSchemaError
             raise UnsupportedCamSchemaError("Unsupported toolpath artifact version")
@@ -238,12 +241,13 @@ class ToolpathArtifact:
         if self.created_at is not None and (not isinstance(self.created_at, str) or not self.created_at.strip()):
             raise CamValidationError("Toolpath timestamp metadata is invalid")
         self._validate_stream()
-        calculated_bounds = calculate_bounds(self.initial_pose, self.events)
-        if calculated_bounds != self.bounds:
-            raise CamInvariantError("Toolpath bounds do not match event geometry")
-        calculated_statistics = ToolpathStatistics.calculate(self.events, self.unit)
-        if calculated_statistics != self.statistics:
-            raise CamInvariantError("Toolpath statistics do not match event stream")
+        if verify_derived:
+            calculated_bounds = calculate_bounds(self.initial_pose, self.events)
+            if calculated_bounds != self.bounds:
+                raise CamInvariantError("Toolpath bounds do not match event geometry")
+            calculated_statistics = ToolpathStatistics.calculate(self.events, self.unit)
+            if calculated_statistics != self.statistics:
+                raise CamInvariantError("Toolpath statistics do not match event stream")
         from hms_cadcam.cam.toolpath.fingerprint import compute_toolpath_fingerprint
         calculated_fingerprint = compute_toolpath_fingerprint(self)
         if self.artifact_fingerprint is None:
@@ -320,7 +324,7 @@ class ToolpathArtifact:
             input_fingerprint, coordinate_space, unit, setup_id, setup_revision, wcs_fingerprint,
             tool_assembly_id, tool_assembly_fingerprint, machine_id, machine_fingerprint,
             initial_pose, events, bounds, statistics, diagnostics, completion_status, None,
-            created_at, TOOLPATH_VERSION)
+            created_at, TOOLPATH_VERSION, False)
 
 
 def _is_event(value: object) -> bool:

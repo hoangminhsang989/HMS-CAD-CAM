@@ -532,6 +532,7 @@ class FunctionEditorPage(QWidget):
         apply_callback: ApplyCallback | None = None,
         preview_callback: PreviewCallback | None = None,
         calculate_callback: CalculateCallback | None = None,
+        calculate_task_callback: CalculateCallback | None = None,
         field_action_callback: FieldActionCallback | None = None,
         tool_profile_interaction_callback: (
             ToolProfileInteractionCallback | None
@@ -551,6 +552,7 @@ class FunctionEditorPage(QWidget):
         self._apply_callback = apply_callback
         self._preview_callback = preview_callback
         self._calculate_callback = calculate_callback
+        self._calculate_task_callback = calculate_task_callback
         self._field_action_callback = field_action_callback
         self._tool_profile_interaction_callback = (
             tool_profile_interaction_callback
@@ -709,8 +711,9 @@ class FunctionEditorPage(QWidget):
         """Forward one typed CAM 3D finishing progress event to the status row."""
         from hms_cadcam.cam.cam3d.parallel import ParallelProgress
         from hms_cadcam.cam.cam3d.zlevel import ZLevelProgress
+        from hms_cadcam.cam.optimization import CamCalculationProgress
 
-        if isinstance(value, (ParallelProgress, ZLevelProgress)):
+        if isinstance(value, (ParallelProgress, ZLevelProgress, CamCalculationProgress)):
             self.calculation_progress.update_progress(value)
 
     def _disclosure_bar(self) -> QFrame:
@@ -1447,8 +1450,9 @@ class FunctionEditorPage(QWidget):
         elif action is FunctionEditorAction.CALCULATE:
             try:
                 snapshot = self.state.calculation_snapshot()
-                if self._calculate_callback is not None:
-                    self._calculate_callback(snapshot)
+                callback = self._calculate_task_callback or self._calculate_callback
+                if callback is not None:
+                    callback(snapshot)
                 self.calculate_requested.emit(snapshot)
             except (KeyError, RuntimeError, TypeError, ValueError) as error:
                 self.preview_status.setText(f"Lỗi tính toán: {ui_text(error)}")

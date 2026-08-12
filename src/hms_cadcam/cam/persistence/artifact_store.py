@@ -58,7 +58,13 @@ class ToolpathArtifactStore:
                 relative_path, digest, artifact.artifact_fingerprint, artifact.input_fingerprint,
                 len(payload), artifact.schema_version, artifact.operation_revision,
                 artifact.computation_token.generation, artifact.completion_status.value)
-            self.load(project_root, metadata)
+            # The caller supplies a fully validated immutable ToolpathArtifact.
+            # Publication still proves durable exact bytes and checksum, while
+            # avoiding a second O(events) typed reconstruction in this same
+            # transaction. Fresh-context consumers continue through load().
+            readback = target.read_bytes()
+            if readback != payload or hashlib.sha256(readback).hexdigest() != digest:
+                raise ToolpathArtifactStoreError("Toolpath artifact readback mismatch")
             return metadata
         except ToolpathArtifactStoreError:
             raise

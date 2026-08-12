@@ -171,6 +171,8 @@ class FunctionEditorHost(QWidget):
         preview_callback: Callable[[object], object] | None = None,
         calculate_callback: Callable[[Mapping[str, PresentationValue]], object]
         | None = None,
+        calculate_task_callback: Callable[[Mapping[str, PresentationValue]], object]
+        | None = None,
         validation_callback: Callable[[Mapping[str, PresentationValue]], tuple]
         | None = None,
         draft_transform_callback: Callable[
@@ -202,6 +204,7 @@ class FunctionEditorHost(QWidget):
             apply_callback=apply_callback,
             preview_callback=preview_callback,  # type: ignore[arg-type]
             calculate_callback=calculate_callback,
+            calculate_task_callback=calculate_task_callback,
             field_action_callback=field_action_callback,
             tool_profile_interaction_callback=tool_profile_interaction_callback,
             close_confirmation=close_confirmation,
@@ -235,6 +238,7 @@ class FunctionEditorHost(QWidget):
             apply_callback=session.apply_callback,
             preview_callback=session.preview_callback,
             calculate_callback=session.calculate_callback,
+            calculate_task_callback=session.calculate_task_callback,
             validation_callback=session.validation_callback,
             draft_transform_callback=session.draft_transform_callback,
             field_action_callback=session.field_action_callback,

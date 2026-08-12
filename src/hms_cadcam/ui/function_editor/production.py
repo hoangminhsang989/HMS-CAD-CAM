@@ -20,6 +20,7 @@ ProductionValidationCallback = Callable[
 ]
 ProductionPreviewCallback = Callable[[FunctionEditorPreviewRequest], object]
 ProductionCalculateCallback = Callable[[Mapping[str, PresentationValue]], object]
+ProductionCalculateTaskCallback = Callable[[Mapping[str, PresentationValue]], object]
 ProductionFieldActionCallback = Callable[
     [str, Mapping[str, PresentationValue]], Mapping[str, PresentationValue] | None
 ]
@@ -62,6 +63,7 @@ class FunctionEditorProductionSession:
     validation_callback: ProductionValidationCallback
     preview_callback: ProductionPreviewCallback
     calculate_callback: ProductionCalculateCallback
+    calculate_task_callback: ProductionCalculateTaskCallback | None = None
     field_action_callback: ProductionFieldActionCallback | None = None
     draft_transform_callback: ProductionDraftTransformCallback | None = None
     tool_profile_interaction_callback: (

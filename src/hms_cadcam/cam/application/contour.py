@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from typing import Callable
 from uuid import UUID, uuid5
 
 from hms_cadcam.cam.automatic_contour import (
@@ -366,6 +367,9 @@ class ContourGenerator:
         tool: ToolDefinition | None,
         machine: MachineDefinition | None,
         resolved_profile: ResolvedContourProfile | ContourProfileDescriptor | None,
+        geometry_provider: Callable[[
+            ContourProfileDescriptor, Setup, ContourParameters, float
+        ], tuple[ContourPath, ContourLoop, tuple[tuple[float, float], ...]]] | None = None,
     ) -> ContourInputs:
         try:
             parameters = ContourParameters.from_operation_parameters(operation.parameters)
@@ -431,9 +435,14 @@ class ContourGenerator:
         if not any(spindle.minimum_speed.value <= parameters.spindle_speed.value <= spindle.maximum_speed.value
                    for spindle in machine.spindles):
             raise ContourGenerationError(DiagnosticCode.CONTOUR_MACHINE_INCOMPATIBLE, "Spindle speed vượt giới hạn máy.")
-        path, offset, source_polygon = prepare_contour_machining_geometry(
-            descriptor, setup, parameters, diameter.value
-        )
+        if geometry_provider is None:
+            path, offset, source_polygon = prepare_contour_machining_geometry(
+                descriptor, setup, parameters, diameter.value
+            )
+        else:
+            path, offset, source_polygon = geometry_provider(
+                descriptor, setup, parameters, diameter.value
+            )
         automatic = _stored_automatic_contract(operation)
         lead_in_point: tuple[float, float]
         lead_out_point: tuple[float, float]

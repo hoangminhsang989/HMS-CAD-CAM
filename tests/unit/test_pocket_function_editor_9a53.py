@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from time import sleep
 from uuid import uuid4
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
 from hms_cadcam.cam.application import PocketGenerator, basic_mill_resources
@@ -84,6 +85,7 @@ from tests.unit._fanuc_fixtures import fixture_context
 from tests.unit.test_fanuc_robodrill_21i_runtime import _robodrill_machine
 from tests.unit.test_pocket_strategy import _rectangle, _reference, _region, _strategy
 from tests.unit.test_pocket_ui import _workspace
+from hms_cadcam.cam.application import service as cam_service_module
 
 
 def _context(
@@ -680,6 +682,55 @@ def test_real_workspace_select_validate_preview_apply_calculate_and_lifecycle(
         restored.parameters, reference
     ).stepdown.value == 0.5
     assert DATABASE_SCHEMA_VERSION == 5
+    workspace.deleteLater()
+    application.processEvents()
+
+
+def test_r251_pocket_button_path_runs_worker_with_ui_heartbeat(
+    tmp_path, monkeypatch
+) -> None:
+    application = _application()
+    service, _project, workspace, viewer, _selected = _workspace(tmp_path)
+    session = workspace.production_function_editor_session()
+    assert session is not None
+    values = session.applied_mapping()
+    assert session.field_action_callback is not None
+    selected = session.field_action_callback("select_geometry", values)
+    assert selected is not None
+    values.update(selected)
+    assert session.apply_callback(values)
+    refreshed = workspace.production_function_editor_session()
+    assert refreshed is not None and refreshed.calculate_task_callback is not None
+
+    original = cam_service_module.prepare_pocket_machining_geometry
+
+    def delayed_prepare(*args, **kwargs):
+        sleep(0.08)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        cam_service_module, "prepare_pocket_machining_geometry", delayed_prepare
+    )
+    heartbeats: list[str] = []
+    progress: list[object] = []
+    workspace.parallel_progress_changed.connect(progress.append)
+    QTimer.singleShot(10, lambda: heartbeats.append("ui-alive"))
+    assert "Đã bắt đầu" in str(
+        refreshed.calculate_task_callback(refreshed.applied_mapping())
+    )
+    assert workspace._cam_calculation_task is not None
+    deadline = 300
+    while workspace._cam_calculation_task is not None and deadline > 0:
+        application.processEvents()
+        sleep(0.01)
+        deadline -= 1
+    application.processEvents()
+    assert deadline > 0
+    assert heartbeats == ["ui-alive"]
+    assert progress
+    assert viewer.displayed
+    operation = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert operation.artifact_state.status is ArtifactStatus.VALID
     workspace.deleteLater()
     application.processEvents()
 

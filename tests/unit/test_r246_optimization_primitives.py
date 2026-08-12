@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from hms_cadcam.cam.domain import ContentFingerprint
@@ -76,3 +78,142 @@ def test_parallel_map_has_stable_order_and_governor_yields() -> None:
     pressure = ResourcePressure(cpu_percent=10.0, memory_percent=10.0)
     governor = ResourceGovernor(lambda: pressure)
     assert governor.decide(foreground_active=True).value == "suspend"
+
+
+def test_cleanup_preserves_leased_shared_artifact_until_release(tmp_path: Path) -> None:
+    store = CalculationArtifactStore()
+    fingerprint = "a" * 64
+    manifest = store.publish_shared(
+        tmp_path, phase="geometry", fingerprint=fingerprint, payload=b"shared-geometry"
+    )
+    payload = tmp_path / manifest.artifact_path
+    with store.lease(payload):
+        assert store.cleanup(tmp_path, max_bytes=0) == 0
+        assert payload.is_file()
+    assert store.cleanup(tmp_path, max_bytes=0) == 1
+    assert not payload.exists()
+
+
+def test_r251_production_cache_corruption_matrix_never_silently_hits(tmp_path: Path) -> None:
+    """Every malformed/stale production representation must fail closed."""
+    fingerprint = "b" * 64
+
+    def published_root(name: str) -> tuple[CalculationArtifactStore, Path, Path, Path]:
+        root = tmp_path / name
+        root.mkdir()
+        store = CalculationArtifactStore()
+        manifest = store.publish(
+            root,
+            operation_id="op-01",
+            phase="geometry",
+            fingerprint=fingerprint,
+            payload=b"geometry-payload",
+            dependency_fingerprints=("dep-a",),
+            engine_version="engine-a",
+            algorithm_version="algorithm-a",
+        )
+        payload = root / manifest.artifact_path
+        metadata = payload.with_suffix(".manifest.json")
+        return store, root, payload, metadata
+
+    mutations = {
+        "truncated": lambda payload, _metadata: payload.write_bytes(b"geo"),
+        "checksum": lambda payload, _metadata: payload.write_bytes(b"geometry-tampered"),
+        "wrong_fingerprint": lambda _payload, metadata: _rewrite_json(
+            metadata, fingerprint="c" * 64
+        ),
+        "wrong_dependency": lambda _payload, metadata: _rewrite_json(
+            metadata, dependency_fingerprints=["dep-b"]
+        ),
+        "wrong_schema": lambda _payload, metadata: _rewrite_json(
+            metadata, format_version=999
+        ),
+        "wrong_engine": lambda _payload, metadata: _rewrite_json(
+            metadata, engine_version="engine-b"
+        ),
+        "wrong_algorithm": lambda _payload, metadata: _rewrite_json(
+            metadata, algorithm_version="algorithm-b"
+        ),
+        "building": lambda _payload, metadata: _rewrite_json(metadata, state="BUILDING"),
+        "malformed": lambda _payload, metadata: metadata.write_text("{", encoding="utf-8"),
+        "missing_payload": lambda payload, _metadata: payload.unlink(),
+        "missing_manifest": lambda _payload, metadata: metadata.unlink(),
+    }
+    for name, mutate in mutations.items():
+        store, root, payload, metadata = published_root(name)
+        mutate(payload, metadata)
+        lookup = store.lookup(
+            root,
+            operation_id="op-01",
+            phase="geometry",
+            fingerprint=fingerprint,
+            dependency_fingerprints=("dep-a",),
+            engine_version="engine-a",
+            algorithm_version="algorithm-a",
+        )
+        assert lookup.status is not CacheLookupStatus.HIT, name
+        assert lookup.payload is None, name
+
+
+def _rewrite_json(path: Path, **updates: object) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(updates)
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+
+def test_r251_shared_reference_and_age_lru_cleanup_are_dependency_safe(
+    tmp_path: Path,
+) -> None:
+    store = CalculationArtifactStore()
+    fingerprint = "d" * 64
+    manifest = store.publish_shared(
+        tmp_path,
+        phase="geometry",
+        fingerprint=fingerprint,
+        payload=b"shared-geometry",
+        algorithm_version="facing.geometry.v1",
+        operation_references=("op-01", "op-02"),
+    )
+    payload = tmp_path / manifest.artifact_path
+    assert store.release_operation_references(tmp_path, "op-01") == 1
+    assert store.cleanup(
+        tmp_path, max_bytes=0, live_operation_ids=frozenset({"op-02"})
+    ) == 0
+    assert payload.is_file()
+    assert store.release_operation_references(tmp_path, "op-02") == 1
+    assert store.cleanup(
+        tmp_path, max_bytes=0, live_operation_ids=frozenset()
+    ) == 1
+    assert not payload.exists()
+
+    first = store.publish(
+        tmp_path, operation_id="op-a", phase="geometry", fingerprint="e" * 64,
+        payload=b"old", algorithm_version="geometry.v1",
+    )
+    second = store.publish(
+        tmp_path, operation_id="op-b", phase="geometry", fingerprint="f" * 64,
+        payload=b"newer", algorithm_version="geometry.v1",
+    )
+    first_path = tmp_path / first.artifact_path
+    second_path = tmp_path / second.artifact_path
+    old_ns = 1_000_000_000
+    os.utime(first_path, ns=(old_ns, old_ns))
+    os.utime(first_path.with_suffix(".manifest.json"), ns=(old_ns, old_ns))
+    assert store.cleanup(tmp_path, max_bytes=5) == 1
+    assert not first_path.exists() and second_path.exists()
+
+
+def test_r251_abandoned_atomic_scratch_is_removed_without_touching_complete(
+    tmp_path: Path,
+) -> None:
+    store = CalculationArtifactStore()
+    manifest = store.publish(
+        tmp_path, operation_id="op-01", phase="geometry", fingerprint="a" * 64,
+        payload=b"complete",
+    )
+    complete = tmp_path / manifest.artifact_path
+    scratch = complete.parent / ".orphan.bin.deadbeef.tmp"
+    scratch.write_bytes(b"partial")
+    assert store.recover_abandoned_scratch(tmp_path) == 1
+    assert not scratch.exists()
+    assert complete.is_file()
