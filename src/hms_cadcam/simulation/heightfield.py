@@ -75,6 +75,16 @@ class HeightFieldResult:
     ignored_non_cutting_samples: int
 
 
+@dataclass(frozen=True, slots=True)
+class HeightFieldChunkResult:
+    """One resumable material-removal chunk; never a complete-job claim."""
+
+    result: HeightFieldResult
+    next_cutting_sample: int
+    total_cutting_samples: int
+    complete: bool
+
+
 class SimulationEngine(Protocol):
     @property
     def kind(self) -> EngineKind: ...
@@ -117,6 +127,39 @@ class HeightField3AxisEngine:
         cancellation: Cancellation | None = None,
         progress: Progress | None = None,
     ) -> HeightFieldResult:
+        return self.simulate_chunk(
+            stock=stock,
+            artifact=artifact,
+            tool=tool,
+            quality=quality,
+            initial_stock=initial_stock,
+            start_cutting_sample=0,
+            maximum_cutting_samples=None,
+            cancellation=cancellation,
+            progress=progress,
+        ).result
+
+    def simulate_chunk(
+        self,
+        *,
+        stock: BoxStock,
+        artifact: ToolpathArtifact,
+        tool: ToolDefinition,
+        quality: QualityMode = QualityMode.STANDARD,
+        initial_stock: RemainingStock | None = None,
+        start_cutting_sample: int = 0,
+        maximum_cutting_samples: int | None = None,
+        cancellation: Cancellation | None = None,
+        progress: Progress | None = None,
+    ) -> HeightFieldChunkResult:
+        """Process a bounded cutting-sample range from a reusable stock state."""
+        if type(start_cutting_sample) is not int or start_cutting_sample < 0:
+            raise MaterialRemovalError("Simulation chunk start is invalid")
+        if maximum_cutting_samples is not None and (
+            type(maximum_cutting_samples) is not int
+            or maximum_cutting_samples <= 0
+        ):
+            raise MaterialRemovalError("Simulation chunk size is invalid")
         if not isinstance(stock, BoxStock):
             raise MaterialRemovalError("HEIGHTFIELD_3AXIS requires box stock")
         if artifact.unit is not stock.size_x.unit or tool.unit is not artifact.unit:
@@ -163,9 +206,19 @@ class HeightField3AxisEngine:
                 ignored += len(segment.sample_indices)
         unique_cutting = tuple(dict.fromkeys(cutting_indices))
         total = len(unique_cutting)
+        if start_cutting_sample > total:
+            raise MaterialRemovalError("Simulation checkpoint exceeds toolpath samples")
+        stop = (
+            total
+            if maximum_cutting_samples is None
+            else min(total, start_cutting_sample + maximum_cutting_samples)
+        )
+        selected_cutting = unique_cutting[start_cutting_sample:stop]
         if progress is not None:
-            progress(0, total)
-        for processed, sample_index in enumerate(unique_cutting, start=1):
+            progress(start_cutting_sample, total)
+        for processed, sample_index in enumerate(
+            selected_cutting, start=start_cutting_sample + 1
+        ):
             if cancellation is not None and cancellation():
                 raise MaterialRemovalError("Simulation material removal cancelled")
             point = sampling.samples[sample_index].setup_pose.position
@@ -190,13 +243,14 @@ class HeightField3AxisEngine:
             max(heights),
             artifact.unit,
         )
-        return HeightFieldResult(
-            self.kind,
-            quality,
-            sampling,
-            stock_result,
-            total,
-            ignored,
+        result = HeightFieldResult(
+            self.kind, quality, sampling, stock_result, len(selected_cutting), ignored
+        )
+        return HeightFieldChunkResult(
+            result=result,
+            next_cutting_sample=stop,
+            total_cutting_samples=total,
+            complete=stop == total,
         )
 
 

@@ -18,6 +18,7 @@ from .contracts import (
 )
 from .heightfield import (
     HeightField3AxisEngine,
+    HeightFieldChunkResult,
     HeightFieldResult,
     MaterialRemovalError,
     RemainingStock,
@@ -38,6 +39,7 @@ __all__ = [
     "EngineKind",
     "GougeStatus",
     "HeightField3AxisEngine",
+    "HeightFieldChunkResult",
     "HeightFieldResult",
     "InvalidationPlan",
     "IncrementalJobSimulator",

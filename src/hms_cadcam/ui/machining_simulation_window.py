@@ -36,8 +36,10 @@ from hms_cadcam.simulation import (
 )
 from hms_cadcam.simulation.worker import SimulationWorker
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
+from hms_cadcam.ui.localization import ui_text
 
 InputProvider = Callable[[], SimulationInputSnapshot]
+PrecomputeProvider = Callable[[SimulationInputSnapshot], object | None]
 
 _TEXT = {
     UiLanguage.VI_VN: {
@@ -100,7 +102,7 @@ class _SimulationCanvas(QLabel):
         self.setObjectName("MachiningSimulationViewport")
         self.setMinimumSize(640, 420)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setText("3D Simulation Viewport")
+        self.setText("")
         self.setStyleSheet("background:#111820;border:1px solid #34414d;color:#8fa3b5")
         self._base: QPixmap | None = None
         self._scale = (1.0, 1.0)
@@ -168,12 +170,19 @@ class _SimulationCanvas(QLabel):
 class MachiningSimulationWindow(QMainWindow):
     """High-density optional workspace with progressive, cancellable compute."""
 
-    def __init__(self, input_provider: InputProvider, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        input_provider: InputProvider,
+        parent: QWidget | None = None,
+        *,
+        precompute_provider: PrecomputeProvider | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("MachiningSimulationR241Window")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.resize(1440, 900)
         self._input_provider = input_provider
+        self._precompute_provider = precompute_provider
         self._worker: SimulationWorker | None = None
         self._inputs: SimulationInputSnapshot | None = None
         self._playback: PlaybackController | None = None
@@ -237,7 +246,7 @@ class MachiningSimulationWindow(QMainWindow):
         self.pause = QPushButton("Pause")
         self.stop = QPushButton("Stop")
         self.previous = QPushButton("Previous event")
-        self.next = QPushButton("Next event")
+        self.next = QPushButton()
         self.speed = QComboBox()
         for value in ("0.1x", "0.25x", "0.5x", "1x", "2x", "5x", "10x", "MAX"):
             self.speed.addItem(value)
@@ -271,6 +280,8 @@ class MachiningSimulationWindow(QMainWindow):
 
     def retranslate(self) -> None:
         text = _TEXT[translation_service().language]
+        self.canvas.setText(ui_text("3D Simulation Viewport"))
+        self.next.setText(ui_text("Next event"))
         self.setWindowTitle(text["title"])
         self.left_group.setTitle(text["operations"])
         self.right_group.setTitle(text["properties"])
@@ -304,6 +315,13 @@ class MachiningSimulationWindow(QMainWindow):
         self._playback = PlaybackController(Timeline.from_artifacts((self._inputs.artifact,)))
         self.timeline.setRange(0, max(0, len(self._playback.timeline.events) - 1))
         self.status.setText(text["ready_path"])
+        if self._precompute_provider is not None:
+            try:
+                precomputed = self._precompute_provider(self._inputs)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                precomputed = None
+            if precomputed is not None:
+                self._succeeded(precomputed)
 
     def calculate(self) -> None:
         if self._worker is not None:

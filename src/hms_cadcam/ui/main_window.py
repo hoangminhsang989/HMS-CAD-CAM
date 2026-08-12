@@ -2185,6 +2185,9 @@ class MainWindow(QMainWindow):
             window = MachiningSimulationWindow(
                 self.cam_workspace.capture_selected_simulation_inputs,
                 self,
+                precompute_provider=(
+                    self.cam_workspace.load_selected_simulation_precompute
+                ),
             )
             self._machining_simulation_window = window
         retranslate = getattr(window, "retranslate", None)

@@ -186,12 +186,26 @@ class PostPanelState:
     output_bytes: int = 0
 
 
+def _post_through_project_gateway(
+    service,
+    request: PostRequest,
+    source: PostSourceSnapshot,
+    current_source: Callable[[], PostSourceSnapshot],
+):
+    gateway = getattr(service, "post_toolpath", None)
+    if callable(gateway):
+        return gateway(request, source, current_source=current_source)
+    return service.post_service.post(
+        request, source, current_source=current_source
+    )
+
+
 class _PostWorker(QObject):
     completed = Signal(object)
 
-    def __init__(self, runtime, request: PostRequest, source: PostSourceSnapshot, current_source: Callable[[], PostSourceSnapshot], epoch: int):
+    def __init__(self, service, request: PostRequest, source: PostSourceSnapshot, current_source: Callable[[], PostSourceSnapshot], epoch: int):
         super().__init__()
-        self._runtime = runtime
+        self._service = service
         self._request = request
         self._source = source
         self._current_source = current_source
@@ -199,10 +213,11 @@ class _PostWorker(QObject):
 
     def run(self) -> None:
         try:
-            execution = self._runtime.post(
+            execution = _post_through_project_gateway(
+                self._service,
                 self._request,
                 self._source,
-                current_source=self._current_source,
+                self._current_source,
             )
         except Exception as error:  # worker boundary: convert to a stable result
             execution = error
@@ -611,7 +626,7 @@ class PostProcessorPanel(QWidget):
         thread = QThread(self)
         operation_id = source.operation.operation_id
         worker = _PostWorker(
-            self._service.post_service,
+            self._service,
             request,
             source,
             lambda operation_id=operation_id: self._service.capture_post_source(operation_id),
@@ -675,7 +690,12 @@ class PostProcessorPanel(QWidget):
         self._set_status(PostGenerationStatus.GENERATING); self.progress_changed.emit(PostProgressPhase.GENERATING)
         try:
             operation_id = source.operation.operation_id
-            execution = self._service.post_service.post(request, source, current_source=lambda: self._service.capture_post_source(operation_id))
+            execution = _post_through_project_gateway(
+                self._service,
+                request,
+                source,
+                lambda: self._service.capture_post_source(operation_id),
+            )
         except Exception as error:
             self.message.emit(f"Tạo Post thất bại: {ui_text(error)}"); self._set_status(PostGenerationStatus.FAILED); return None
         if not execution.accepted or execution.result is None:

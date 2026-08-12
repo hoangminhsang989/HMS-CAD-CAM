@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -131,6 +132,8 @@ from hms_cadcam.cam.post.export_service import (
 from hms_cadcam.cam.post.export_store import NCArtifactStore, NCArtifactStoreError
 from hms_cadcam.cam.post.service import PostRuntimeService
 from hms_cadcam.cam.post.lowering import PostSourceSnapshot
+from hms_cadcam.cam.post.model import PostRequest
+from hms_cadcam.cam.post.service import PostExecution
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
@@ -158,6 +161,8 @@ class ProjectService:
         lathe_persistence: LatheProjectPersistenceService | None = None,
         lathe_persistence_enabled: bool = False,
         lifecycle_hook: Callable[[str], None] | None = None,
+        background_simulation_precompute: bool = False,
+        background_simulation_coordinator: object | None = None,
     ) -> None:
         self._creator = creator
         self._loader = loader
@@ -199,6 +204,11 @@ class ProjectService:
         self._lifecycle_generation = 0
         self._project_opened_at = None
         self._project_session_id: UUID | None = None
+        if type(background_simulation_precompute) is not bool:
+            raise TypeError("background_simulation_precompute must be bool")
+        self._background_simulation_enabled = background_simulation_precompute
+        self._background_simulation = background_simulation_coordinator
+        self._background_calculation_claims: set[OperationId] = set()
 
     @classmethod
     def create_default(
@@ -209,6 +219,7 @@ class ProjectService:
         default_document_directory: Path | None = None,
         lathe_persistence_enabled: bool = False,
         lifecycle_hook: Callable[[str], None] | None = None,
+        background_simulation_precompute: bool = False,
     ) -> "ProjectService":
         """Build the default project service graph for the application."""
         manifest_store = ProjectManifestStore()
@@ -278,7 +289,23 @@ class ProjectService:
             lathe_persistence=lathe_persistence,
             lathe_persistence_enabled=lathe_persistence_enabled,
             lifecycle_hook=lifecycle_hook,
+            background_simulation_precompute=background_simulation_precompute,
         )
+
+    def configure_background_simulation_precompute(self, enabled: bool) -> None:
+        """Enable optional spare-resource Simulation preparation for future publishes."""
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        if not enabled and self._current_project is not None:
+            self._cancel_background_project(self._current_project)
+        self._background_simulation_enabled = enabled
+        if enabled:
+            self._background_simulation_coordinator()
+
+    @property
+    def background_simulation_precompute_enabled(self) -> bool:
+        """Return the optional precompute policy without importing R241 modules."""
+        return self._background_simulation_enabled
 
     @property
     def config_dir(self) -> Path:
@@ -855,6 +882,20 @@ class ProjectService:
         """Open a valid project without replacing current state on failure."""
         if type(read_only) is not bool:
             raise TypeError("read_only must be bool")
+        with self._background_foreground("project_open"):
+            return self._open_project_foreground(
+                project_root,
+                discard_recovery=discard_recovery,
+                read_only=read_only,
+            )
+
+    def _open_project_foreground(
+        self,
+        project_root: Path,
+        *,
+        discard_recovery: bool,
+        read_only: bool,
+    ) -> ProjectSession:
         replaced = self._recovery.inspect_replaced_for_open(project_root)
         if replaced is not None:
             raise ReplacedProjectRecoveryRequiredError(replaced)
@@ -955,13 +996,14 @@ class ProjectService:
 
     def save(self) -> ProjectSession:
         """Persist the current project."""
-        current = self._require_current()
-        self._require_writable(current)
-        self.flush_simulation_cache()
-        current.cam_snapshot = self._cam_application.snapshot
-        session = self._saver.save(current)
-        self._cam_application.mark_persisted(session.cam_snapshot)
-        return session
+        with self._background_foreground("project_save"):
+            current = self._require_current()
+            self._require_writable(current)
+            self.flush_simulation_cache()
+            current.cam_snapshot = self._cam_application.snapshot
+            session = self._saver.save(current)
+            self._cam_application.mark_persisted(session.cam_snapshot)
+            return session
 
     @property
     def cam_snapshot(self) -> CamProjectSnapshot:
@@ -1255,21 +1297,22 @@ class ProjectService:
         current_source: Callable[[], NCExportSourceSnapshot] | None = None,
     ) -> NCExportExecution:
         """Export one current production PostResult through the project lifecycle."""
-        session = self._require_current()
-        if request.project_id != session.manifest.project_id:
-            raise ProjectError("NC export request belongs to another project")
-        if source.project_generation != self._cam_application.generation:
-            raise ProjectError("NC export source belongs to an inactive project generation")
-        return self._nc_export_service.export(
-            session.root_path,
-            request,
-            source,
-            current_source=current_source,
-            current_project_generation=lambda: self._cam_application.generation,
-            current_post_result=lambda: self._cam_application.post_runtime.current(
-                source.post_request
-            ),
-        )
+        with self._background_foreground("nc_export"):
+            session = self._require_current()
+            if request.project_id != session.manifest.project_id:
+                raise ProjectError("NC export request belongs to another project")
+            if source.project_generation != self._cam_application.generation:
+                raise ProjectError("NC export source belongs to an inactive project generation")
+            return self._nc_export_service.export(
+                session.root_path,
+                request,
+                source,
+                current_source=current_source,
+                current_project_generation=lambda: self._cam_application.generation,
+                current_post_result=lambda: self._cam_application.post_runtime.current(
+                    source.post_request
+                ),
+            )
 
     def export_assembly_nc(
         self,
@@ -1279,18 +1322,35 @@ class ProjectService:
         current_source: Callable[[], NCAssemblyExportSourceSnapshot] | None = None,
     ) -> NCExportExecution:
         """Export one published multi-operation assembly via 7D.2.2 storage."""
-        session = self._require_current()
-        if request.project_id != session.manifest.project_id:
-            raise ProjectError("NC assembly export request belongs to another project")
-        if source.project_generation != self._cam_application.generation:
-            raise ProjectError("NC assembly export source belongs to an inactive project generation")
-        return self._nc_export_service.export_assembly(
-            session.root_path,
-            request,
-            source,
-            current_source=current_source,
-            current_project_generation=lambda: self._cam_application.generation,
-        )
+        with self._background_foreground("nc_assembly_export"):
+            session = self._require_current()
+            if request.project_id != session.manifest.project_id:
+                raise ProjectError("NC assembly export request belongs to another project")
+            if source.project_generation != self._cam_application.generation:
+                raise ProjectError("NC assembly export source belongs to an inactive project generation")
+            return self._nc_export_service.export_assembly(
+                session.root_path,
+                request,
+                source,
+                current_source=current_source,
+                current_project_generation=lambda: self._cam_application.generation,
+            )
+
+    def post_toolpath(
+        self,
+        request: PostRequest,
+        source: PostSourceSnapshot,
+        *,
+        current_source: Callable[[], PostSourceSnapshot] | None = None,
+    ) -> PostExecution:
+        """Run production Post while foreground ownership pauses precompute."""
+        self._require_current()
+        with self._background_foreground("post"):
+            return self._cam_application.post_runtime.post(
+                request,
+                source,
+                current_source=current_source,
+            )
 
     def register_toolpath_artifact(
         self,
@@ -1301,9 +1361,10 @@ class ProjectService:
     ) -> ToolpathPublishResult:
         """Publish a verified artifact file and stage its metadata for Save."""
         session = self._require_current()
-        result = self._cam_application.register_artifact(
-            session.root_path, operation_id, candidate, token, current_input
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.register_artifact(
+                session.root_path, operation_id, candidate, token, current_input
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if result.accepted or session.cam_snapshot != session.persisted_cam_snapshot:
             session.is_dirty = True
@@ -1312,6 +1373,8 @@ class ProjectService:
                 "Source ToolpathArtifact was recomputed",
             )
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def begin_parallel_calculation(
@@ -1325,7 +1388,10 @@ class ProjectService:
         if expected_generation != self._cam_application.generation:
             return False
         before = self._cam_application.snapshot
+        self._begin_background_calculation(computing.operation_id)
         accepted = self._cam_application.begin_parallel_calculation(computing)
+        if not accepted:
+            self._end_background_calculation(computing.operation_id)
         session.cam_snapshot = self._cam_application.snapshot
         if accepted and session.cam_snapshot != before:
             session.is_dirty = True
@@ -1340,14 +1406,20 @@ class ProjectService:
         """Commit a SAFE/failed Parallel result through the project lifecycle gate."""
         session = self._require_current()
         if expected_generation != self._cam_application.generation:
+            self._end_background_calculation(result.operation.operation_id)
             return False
         before = self._cam_application.snapshot
-        accepted = self._cam_application.commit_parallel_calculation(result)
+        try:
+            accepted = self._cam_application.commit_parallel_calculation(result)
+        finally:
+            self._end_background_calculation(result.operation.operation_id)
         session.cam_snapshot = self._cam_application.snapshot
         if accepted and session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(result.operation.operation_id)
             self._nc_export_service.mark_operation_stale(result.operation.operation_id)
+            if result.artifact is not None:
+                self._schedule_background_simulation(result.operation.operation_id)
         return accepted
 
     def begin_z_level_calculation(
@@ -1361,7 +1433,10 @@ class ProjectService:
         if expected_generation != self._cam_application.generation:
             return False
         before = self._cam_application.snapshot
+        self._begin_background_calculation(computing.operation_id)
         accepted = self._cam_application.begin_z_level_calculation(computing)
+        if not accepted:
+            self._end_background_calculation(computing.operation_id)
         session.cam_snapshot = self._cam_application.snapshot
         if accepted and session.cam_snapshot != before:
             session.is_dirty = True
@@ -1376,14 +1451,20 @@ class ProjectService:
         """Commit a SAFE/failed Z-Level result through the project lifecycle."""
         session = self._require_current()
         if expected_generation != self._cam_application.generation:
+            self._end_background_calculation(result.operation.operation_id)
             return False
         before = self._cam_application.snapshot
-        accepted = self._cam_application.commit_z_level_calculation(result)
+        try:
+            accepted = self._cam_application.commit_z_level_calculation(result)
+        finally:
+            self._end_background_calculation(result.operation.operation_id)
         session.cam_snapshot = self._cam_application.snapshot
         if accepted and session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(result.operation.operation_id)
             self._nc_export_service.mark_operation_stale(result.operation.operation_id)
+            if result.artifact is not None:
+                self._schedule_background_simulation(result.operation.operation_id)
         return accepted
 
     def compute_facing(self, operation_id: OperationId,
@@ -1395,14 +1476,17 @@ class ProjectService:
         if expected_generation is not None and expected_generation != self._cam_application.generation:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_facing(
-            session.root_path, operation_id, face_resolver=face_resolver
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_facing(
+                session.root_path, operation_id, face_resolver=face_resolver
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_contour(self, operation_id: OperationId,
@@ -1414,14 +1498,17 @@ class ProjectService:
         if expected_generation is not None and expected_generation != self._cam_application.generation:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_contour(
-            session.root_path, operation_id, profile_resolver=profile_resolver
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_contour(
+                session.root_path, operation_id, profile_resolver=profile_resolver
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_pocket(self, operation_id: OperationId,
@@ -1433,14 +1520,17 @@ class ProjectService:
         if expected_generation is not None and expected_generation != self._cam_application.generation:
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_pocket(
-            session.root_path, operation_id, geometry_resolver=geometry_resolver
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_pocket(
+                session.root_path, operation_id, geometry_resolver=geometry_resolver
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_drilling(
@@ -1460,14 +1550,17 @@ class ProjectService:
         ):
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_drilling(
-            session.root_path, operation_id, geometry_resolver=geometry_resolver
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_drilling(
+                session.root_path, operation_id, geometry_resolver=geometry_resolver
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_tapping(
@@ -1487,16 +1580,19 @@ class ProjectService:
         ):
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_tapping(
-            session.root_path,
-            operation_id,
-            geometry_resolver=geometry_resolver,
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_tapping(
+                session.root_path,
+                operation_id,
+                geometry_resolver=geometry_resolver,
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_reaming(
@@ -1516,16 +1612,19 @@ class ProjectService:
         ):
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_reaming(
-            session.root_path,
-            operation_id,
-            geometry_resolver=geometry_resolver,
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_reaming(
+                session.root_path,
+                operation_id,
+                geometry_resolver=geometry_resolver,
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def compute_boring(
@@ -1545,16 +1644,19 @@ class ProjectService:
         ):
             raise RuntimeError("CAM command belongs to an inactive project generation")
         before = self._cam_application.snapshot
-        result = self._cam_application.compute_boring(
-            session.root_path,
-            operation_id,
-            geometry_resolver=geometry_resolver,
-        )
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.compute_boring(
+                session.root_path,
+                operation_id,
+                geometry_resolver=geometry_resolver,
+            )
         session.cam_snapshot = self._cam_application.snapshot
         if session.cam_snapshot != before:
             session.is_dirty = True
             self._simulation_runs.mark_stale(operation_id)
             self._nc_export_service.mark_operation_stale(operation_id)
+        if result.accepted and result.artifact is not None:
+            self._schedule_background_simulation(operation_id)
         return result
 
     def load_toolpath_artifact(self, operation_id: OperationId) -> ToolpathArtifact | None:
@@ -1741,6 +1843,30 @@ class ProjectService:
             machine,
             request,
         )
+
+    def load_background_simulation_precompute(
+        self,
+        inputs: SimulationInputSnapshot,
+    ) -> object | None:
+        """Load an optional complete R242 stock checkpoint for manual Simulation."""
+        if not self._background_simulation_enabled:
+            return None
+        session = self._require_current()
+        coordinator = self._background_simulation_coordinator()
+        load = None if coordinator is None else getattr(coordinator, "load_completed", None)
+        if not callable(load):
+            return None
+        try:
+            return load(
+                project_root=session.root_path,
+                project_id=session.manifest.project_id,
+                project_generation=self._cam_application.generation,
+                operation_id=inputs.operation.operation_id,
+                inputs=inputs,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("Cannot load background Simulation precompute", exc_info=True)
+            return None
 
     def load_cached_simulation(
         self,
@@ -1948,6 +2074,12 @@ class ProjectService:
         self, *, expected_project_id: UUID | None = None
     ) -> AutosaveSnapshot | None:
         """Snapshot the current dirty session without changing its dirty state."""
+        with self._background_foreground("project_autosave"):
+            return self._autosave_foreground(expected_project_id=expected_project_id)
+
+    def _autosave_foreground(
+        self, *, expected_project_id: UUID | None = None
+    ) -> AutosaveSnapshot | None:
         session = self._require_current()
         self._require_writable(session)
         if (
@@ -1996,6 +2128,15 @@ class ProjectService:
         overwrite: bool = False,
     ) -> ProjectSession:
         """Create and select an independent copy of the current project."""
+        with self._background_foreground("project_save_as"):
+            return self._save_as_foreground(parent_dir, project_name, overwrite)
+
+    def _save_as_foreground(
+        self,
+        parent_dir: Path,
+        project_name: str,
+        overwrite: bool,
+    ) -> ProjectSession:
         current = self._require_current()
         self._require_writable(current)
         current.cam_snapshot = self._cam_application.snapshot
@@ -2034,6 +2175,7 @@ class ProjectService:
             except (RuntimeError, TypeError, ValueError):
                 logger.warning("Stage 13B project lifecycle hook failed", exc_info=True)
         logger.info("Đã đóng dự án %s", self._current_project.root_path)
+        self._cancel_background_project(self._current_project)
         self._simulation_runs.bind_project(None, None)
         if not self._current_project.read_only:
             self._session_locks.release(self._current_project.root_path)
@@ -2496,6 +2638,7 @@ class ProjectService:
         previous = self._current_project
         if previous is not None and previous.root_path.resolve() != session.root_path.resolve():
             try:
+                self._cancel_background_project(previous)
                 if not previous.read_only:
                     self._session_locks.release(previous.root_path)
             except Exception:
@@ -2568,6 +2711,85 @@ class ProjectService:
         if self._current_project is None:
             raise ProjectError("No HMS project is currently open")
         return self._current_project
+
+    def _background_simulation_coordinator(self):
+        """Create the optional coordinator lazily, outside normal imports."""
+        coordinator = self._background_simulation
+        if coordinator is None and self._background_simulation_enabled:
+            from hms_cadcam.simulation.background import (
+                BackgroundSimulationCoordinator,
+            )
+
+            coordinator = BackgroundSimulationCoordinator()
+            self._background_simulation = coordinator
+        return coordinator
+
+    def _background_foreground(self, name: str):
+        if not self._background_simulation_enabled:
+            return nullcontext()
+        coordinator = self._background_simulation
+        if coordinator is None:
+            return nullcontext()
+        foreground = getattr(coordinator, "foreground", None)
+        return nullcontext() if not callable(foreground) else foreground(name)
+
+    def _begin_background_calculation(self, operation_id: OperationId) -> None:
+        if not self._background_simulation_enabled:
+            return
+        coordinator = self._background_simulation_coordinator()
+        begin = None if coordinator is None else getattr(coordinator, "begin_foreground", None)
+        if callable(begin) and operation_id not in self._background_calculation_claims:
+            begin("toolpath_calculation")
+            self._background_calculation_claims.add(operation_id)
+
+    def _end_background_calculation(self, operation_id: OperationId) -> None:
+        if operation_id not in self._background_calculation_claims:
+            return
+        self._background_calculation_claims.discard(operation_id)
+        coordinator = self._background_simulation
+        end = None if coordinator is None else getattr(coordinator, "end_foreground", None)
+        if callable(end):
+            end("toolpath_calculation")
+
+    def _schedule_background_simulation(self, operation_id: OperationId) -> None:
+        if not self._background_simulation_enabled:
+            return
+        session = self._require_current()
+        if session.read_only:
+            return
+        try:
+            coordinator = self._background_simulation_coordinator()
+            if coordinator is None:
+                return
+            generation = self._cam_application.generation
+            coordinator.schedule(
+                project_root=session.root_path,
+                project_id=session.manifest.project_id,
+                project_generation=generation,
+                operation_id=operation_id,
+                load_inputs=lambda: self.capture_simulation_inputs(operation_id),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            logger.warning(
+                "Background Simulation precompute is unavailable; CAM remains active",
+                exc_info=True,
+            )
+
+    def _cancel_background_project(self, session: ProjectSession) -> None:
+        coordinator = self._background_simulation
+        if coordinator is None:
+            return
+        for operation_id in tuple(self._background_calculation_claims):
+            self._end_background_calculation(operation_id)
+        cancel = getattr(coordinator, "cancel_project", None)
+        if callable(cancel):
+            try:
+                cancel(session.root_path, self._cam_application.generation)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.warning(
+                    "Background Simulation cleanup failed during project close",
+                    exc_info=True,
+                )
 
     @staticmethod
     def _require_writable(session: ProjectSession) -> None:

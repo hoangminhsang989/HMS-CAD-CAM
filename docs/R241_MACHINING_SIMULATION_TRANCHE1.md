@@ -31,6 +31,32 @@ CNC connection, upload, MDI, Cycle Start, spindle, axis, or offset action.
   cutter/shank/Holder envelopes, fixture and stock targets, rapid-below-safe
   warnings, and exact OCP narrow phase where geometry ownership is proven.
 
+### Optional background precompute (R242)
+
+After a verified toolpath publish, an owner-enabled policy may enqueue one
+spare-resource height-field precompute job. It never opens the Simulation UI
+and is not a prerequisite for Calculate, Post, NC Export, project open/save,
+or any interactive action. The default remains disabled; an unavailable
+coordinator is logged and normal CAM continues.
+
+Foreground project/CAM/Post/Export leases cooperatively suspend the one
+background worker. CPU, memory, disk, GPU (when available), and worker-pressure
+signals can throttle or suspend new chunks. Work resumes from a fingerprinted
+per-operation stock checkpoint; partial checkpoints remain explicitly
+`partial` and are never presented as a complete Simulation PASS.
+
+Reusable checkpoints live below `cache/simulation/precompute`, are bounded by
+quota, age, run count and per-run retention, and use atomic manifest
+publication with SHA-256 stock verification. Cleanup is restricted to inactive
+precompute artifacts and scratch owned by this subsystem; active workers and
+other Simulation/audit artifacts are excluded.
+
+Future CAM calculation caches follow the same owner-frozen principles without
+changing R242's CAM algorithms: multi-file per-operation artifacts, semantic
+fingerprints, dependency-aware incremental recalculation, safe content reuse,
+strict stale detection, and owned scratch cleanup. Cache reuse must never
+reduce toolpath accuracy.
+
 ## Accuracy and honest limitations
 
 The default engine is a bounded regular XY height field. It performs actual

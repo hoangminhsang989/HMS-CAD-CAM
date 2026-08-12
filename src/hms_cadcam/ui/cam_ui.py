@@ -573,6 +573,12 @@ class CamWorkspace(QWidget):
             raise RuntimeError("Hãy chọn một nguyên công đã tính toolpath.")
         return self._service.capture_simulation_inputs(operation.operation_id)
 
+    def load_selected_simulation_precompute(
+        self, inputs: SimulationInputSnapshot
+    ) -> object | None:
+        """Load only a complete optional R242 checkpoint for the manual window."""
+        return self._service.load_background_simulation_precompute(inputs)
+
     def select_identity(self, kind: str, identity: str) -> bool:
         """Select one classic coordinator item by stable typed presentation ID."""
         iterator = QTreeWidgetItemIterator(self.tree)
