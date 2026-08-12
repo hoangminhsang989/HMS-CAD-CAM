@@ -5,3 +5,4 @@ from hms_cadcam.cam.post_studio.service import *
 from hms_cadcam.cam.post_studio.store import *
 from hms_cadcam.cam.post_studio.sandbox import *
 from hms_cadcam.cam.post_studio.rules import *
+from hms_cadcam.cam.post_studio.deployment import *
