@@ -32,6 +32,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QDialog,
     QDockWidget,
     QColorDialog,
     QHeaderView,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -165,6 +167,7 @@ from hms_cadcam.ui.post_assembly_panel import (
     PostAssemblyProjectionAdapter,
     UnifiedPostAssemblyPanel,
 )
+from hms_cadcam.ui.post_studio import PostProcessorStudioPanel
 from hms_cadcam.ui.ribbon import (
     RibbonMetrics,
     RibbonWidget,
@@ -688,6 +691,11 @@ class MainWindow(QMainWindow):
             # Production/development keeps the legacy dock topology intact.
             self.post_assembly_dock = self.secondary_dock
 
+        # Studio is a modeless window, deliberately not a dock: the main
+        # workspace keeps its one semantic Post dock/tab group invariant.
+        self.post_studio_window: QDialog | None = None
+        self.post_studio_panel: PostProcessorStudioPanel | None = None
+
         self.incoming_geometry_bar = IncomingGeometryNotificationBar(self)
         self.incoming_geometry_dock = QDockWidget(
             "Thông báo dữ liệu 3D",
@@ -1026,6 +1034,11 @@ class MainWindow(QMainWindow):
             self._open_post_assembly
         )
         cam_menu.addAction(self.post_assembly_action)
+        self.post_studio_action = QAction(ui_text("post_studio.open"), self)
+        self.post_studio_action.setObjectName("PostProcessorStudioOpenAction")
+        self.post_studio_action.setProperty("commandId", "cam.post_studio.open")
+        self.post_studio_action.triggered.connect(self._open_post_studio)
+        cam_menu.addAction(self.post_studio_action)
         if self._cam3d_review_host:
             self.cam3d_function_action = QAction(
                 ui_text("CAM 3D Function UI"), self
@@ -1265,6 +1278,30 @@ class MainWindow(QMainWindow):
         self.post_assembly_dock.raise_()
         self.post_assembly_dock.activateWindow()
         self._schedule_post_assembly_dock_containment()
+
+    def _open_post_studio(self) -> None:
+        """Open the isolated Post Studio without changing CAM/Post runtime state."""
+        if self.post_studio_window is None:
+            window = QDialog(self)
+            window.setObjectName("PostProcessorStudioWindow")
+            window.setWindowTitle(ui_text("post_studio.title"))
+            window.setModal(False)
+            layout = QVBoxLayout(window)
+            layout.setContentsMargins(0, 0, 0, 0)
+            self.post_studio_panel = PostProcessorStudioPanel(parent=window)
+            layout.addWidget(self.post_studio_panel)
+            window.resize(1180, 720)
+            window.finished.connect(self._close_post_studio_window)
+            self.post_studio_window = window
+        if self.post_studio_panel is not None:
+            self.post_studio_panel.refresh()
+        self.post_studio_window.show()
+        self.post_studio_window.raise_()
+        self.post_studio_window.activateWindow()
+
+    def _close_post_studio_window(self, _result: int) -> None:
+        self.post_studio_window = None
+        self.post_studio_panel = None
 
     def _refresh_post_assembly_panel(self) -> None:
         if not hasattr(self, "unified_post_assembly_panel"):

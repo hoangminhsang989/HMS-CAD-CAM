@@ -1516,6 +1516,19 @@ STAGE18A_TRANCHE4_UI_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
     ("stage18a.tranche4.ready_review", "Sẵn sàng duyệt phát hành", "Ready for release review", "릴리스 검토 준비됨"),
 )
 
+POST_STUDIO_UI_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("post_studio.title", "Post Processor Studio", "Post Processor Studio", "포스트 프로세서 스튜디오"),
+    ("post_studio.new", "Tạo Post", "Create Post", "포스트 생성"),
+    ("post_studio.import", "Nhập Post", "Import Post", "포스트 가져오기"),
+    ("post_studio.clone", "Nhân bản", "Clone", "복제"),
+    ("post_studio.validate", "Kiểm tra", "Validate", "검증"),
+    ("post_studio.diff", "So sánh", "Compare", "비교"),
+    ("post_studio.approve", "Phê duyệt", "Approve", "승인"),
+    ("post_studio.activate", "Kích hoạt", "Activate", "활성화"),
+    ("post_studio.rollback", "Rollback", "Rollback", "롤백"),
+    ("post_studio.open", "Mở Post Processor Studio", "Open Post Processor Studio", "포스트 프로세서 스튜디오 열기"),
+)
+
 
 TECHNICAL_GLOSSARY: tuple[GlossaryEntry, ...] = tuple(
     GlossaryEntry(term, term, term, term)
@@ -1673,6 +1686,10 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         en_entries[source] = english
         ko_entries[source] = korean
     for key, vietnamese, english, korean in STAGE18A_TRANCHE4_UI_TRANSLATIONS:
+        vi_entries[key] = vietnamese
+        en_entries[key] = english
+        ko_entries[key] = korean
+    for key, vietnamese, english, korean in POST_STUDIO_UI_TRANSLATIONS:
         vi_entries[key] = vietnamese
         en_entries[key] = english
         ko_entries[key] = korean
@@ -1891,6 +1908,7 @@ __all__ = [
     "language_display_name",
     "set_translation_service",
     "STAGE18A_TRANCHE4_UI_TRANSLATIONS",
+    "POST_STUDIO_UI_TRANSLATIONS",
     "translation_service",
     "validate_glossary",
 ]
