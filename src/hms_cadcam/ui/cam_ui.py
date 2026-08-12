@@ -270,6 +270,7 @@ class CamWorkspace(QWidget):
         self._simulation_cache_attempts: set[tuple[OperationId, str]] = set()
         self._simulation_handle: SimulationRunHandle | None = None
         self._simulation_project_id: UUID | None = None
+        self._simulation_workspace_activated = False
         self._picked_reference: GeometryReference | None = None
         self._picked_hole_reference: HoleReference | None = None
         self._picked_hole_source: HoleReference | HolePattern | None = None
@@ -439,6 +440,7 @@ class CamWorkspace(QWidget):
         self._z_level_reports.clear()
         self._simulation_handle = None
         self._simulation_project_id = None
+        self._simulation_workspace_activated = False
         self._simulation_policies.clear()
         self._simulation_cache_attempts.clear()
         self.simulation_panel.clear_source()
@@ -548,6 +550,28 @@ class CamWorkspace(QWidget):
     def selected_identity(self) -> tuple[str, str] | None:
         """Return the transient CAM selection as its stable presentation key."""
         return self._selected_key
+
+    def activate_simulation_workspace(self) -> None:
+        """Enable optional simulation binding after one explicit user action."""
+
+        self._simulation_workspace_activated = True
+        operation = self._selected_operation()
+        if operation is None:
+            return
+        artifact = (
+            self._service.load_toolpath_artifact(operation.operation_id)
+            if operation.artifact_state.status is ArtifactStatus.VALID
+            else None
+        )
+        self._bind_simulation_operation(operation, artifact)
+
+    def capture_selected_simulation_inputs(self) -> SimulationInputSnapshot:
+        """Capture the current immutable source for the optional R241 window."""
+
+        operation = self._selected_operation()
+        if operation is None:
+            raise RuntimeError("Hãy chọn một nguyên công đã tính toolpath.")
+        return self._service.capture_simulation_inputs(operation.operation_id)
 
     def select_identity(self, kind: str, identity: str) -> bool:
         """Select one classic coordinator item by stable typed presentation ID."""
@@ -3971,6 +3995,9 @@ class CamWorkspace(QWidget):
         operation: Operation,
         artifact: object | None,
     ) -> None:
+        if not self._simulation_workspace_activated:
+            self.simulation_panel.clear_source()
+            return
         policies = self._simulation_policies.get(
             operation.operation_id,
             (SimulationSamplingPolicy(), SimulationDisplayPolicy()),

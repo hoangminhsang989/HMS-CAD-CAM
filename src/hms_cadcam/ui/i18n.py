@@ -720,6 +720,7 @@ CORE_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Diagnostics and background tasks", "Chẩn đoán và tác vụ nền", "진단 및 백그라운드 작업"),
     ("Simulation / Post", "Mô phỏng / Post", "시뮬레이션 / Post"),
     ("Simulation", "Mô phỏng", "시뮬레이션"),
+    ("Machining simulation", "Mô phỏng gia công", "가공 시뮬레이션"),
     ("Post / Program Assembly", "Post / Lắp ráp chương trình", "Post / 프로그램 어셈블리"),
     ("3D geometry notifications", "Thông báo dữ liệu 3D", "3D 형상 알림"),
     ("New 3D geometry notification", "Thông báo dữ liệu 3D mới", "새 3D 형상 알림"),

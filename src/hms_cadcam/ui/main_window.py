@@ -399,6 +399,7 @@ class MainWindow(QMainWindow):
             tuple[str, dict[str, object], frozenset[str]],
         ] = {}
         self._reported_lathe_diagnostics: set[tuple[str, str]] = set()
+        self._machining_simulation_window: QMainWindow | None = None
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
         self._viewport_baseline_minimum = QSize(self.viewport.minimumSize())
@@ -1017,6 +1018,19 @@ class MainWindow(QMainWindow):
         cam_workspace_action = QAction("Mở không gian làm việc CAM", self)
         cam_workspace_action.triggered.connect(self._show_cam_workspace)
         cam_menu.addAction(cam_workspace_action)
+        self.machining_simulation_action = QAction(
+            ui_text("Machining simulation"), self
+        )
+        self.machining_simulation_action.setObjectName(
+            "MachiningSimulationOpenAction"
+        )
+        self.machining_simulation_action.setProperty(
+            "commandId", "cam.simulation.open"
+        )
+        self.machining_simulation_action.triggered.connect(
+            self._open_machining_simulation
+        )
+        cam_menu.addAction(self.machining_simulation_action)
         self.post_assembly_action = QAction(
             ui_text("Post / Program Assembly"), self
         )
@@ -2031,6 +2045,12 @@ class MainWindow(QMainWindow):
                 retranslate(selected)
         self.viewport.retranslate_status()
         self.operation_manager_host.retranslate_ui(selected)
+        self.machining_simulation_action.setText(ui_text("Machining simulation"))
+        simulation_window = self._machining_simulation_window
+        if simulation_window is not None and isValid(simulation_window):
+            retranslate = getattr(simulation_window, "retranslate", None)
+            if callable(retranslate):
+                retranslate()
         if hasattr(self, "unified_post_assembly_panel"):
             self.post_assembly_action.setText(
                 ui_text("Post / Program Assembly")
@@ -2152,6 +2172,31 @@ class MainWindow(QMainWindow):
         """Open the selected operation in the one shared CAM popup."""
         self.cam_function_popup.open_current_operation()
 
+    def _open_machining_simulation(self) -> None:
+        """Lazy-load the separate R241 workspace only on explicit user action."""
+
+        self.cam_workspace.activate_simulation_workspace()
+        window = self._machining_simulation_window
+        if window is None or not isValid(window):
+            from hms_cadcam.ui.machining_simulation_window import (
+                MachiningSimulationWindow,
+            )
+
+            window = MachiningSimulationWindow(
+                self.cam_workspace.capture_selected_simulation_inputs,
+                self,
+            )
+            self._machining_simulation_window = window
+        retranslate = getattr(window, "retranslate", None)
+        if callable(retranslate):
+            retranslate()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        prepare = getattr(window, "prepare_scene", None)
+        if callable(prepare):
+            prepare()
+
     def _prepare_cam_popup_for_project_change(self) -> bool:
         """Protect an unapplied CAM draft before closing or replacing a project."""
         if self.function_editor_host.active_session is None:
@@ -2170,6 +2215,7 @@ class MainWindow(QMainWindow):
             self.properties_dock.show()
             self.properties_dock.raise_()
         elif workspace is WorkspaceId.SIMULATION:
+            self._open_machining_simulation()
             self.secondary_panel_host.select_simulation()
             self.secondary_dock.show()
             self.secondary_dock.raise_()
@@ -4197,6 +4243,9 @@ class MainWindow(QMainWindow):
                     )
             if self._cam3d_review_host:
                 self._teardown_cam3d_workflow(wait=True)
+            simulation_window = self._machining_simulation_window
+            if simulation_window is not None and isValid(simulation_window):
+                simulation_window.close()
             if self._lathe_review_host:
                 self._lathe_session_controller.teardown()
             if self._ai_assist_controller is not None:
