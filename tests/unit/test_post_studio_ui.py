@@ -16,6 +16,13 @@ def test_post_studio_panel_renders_real_revision_and_does_not_activate(qtbot) ->
     panel.library.setCurrentRow(0)
     assert revision.source_sha256 in panel.source_editor.toPlainText() or "G40" in panel.source_editor.toPlainText()
     assert "NOT_ACTIVE_GLOBALLY" in panel.properties.item(5, 1).text()
-    assert "Yêu cầu phê duyệt" in panel.properties.item(6, 1).text()
-    assert "không ghi đè" in panel.properties.item(8, 1).text()
+    assert "Sẵn sàng chờ phê duyệt" in panel.properties.item(6, 1).text()
+    assert "CHƯA ĐƯỢC PHÉP KÍCH HOẠT" in panel.properties.item(7, 1).text()
+    assert "không ghi đè" in panel.properties.item(9, 1).text()
+    assert not panel.activate_button.isEnabled()
+    with qtbot.waitSignal(panel.prepare_activation_requested, timeout=500) as signal:
+        panel.prepare_activation_button.click()
+    assert signal.args == [revision.revision_id]
+    panel.set_production_progress("SANDBOX")
+    assert "sandbox" in panel.status.text()
     panel.close()

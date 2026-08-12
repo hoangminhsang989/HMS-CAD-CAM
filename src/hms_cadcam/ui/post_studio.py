@@ -28,6 +28,7 @@ class PostProcessorStudioPanel(QWidget):
 
     state_changed = Signal(object)
     message = Signal(str)
+    prepare_activation_requested = Signal(str)
 
     def __init__(self, service: PostStudioService | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,8 +64,8 @@ class PostProcessorStudioPanel(QWidget):
         heading = QHBoxLayout(); self.title = QLabel(); self.title.setObjectName("PostStudioTitle")
         self.status = QLabel("NOT_RUN"); self.status.setObjectName("PostStudioStatus")
         heading.addWidget(self.title); heading.addStretch(1); heading.addWidget(self.status); layout.addLayout(heading)
-        actions = QHBoxLayout(); self.new_button = QPushButton(); self.import_button = QPushButton(); self.clone_button = QPushButton(); self.validate_button = QPushButton(); self.diff_button = QPushButton(); self.approve_button = QPushButton(); self.activate_button = QPushButton(); self.rollback_button = QPushButton()
-        for button in (self.new_button, self.import_button, self.clone_button, self.validate_button, self.diff_button, self.approve_button, self.activate_button, self.rollback_button): actions.addWidget(button)
+        actions = QHBoxLayout(); self.new_button = QPushButton(); self.import_button = QPushButton(); self.clone_button = QPushButton(); self.validate_button = QPushButton(); self.diff_button = QPushButton(); self.approve_button = QPushButton(); self.prepare_activation_button = QPushButton("Chuẩn bị kích hoạt"); self.activate_button = QPushButton(); self.rollback_button = QPushButton()
+        for button in (self.new_button, self.import_button, self.clone_button, self.validate_button, self.diff_button, self.approve_button, self.prepare_activation_button, self.activate_button, self.rollback_button): actions.addWidget(button)
         actions.addStretch(1); layout.addLayout(actions)
         splitter = QSplitter(); self.library = QListWidget(); self.library.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection); self.library.currentRowChanged.connect(lambda _row: self._show_selected())
         center = QWidget(); center_layout = QVBoxLayout(center); center_layout.setContentsMargins(0, 0, 0, 0)
@@ -77,7 +78,9 @@ class PostProcessorStudioPanel(QWidget):
         self.new_button.clicked.connect(lambda: self.message.emit("Tạo Post yêu cầu siêu dữ liệu và nguồn hợp lệ."))
         self.import_button.clicked.connect(lambda: self.message.emit("Nhập Post chỉ tạo phiên bản bất biến trong vùng làm việc cô lập."))
         self.validate_button.clicked.connect(self._validate_selected); self.diff_button.clicked.connect(self._show_selected)
-        self.activate_button.clicked.connect(lambda: self.message.emit("Kích hoạt toàn cục không được cấp quyền trong Tranche1."))
+        self.prepare_activation_button.clicked.connect(self._request_activation_preparation)
+        self.activate_button.setEnabled(False)
+        self.activate_button.setToolTip("Giai đoạn 2 chưa được phép kích hoạt trong R239.")
         self.rollback_button.clicked.connect(lambda: self.message.emit("Rollback yêu cầu một activation record đã được xác minh."))
         self._retranslate()
 
@@ -95,7 +98,7 @@ class PostProcessorStudioPanel(QWidget):
         revision = self._service.revision(revision_id); source = self._service.source_bytes(revision_id)
         self.source_editor.setPlainText(source.decode(revision.source_encoding, errors="replace"))
         diff = self._service.source_diff(revision_id); self.diff.setPlainText("\n".join(diff.text_lines) or "(Không có parent diff)")
-        entries = (("Revision", revision.revision_id), ("SHA-256", revision.source_sha256), ("Status", self._service.lifecycle_status(revision_id).value), ("Encoding", revision.source_encoding), ("Line ending", revision.line_ending), ("Deployment", "NOT_ACTIVE_GLOBALLY"), ("Kích hoạt", "Yêu cầu phê duyệt gắn SHA, kiểm tra target và bản sao lưu"), ("Rollback", "Chỉ Post managed có activation record đã xác minh"), ("Drift", "Kiểm tra lại trước mọi thao tác; không ghi đè bytes ngoài HMS"))
+        entries = (("Phiên bản", revision.revision_id), ("SHA-256", revision.source_sha256), ("Trạng thái", self._service.lifecycle_status(revision_id).value), ("Mã hóa", revision.source_encoding), ("Kết thúc dòng", revision.line_ending), ("Triển khai", "NOT_ACTIVE_GLOBALLY"), ("Giai đoạn 1", "CHUẨN BỊ KÍCH HOẠT — Sẵn sàng chờ phê duyệt"), ("Giai đoạn 2", "CHƯA ĐƯỢC PHÉP KÍCH HOẠT"), ("Rollback", "Chỉ Post managed có activation record đã xác minh"), ("Thay đổi ngoài HMS", "Kiểm tra lại trước mọi thao tác; không ghi đè bytes ngoài HMS"))
         for key, value in entries:
             row = self.properties.rowCount(); self.properties.insertRow(row); self.properties.setItem(row, 0, QTableWidgetItem(key)); self.properties.setItem(row, 1, QTableWidgetItem(value))
         self.state_changed.emit(self._state)
@@ -106,6 +109,28 @@ class PostProcessorStudioPanel(QWidget):
             return
         result = self._service.validate(revision_id, validated_at="2026-08-12T12:00:00+07:00")
         self._state = PostStudioViewState(revision_id, result.state.value, 0.0); self.status.setText(result.state.value); self._show_selected()
+
+    def _request_activation_preparation(self) -> None:
+        revision_id = self._state.selected_revision_id
+        if not revision_id:
+            self.message.emit("Hãy chọn một phiên bản Post đã được duyệt trước khi chuẩn bị kích hoạt.")
+            return
+        self.status.setText("Đang chuẩn bị kích hoạt...")
+        self.prepare_activation_requested.emit(revision_id)
+
+    def set_production_progress(self, state: str) -> None:
+        """Project background-service progress without running work in the widget."""
+
+        labels = {
+            "PREFLIGHT": "Đang kiểm tra Post hiện tại...",
+            "HASHING": "Đang xác minh SHA...",
+            "ROLLBACK": "Đang kiểm tra rollback...",
+            "SANDBOX": "Đang chạy thử kích hoạt trong sandbox...",
+            "PACKAGE": "Đang tạo gói kích hoạt...",
+            "READY": "Sẵn sàng chờ phê duyệt kích hoạt",
+            "FAILED": "Chuẩn bị kích hoạt thất bại",
+        }
+        self.status.setText(labels.get(state, "Đang kiểm tra..."))
 
 
 __all__ = ["PostProcessorStudioPanel", "PostStudioViewState"]
