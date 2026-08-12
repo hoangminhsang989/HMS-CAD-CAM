@@ -23,8 +23,39 @@ from hms_cadcam.cad.models import (
     XcafSourceAppearance,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel
+from hms_cadcam.cad.ocp.xcaf import _merge_source_appearances
 from hms_cadcam.cad.ocp.topology import get_bounding_box
 from spikes.xcaf_step.fixture import XcafFixtureExpectations, write_xcaf_step_fixture
+
+
+def test_component_color_falls_back_channelwise_to_assembly_color() -> None:
+    component = XcafSourceAppearance(
+        surface_color=XcafColor(0.2, 0.3, 0.4),
+    )
+    assembly = XcafSourceAppearance(
+        generic_color=XcafColor(0.8, 0.7, 0.6),
+        surface_color=XcafColor(0.5, 0.6, 0.7),
+    )
+
+    merged = _merge_source_appearances(component, assembly)
+
+    assert merged.surface_color == component.surface_color
+    assert merged.generic_color == assembly.generic_color
+
+
+def test_uncolored_xcaf_source_has_no_fabricated_color(tmp_path: Path) -> None:
+    source = tmp_path / "plain.step"
+    _write_plain_step(source)
+    kernel = OcpCadKernel()
+    result = kernel.import_step(source)
+    assert result.document_id is not None
+
+    tree = kernel.get_document_tree(result.document_id)
+
+    assert all(
+        node.source_appearance == XcafSourceAppearance()
+        for node in tree.presentation_nodes
+    )
 
 
 @pytest.fixture
@@ -231,7 +262,7 @@ def test_xcaf_presentation_shapes_are_absolute_and_source_appearance_is_effectiv
     assert second_bounds.x_min == pytest.approx(40.0)
     _assert_color(
         repeated[0].source_appearance.surface_color,
-        expected.first_occurrence_color,
+        expected.repeated_product_surface_color,
     )
     _assert_color(
         repeated[1].source_appearance.surface_color,

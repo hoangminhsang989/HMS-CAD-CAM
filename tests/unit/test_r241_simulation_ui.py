@@ -6,6 +6,7 @@ from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 
 from hms_cadcam.ui.machining_simulation_window import MachiningSimulationWindow
+from hms_cadcam.viewer.models import ObjectColor
 from tests.unit.test_simulation_service import _source
 
 
@@ -60,3 +61,16 @@ def test_repeated_open_prepare_close_releases_owned_windows(qtbot) -> None:
     gc.collect()
     assert pool.activeThreadCount() <= baseline_active
     assert all(not window.worker_active for window in windows)
+
+
+def test_simulation_background_updates_without_starting_compute(qtbot) -> None:
+    initial = ObjectColor(0.12, 0.16, 0.22)
+    changed = ObjectColor(0.2, 0.3, 0.4)
+    window = MachiningSimulationWindow(_inputs, background_color=initial)
+    qtbot.addWidget(window)
+
+    window.set_background_color(changed)
+
+    assert changed.to_hex() in window.canvas.styleSheet()
+    assert not window.worker_active
+    assert window._inputs is None

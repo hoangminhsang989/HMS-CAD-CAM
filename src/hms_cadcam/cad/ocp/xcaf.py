@@ -268,7 +268,7 @@ def build_xcaf_document_tree(
         data.occurrence_ids_by_object[object_id] = occurrence_id
         children = tuple(build_node(item) for item in occurrence.child_occurrence_ids)
         source = _effective_source_appearance(
-            occurrence.source_appearance,
+            _occurrence_hierarchy_appearance(data, occurrence_id),
             product.source_appearance,
         )
         return CadObjectNode(
@@ -319,6 +319,10 @@ def resolve_presentation_sources(
         if occurrence.role is not XcafNodeRole.PART:
             continue
         product = data.products[occurrence.product_id]
+        occurrence_appearance = _occurrence_hierarchy_appearance(
+            data,
+            occurrence_id,
+        )
         labels = TDF_LabelSequence()
         subshape_sources: list[OcpXcafSubshapeSource] = []
         if payload.shape_tool.GetSubShapes_s(
@@ -339,7 +343,7 @@ def resolve_presentation_sources(
                     )
         result[object_id] = OcpXcafPresentationSource(
             shape=resolve_occurrence_shape(payload, data, occurrence_id),
-            occurrence_appearance=occurrence.source_appearance,
+            occurrence_appearance=occurrence_appearance,
             product_appearance=product.source_appearance,
             subshape_sources=tuple(subshape_sources),
         )
@@ -351,9 +355,47 @@ def _effective_source_appearance(
     product: XcafSourceAppearance,
 ) -> XcafSourceAppearance:
     return XcafSourceAppearance(
-        generic_color=occurrence.generic_color or product.generic_color,
-        surface_color=occurrence.surface_color or product.surface_color,
-        curve_color=occurrence.curve_color or product.curve_color,
+        generic_color=product.generic_color or occurrence.generic_color,
+        surface_color=product.surface_color or occurrence.surface_color,
+        curve_color=product.curve_color or occurrence.curve_color,
+    )
+
+
+def _occurrence_hierarchy_appearance(
+    data: OcpXcafDocumentData,
+    occurrence_id: XcafOccurrenceId,
+) -> XcafSourceAppearance:
+    """Resolve nearest component/assembly source style for one placed leaf."""
+    appearances: list[XcafSourceAppearance] = []
+    current_id: XcafOccurrenceId | None = occurrence_id
+    while current_id is not None:
+        occurrence = data.occurrences[current_id]
+        appearances.append(occurrence.source_appearance)
+        if current_id != occurrence_id:
+            appearances.append(
+                data.products[occurrence.product_id].source_appearance
+            )
+        current_id = occurrence.parent_occurrence_id
+    return _merge_source_appearances(*appearances)
+
+
+def _merge_source_appearances(
+    *appearances: XcafSourceAppearance,
+) -> XcafSourceAppearance:
+    """Merge channel-wise styles from highest to lowest priority."""
+    return XcafSourceAppearance(
+        generic_color=next(
+            (item.generic_color for item in appearances if item.generic_color),
+            None,
+        ),
+        surface_color=next(
+            (item.surface_color for item in appearances if item.surface_color),
+            None,
+        ),
+        curve_color=next(
+            (item.curve_color for item in appearances if item.curve_color),
+            None,
+        ),
     )
 
 

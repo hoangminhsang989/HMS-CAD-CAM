@@ -6,10 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPoint, QRect, QSize, QTimer, Qt
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QMoveEvent, QShowEvent
+from PySide6.QtGui import QColor, QCloseEvent, QKeyEvent, QMoveEvent, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QColorDialog,
     QDialog,
     QFrame,
     QGridLayout,
@@ -48,6 +49,11 @@ from hms_cadcam.ui.settings.ui_scale import (
 )
 from hms_cadcam.ui.settings.export_3d_settings import Export3dSettingsPage
 from hms_cadcam.ui.settings.export_defaults import ExportDefaultsSettingsService
+from hms_cadcam.ui.settings.viewport_background import (
+    VIEWPORT_BACKGROUND_PRESETS,
+    ViewportBackgroundManager,
+)
+from hms_cadcam.viewer.models import ObjectColor
 
 
 _DIALOG_BASE_SIZE = QSize(820, 600)
@@ -57,6 +63,7 @@ _DIALOG_SCREEN_MARGIN = 12
 _NAVIGATION_BASE_WIDTH = 190
 _UI_SCALE_RESET_SCOPE = "ui_scale"
 _EXPORT_DEFAULTS_RESET_SCOPE = "export_defaults_current"
+_VIEWPORT_BACKGROUND_RESET_SCOPE = "viewport_background"
 _SHELL_EMPTY_MESSAGE = (
     "This settings category has no available options in the current version."
 )
@@ -76,7 +83,7 @@ _SETTINGS_CATEGORIES: tuple[SettingsCategory, ...] = (
     SettingsCategory("Keyboard shortcuts", "Keyboard shortcuts"),
     SettingsCategory("Language", "Language"),
     SettingsCategory("Storage & projects", "Storage & projects"),
-    SettingsCategory("CAD/Viewer", "CAD/Viewer"),
+    SettingsCategory("CAD/Viewer", "CAD/Viewer", _VIEWPORT_BACKGROUND_RESET_SCOPE),
     SettingsCategory("3D Export", "3D Export", _EXPORT_DEFAULTS_RESET_SCOPE),
     SettingsCategory("CAM", "CAM"),
     SettingsCategory("Performance", "Performance"),
@@ -199,6 +206,7 @@ class GeneralSettingsDialog(QDialog):
         ai_assist_controller: AiAssistController | None = None,
         advisor_settings_service: AdvisorSettingsService | None = None,
         export_defaults_service: ExportDefaultsSettingsService | None = None,
+        viewport_background_manager: ViewportBackgroundManager | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -210,6 +218,7 @@ class GeneralSettingsDialog(QDialog):
             export_defaults_service
             or ExportDefaultsSettingsService(scale_manager.settings)
         )
+        self._viewport_background_manager = viewport_background_manager
         self._categories = (
             (*_SETTINGS_CATEGORIES, _AI_ASSIST_CATEGORY)
             if ai_assist_controller is not None
@@ -285,6 +294,8 @@ class GeneralSettingsDialog(QDialog):
                     translation=self._service,
                 )
                 if category.key == "3D Export"
+                else self._build_viewport_page()
+                if category.key == "CAD/Viewer" and self._viewport_background_manager is not None
                 else self._build_placeholder_page(category.key)
             )
             self.page_stack.addWidget(page)
@@ -303,10 +314,14 @@ class GeneralSettingsDialog(QDialog):
         self.apply_button.setObjectName("ApplySettingsButton")
         self.apply_button.setDefault(True)
         self.apply_button.clicked.connect(self._apply)
+        self.ok_button = QPushButton()
+        self.ok_button.setObjectName("OkSettingsButton")
+        self.ok_button.clicked.connect(self._ok)
         self._footer_buttons = (
             self.reset_button,
             self.cancel_button,
             self.apply_button,
+            self.ok_button,
         )
 
         self.page_scroll = QScrollArea()
@@ -331,6 +346,7 @@ class GeneralSettingsDialog(QDialog):
         footer.addStretch(1)
         footer.addWidget(self.cancel_button)
         footer.addWidget(self.apply_button)
+        footer.addWidget(self.ok_button)
 
         self._root_layout = QVBoxLayout(self)
         self._root_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
@@ -453,6 +469,74 @@ class GeneralSettingsDialog(QDialog):
         layout.addStretch(1)
         return page
 
+    def _build_viewport_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("SettingsCadViewerPage")
+        layout = QVBoxLayout(page)
+        self.viewport_heading = QLabel()
+        self.viewport_heading.setStyleSheet("font-weight: 600;")
+        self.viewport_description = QLabel()
+        self.viewport_description.setWordWrap(True)
+        self.background_label = QLabel()
+        controls = QHBoxLayout()
+        self.background_preview = QFrame()
+        self.background_preview.setObjectName("ViewportBackgroundPreview")
+        self.background_preview.setFixedSize(72, 32)
+        self.background_picker = QPushButton()
+        self.background_picker.setObjectName("ViewportBackgroundPicker")
+        self.background_picker.clicked.connect(self._pick_background)
+        controls.addWidget(self.background_preview)
+        controls.addWidget(self.background_picker)
+        controls.addStretch(1)
+        self.background_presets = QHBoxLayout()
+        self.background_preset_buttons: list[QPushButton] = []
+        for index, color in enumerate(VIEWPORT_BACKGROUND_PRESETS):
+            button = QPushButton(color.to_hex())
+            button.setObjectName(f"ViewportBackgroundPreset{index}")
+            button.clicked.connect(
+                lambda _checked=False, value=color: self._set_background_preview(value)
+            )
+            self.background_presets.addWidget(button)
+            self.background_preset_buttons.append(button)
+        self.background_presets.addStretch(1)
+        layout.addWidget(self.viewport_heading)
+        layout.addWidget(self.viewport_description)
+        layout.addWidget(self.background_label)
+        layout.addLayout(controls)
+        layout.addLayout(self.background_presets)
+        layout.addStretch(1)
+        manager = self._viewport_background_manager
+        assert manager is not None
+        manager.preview_changed.connect(self._background_preview_changed)
+        self._background_preview_changed(manager.current_color)
+        return page
+
+    def _pick_background(self) -> None:
+        manager = self._viewport_background_manager
+        if manager is None:
+            return
+        selected = QColorDialog.getColor(
+            QColor(manager.current_color.to_hex()),
+            self,
+            ui_text("Viewport background color"),
+        )
+        if selected.isValid():
+            self._set_background_preview(
+                ObjectColor(selected.redF(), selected.greenF(), selected.blueF())
+            )
+
+    def _set_background_preview(self, color: ObjectColor) -> None:
+        manager = self._viewport_background_manager
+        if manager is not None:
+            manager.set_preview_color(color)
+
+    def _background_preview_changed(self, color: ObjectColor) -> None:
+        self.background_preview.setStyleSheet(
+            f"background:{color.to_hex()};border:1px solid #6f7780"
+        )
+        self.background_preview.setToolTip(color.to_hex())
+        self._update_apply_button()
+
     def _preset_handler(self, value: int) -> Callable[[], None]:
         return lambda: self._scale_manager.set_preview_percent(value)
 
@@ -545,6 +629,7 @@ class GeneralSettingsDialog(QDialog):
         enabled = category is not None and category.reset_scope in {
             _UI_SCALE_RESET_SCOPE,
             _EXPORT_DEFAULTS_RESET_SCOPE,
+            _VIEWPORT_BACKGROUND_RESET_SCOPE,
         }
         self.reset_button.setEnabled(enabled)
         self.reset_button.setText(
@@ -553,6 +638,8 @@ class GeneralSettingsDialog(QDialog):
                 if category is not None and category.reset_scope == _UI_SCALE_RESET_SCOPE
                 else "Reset current format"
                 if category is not None and category.reset_scope == _EXPORT_DEFAULTS_RESET_SCOPE
+                else "Reset Default"
+                if category is not None and category.reset_scope == _VIEWPORT_BACKGROUND_RESET_SCOPE
                 else "Reset"
             )
         )
@@ -561,26 +648,45 @@ class GeneralSettingsDialog(QDialog):
         self._update_apply_button()
 
     def _update_apply_button(self) -> None:
+        if not hasattr(self, "apply_button"):
+            return
         export_page = getattr(self, "_export_3d_page", None)
         self.apply_button.setEnabled(
             self._preview_dirty
             or (export_page is not None and export_page.dirty)
+            or (
+                self._viewport_background_manager is not None
+                and self._viewport_background_manager.current_color
+                != self._viewport_background_manager.persisted_color
+            )
         )
 
-    def _apply(self) -> None:
+    def _apply(self) -> bool:
         export_page = getattr(self, "_export_3d_page", None)
         if export_page is not None and export_page.dirty and not export_page.apply():
             self._update_apply_button()
-            return
+            return False
         if self._preview_dirty and not self._scale_manager.apply_percent():
             self.preview_status.setText(ui_text("The UI scale could not be saved."))
             self._update_apply_button()
-            return
+            return False
+        manager = self._viewport_background_manager
+        if manager is not None and manager.current_color != manager.persisted_color:
+            if not manager.apply_color():
+                self._update_apply_button()
+                return False
         self._preview_dirty = False
         self._update_apply_button()
+        return True
+
+    def _ok(self) -> None:
+        if self._apply():
+            self.close()
 
     def _cancel(self) -> None:
         self._scale_manager.cancel_preview()
+        if self._viewport_background_manager is not None:
+            self._viewport_background_manager.cancel_preview()
         self.close()
 
     def _reset_default(self) -> None:
@@ -591,6 +697,9 @@ class GeneralSettingsDialog(QDialog):
             self._scale_manager.reset_default()
         elif category.reset_scope == _EXPORT_DEFAULTS_RESET_SCOPE:
             self._export_3d_page.reset_current()
+        elif category.reset_scope == _VIEWPORT_BACKGROUND_RESET_SCOPE:
+            assert self._viewport_background_manager is not None
+            self._viewport_background_manager.reset_default()
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
@@ -732,6 +841,14 @@ class GeneralSettingsDialog(QDialog):
                 if isinstance(page, Export3dSettingsPage):
                     page.retranslate_ui(language)
                     continue
+                if category.key == "CAD/Viewer" and self._viewport_background_manager is not None:
+                    self.viewport_heading.setText(ui_text("3D display"))
+                    self.viewport_description.setText(
+                        ui_text("Choose one stable solid background for CAD and Machining Simulation viewports.")
+                    )
+                    self.background_label.setText(ui_text("Viewport background color"))
+                    self.background_picker.setText(ui_text("Choose color…"))
+                    continue
                 heading = page.findChildren(QLabel)[0]
                 message = page.findChildren(QLabel)[1]
                 heading.setText(ui_text(category.key))
@@ -739,14 +856,17 @@ class GeneralSettingsDialog(QDialog):
         self._update_reset_button()
         self.cancel_button.setText(ui_text("Cancel"))
         self.apply_button.setText(ui_text("Apply"))
+        self.ok_button.setText(ui_text("OK"))
         localize_widget_tree(self)
         self._preview_scale_changed(self._scale_manager.current_percent)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        if self._language_changed_slot is not None:
+        if getattr(self, "_language_changed_slot", None) is not None:
             self._service.language_changed.disconnect(self._language_changed_slot)
             self._language_changed_slot = None
         self._scale_manager.cancel_preview()
+        if self._viewport_background_manager is not None:
+            self._viewport_background_manager.cancel_preview()
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802

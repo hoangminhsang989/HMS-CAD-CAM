@@ -106,6 +106,7 @@ class ObjectColor:
 
 
 DEFAULT_OBJECT_COLOR = ObjectColor(0.78, 0.80, 0.84)
+DEFAULT_VIEWPORT_BACKGROUND = ObjectColor(0.12, 0.16, 0.22)
 
 
 @dataclass(frozen=True, slots=True)

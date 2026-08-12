@@ -8,6 +8,7 @@ from uuid import UUID
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import (
+    QColor,
     QCloseEvent,
     QMouseEvent,
     QPaintEngine,
@@ -84,7 +85,8 @@ class CadViewportWidget(QWidget):
         self.setMinimumSize(520, 360)
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_PaintOnScreen)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
+        self.setAutoFillBackground(True)
         self.setMouseTracking(True)
         self._backend = backend or CadViewportBackendFactory.create(kernel)
         self._status = self._backend.get_status()
@@ -101,6 +103,19 @@ class CadViewportWidget(QWidget):
         )
         self._backend.set_selection_callback(self._receive_selection)
         self._refresh_status(self._status)
+
+    def set_background_color(self, color: ObjectColor) -> bool:
+        """Keep the Qt erase color and native renderer clear color identical."""
+        if not isinstance(color, ObjectColor):
+            raise TypeError("Viewport background must be ObjectColor")
+        qt_color = QColor.fromRgbF(color.red, color.green, color.blue)
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), qt_color)
+        self.setPalette(palette)
+        setter = getattr(self._backend, "set_background_color", None)
+        if not callable(setter):
+            return False
+        return self._invoke("set background color", setter, color)
 
     def set_status_text_resolver(
         self,

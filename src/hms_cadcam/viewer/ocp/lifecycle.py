@@ -12,9 +12,9 @@ from OCP.AIS import (
     AIS_Shape,
     AIS_Triangulation,
 )
-from OCP.Aspect import Aspect_DisplayConnection
+from OCP.Aspect import Aspect_DisplayConnection, Aspect_GradientFillMethod
 from OCP.OpenGl import OpenGl_GraphicDriver
-from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
+from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB, Quantity_TOC_sRGB
 from OCP.Poly import Poly_Triangulation
 from OCP.TopoDS import TopoDS_Shape
 from OCP.TopAbs import TopAbs_ShapeEnum
@@ -27,11 +27,14 @@ from hms_cadcam.cad.models import CadDocumentTree, CadObjectId, XcafColor
 from hms_cadcam.cad.ocp.xcaf import OcpXcafPresentationSource
 from hms_cadcam.viewer.models import (
     DEFAULT_OBJECT_COLOR,
+    DEFAULT_VIEWPORT_BACKGROUND,
     DisplayMode,
     ObjectAppearance,
     ObjectColor,
 )
 from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry
+
+_AUTO_Z_FIT_SCALE_FACTOR = 1.05
 
 
 def _void_pointer_capsule(address: int) -> object:
@@ -53,6 +56,7 @@ class OcpViewportLifecycle:
         self._window: WNT_Window | None = None
         self._presentation: AIS_InteractiveObject | None = None
         self._registry: OcpPresentationRegistry | None = None
+        self._background_color = DEFAULT_VIEWPORT_BACKGROUND
         self._closed = False
 
     @property
@@ -106,7 +110,8 @@ class OcpViewportLifecycle:
         view.SetWindow(window)
         if not window.IsMapped():
             window.Map()
-        view.SetBackgroundColor(Quantity_Color(0.12, 0.16, 0.22, Quantity_TOC_RGB))
+        self._apply_background(view)
+        view.SetAutoZFitMode(True, _AUTO_Z_FIT_SCALE_FACTOR)
         self._display_connection = display_connection
         self._driver = driver
         self._viewer = viewer
@@ -187,6 +192,7 @@ class OcpViewportLifecycle:
         if old_presentation is not None and old_presentation is not new_presentation:
             self.context.Remove(old_presentation, False)
         self._presentation = new_presentation
+        self._refresh_depth()
         self.view.Redraw()
 
     def prepare_registry(
@@ -291,6 +297,7 @@ class OcpViewportLifecycle:
                     self.context.Remove(presentation, False)
             if old_presentation is not None:
                 self.context.Remove(old_presentation, False)
+            self._refresh_depth()
             self.view.Redraw()
         except Exception as error:
             rollback_error = self._restore_active_presentations(
@@ -420,14 +427,47 @@ class OcpViewportLifecycle:
     def fit_all(self) -> None:
         if self._view is not None:
             self._view.FitAll()
+            self._refresh_depth()
             self._view.Redraw()
+
+    def set_background_color(self, color: ObjectColor) -> None:
+        """Apply one solid clear color without touching camera or scene state."""
+        if not isinstance(color, ObjectColor):
+            raise TypeError("Viewport background must be ObjectColor")
+        self._background_color = color
+        if self._view is not None:
+            self._apply_background(self._view)
+            self._view.Redraw()
+
+    def _apply_background(self, view: V3d_View) -> None:
+        """Disable inherited gradient state and apply one solid clear color."""
+        color = self._background_color
+        native = Quantity_Color(
+            color.red,
+            color.green,
+            color.blue,
+            Quantity_TOC_sRGB,
+        )
+        view.SetBackgroundColor(native)
+        view.SetBgGradientColors(
+            native,
+            native,
+            Aspect_GradientFillMethod.Aspect_GradientFillMethod_None,
+            False,
+        )
 
     def resize(self, width: int, height: int) -> None:
         if width < 0 or height < 0:
             raise ValueError("Viewport size must not be negative")
         if self._view is not None:
             self._view.MustBeResized()
+            self._refresh_depth()
             self._view.Redraw()
+
+    def _refresh_depth(self) -> None:
+        """Fit only projection depth to current presentation bounds."""
+        if self._view is not None:
+            self._view.AutoZFit()
 
     def close(self) -> None:
         """Release OCCT objects before the native HWND is destroyed."""
@@ -479,9 +519,9 @@ def _source_styles(
     source: OcpXcafPresentationSource,
 ) -> tuple[tuple[TopoDS_Shape, ObjectColor], ...]:
     occurrence_color = _source_color(source.occurrence_appearance)
-    if occurrence_color is not None:
-        return _uniform_styles(presentation.Shape(), occurrence_color)
     styles: list[tuple[TopoDS_Shape, ObjectColor]] = []
+    if occurrence_color is not None:
+        styles.extend(_uniform_styles(presentation.Shape(), occurrence_color))
     product_color = _source_color(source.product_appearance)
     if product_color is not None:
         styles.extend(_uniform_styles(presentation.Shape(), product_color))

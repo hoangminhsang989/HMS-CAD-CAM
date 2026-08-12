@@ -54,10 +54,11 @@ class OcpInputController:
         self._dragged = self._dragged or abs(delta_x) + abs(delta_y) > 2
         if self._pressed_button is MouseButton.MIDDLE:
             self._view.Rotation(x, y)
+            self._refresh_depth()
         elif self._pressed_button is MouseButton.RIGHT:
             self._view.Pan(delta_x, -delta_y, 1.0, True)
             self._origin = (x, y)
-            self._view.Redraw()
+            self._redraw_with_depth()
 
     def release(
         self,
@@ -87,7 +88,16 @@ class OcpInputController:
             return
         factor = 1.15 if delta > 0 else 1.0 / 1.15
         self._view.SetScale(max(1.0e-6, self._view.Scale() * factor))
+        self._redraw_with_depth()
+
+    def _redraw_with_depth(self) -> None:
+        """Refresh OCCT Z planes without changing the XY camera mapping."""
+        self._refresh_depth()
         self._view.Redraw()
+
+    def _refresh_depth(self) -> None:
+        """Keep displayed bounds inside the projection depth after camera motion."""
+        self._view.AutoZFit()
 
     def reset(self) -> None:
         self._pressed_button = MouseButton.NONE

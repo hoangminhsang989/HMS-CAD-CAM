@@ -902,7 +902,7 @@ def _catalog_pairs(locale: UiLanguage) -> tuple[tuple[str, str], ...]:
 
 def test_c31_core_and_catalog_key_coverage_is_source_derived() -> None:
     required = _c31_production_keys()
-    assert len(required) == 38
+    assert len(required) == 44
     core_counts = Counter(row[0] for row in CORE_TRANSLATIONS)
     assert not {key: count for key, count in core_counts.items() if count > 1}
     assert required <= core_counts.keys()

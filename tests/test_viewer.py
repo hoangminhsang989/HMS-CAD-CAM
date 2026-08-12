@@ -13,12 +13,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from OCP.BRepMesh import BRepMesh_IncrementalMesh  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
+from OCP.Quantity import Quantity_TOC_sRGB  # noqa: E402
 from OCP.StlAPI import StlAPI_Writer  # noqa: E402
 from OCP.TopAbs import TopAbs_ShapeEnum  # noqa: E402
 from OCP.TopExp import TopExp  # noqa: E402
 from OCP.TopTools import TopTools_IndexedMapOfShape  # noqa: E402
 from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape  # noqa: E402
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import QTimer, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from hms_cadcam.cad.models import (  # noqa: E402
@@ -29,8 +30,14 @@ from hms_cadcam.cad.models import (  # noqa: E402
     CadObjectId,
     CadObjectKind,
     CadObjectNode,
+    XcafColor,
+    XcafSourceAppearance,
 )
 from hms_cadcam.cad.ocp import OcpCadKernel  # noqa: E402
+from hms_cadcam.cad.ocp.xcaf import (  # noqa: E402
+    OcpXcafPresentationSource,
+    OcpXcafSubshapeSource,
+)
 from hms_cadcam.viewer.backend import CadViewportBackend  # noqa: E402
 from hms_cadcam.viewer import backend as backend_module  # noqa: E402
 from hms_cadcam.viewer import models as models_module  # noqa: E402
@@ -51,7 +58,11 @@ from hms_cadcam.viewer.ocp.backend import (  # noqa: E402
     OcpCadViewportBackend,
     _VIEW_DIRECTIONS,
 )
-from hms_cadcam.viewer.ocp.lifecycle import OcpViewportLifecycle  # noqa: E402
+from hms_cadcam.viewer.ocp.input_controller import OcpInputController  # noqa: E402
+from hms_cadcam.viewer.ocp.lifecycle import (  # noqa: E402
+    OcpViewportLifecycle,
+    _source_styles,
+)
 from hms_cadcam.viewer.ocp.registry import OcpPresentationRegistry  # noqa: E402
 from hms_cadcam.viewer.ocp.selection import OcpSelectionController  # noqa: E402
 from hms_cadcam.viewer.unavailable_backend import (  # noqa: E402
@@ -74,6 +85,7 @@ class MockViewportBackend:
         self.display_history: list[CadDocumentId] = []
         self.clear_count = 0
         self.closed = False
+        self.background_colors: list[ObjectColor] = []
 
     def get_status(self) -> ViewportStatus:
         return ViewportStatus(True, self.initialize_count > 0, "mock")
@@ -99,6 +111,9 @@ class MockViewportBackend:
 
     def fit_all(self) -> None:
         return None
+
+    def set_background_color(self, color: ObjectColor) -> None:
+        self.background_colors.append(color)
 
     def set_view_direction(self, direction: ViewDirection) -> None:
         del direction
@@ -167,6 +182,262 @@ class FakeView:
 
     def Redraw(self) -> None:  # noqa: N802 - OCP-compatible fake
         self.redraw_count += 1
+
+
+class DepthManagedFakeView:
+    def __init__(self) -> None:
+        self.scale = 1.0
+        self.auto_z_fit_count = 0
+        self.fit_all_count = 0
+        self.redraw_count = 0
+        self.pan_count = 0
+        self.rotation_count = 0
+        self.resize_count = 0
+        self.target = (5.0, 6.0, 7.0)
+        self.orientation = (0.3, 0.4, 0.5)
+        self.background_colors: list[tuple[float, float, float]] = []
+        self.gradient_backgrounds: list[object] = []
+
+    def Scale(self) -> float:  # noqa: N802
+        return self.scale
+
+    def SetScale(self, value: float) -> None:  # noqa: N802
+        self.scale = value
+
+    def AutoZFit(self) -> None:  # noqa: N802
+        self.auto_z_fit_count += 1
+
+    def FitAll(self) -> None:  # noqa: N802
+        self.fit_all_count += 1
+
+    def Redraw(self) -> None:  # noqa: N802
+        self.redraw_count += 1
+
+    def StartRotation(self, _x: int, _y: int) -> None:  # noqa: N802
+        return None
+
+    def Rotation(self, _x: int, _y: int) -> None:  # noqa: N802
+        self.rotation_count += 1
+
+    def Pan(self, *_args: object) -> None:  # noqa: N802
+        self.pan_count += 1
+
+    def MustBeResized(self) -> None:  # noqa: N802
+        self.resize_count += 1
+
+    def SetBackgroundColor(self, color) -> None:  # noqa: N802
+        self.background_colors.append(color.Values(Quantity_TOC_sRGB))
+
+    def SetBgGradientColors(self, *args: object) -> None:  # noqa: N802
+        self.gradient_backgrounds.append(args)
+
+
+class ShapePresentationFake:
+    def __init__(self, shape: TopoDS_Shape) -> None:
+        self._shape = shape
+
+    def Shape(self) -> TopoDS_Shape:  # noqa: N802
+        return self._shape
+
+
+def test_camera_mutations_refresh_depth_without_implicit_fit_all() -> None:
+    view = DepthManagedFakeView()
+    controller = OcpInputController(view, object())
+
+    controller.wheel(120, KeyboardModifier.NONE)
+    controller.press(10, 10, MouseButton.MIDDLE, KeyboardModifier.NONE)
+    controller.move(
+        14,
+        16,
+        frozenset({MouseButton.MIDDLE}),
+        KeyboardModifier.NONE,
+    )
+    controller.release(14, 16, MouseButton.MIDDLE, KeyboardModifier.NONE)
+    controller.press(20, 20, MouseButton.RIGHT, KeyboardModifier.NONE)
+    controller.move(
+        23,
+        25,
+        frozenset({MouseButton.RIGHT}),
+        KeyboardModifier.NONE,
+    )
+    controller.release(23, 25, MouseButton.RIGHT, KeyboardModifier.NONE)
+
+    assert view.auto_z_fit_count == 3
+    assert view.fit_all_count == 0
+    assert view.rotation_count == 1
+    assert view.pan_count == 1
+    assert view.target == (5.0, 6.0, 7.0)
+    assert view.orientation == (0.3, 0.4, 0.5)
+
+
+def test_lifecycle_resize_refreshes_depth_without_fit_all() -> None:
+    lifecycle = OcpViewportLifecycle()
+    view = DepthManagedFakeView()
+    lifecycle._view = view
+
+    lifecycle.resize(1600, 900)
+
+    assert view.resize_count == 1
+    assert view.auto_z_fit_count == 1
+    assert view.fit_all_count == 0
+
+
+def test_scene_replacement_and_explicit_fit_refresh_depth() -> None:
+    lifecycle = OcpViewportLifecycle()
+    view = DepthManagedFakeView()
+    context = FakeRegistryContext()
+    lifecycle._view = view
+    lifecycle._context = context
+    first = object()
+    second = object()
+
+    lifecycle.commit_presentation(first)
+    lifecycle.commit_presentation(second)
+    lifecycle.fit_all()
+
+    assert first in context.removed
+    assert lifecycle.presentation is second
+    assert view.auto_z_fit_count == 3
+    assert view.fit_all_count == 1
+
+
+def test_background_change_is_render_only_and_preserves_camera_state() -> None:
+    lifecycle = OcpViewportLifecycle()
+    view = DepthManagedFakeView()
+    lifecycle._view = view
+    color = ObjectColor(0.2, 0.3, 0.4)
+
+    lifecycle.set_background_color(color)
+
+    assert view.background_colors == [pytest.approx((0.2, 0.3, 0.4))]
+    assert len(view.gradient_backgrounds) == 1
+    assert view.auto_z_fit_count == 0
+    assert view.fit_all_count == 0
+    assert view.scale == 1.0
+    assert view.target == (5.0, 6.0, 7.0)
+    assert view.orientation == (0.3, 0.4, 0.5)
+    assert view.redraw_count == 1
+
+
+def test_widget_background_updates_qt_surface_and_backend_together() -> None:
+    _application()
+    backend = MockViewportBackend()
+    widget = CadViewportWidget(OcpCadKernel(), backend)
+    color = ObjectColor(0.18, 0.24, 0.31)
+
+    assert widget.set_background_color(color)
+
+    qt_color = widget.palette().color(widget.backgroundRole())
+    assert qt_color.name().upper() == color.to_hex()
+    assert widget.autoFillBackground()
+    assert not widget.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+    assert backend.background_colors == [color]
+    widget.shutdown()
+
+
+def test_source_style_priority_keeps_face_color_over_occurrence_color() -> None:
+    shape = BRepPrimAPI_MakeBox(10.0, 8.0, 6.0).Shape()
+    faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_ShapeEnum.TopAbs_FACE, faces)
+    face = faces.FindKey(1)
+    component_color = XcafColor(0.15, 0.75, 0.25)
+    body_color = XcafColor(0.82, 0.12, 0.08)
+    face_color = XcafColor(0.95, 0.80, 0.10)
+    source = OcpXcafPresentationSource(
+        shape=shape,
+        occurrence_appearance=XcafSourceAppearance(surface_color=component_color),
+        product_appearance=XcafSourceAppearance(surface_color=body_color),
+        subshape_sources=(
+            OcpXcafSubshapeSource(
+                face,
+                XcafSourceAppearance(surface_color=face_color),
+            ),
+        ),
+    )
+
+    styles = _source_styles(ShapePresentationFake(shape), source)
+    face_styles = [
+        color for styled_shape, color in styles if styled_shape.IsSame(face)
+    ]
+
+    assert face_styles
+    assert face_styles[-1] == ObjectColor(0.95, 0.80, 0.10)
+    assert styles[0][1] == ObjectColor(0.15, 0.75, 0.25)
+
+
+def test_step_source_style_priority_is_face_then_body_then_component(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source-colors.step"
+    expected = write_xcaf_step_fixture(source_path)
+    kernel = OcpCadKernel()
+    result = kernel.import_step(source_path)
+    assert result.document_id is not None
+    tree = kernel.get_document_tree(result.document_id)
+    repeated = sorted(
+        (
+            node
+            for node in tree.presentation_nodes
+            if node.product_name == expected.repeated_product_name
+        ),
+        key=lambda node: node.absolute_transform.translation[0],
+    )
+    presentation_sources = kernel._resolve_xcaf_presentation_sources(
+        result.document_id
+    )
+    first_source = presentation_sources[repeated[0].object_id]
+    styles = _source_styles(
+        ShapePresentationFake(first_source.shape),
+        first_source,
+    )
+
+    assert (
+        styles[0][1].red,
+        styles[0][1].green,
+        styles[0][1].blue,
+    ) == pytest.approx(expected.first_occurrence_color, abs=1.0e-6)
+    assert (
+        styles[-2][1].red,
+        styles[-2][1].green,
+        styles[-2][1].blue,
+    ) == pytest.approx(expected.repeated_product_surface_color, abs=1.0e-6)
+    assert (
+        styles[-1][1].red,
+        styles[-1][1].green,
+        styles[-1][1].blue,
+    ) == pytest.approx(expected.subshape_surface_color, abs=1.0e-6)
+    body_color = repeated[0].source_appearance.surface_color
+    assert body_color is not None
+    assert (body_color.red, body_color.green, body_color.blue) == pytest.approx(
+        expected.repeated_product_surface_color,
+        abs=1.0e-6,
+    )
+
+
+@pytest.mark.parametrize(
+    ("initial_scale", "delta"),
+    (
+        (1.0e-6, 120),
+        (1.0e-3, 120),
+        (1.0, 120),
+        (1.0e3, -120),
+        (1.0e6, -120),
+    ),
+    ids=("very-small", "small", "normal", "large", "very-large"),
+)
+def test_extreme_scene_scale_zoom_keeps_depth_managed(
+    initial_scale: float,
+    delta: int,
+) -> None:
+    view = DepthManagedFakeView()
+    view.scale = initial_scale
+    controller = OcpInputController(view, object())
+
+    controller.wheel(delta, KeyboardModifier.NONE)
+
+    assert view.scale >= 1.0e-6
+    assert view.auto_z_fit_count == 1
+    assert view.fit_all_count == 0
 
 
 class FakeLifecycle:

@@ -227,6 +227,9 @@ class UnavailableCadViewportBackend:
     def fit_all(self) -> None:
         return None
 
+    def set_background_color(self, color: ObjectColor) -> None:
+        del color
+
     def set_view_direction(self, direction: ViewDirection) -> None:
         del direction
 

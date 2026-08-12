@@ -37,6 +37,10 @@ from hms_cadcam.simulation import (
 from hms_cadcam.simulation.worker import SimulationWorker
 from hms_cadcam.ui.i18n import UiLanguage, translation_service
 from hms_cadcam.ui.localization import ui_text
+from hms_cadcam.ui.settings.viewport_background import (
+    DEFAULT_VIEWPORT_BACKGROUND,
+)
+from hms_cadcam.viewer.models import ObjectColor
 
 InputProvider = Callable[[], SimulationInputSnapshot]
 PrecomputeProvider = Callable[[SimulationInputSnapshot], object | None]
@@ -97,21 +101,26 @@ _TEXT = {
 
 
 class _SimulationCanvas(QLabel):
-    def __init__(self) -> None:
+    def __init__(self, background_color: ObjectColor) -> None:
         super().__init__()
         self.setObjectName("MachiningSimulationViewport")
         self.setMinimumSize(640, 420)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("")
-        self.setStyleSheet("background:#111820;border:1px solid #34414d;color:#8fa3b5")
+        self._background_color = background_color
+        self._apply_background_style()
         self._base: QPixmap | None = None
+        self._last_inputs: SimulationInputSnapshot | None = None
+        self._last_result: object | None = None
         self._scale = (1.0, 1.0)
         self._height = 500
 
     def show_result(self, inputs: SimulationInputSnapshot, result: object) -> None:
+        self._last_inputs = inputs
+        self._last_result = result
         width, height = 800, 500
         pixmap = QPixmap(width, height)
-        pixmap.fill(QColor("#111820"))
+        pixmap.fill(QColor(self._background_color.to_hex()))
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         remaining = result.remaining_stock
@@ -151,6 +160,23 @@ class _SimulationCanvas(QLabel):
         self._height = height
         self.setPixmap(pixmap)
 
+    def set_background_color(self, color: ObjectColor) -> None:
+        """Update canvas clear color without recalculating simulation state."""
+        if not isinstance(color, ObjectColor):
+            raise TypeError("Simulation background must be ObjectColor")
+        self._background_color = color
+        self._apply_background_style()
+        if self._last_inputs is not None and self._last_result is not None:
+            self.show_result(self._last_inputs, self._last_result)
+        else:
+            self.update()
+
+    def _apply_background_style(self) -> None:
+        self.setStyleSheet(
+            f"background:{self._background_color.to_hex()};"
+            "border:1px solid #34414d;color:#8fa3b5"
+        )
+
     def show_tool_pose(self, inputs: SimulationInputSnapshot, event_index: int) -> None:
         if self._base is None:
             return
@@ -176,6 +202,7 @@ class MachiningSimulationWindow(QMainWindow):
         parent: QWidget | None = None,
         *,
         precompute_provider: PrecomputeProvider | None = None,
+        background_color: ObjectColor = DEFAULT_VIEWPORT_BACKGROUND,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("MachiningSimulationR241Window")
@@ -183,6 +210,7 @@ class MachiningSimulationWindow(QMainWindow):
         self.resize(1440, 900)
         self._input_provider = input_provider
         self._precompute_provider = precompute_provider
+        self._background_color = background_color
         self._worker: SimulationWorker | None = None
         self._inputs: SimulationInputSnapshot | None = None
         self._playback: PlaybackController | None = None
@@ -213,7 +241,7 @@ class MachiningSimulationWindow(QMainWindow):
         self.operation_tree = QTreeWidget()
         self.operation_tree.setHeaderLabels(["Operation", "State"])
         left_layout.addWidget(self.operation_tree)
-        self.canvas = _SimulationCanvas()
+        self.canvas = _SimulationCanvas(self._background_color)
         right = QGroupBox()
         self.right_group = right
         form = QFormLayout(right)
@@ -277,6 +305,11 @@ class MachiningSimulationWindow(QMainWindow):
         self.previous.clicked.connect(lambda: self._step(-1))
         self.next.clicked.connect(lambda: self._step(1))
         self.speed.currentTextChanged.connect(self._speed_changed)
+
+    def set_background_color(self, color: ObjectColor) -> None:
+        """Apply shared viewport preference without invalidating results."""
+        self._background_color = color
+        self.canvas.set_background_color(color)
 
     def retranslate(self) -> None:
         text = _TEXT[translation_service().language]

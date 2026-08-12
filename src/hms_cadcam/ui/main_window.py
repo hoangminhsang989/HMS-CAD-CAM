@@ -211,7 +211,11 @@ from hms_cadcam.ui.i18n import (
     translation_service,
 )
 from hms_cadcam.ui.language_settings import LanguageSettingsDialog
-from hms_cadcam.ui.settings import GeneralSettingsDialog, UiScaleManager
+from hms_cadcam.ui.settings import (
+    GeneralSettingsDialog,
+    UiScaleManager,
+    ViewportBackgroundManager,
+)
 from hms_cadcam.ui.settings.export_defaults import ExportDefaultsSettingsService
 from hms_cadcam.ui.data_locations import (
     DataLocationsDialog,
@@ -363,6 +367,10 @@ class MainWindow(QMainWindow):
         self._export_defaults_service = ExportDefaultsSettingsService(
             self._layout_store.settings
         )
+        self._viewport_background_manager = ViewportBackgroundManager(
+            self._layout_store.settings,
+            parent=self,
+        )
         self._ui_scale_manager.preview_changed.connect(self._apply_ui_scale)
         self._ui_scale_manager.scale_changed.connect(self._apply_ui_scale)
         self._ui_scale_manager.apply_runtime()
@@ -402,6 +410,12 @@ class MainWindow(QMainWindow):
         self._machining_simulation_window: QMainWindow | None = None
 
         self.viewport = CadViewportWidget(cad_kernel, viewport_backend, self)
+        self.viewport.set_background_color(
+            self._viewport_background_manager.current_color
+        )
+        self._viewport_background_manager.preview_changed.connect(
+            self._apply_viewport_background
+        )
         self._viewport_baseline_minimum = QSize(self.viewport.minimumSize())
         self.viewport.set_status_text_resolver(ui_text)
         if self._lathe_toolpath_preview_host:
@@ -1645,6 +1659,7 @@ class MainWindow(QMainWindow):
                 ai_assist_controller=self._ai_assist_controller,
                 advisor_settings_service=self._advisor_settings_service,
                 export_defaults_service=self._export_defaults_service,
+                viewport_background_manager=self._viewport_background_manager,
                 parent=self,
             )
             self._general_settings_dialog.destroyed.connect(
@@ -1655,6 +1670,14 @@ class MainWindow(QMainWindow):
         self._general_settings_dialog.show()
         self._general_settings_dialog.raise_()
         self._general_settings_dialog.activateWindow()
+
+    def _apply_viewport_background(self, color: ObjectColor) -> None:
+        """Update CAD and any live Simulation viewport without scene work."""
+        self.viewport.set_background_color(color)
+        window = self._machining_simulation_window
+        setter = getattr(window, "set_background_color", None)
+        if callable(setter):
+            setter(color)
 
     def _apply_ui_scale(self, _percent: int | None = None) -> None:
         """Apply the shared logical scale without touching Windows/Qt DPI."""
@@ -2188,6 +2211,7 @@ class MainWindow(QMainWindow):
                 precompute_provider=(
                     self.cam_workspace.load_selected_simulation_precompute
                 ),
+                background_color=self._viewport_background_manager.current_color,
             )
             self._machining_simulation_window = window
         retranslate = getattr(window, "retranslate", None)

@@ -1559,6 +1559,11 @@ class OcpCadViewportBackend:
 
     def fit_all(self) -> None:
         self._lifecycle.fit_all()
+
+    def set_background_color(self, color: ObjectColor) -> None:
+        """Change only the viewport clear color and redraw once."""
+        self._lifecycle.set_background_color(color)
+
     def set_view_direction(self, direction: ViewDirection) -> None:
         self._view_direction = direction
         if self._lifecycle.initialized:

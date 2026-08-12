@@ -18,6 +18,12 @@ from hms_cadcam.ui.settings.ui_scale import (
     UiScaleManager,
     validate_percent,
 )
+from hms_cadcam.ui.settings.viewport_background import (
+    DEFAULT_VIEWPORT_BACKGROUND,
+    VIEWPORT_BACKGROUND_PRESETS,
+    VIEWPORT_BACKGROUND_SETTINGS_KEY,
+    ViewportBackgroundManager,
+)
 
 __all__ = [
     "APPLICATION_FONT_MODE_POINT",
@@ -33,5 +39,9 @@ __all__ = [
     "UI_SCALE_SETTINGS_KEY",
     "UiMetrics",
     "UiScaleManager",
+    "DEFAULT_VIEWPORT_BACKGROUND",
+    "VIEWPORT_BACKGROUND_PRESETS",
+    "VIEWPORT_BACKGROUND_SETTINGS_KEY",
+    "ViewportBackgroundManager",
     "validate_percent",
 ]
