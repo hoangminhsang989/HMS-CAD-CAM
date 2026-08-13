@@ -1205,8 +1205,6 @@ class MainWindow(QMainWindow):
         brand = QLabel("HMS  CAD/CAM", toolbar)
         brand.setObjectName("HmsBrandLabel")
         brand.setAccessibleName("HMS CAD/CAM")
-        toolbar.addWidget(brand)
-        toolbar.addSeparator()
         self._brand_label = brand
         for key in ("new", "open", "save"):
             action = self.project_controller.actions[key]
@@ -1219,6 +1217,10 @@ class MainWindow(QMainWindow):
             action = toolbar.addAction(self.style().standardIcon(standard_icon), "")
             action.setToolTip(f"{tooltip} — chưa khả dụng")
             action.setEnabled(False)
+        # Keep the historical QAction order stable for keyboard/automation
+        # contracts; branding is a trailing native widget, never an action.
+        toolbar.addSeparator()
+        toolbar.addWidget(brand)
         self._quick_access_toolbar = toolbar
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 

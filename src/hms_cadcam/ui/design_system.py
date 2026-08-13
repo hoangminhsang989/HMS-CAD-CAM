@@ -234,6 +234,9 @@ QPushButton:hover, QToolButton:hover {{ background: #29404f; border-color: {p.ac
 QPushButton:pressed, QToolButton:pressed {{ background: {p.accent_pressed}; }}
 QPushButton:checked, QToolButton:checked {{ background: {p.selected}; color: #ffffff; border-color: {p.accent_hover}; }}
 QPushButton:disabled, QToolButton:disabled {{ background: #18242d; color: {p.text_disabled}; border-color: {p.border}; }}
+QWidget#CadLoadingStatusSurface QPushButton#CadLoadingCancelButton {{
+    min-height: 19px; padding: 0 5px; border-radius: 2px;
+}}
 QPushButton#PrimaryPanelAction, QPushButton#ApplySettingsButton,
 QPushButton#OkSettingsButton, QPushButton#ClassicCamApplyButton {{
     background: {p.selected}; color: #ffffff; border-color: {p.accent_hover}; font-weight: 600;
