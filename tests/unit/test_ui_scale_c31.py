@@ -477,9 +477,9 @@ def test_ribbon_and_metrics_cover_required_scale_values(tmp_path: Path) -> None:
         manager.set_preview_percent(percent)
         QApplication.processEvents()
         assert manager.current_percent == percent
-        assert ribbon.height() == manager.scaled_int(112, minimum=80)
+        assert ribbon.height() == manager.scaled_int(92, minimum=68)
         assert ribbon.iconSize() == manager.scaled_icon_size(
-            QSize(24, 24), minimum=16
+            QSize(22, 22), minimum=16
         )
         metrics = manager.metrics()
         assert metrics.percent == percent
@@ -513,7 +513,7 @@ def test_ribbon_metrics_are_baseline_derived_and_round_trip(tmp_path: Path) -> N
         metrics = ribbon.metrics
         assert metrics is not None and metrics.percent == percent
         assert metrics.icon_size.width() > 0 and metrics.icon_size.height() > 0
-        assert metrics.ribbon_height >= 80
+        assert metrics.ribbon_height >= 68
         assert metrics.group_spacing >= 1
         assert metrics.action_button_minimum_width >= 24
         assert metrics.action_button_padding_horizontal >= 4

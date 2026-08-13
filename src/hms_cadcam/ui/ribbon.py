@@ -26,15 +26,15 @@ if TYPE_CHECKING:
     from hms_cadcam.ui.settings.ui_scale import UiScaleManager
 
 
-_BASE_ICON_SIZE = QSize(24, 24)
-_BASE_RIBBON_HEIGHT = 112
-_BASE_PAGE_MARGINS = QMargins(4, 3, 4, 1)
+_BASE_ICON_SIZE = QSize(22, 22)
+_BASE_RIBBON_HEIGHT = 92
+_BASE_PAGE_MARGINS = QMargins(3, 2, 3, 1)
 _BASE_PAGE_SPACING = 1
-_BASE_GROUP_MARGINS = QMargins(4, 4, 4, 4)
+_BASE_GROUP_MARGINS = QMargins(3, 2, 3, 2)
 _BASE_GROUP_SPACING = 2
-_BASE_ACTION_BUTTON_MINIMUM_WIDTH = 48
-_BASE_ACTION_BUTTON_PADDING_HORIZONTAL = 16
-_BASE_ACTION_BUTTON_PADDING_VERTICAL = 4
+_BASE_ACTION_BUTTON_MINIMUM_WIDTH = 44
+_BASE_ACTION_BUTTON_PADDING_HORIZONTAL = 12
+_BASE_ACTION_BUTTON_PADDING_VERTICAL = 2
 _BASE_SEPARATOR_WIDTH = 1
 _BASE_TAB_SPACING = 2
 
@@ -80,7 +80,7 @@ class RibbonMetrics:
         return cls(
             percent=manager.current_percent,
             icon_size=manager.scaled_icon_size(_BASE_ICON_SIZE, minimum=16),
-            ribbon_height=manager.scaled_int(_BASE_RIBBON_HEIGHT, minimum=80),
+            ribbon_height=manager.scaled_int(_BASE_RIBBON_HEIGHT, minimum=68),
             page_margins=manager.scaled_margins(_BASE_PAGE_MARGINS, minimum=1),
             page_spacing=manager.scaled_int(_BASE_PAGE_SPACING, minimum=1),
             group_margins=manager.scaled_margins(

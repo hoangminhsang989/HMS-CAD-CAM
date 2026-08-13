@@ -174,6 +174,7 @@ from hms_cadcam.ui.ribbon import (
     ribbon_menu_style_sheet,
 )
 from hms_cadcam.ui.theme import APP_STYLE
+from hms_cadcam.ui.design_system import NATIVE_CAD_STYLE
 from hms_cadcam.ui.ui_tokens import (
     DIAGNOSTICS_DEFAULT_HEIGHT,
     DIAGNOSTICS_MAX_HEIGHT,
@@ -295,7 +296,10 @@ class MainWindow(QMainWindow):
         self._effective_minimum_size = QSize(_MAIN_WINDOW_BASE_MINIMUM)
         self.setMinimumSize(self._effective_minimum_size)
         self.setDockNestingEnabled(True)
-        self._base_style_sheet = APP_STYLE + WORKSPACE_STYLE
+        # The modern design system is appended last so its scoped native-dark
+        # surfaces supersede legacy light chrome without changing widget
+        # ownership, dock identity or the certified central OCP viewport.
+        self._base_style_sheet = APP_STYLE + WORKSPACE_STYLE + NATIVE_CAD_STYLE
         self.setStyleSheet(self._base_style_sheet)
         self._cad_kernel = cad_kernel
         self._project_service = project_service
@@ -1198,6 +1202,12 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("QuickAccess")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+        brand = QLabel("HMS  CAD/CAM", toolbar)
+        brand.setObjectName("HmsBrandLabel")
+        brand.setAccessibleName("HMS CAD/CAM")
+        toolbar.addWidget(brand)
+        toolbar.addSeparator()
+        self._brand_label = brand
         for key in ("new", "open", "save"):
             action = self.project_controller.actions[key]
             action.setProperty("profileCommandId", f"project.{key}")

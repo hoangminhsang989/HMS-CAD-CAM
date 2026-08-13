@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hms_cadcam.ui.design_system import TOOLPATH_SEMANTIC_COLORS
+
 from hms_cadcam.cam.simulation.runtime import SimulationInputSnapshot
 from hms_cadcam.simulation import (
     HeightField3AxisEngine,
@@ -140,14 +142,9 @@ class _SimulationCanvas(QLabel):
             end = getattr(event, "end", None)
             if start is None or end is None:
                 continue
-            color = {
-                "rapid": "#ff3636",
-                "cutting": "#ffd22e",
-                "link": "#ffffff",
-                "retract": "#32d06b",
-            }.get(
+            color = TOOLPATH_SEMANTIC_COLORS.get(
                 "rapid" if event.kind.value == "rapid" else event.motion_class.value,
-                "#ffd22e",
+                TOOLPATH_SEMANTIC_COLORS["cutting"],
             )
             painter.setPen(QPen(QColor(color), 1.5))
             painter.drawLine(
@@ -229,10 +226,7 @@ class MachiningSimulationWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         root = QWidget(self)
-        root.setStyleSheet(
-            "QWidget{background:#202831;color:#e5ebef} QGroupBox{border:1px solid #3b4a58;margin-top:8px} "
-            "QPushButton{background:#354452;padding:6px;border:1px solid #526474} QPushButton:disabled{color:#71808c}"
-        )
+        root.setObjectName("MachiningSimulationRoot")
         layout = QVBoxLayout(root)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         left = QGroupBox()
