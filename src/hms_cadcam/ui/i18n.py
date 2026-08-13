@@ -967,6 +967,11 @@ LEGACY_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
     ("Add Facing 2.5D", "Thêm Phay mặt 2.5D", "2.5D 페이싱 추가"),
     ("Add 2D Contour", "Thêm Phay biên dạng 2D", "2D 윤곽 가공 추가"),
     ("Add Pocket 2.5D", "Thêm Phay hốc 2.5D", "2.5D 포켓 추가"),
+    (
+        "Add Rest Pocket 3-axis",
+        "Thêm Phay hốc phần dư 3 trục",
+        "3축 잔삭 포켓 추가",
+    ),
     ("Add Parallel Finishing", "Thêm Gia công tinh song song", "평행 정삭 추가"),
     ("Add Z-Level Finishing", "Thêm Gia công tinh theo cao độ Z", "Z 레벨 정삭 추가"),
     ("Add Drilling", "Thêm Khoan", "드릴링 추가"),

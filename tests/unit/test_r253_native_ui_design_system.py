@@ -16,10 +16,14 @@ from hms_cadcam.ui.settings.ui_scale import UiScaleManager
 from hms_cadcam.ui.settings.viewport_background import DEFAULT_VIEWPORT_BACKGROUND
 
 
-def test_r253_theme_is_soft_dark_compact_and_state_complete() -> None:
+def test_owner_theme_is_light_workspace_navy_chrome_compact_and_state_complete() -> None:
     assert PALETTE.window != "#000000"
     assert PALETTE.chrome != "#000000"
-    assert PALETTE.text.lower() == "#e6edf2"
+    assert PALETTE.window.lower() == "#f8fafc"
+    assert PALETTE.chrome.lower() == "#0b2030"
+    assert PALETTE.panel.lower() == "#f7f9fb"
+    assert PALETTE.editor.lower() == "#ffffff"
+    assert PALETTE.text.lower() == "#24313d"
     assert "QMainWindow#HmsMainWindow" in NATIVE_CAD_STYLE
     assert "QToolBar#WorkspaceBar" in NATIVE_CAD_STYLE
     assert "QToolBar#RibbonContainer" in NATIVE_CAD_STYLE

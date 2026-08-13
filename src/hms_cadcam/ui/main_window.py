@@ -296,8 +296,8 @@ class MainWindow(QMainWindow):
         self._effective_minimum_size = QSize(_MAIN_WINDOW_BASE_MINIMUM)
         self.setMinimumSize(self._effective_minimum_size)
         self.setDockNestingEnabled(True)
-        # The modern design system is appended last so its scoped native-dark
-        # surfaces supersede legacy light chrome without changing widget
+        # The owner-reference design system is appended last so its light
+        # technical surfaces and navy chrome supersede legacy overrides without changing widget
         # ownership, dock identity or the certified central OCP viewport.
         self._base_style_sheet = APP_STYLE + WORKSPACE_STYLE + NATIVE_CAD_STYLE
         self.setStyleSheet(self._base_style_sheet)

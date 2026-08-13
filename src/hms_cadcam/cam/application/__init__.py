@@ -113,9 +113,14 @@ from hms_cadcam.cam.application.pocket import (
     PocketGenerator,
     PocketInputs,
     build_pocket_offset_loops,
+    pocket_lead_independent_fingerprint,
     pocket_depth_levels,
     prepare_pocket_machining_geometry,
 )
+from hms_cadcam.cam.application.rest_pocket import (MaterialStateResolution,
+    MaterialStateResolutionStatus, RestPocketGenerator, RestPocketInputs,
+    material_state_status_vi, resolve_material_state)
+from hms_cadcam.cam.application.rest_region import RestRegion, extract_rest_regions, validate_rest_region
 
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
@@ -156,5 +161,6 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "BoringHole", "BoringInputs",
            "PocketComputeResult", "PocketGenerationError", "PocketGenerator", "PocketGeometryResolver",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels",
-           "prepare_pocket_machining_geometry", "resolve_box_facing_region",
+           "pocket_lead_independent_fingerprint",
+           "prepare_pocket_machining_geometry", "MaterialStateResolution", "MaterialStateResolutionStatus", "RestPocketGenerator", "RestPocketInputs", "material_state_status_vi", "resolve_material_state", "RestRegion", "extract_rest_regions", "validate_rest_region", "resolve_box_facing_region",
            "resolve_profile_in_setup"]

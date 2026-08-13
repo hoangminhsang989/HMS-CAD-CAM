@@ -49,6 +49,7 @@ from hms_cadcam.cam.domain import (
     PocketGeometryInput,
     PocketRegion,
     PocketStrategy,
+    REST_POCKET_STRATEGY_KEY,
     Setup,
     SpindleSpeed,
     ToolAssembly,
@@ -93,6 +94,8 @@ class PocketEditorContext:
     geometry_island_count: int | None = None
     geometry_diagnostic: str = ""
     geometry_region: PocketRegion | None = None
+    material_state_source: str = "Không áp dụng"
+    material_state_status: str = "Không áp dụng"
 
 
 @dataclass(slots=True)
@@ -155,8 +158,11 @@ _FIELD_IDS = frozenset(
         "automatic_entry_form",
         "automatic_linking",
         "automatic_provenance",
+        "material_state_source",
+        "material_state_status",
     }
 )
+_REST_FIELD_IDS = _FIELD_IDS | {"lead_in_length"}
 _PARAMETER_KEYS = frozenset(
     {
         "unit",
@@ -174,6 +180,7 @@ _PARAMETER_KEYS = frozenset(
         "entry_policy",
         "cutting_direction",
         "tolerance",
+        "lead_in_length",
     }
 )
 
@@ -862,10 +869,15 @@ def pocket_draft_transform(
 
 def _parameter_data(context: PocketEditorContext) -> dict[str, object]:
     parameters = context.operation.parameters
-    if parameters.strategy_key != "pocket_2_5d" or parameters.strategy_version != 1:
+    if parameters.strategy_key not in {
+        "pocket_2_5d", REST_POCKET_STRATEGY_KEY,
+    } or parameters.strategy_version != 1:
         raise ValueError("Operation không dùng Pocket strategy v1.")
     data = dict(parameters.values)
     data.pop(AUTOMATIC_PARAMETER_CONTRACT_KEY, None)
+    # R266 Lead-In is additive.  Historical Pocket/Rest payloads did not
+    # contain it and retain their exact zero-lead motion semantics.
+    data.setdefault("lead_in_length", 0.0)
     if set(data) != _PARAMETER_KEYS:
         raise ValueError("Pocket operation parameters không khớp codec v1.")
     if data["unit"] != context.setup.wcs.origin.unit.value:
@@ -899,6 +911,8 @@ def pocket_applied_values(
     reference = context.geometry_reference
     values: dict[str, PresentationValue] = {
         "operation_name": context.operation_name,
+        "material_state_source": context.material_state_source,
+        "material_state_status": context.material_state_status,
         "geometry_summary": _geometry_summary(context),
         "geometry_reference_id": "" if reference is None else str(reference.reference_id),
         "island_summary": _island_summary(context),
@@ -932,6 +946,8 @@ def pocket_applied_values(
         "enabled": context.operation.enabled,
         "tolerance": str(data["tolerance"]),
     }
+    if context.operation.strategy_key == REST_POCKET_STRATEGY_KEY:
+        values["lead_in_length"] = str(data["lead_in_length"])
     values.update(
         _automatic_presentation(automatic, context.setup.wcs.origin.unit.value)
     )
@@ -1001,6 +1017,9 @@ def _strategy_from_values(
             _text(complete["cutting_direction"], "cutting_direction")
         ),
         Length(_number(complete["tolerance"], "tolerance"), unit),
+        lead_in_length=Length(
+            _number(complete.get("lead_in_length", "0"), "lead_in_length"), unit
+        ),
     )
     return strategy, automatic
 
@@ -1114,14 +1133,19 @@ def prepare_pocket_update(
     )
     parameter_set = (
         OperationParameterSet(
-            base_parameters.strategy_key,
+            context.operation.strategy_key,
             base_parameters.strategy_version,
             base_parameters.values
             + ((AUTOMATIC_PARAMETER_CONTRACT_KEY, automatic.to_json()),),
             base_parameters.schema_version,
         )
         if persist_automatic
-        else base_parameters
+        else OperationParameterSet(
+            context.operation.strategy_key,
+            base_parameters.strategy_version,
+            base_parameters.values,
+            base_parameters.schema_version,
+        )
     )
     tool_reference = ToolAssemblyReference.from_assembly(assembly)
     enabled = _boolean(complete["enabled"], "enabled")
@@ -1168,10 +1192,15 @@ def prepare_pocket_update(
 def validate_pocket_schema_contract(schema: FunctionEditorSchema) -> None:
     """Fail closed when a production field is missing, duplicate or invented."""
     actual = {field.field_id for field in schema.fields}
-    if actual != _FIELD_IDS:
+    expected = (
+        _REST_FIELD_IDS
+        if str(schema.strategy) == "rest_pocket_3axis_r266"
+        else _FIELD_IDS
+    )
+    if actual != expected:
         raise ValueError(
             "Pocket schema mapping mismatch; "
-            f"missing={sorted(_FIELD_IDS - actual)}, unsupported={sorted(actual - _FIELD_IDS)}"
+            f"missing={sorted(expected - actual)}, unsupported={sorted(actual - expected)}"
         )
     for field in schema.fields:
         if not field.binding_key:
@@ -1302,6 +1331,26 @@ def build_pocket_sections(
                 order=10,
                 binding_key="node.name",
                 conversion=FunctionEditorValueConversion.TEXT,
+            ),
+            FunctionEditorField(
+                "material_state_source",
+                "Nguồn phần dư",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["material_state_source"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="pocket.material_state_source",
+                order=15,
+                binding_key="derived.material_state_source",
+            ),
+            FunctionEditorField(
+                "material_state_status",
+                "Trạng thái phần dư",
+                FunctionEditorFieldKind.READ_ONLY,
+                values["material_state_status"],
+                source=FunctionEditorValueSource.DERIVED,
+                help_key="pocket.material_state_status",
+                order=16,
+                binding_key="derived.material_state_status",
             ),
             FunctionEditorField(
                 "quality_profile",
@@ -1685,6 +1734,33 @@ def build_pocket_sections(
                 disclosure_level=ParameterDisclosureLevel.ADVANCED,
                 help_text="Generator plunge thẳng tại start của từng offset loop.",
             ),
+            *(
+                (
+                    _number_field(
+                        "lead_in_length",
+                        ui_text("Lead-In Length"),
+                        values["lead_in_length"],
+                        unit=unit,
+                        binding_key="parameters.lead_in_length",
+                        order=40,
+                        default=defaults.get("lead_in_length", 0.0),
+                        validators=(
+                            _minimum(
+                                "rest_pocket.lead_in_nonnegative",
+                                "Chiều dài Lead-In không được âm.",
+                                0.0,
+                            ),
+                        ),
+                        disclosure_level=ParameterDisclosureLevel.ADVANCED,
+                        help_text=(
+                            "Chỉ nguyên công phần dư: đoạn cắt tuyến tính thực phải nằm "
+                            "hoàn toàn trong vật liệu dư; 0 giữ nguyên chuyển động lịch sử."
+                        ),
+                    ),
+                )
+                if context.operation.strategy_key == REST_POCKET_STRATEGY_KEY
+                else ()
+            ),
         ),
         "Entry policy thực sự tồn tại; khả năng plunge-safe vẫn do generator hiện có kiểm tra.",
         order=60,
@@ -1838,9 +1914,12 @@ def build_pocket_schema(context: PocketEditorContext) -> FunctionEditorSchema:
         )
     _tool_text, _holder_text, assembly_name = _tool_summaries(context)
     geometry = _geometry_summary(context)
+    is_rest = context.operation.strategy_key == REST_POCKET_STRATEGY_KEY
     schema = FunctionEditorSchema(
-        "pocket_production_9a5_3",
-        FunctionEditorStrategyKey("pocket_2_5d_9a5_3"),
+        "rest_pocket_production_r266" if is_rest else "pocket_production_9a5_3",
+        FunctionEditorStrategyKey(
+            "rest_pocket_3axis_r266" if is_rest else "pocket_2_5d_9a5_3"
+        ),
         FunctionEditorSummary(
             context.operation_name,
             (

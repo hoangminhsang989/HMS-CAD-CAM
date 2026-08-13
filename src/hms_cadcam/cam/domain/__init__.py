@@ -62,6 +62,7 @@ from hms_cadcam.cam.domain.facing import (
 from hms_cadcam.cam.domain.pocket import (
     POCKET_STRATEGY_KEY,
     POCKET_STRATEGY_VERSION,
+    REST_POCKET_STRATEGY_KEY,
     PocketBoundary,
     PocketCuttingDirection,
     PocketDepthDefinition,
@@ -440,6 +441,7 @@ __all__ = [
     "PersistentProfileSelectorV1",
     "POCKET_STRATEGY_KEY",
     "POCKET_STRATEGY_VERSION",
+    "REST_POCKET_STRATEGY_KEY",
     "PocketBoundary",
     "PocketCuttingDirection",
     "PocketDepthDefinition",

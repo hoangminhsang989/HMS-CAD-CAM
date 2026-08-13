@@ -1545,6 +1545,13 @@ class ProjectService:
             self._schedule_background_simulation(operation_id)
         return result
 
+    def resolve_persisted_material_state(self, operation_id: OperationId):
+        """Resolve Rest provenance through the active project service boundary."""
+        session = self._require_current()
+        return self._cam_application.resolve_persisted_material_state(
+            session.root_path, operation_id
+        )
+
     def compute_drilling(
         self,
         operation_id: OperationId,

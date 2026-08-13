@@ -1,0 +1,50 @@
+{
+  "format": "HMS_R260_REST_MACHINING_PRODUCT_DEFINITION",
+  "format_version": 1,
+  "stage": "REST_MACHINING_AND_REMAINING_STOCK_CAM_INTELLIGENCE",
+  "tranche": 1,
+  "first_consumer": "REST_POCKET_3AXIS",
+  "semantics": "Machine only meaningful software-estimated material remaining above target geometry/allowance inside the selected region.",
+  "material_state": {
+    "representation": "deterministic_top_down_heightfield",
+    "engine_version": "heightfield-3axis-v1",
+    "precision": "MATERIAL_STATE_PRECISION_POLICY",
+    "source": "actual_upstream_toolpath_artifact",
+    "physical_measurement": false,
+    "supported_stock": ["box"],
+    "unsupported_stock": ["cylinder", "from_model", "custom_geometry"],
+    "supported_tools": ["end_mill", "ball_end_mill", "bull_nose_end_mill"],
+    "unsupported_tools": ["drill", "chamfer_mill", "face_mill", "custom"]
+  },
+  "dependency": {
+    "edge_kind": "material_state",
+    "chain": "initial_stock -> toolpath -> state -> consumer -> successor_state",
+    "selection": "automatic_same_setup_wcs_chain",
+    "independent_operations": "preserved_when_no_material_state_edge_exists"
+  },
+  "persistence": {
+    "root": ".hms/cam/material_state",
+    "publication": "atomic_complete_only",
+    "corruption": "fail_closed_and_recompute",
+    "required_provenance": ["parent_fingerprint", "toolpath_fingerprint", "stock_fingerprint", "setup_fingerprint", "precision", "engine_version", "checksum_sha256"]
+  },
+  "fingerprint_inputs": ["parent_state", "actual_semantic_toolpath", "tool_cutter_geometry", "stock", "setup_wcs", "precision", "algorithm_version", "material_state_engine_version"],
+  "invalidation": {
+    "camera": false,
+    "viewport_background": false,
+    "feed_only": false,
+    "lead_geometry_physical_cut": true,
+    "upstream_cutting_geometry": true,
+    "tool_profile": true,
+    "stock": true,
+    "wcs": true,
+    "precision_or_engine": true,
+    "unknown_relevant_mutation": "fail_safe"
+  },
+  "ui": {
+    "basic_labels_vi": ["Gia công phần dư", "Phôi còn lại", "Nguồn phần dư", "Tự động xác định", "Lượng dư còn lại"],
+    "advanced_provenance": true,
+    "simulation_required_for_cam": false
+  },
+  "unsupported_scope": ["physical probing", "Level2/Level3 qualification", "CNC/FOCAS/MDI", "future rest strategies", "production post changes"]
+}

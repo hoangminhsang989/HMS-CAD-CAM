@@ -25,6 +25,7 @@ from hms_cadcam.cam.domain.spatial import Point3, Vector3
 from hms_cadcam.cam.domain.units import FeedRate, FeedUnit, Length, LengthUnit, SpindleSpeed
 
 POCKET_STRATEGY_KEY = "pocket_2_5d"
+REST_POCKET_STRATEGY_KEY = "rest_pocket_3axis"
 POCKET_STRATEGY_VERSION = 1
 _DEPTH_FORMAT = "HMS_CAM_POCKET_DEPTH"
 _GEOMETRY_INPUT_FORMAT = "HMS_CAM_POCKET_GEOMETRY_INPUT"
@@ -299,6 +300,7 @@ class PocketStrategy:
     tolerance: Length | None = None
     strategy_version: int = POCKET_STRATEGY_VERSION
     schema_version: int = _FORMAT_VERSION
+    lead_in_length: Length | None = None
     SERIALIZATION_VERSION: ClassVar[int] = _STRATEGY_FORMAT_VERSION
 
     def __post_init__(self) -> None:
@@ -339,6 +341,14 @@ class PocketStrategy:
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Pocket tolerance must be positive")
         object.__setattr__(self, "tolerance", tolerance)
+        lead = self.lead_in_length or Length(0.0, self.unit)
+        _known_length(lead, self.unit, "Pocket lead-in length")
+        if lead.value < 0.0:
+            raise PocketValidationError(
+                DiagnosticCode.POCKET_ENTRY_UNSAFE,
+                "Pocket lead-in length must not be negative",
+            )
+        object.__setattr__(self, "lead_in_length", lead)
         expected_feed = (FeedUnit.MM_PER_MINUTE if self.unit is LengthUnit.MM
                          else FeedUnit.INCH_PER_MINUTE)
         if (not isinstance(self.cutting_feed_rate, FeedRate)
@@ -388,6 +398,7 @@ class PocketStrategy:
             ("entry_policy", self.entry_policy.value),
             ("cutting_direction", self.cutting_direction.value),
             ("tolerance", self.tolerance.value),
+            ("lead_in_length", self.lead_in_length.value),
         )
         return OperationParameterSet(POCKET_STRATEGY_KEY, POCKET_STRATEGY_VERSION, values)
 
@@ -397,12 +408,13 @@ class PocketStrategy:
         value: OperationParameterSet,
         reference: GeometryReference,
     ) -> "PocketStrategy":
-        if value.strategy_key != POCKET_STRATEGY_KEY:
+        if value.strategy_key not in {POCKET_STRATEGY_KEY, REST_POCKET_STRATEGY_KEY}:
             raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
                                         "Operation is not a Pocket strategy")
         data = dict(value.values)
         # Stage17A metadata is additive; legacy Pocket numeric semantics stay V1.
         data.pop("automatic_parameter_contract", None)
+        lead_in_length = data.pop("lead_in_length", 0.0)
         fields = {"unit", "top_z", "bottom_z", "axial_allowance", "stepover", "stepdown",
                   "radial_stock_allowance", "clearance_height", "retract_height",
                   "cutting_feed_rate", "plunge_feed_rate", "spindle_speed", "entry_policy",
@@ -433,6 +445,7 @@ class PocketStrategy:
                 Length(data["tolerance"], unit),
                 value.strategy_version,
                 value.schema_version,
+                Length(lead_in_length, unit),
             )
         except PocketValidationError:
             raise
@@ -460,6 +473,7 @@ class PocketStrategy:
             "entry_policy": self.entry_policy.value,
             "cutting_direction": self.cutting_direction.value,
             "tolerance": self.tolerance.value,
+            "lead_in_length": self.lead_in_length.value,
         }
 
     @classmethod
@@ -469,7 +483,14 @@ class PocketStrategy:
                   "radial_stock_allowance", "clearance_height", "retract_height",
                   "cutting_feed_rate", "plunge_feed_rate", "spindle_speed", "entry_policy",
                   "cutting_direction", "tolerance"}
-        if (not isinstance(data, dict) or set(data) != fields
+        if not isinstance(data, dict):
+            raise PocketValidationError(DiagnosticCode.POCKET_PROFILE_INVALID,
+                                        "Pocket strategy payload is malformed")
+        lead_in_length = data.get("lead_in_length", 0.0)
+        supplied_fields = set(data)
+        if "lead_in_length" in supplied_fields:
+            supplied_fields.remove("lead_in_length")
+        if (supplied_fields != fields
                 or data.get("format") != _STRATEGY_FORMAT
                 or type(data.get("format_version")) is not int
                 or data["format_version"] != _STRATEGY_FORMAT_VERSION
@@ -491,6 +512,7 @@ class PocketStrategy:
                 PocketEntryPolicy(data["entry_policy"]),
                 PocketCuttingDirection(data["cutting_direction"]), Length(data["tolerance"], unit),
                 data["strategy_version"], data["schema_version"],
+                Length(lead_in_length, unit),
             )
         except PocketValidationError:
             raise

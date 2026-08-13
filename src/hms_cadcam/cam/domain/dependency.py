@@ -29,6 +29,7 @@ class DependencyKind(StrEnum):
     MACHINE = "machine"
     PARAMETERS = "parameters"
     OPERATION_OUTPUT = "operation_output"
+    MATERIAL_STATE = "material_state"
 
 
 _DIRTY_REASON = {
@@ -40,6 +41,7 @@ _DIRTY_REASON = {
     DependencyKind.MACHINE: DirtyReason.MACHINE_CHANGED,
     DependencyKind.PARAMETERS: DirtyReason.PARAMETERS_CHANGED,
     DependencyKind.OPERATION_OUTPUT: DirtyReason.UPSTREAM_CHANGED,
+    DependencyKind.MATERIAL_STATE: DirtyReason.UPSTREAM_CHANGED,
 }
 
 
@@ -65,9 +67,15 @@ class DependencyEdge:
             raise CamValidationError("Dependency source operation is invalid")
         return cls(DependencyKind.OPERATION_OUTPUT, str(source), target)
 
+    @classmethod
+    def material_state(cls, source: OperationId, target: OperationId) -> "DependencyEdge":
+        if not isinstance(source, OperationId):
+            raise CamValidationError("Material-state source operation is invalid")
+        return cls(DependencyKind.MATERIAL_STATE, str(source), target)
+
     @property
     def source_operation_id(self) -> OperationId | None:
-        if self.kind is not DependencyKind.OPERATION_OUTPUT:
+        if self.kind not in {DependencyKind.OPERATION_OUTPUT, DependencyKind.MATERIAL_STATE}:
             return None
         return OperationId.parse(self.source_key)
 
@@ -163,7 +171,9 @@ class DependencyGraph:
         while queue:
             source = queue.pop(0)
             for edge in self.edges:
-                if edge.kind is DependencyKind.OPERATION_OUTPUT and edge.source_operation_id == source and edge.target_operation_id not in affected:
+                if (edge.kind in {DependencyKind.OPERATION_OUTPUT, DependencyKind.MATERIAL_STATE}
+                        and edge.source_operation_id == source
+                        and edge.target_operation_id not in affected):
                     affected.add(edge.target_operation_id)
                     queue.append(edge.target_operation_id)
         return tuple(item for item in self.topological_order if item in affected)

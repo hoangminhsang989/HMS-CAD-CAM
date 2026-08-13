@@ -14,28 +14,28 @@ from typing import Final
 
 @dataclass(frozen=True, slots=True)
 class CadUiPalette:
-    """Soft-dark CAD palette with compact, non-decorative interaction states."""
+    """Owner HTML light workspace with dark navy application chrome."""
 
-    window: str = "#101820"
-    chrome: str = "#0b1722"
-    toolbar: str = "#122535"
-    panel: str = "#17232e"
-    panel_alt: str = "#1b2a36"
-    editor: str = "#202f3b"
-    border: str = "#344653"
-    border_strong: str = "#496273"
-    text: str = "#e6edf2"
-    text_muted: str = "#a7b5c0"
-    text_disabled: str = "#687985"
-    accent: str = "#2f8fd1"
-    accent_hover: str = "#3d9cde"
-    accent_pressed: str = "#17679f"
+    window: str = "#f8fafc"
+    chrome: str = "#0b2030"
+    toolbar: str = "#ffffff"
+    panel: str = "#f7f9fb"
+    panel_alt: str = "#edf2f6"
+    editor: str = "#ffffff"
+    border: str = "#cbd5df"
+    border_strong: str = "#afbdc9"
+    text: str = "#24313d"
+    text_muted: str = "#657382"
+    text_disabled: str = "#8995a2"
+    accent: str = "#1b78bb"
+    accent_hover: str = "#3b8fd0"
+    accent_pressed: str = "#0b5f9f"
     selected: str = "#176aa6"
     gold: str = "#d9ad3d"
-    success: str = "#4fbd70"
-    warning: str = "#e0aa2e"
-    danger: str = "#dc5a55"
-    focus: str = "#70b9ea"
+    success: str = "#35a45a"
+    warning: str = "#d39a15"
+    danger: str = "#c84a45"
+    focus: str = "#2774ad"
 
 
 PALETTE: Final = CadUiPalette()
@@ -58,11 +58,11 @@ COMPACT_SPACING: Final = 4
 
 
 def native_cad_style(palette: CadUiPalette = PALETTE) -> str:
-    """Return the shared native dark stylesheet from immutable design tokens."""
+    """Return the shared owner-reference light workspace stylesheet."""
 
     p = palette
     return f"""
-/* R253 native HMS CAD/CAM soft-dark design system. */
+/* HMS/WorkNC light technical workspace with dark navy application chrome. */
 QMainWindow#HmsMainWindow, QDialog, QMessageBox {{
     background: {p.window};
     color: {p.text};
@@ -82,7 +82,7 @@ QMenuBar#MainMenuBar::item {{
     background: transparent; padding: 4px 10px; border-bottom: 2px solid transparent;
 }}
 QMenuBar#MainMenuBar::item:selected {{
-    background: {p.panel_alt}; color: #ffffff; border-bottom-color: {p.accent};
+    background: #14344b; color: #ffffff; border-bottom-color: {p.accent};
 }}
 QMenu {{ background: {p.panel}; color: {p.text}; border: 1px solid {p.border_strong}; }}
 QMenu::item {{ padding: 5px 26px 5px 9px; }}
@@ -107,18 +107,18 @@ QLabel#HmsBrandLabel {{
 }}
 
 QToolBar#WorkspaceBar {{
-    background: {p.toolbar}; border: 0; border-bottom: 1px solid {p.border};
+    background: #173148; border: 0; border-bottom: 1px solid #0e2233;
     spacing: 2px; padding: 2px 7px;
 }}
 QToolBar#WorkspaceBar QToolButton {{
-    background: transparent; color: {p.text_muted}; border: 1px solid transparent;
+    background: transparent; color: #e6edf3; border: 1px solid transparent;
     border-radius: {COMPACT_RADIUS}px; min-height: 23px; padding: 1px 9px; font-weight: 600;
 }}
 QToolBar#WorkspaceBar QToolButton:hover {{
-    background: {p.panel_alt}; color: {p.text}; border-color: {p.border_strong};
+    background: #254c6b; color: #ffffff; border-color: #4a7292;
 }}
 QToolBar#WorkspaceBar QToolButton:checked {{
-    background: {p.selected}; color: #ffffff; border-color: {p.accent_hover};
+    background: #f4f9fd; color: #123e64; border-color: #9fc3dc;
 }}
 QToolBar#WorkspaceBar QToolButton:disabled {{ color: {p.text_disabled}; }}
 
@@ -127,13 +127,13 @@ QTabWidget#RibbonTabs::pane {{
     background: {p.toolbar}; border: 0; border-bottom: 1px solid {p.border};
 }}
 QTabWidget#RibbonTabs > QTabBar::tab {{
-    background: {p.chrome}; color: {p.text_muted}; border: 0;
+    background: {p.toolbar}; color: {p.text}; border: 0;
     border-bottom: 2px solid transparent; min-width: 52px; padding: 4px 10px;
 }}
 QTabWidget#RibbonTabs > QTabBar::tab:selected {{
-    background: {p.toolbar}; color: #ffffff; border-bottom-color: {p.accent};
+    background: #f4f9fd; color: #0b538c; border-bottom-color: {p.accent};
 }}
-QTabWidget#RibbonTabs > QTabBar::tab:hover {{ background: {p.panel_alt}; color: {p.text}; }}
+QTabWidget#RibbonTabs > QTabBar::tab:hover {{ background: #eaf4fb; color: #0b538c; }}
 QFrame#RibbonPage, QGroupBox#RibbonGroup {{ background: {p.toolbar}; color: {p.text}; }}
 QGroupBox#RibbonGroup {{
     border: 0; border-right: 1px solid {p.border}; margin-top: 0;
@@ -202,7 +202,7 @@ QLineEdit#OperationSearch, QComboBox#OperationStatusFilter {{
     background: {p.editor}; color: {p.text}; border-color: {p.border_strong};
 }}
 QTreeView::item, QTreeWidget::item, QListView::item, QListWidget::item {{
-    min-height: 24px; border-bottom: 1px solid #22323e;
+    min-height: 24px; border-bottom: 1px solid #edf1f4;
 }}
 QTreeView::item:hover, QTreeWidget::item:hover, QListView::item:hover, QListWidget::item:hover {{ background: {p.editor}; }}
 QTreeView::item:selected, QTreeWidget::item:selected, QListView::item:selected, QListWidget::item:selected {{ background: {p.selected}; color: #ffffff; }}
@@ -223,17 +223,17 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QTreeView:focus, QTreeWidget:focus, QTableView:focus, QTableWidget:focus,
 QPlainTextEdit:focus, QTextEdit:focus {{ border: 1px solid {p.focus}; }}
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
-    background: #18242d; color: {p.text_disabled}; border-color: {p.border};
+    background: #eef2f5; color: {p.text_disabled}; border-color: {p.border};
 }}
 
 QPushButton, QToolButton {{
     background: {p.editor}; color: {p.text}; border: 1px solid {p.border_strong};
     border-radius: {COMPACT_RADIUS}px; min-height: 25px; padding: 1px 7px;
 }}
-QPushButton:hover, QToolButton:hover {{ background: #29404f; border-color: {p.accent_hover}; }}
+QPushButton:hover, QToolButton:hover {{ background: #eaf3fb; border-color: {p.accent_hover}; }}
 QPushButton:pressed, QToolButton:pressed {{ background: {p.accent_pressed}; }}
 QPushButton:checked, QToolButton:checked {{ background: {p.selected}; color: #ffffff; border-color: {p.accent_hover}; }}
-QPushButton:disabled, QToolButton:disabled {{ background: #18242d; color: {p.text_disabled}; border-color: {p.border}; }}
+QPushButton:disabled, QToolButton:disabled {{ background: #eef2f5; color: {p.text_disabled}; border-color: {p.border}; }}
 QWidget#CadLoadingStatusSurface QPushButton#CadLoadingCancelButton {{
     min-height: 19px; padding: 0 5px; border-radius: 2px;
 }}
@@ -249,7 +249,7 @@ QTabWidget QTabBar::tab {{
     background: {p.toolbar}; color: {p.text_muted}; border: 1px solid {p.border};
     border-bottom: 0; padding: 4px 9px;
 }}
-QTabWidget QTabBar::tab:selected {{ background: {p.panel}; color: #ffffff; border-top-color: {p.accent}; }}
+QTabWidget QTabBar::tab:selected {{ background: {p.panel}; color: #0b5e9c; border-top-color: {p.accent}; }}
 QTabWidget QTabBar::tab:hover {{ background: {p.panel_alt}; color: {p.text}; }}
 QGroupBox {{
     background: {p.panel}; color: {p.text}; border: 1px solid {p.border};
@@ -258,7 +258,7 @@ QGroupBox {{
 QGroupBox::title {{ subcontrol-origin: margin; left: 7px; padding: 0 3px; color: {p.text_muted}; }}
 
 QDialog#GeneralSettingsDialog, QDialog#ToolLibraryDialog, QDialog#ToolDefinitionDialog {{ background: {p.window}; }}
-QListWidget#SettingsCategoryList {{ background: {p.toolbar}; border-color: {p.border}; }}
+QListWidget#SettingsCategoryList {{ background: {p.panel_alt}; border-color: {p.border}; }}
 QListWidget#SettingsCategoryList::item {{ padding: 4px 7px; min-height: 25px; }}
 QListWidget#SettingsCategoryList::item:selected {{ background: {p.selected}; color: #ffffff; }}
 QFrame#UiScalePreviewFrame, QFrame#ViewportBackgroundPreview {{ border: 1px solid {p.border_strong}; border-radius: {COMPACT_RADIUS}px; }}
@@ -267,7 +267,7 @@ QLabel#SettingsCadViewerHeading, QLabel#ToolLibraryDetailTitle {{ color: {p.text
 QLabel#GeneralSettingsBreadcrumb, QLabel#UiScalePreviewStatus {{ color: {p.text_muted}; }}
 
 QProgressBar {{
-    background: {p.chrome}; color: {p.text}; border: 1px solid {p.border};
+    background: #eaf4fb; color: {p.text}; border: 1px solid {p.border};
     border-radius: 2px; min-height: 12px; text-align: center;
 }}
 QProgressBar::chunk {{ background: {p.accent}; }}
@@ -278,12 +278,12 @@ QStatusBar {{ background: #0d558a; color: #ffffff; min-height: 23px; border-top:
 QStatusBar::item {{ border: 0; border-left: 1px solid rgba(255,255,255,35); }}
 QStatusBar QLabel#StatusLabel {{ color: #ffffff; padding: 0 7px; }}
 
-QScrollBar:vertical {{ background: {p.chrome}; width: 10px; margin: 0; }}
+QScrollBar:vertical {{ background: #f4f7fa; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: {p.border_strong}; min-height: 24px; border-radius: 4px; margin: 1px; }}
 QScrollBar::handle:vertical:hover {{ background: #5d788a; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ height: 0; background: transparent; }}
-QScrollBar:horizontal {{ background: {p.chrome}; height: 10px; margin: 0; }}
+QScrollBar:horizontal {{ background: #f4f7fa; height: 10px; margin: 0; }}
 QScrollBar::handle:horizontal {{ background: {p.border_strong}; min-width: 24px; border-radius: 4px; margin: 1px; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ width: 0; background: transparent; }}
@@ -291,10 +291,10 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ width: 0; ba
 QLabel#DiagnosticSeverityInfo {{ color: {p.accent_hover}; }}
 QLabel#DiagnosticSeverityWarning {{ color: {p.warning}; }}
 QLabel#DiagnosticSeverityError {{ color: {p.danger}; }}
-QLabel#FunctionEditorInlineDiagnostic[severity="error"] {{ color: #ffd5d2; background: #4a2425; }}
-QLabel#FunctionEditorInlineDiagnostic[severity="warning"] {{ color: #ffe6a6; background: #45381f; }}
-QLabel#FunctionEditorInlineDiagnostic[severity="info"] {{ color: #cdeaff; background: #17364a; }}
-QLineEdit[validationState="error"], QComboBox[validationState="error"] {{ border: 1px solid {p.danger}; background: #3a2426; }}
+QLabel#FunctionEditorInlineDiagnostic[severity="error"] {{ color: #8f201b; background: #fff0ef; }}
+QLabel#FunctionEditorInlineDiagnostic[severity="warning"] {{ color: #77500e; background: #fff8df; }}
+QLabel#FunctionEditorInlineDiagnostic[severity="info"] {{ color: #245b87; background: #edf6fc; }}
+QLineEdit[validationState="error"], QComboBox[validationState="error"] {{ border: 1px solid {p.danger}; background: #fff7f6; }}
 """
 
 

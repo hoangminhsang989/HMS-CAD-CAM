@@ -1,6 +1,7 @@
 """Stage 7B.5.4 Pocket UI and project persistence integration tests."""
 
 from types import SimpleNamespace
+import gc
 
 import pytest
 from PySide6.QtWidgets import QApplication, QTreeWidgetItem
@@ -36,6 +37,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.project.exceptions import RecoveryRequiredError
 from hms_cadcam.project.service import ProjectService
 from hms_cadcam.ui.cam_ui import CamWorkspace
+from hms_cadcam.ui.localization import operation_display_name
 
 IDENTITY = (
     1.0, 0.0, 0.0, 0.0,
@@ -248,6 +250,77 @@ def test_pocket_ui_create_edit_bind_generate_status_and_draft_lifecycle(
     assert "THIẾU BIÊN DẠNG" in workspace.editor.status.text()
     assert not workspace.actions["generate"].isEnabled()
     workspace.deleteLater()
+
+
+def test_r266_native_rest_pocket_ui_creation_editor_and_fresh_reopen(
+    tmp_path,
+) -> None:
+    service, session, workspace, _viewer, selected = _workspace(tmp_path)
+    # Replace the normal Pocket created by the shared fixture with a fresh Setup
+    # so this proof has exactly one Rest operation and no console-only insertion.
+    first = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    service.execute_cam_command(lambda app: app.update_tree(
+        service.cam_snapshot.active_job_id,
+        first.setup_id,
+        lambda tree: tree.remove_node(first.node_id),
+    ))
+    workspace.refresh()
+    rest_action = workspace.actions["rest_pocket_operation"]
+    assert rest_action.text() == "Thêm Phay hốc phần dư 3 trục"
+    assert sum(action is rest_action for action in workspace.toolbar.actions()) == 1
+
+    rest_action.trigger()
+    operations = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations
+    assert len(operations) == 1
+    operation = operations[0]
+    assert operation.strategy_key == "rest_pocket_3axis"
+    assert operation.geometry_inputs == ()
+    assert operation_display_name(
+        "", strategy_key=operation.strategy_key,
+    ) == "Phay hốc phần dư 3 trục"
+
+    workspace.pick_geometry()
+    workspace.editor._submit()
+    applied = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert applied.strategy_key == "rest_pocket_3axis"
+    assert applied.geometry_inputs[0].reference == selected["reference"]
+    production = workspace.production_function_editor_session()
+    assert production is not None
+    assert production.schema.editor_id == "rest_pocket_production_r266"
+    assert str(production.schema.strategy) == "rest_pocket_3axis_r266"
+    assert production.schema.field("material_state_source").label == "Nguồn phần dư"
+    assert production.schema.field("material_state_status").label == "Trạng thái phần dư"
+    assert production.schema.field("lead_in_length").label == "Chiều dài Lead-In"
+    assert production.applied_mapping()["material_state_source"] == "Tự động xác định"
+    assert production.applied_mapping()["material_state_status"] == (
+        "Không tìm thấy nguồn phần dư phù hợp"
+    )
+    edited = dict(production.applied_mapping())
+    edited["lead_in_length"] = "1.25"
+    production.apply_callback(edited)
+    updated = service.cam_snapshot.jobs[0].setups[0].operation_tree.operations[0]
+    assert updated.strategy_key == "rest_pocket_3axis"
+    assert dict(updated.parameters.values)["lead_in_length"] == 1.25
+
+    service.save()
+    project_root = session.root_path
+    service.close_project()
+    workspace.deleteLater()
+    del service, workspace
+    gc.collect()
+
+    reopened = ProjectService.create_default(tmp_path / "config-rest-reopen")
+    reopened.open_project(project_root)
+    restored_operations = (
+        reopened.cam_snapshot.jobs[0].setups[0].operation_tree.operations
+    )
+    assert len(restored_operations) == 1
+    restored = restored_operations[0]
+    assert restored.operation_id == operation.operation_id
+    assert restored.strategy_key == "rest_pocket_3axis"
+    assert restored.geometry_inputs == applied.geometry_inputs
+    assert dict(restored.parameters.values)["lead_in_length"] == 1.25
+    reopened.close_project()
 
 
 def test_pocket_ui_persistence_save_as_autosave_recovery_and_stale_display(

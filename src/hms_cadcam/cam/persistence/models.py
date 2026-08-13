@@ -16,6 +16,50 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialStateDependency:
+    """Persisted provenance edge from a Rest consumer to its state producer."""
+    consumer_operation_id: OperationId
+    producer_operation_id: OperationId
+    parent_state_fingerprint: ContentFingerprint
+    producer_toolpath_fingerprint: ContentFingerprint
+    setup_fingerprint: ContentFingerprint
+    stock_fingerprint: ContentFingerprint
+    engine_version: str
+    precision: dict
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.consumer_operation_id, OperationId) or not isinstance(self.producer_operation_id, OperationId):
+            raise CamValidationError("Material-state dependency operation identity is invalid")
+        for value in (self.parent_state_fingerprint, self.producer_toolpath_fingerprint,
+                      self.setup_fingerprint, self.stock_fingerprint):
+            if not isinstance(value, ContentFingerprint):
+                raise CamValidationError("Material-state dependency fingerprint is invalid")
+        if not isinstance(self.engine_version, str) or not self.engine_version:
+            raise CamValidationError("Material-state dependency engine is invalid")
+        if not isinstance(self.precision, dict):
+            raise CamValidationError("Material-state dependency precision is invalid")
+
+    def to_dict(self) -> dict:
+        return {"format": "HMS_CAM_MATERIAL_STATE_DEPENDENCY", "format_version": 1,
+                "consumer_operation_id": str(self.consumer_operation_id),
+                "producer_operation_id": str(self.producer_operation_id),
+                "parent_state_fingerprint": self.parent_state_fingerprint.to_dict(),
+                "producer_toolpath_fingerprint": self.producer_toolpath_fingerprint.to_dict(),
+                "setup_fingerprint": self.setup_fingerprint.to_dict(),
+                "stock_fingerprint": self.stock_fingerprint.to_dict(),
+                "engine_version": self.engine_version, "precision": self.precision}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "MaterialStateDependency":
+        if data.get("format") != "HMS_CAM_MATERIAL_STATE_DEPENDENCY" or data.get("format_version") != 1:
+            raise CamValidationError("Material-state dependency schema is invalid")
+        return cls(OperationId.parse(data["consumer_operation_id"]), OperationId.parse(data["producer_operation_id"]),
+                   ContentFingerprint.from_dict(data["parent_state_fingerprint"]), ContentFingerprint.from_dict(data["producer_toolpath_fingerprint"]),
+                   ContentFingerprint.from_dict(data["setup_fingerprint"]), ContentFingerprint.from_dict(data["stock_fingerprint"]),
+                   data["engine_version"], dict(data["precision"]))
+
+
+@dataclass(frozen=True, slots=True)
 class ToolpathArtifactMetadata:
     artifact_id: ToolpathArtifactId
     operation_id: OperationId
@@ -59,6 +103,7 @@ class CamProjectSnapshot:
     tool_assemblies: tuple[ToolAssembly, ...] = ()
     machine_definitions: tuple[MachineDefinition, ...] = ()
     artifacts: tuple[ToolpathArtifactMetadata, ...] = ()
+    material_state_dependencies: tuple[MaterialStateDependency, ...] = ()
 
     def __post_init__(self) -> None:
         typed_groups = (
@@ -67,6 +112,7 @@ class CamProjectSnapshot:
             (self.tool_assemblies, ToolAssembly, "assemblies"),
             (self.machine_definitions, MachineDefinition, "machines"),
             (self.artifacts, ToolpathArtifactMetadata, "artifacts"),
+            (self.material_state_dependencies, MaterialStateDependency, "material-state dependencies"),
         )
         for values, expected, name in typed_groups:
             if not isinstance(values, tuple) or any(not isinstance(item, expected) for item in values):
@@ -94,6 +140,9 @@ class CamProjectSnapshot:
         }
         if any(item.operation_id not in operation_ids for item in self.artifacts):
             raise CamInvariantError("Toolpath metadata references an unknown operation")
+        if any(item.consumer_operation_id not in operation_ids or item.producer_operation_id not in operation_ids
+               for item in self.material_state_dependencies):
+            raise CamInvariantError("Material-state dependency references an unknown operation")
 
     @property
     def is_empty(self) -> bool:

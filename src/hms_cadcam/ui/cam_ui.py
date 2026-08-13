@@ -38,6 +38,7 @@ from hms_cadcam.cam.domain import (
     OperationId, OperationParameterSet, Point3,
     PocketCuttingDirection, PocketDepthDefinition, PocketEntryPolicy,
     PocketGeometryInput, PocketStrategy,
+    REST_POCKET_STRATEGY_KEY,
     ReamingCoolantMode, ReamingRetractPolicy, ReamingStrategy,
     ReamingValidationError,
     ResolvedContourProfile, ResolvedMachiningGeometry, Revision, Setup, SetupId, SetupKind, SourceScope, StockKind,
@@ -70,6 +71,8 @@ from hms_cadcam.cam.application import (
     PocketGenerationError,
     PocketGenerator,
     PocketComputeResult,
+    MaterialStateResolutionStatus,
+    material_state_status_vi,
     ReamingGenerationError,
     ReamingGenerator,
     TappingGenerationError,
@@ -197,6 +200,22 @@ _KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 20
 _ID_ROLE = int(Qt.ItemDataRole.UserRole) + 21
 _JOB_ROLE = int(Qt.ItemDataRole.UserRole) + 22
 _SETUP_ROLE = int(Qt.ItemDataRole.UserRole) + 23
+_POCKET_STRATEGIES = frozenset({"pocket_2_5d", REST_POCKET_STRATEGY_KEY})
+
+
+def _pocket_parameters_for_strategy(
+    strategy: PocketStrategy, strategy_key: str,
+) -> OperationParameterSet:
+    """Serialize shared Pocket fields without losing Rest strategy identity."""
+    if strategy_key not in _POCKET_STRATEGIES:
+        raise ValueError("Pocket strategy UI identity is unsupported")
+    base = strategy.to_operation_parameters()
+    return OperationParameterSet(
+        strategy_key,
+        base.strategy_version,
+        base.values,
+        base.schema_version,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +386,7 @@ class CamWorkspace(QWidget):
             "job", "setup", "resources", "parallel_resources",
             "tapping_resources", "reaming_resources", "boring_resources",
             "group", "create_operation", "operation", "contour_operation",
-            "pocket_operation", "parallel_operation", "z_level_operation",
+            "pocket_operation", "rest_pocket_operation", "parallel_operation", "z_level_operation",
             "drilling_operation", "tapping_operation", "reaming_operation",
             "boring_operation", "generate", "visibility", "pick", "clear_pick",
             "up", "down", "delete",
@@ -402,6 +421,9 @@ class CamWorkspace(QWidget):
             "contour_operation": ("Thêm Phay biên dạng 2D", self.add_contour_operation),
             "pocket_operation": ("Thêm Phay hốc 2.5D", self.add_pocket_operation),
             "parallel_operation": ("Thêm Gia công tinh song song", self.add_parallel_operation),
+            "rest_pocket_operation": (
+                ui_text("Add Rest Pocket 3-axis"), self.add_rest_pocket_operation,
+            ),
             "z_level_operation": (
                 "Thêm Gia công tinh theo cao độ Z",
                 self.add_z_level_operation,
@@ -669,7 +691,7 @@ class CamWorkspace(QWidget):
             return self._contour_production_session(
                 job.job_id, setup, node_id, node.name, operation
             )
-        if operation.strategy_key == "pocket_2_5d":
+        if operation.strategy_key in _POCKET_STRATEGIES:
             if not self._production_pocket_editor_enabled:
                 return None
             return self._pocket_production_session(
@@ -2021,6 +2043,19 @@ class CamWorkspace(QWidget):
         if len(operation.geometry_inputs) > 1:
             diagnostic = "duplicate/additional geometry input"
         snapshot = self._service.cam_snapshot
+        material_source = "Không áp dụng"
+        material_status = "Không áp dụng"
+        if operation.strategy_key == REST_POCKET_STRATEGY_KEY:
+            material_source = "Tự động xác định"
+            resolution = self._service.resolve_persisted_material_state(
+                operation.operation_id
+            )
+            material_status = material_state_status_vi(resolution.status)
+            if (
+                resolution.status is MaterialStateResolutionStatus.RESOLVED
+                and resolution.producer_operation_id is not None
+            ):
+                material_source = str(resolution.producer_operation_id)
         context = PocketEditorContext(
             operation_name,
             operation,
@@ -2041,6 +2076,8 @@ class CamWorkspace(QWidget):
                 and resolved_pocket.status is GeometryResolutionStatus.RESOLVED
                 else None
             ),
+            material_source,
+            material_status,
         )
         draft = PocketEditorDraftContext(
             reference,
@@ -3975,7 +4012,7 @@ class CamWorkspace(QWidget):
                         " · HOLE PATTERN" if has_explicit_pattern
                         else " · HOLE MISSING"
                     )
-                elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
+                elif operation.strategy_key == "contour_2d" or operation.strategy_key in _POCKET_STRATEGIES:
                     status += " · PROFILE MISSING"
             item = self._item(child.name, child.kind.value, str(child.node_id), job_id, setup_id, status)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -4086,7 +4123,7 @@ class CamWorkspace(QWidget):
                     snapshot.tool_definitions,
                     snapshot.holder_definitions,
                 )
-                if operation.strategy_key == "pocket_2_5d":
+                if operation.strategy_key in _POCKET_STRATEGIES:
                     saved = self._pocket_drafts.get(operation.operation_id)
                     if saved is not None:
                         self.editor.restore_pocket_state(saved[0])
@@ -4791,7 +4828,7 @@ class CamWorkspace(QWidget):
         provider = (
             self._drilling_pick_provider if is_hole_operation
             else self._contour_pick_provider if operation is not None and
-            operation.strategy_key in {"contour_2d", "pocket_2_5d"}
+            (operation.strategy_key == "contour_2d" or operation.strategy_key in _POCKET_STRATEGIES)
             else self._pick_provider
         )
         if provider is None:
@@ -4852,7 +4889,7 @@ class CamWorkspace(QWidget):
         operation = self._selected_operation()
         if (operation is not None
                 and operation.strategy_key in {
-                    "contour_2d", "drilling_v1", "pocket_2_5d", "tapping_v1",
+                    "contour_2d", "drilling_v1", "pocket_2_5d", REST_POCKET_STRATEGY_KEY, "tapping_v1",
                     "reaming_v1", "boring_v1",
                 }
                 and operation.geometry_inputs):
@@ -4932,7 +4969,7 @@ class CamWorkspace(QWidget):
                                 continue
                             if parameters.boundary_source is FacingBoundarySource.PLANAR_FACE:
                                 resolver = self._face_resolver
-                        elif operation.strategy_key in {"contour_2d", "pocket_2_5d"}:
+                        elif operation.strategy_key == "contour_2d" or operation.strategy_key in _POCKET_STRATEGIES:
                             resolver = self._profile_resolver
                         elif operation.strategy_key in {
                             "boring_v1", "drilling_v1", "tapping_v1", "reaming_v1",
@@ -5061,7 +5098,7 @@ class CamWorkspace(QWidget):
         operation_id = self._active_editor_operation_id
         if operation_id is None:
             return
-        if self._active_editor_strategy_key == "pocket_2_5d":
+        if self._active_editor_strategy_key in _POCKET_STRATEGIES:
             self._pocket_drafts[operation_id] = (
                 self.editor.pocket_state(),
                 self._picked_reference,
@@ -5137,6 +5174,21 @@ class CamWorkspace(QWidget):
 
     def add_pocket_operation(self) -> None:
         """Add one unbound Pocket operation without guessing its boundary."""
+        self._add_pocket_operation(
+            strategy_key="pocket_2_5d", node_name="Pocket 2.5D",
+        )
+
+    def add_rest_pocket_operation(self) -> None:
+        """Add one native Rest Pocket operation without calculating it."""
+        self._add_pocket_operation(
+            strategy_key=REST_POCKET_STRATEGY_KEY,
+            node_name="Phay hốc phần dư 3 trục",
+        )
+
+    def _add_pocket_operation(self, *, strategy_key: str, node_name: str) -> None:
+        """Create one Pocket-family operation while preserving strategy identity."""
+        if strategy_key not in _POCKET_STRATEGIES:
+            raise ValueError("Pocket strategy UI identity is unsupported")
         context = self._tree_context()
         if context is None:
             return
@@ -5153,13 +5205,20 @@ class CamWorkspace(QWidget):
             machine.unit, (OperationCapability.MILLING,))
         setup = next(value for job in snapshot.jobs for value in job.setups
                      if value.setup_id == setup_id)
+        default_parameters = _default_pocket_parameters(setup)
+        parameters = OperationParameterSet(
+            strategy_key,
+            default_parameters.strategy_version,
+            default_parameters.values,
+            default_parameters.schema_version,
+        )
         operation = Operation(
             operation_id, node_id, OperationFamily.MILLING, setup_id,
-            tool_reference, (), _default_pocket_parameters(setup), machine_requirement,
+            tool_reference, (), parameters, machine_requirement,
         )
         changed = self._execute(lambda app: app.update_tree(
             job_id, setup_id,
-            lambda value: value.add_operation(parent_id, "Pocket 2.5D", operation),
+            lambda value: value.add_operation(parent_id, node_name, operation),
         ))
         if changed:
             self._present_created_operation(node_id)
@@ -5689,7 +5748,7 @@ class CamWorkspace(QWidget):
         node = setup.operation_tree.get_node(CamNodeId.parse(item.data(0, _ID_ROLE))) if setup else None
         operation = setup.operation_tree.get_operation(node.operation_id) if setup and node else None
         if operation is None or operation.strategy_key not in {
-            "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d",
+            "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d", REST_POCKET_STRATEGY_KEY,
             "tapping_v1", "reaming_v1", "boring_v1", "parallel_finishing_3d",
             "z_level_finishing_3d",
         }:
@@ -5974,11 +6033,12 @@ class CamWorkspace(QWidget):
             if failure_message is not None:
                 self._error(failure_message)
             return
-        if operation.strategy_key == "pocket_2_5d":
+        if operation.strategy_key in _POCKET_STRATEGIES:
             generation = self._generation
             draft = self.editor.pocket_draft(setup.wcs.origin.unit, self._picked_reference)
             machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
-            if (draft is None or draft.to_operation_parameters() != operation.parameters or
+            if (draft is None or _pocket_parameters_for_strategy(
+                    draft, operation.strategy_key) != operation.parameters or
                     self.editor.tool.currentData() != str(operation.tool_assembly.assembly_id) or
                     self.editor.machine.currentData() != (str(machine_id) if machine_id else None) or
                     len(operation.geometry_inputs) != 1 or
@@ -6430,7 +6490,7 @@ class CamWorkspace(QWidget):
                             revision=current.revision.next(),
                             artifact_state=current.artifact_state.mark_dirty(reason))
                     tree_mutation = lambda tree: tree.rename_node(node_id, str(values["name"])).replace_operation(changed_operation)
-                elif current is not None and current.strategy_key == "pocket_2_5d":
+                elif current is not None and current.strategy_key in _POCKET_STRATEGIES:
                     unit = setup.wcs.origin.unit
                     if self._picked_reference is None:
                         raise ValueError("Pocket thiếu profile. Hãy Bind profile trước khi Áp dụng.")
@@ -6460,7 +6520,9 @@ class CamWorkspace(QWidget):
                         input_id, GeometryInputRole.BOUNDARY, self._picked_reference,
                         True, self._picked_reference.kind, 0,
                     ),)
-                    parameter_set = parameters.to_operation_parameters()
+                    parameter_set = _pocket_parameters_for_strategy(
+                        parameters, current.strategy_key,
+                    )
                     tool_reference = ToolAssemblyReference.from_assembly(assembly)
                     enabled = bool(values["enabled"])
                     parameter_changed = parameter_set != current.parameters
@@ -7050,12 +7112,14 @@ class CamWorkspace(QWidget):
                     self._picked_reference_resolved and
                     self.editor.tool.currentData() == str(operation.tool_assembly.assembly_id) and
                     self.editor.machine.currentData() == (str(machine_id) if machine_id else None))
-            if operation.strategy_key == "pocket_2_5d":
+            if operation.strategy_key in _POCKET_STRATEGIES:
                 draft = self.editor.pocket_draft(
                     setup.wcs.origin.unit, self._picked_reference,
                 )
                 return bool(operation.enabled and draft is not None and
-                    draft.to_operation_parameters() == operation.parameters and
+                    _pocket_parameters_for_strategy(
+                        draft, operation.strategy_key,
+                    ) == operation.parameters and
                     len(operation.geometry_inputs) == 1 and
                     self._picked_reference == operation.geometry_inputs[0].reference and
                     self._picked_reference_resolved and
@@ -7484,7 +7548,7 @@ class _CamPropertiesEditor(QWidget):
             self.tool.setCurrentIndex(self.tool.findData(str(operation.tool_assembly.assembly_id)))
             if operation.machine_requirement:
                 self.machine.setCurrentIndex(self.machine.findData(str(operation.machine_requirement.machine_id)))
-        elif operation is not None and operation.strategy_key == "pocket_2_5d":
+        elif operation is not None and operation.strategy_key in _POCKET_STRATEGIES:
             values = dict(operation.parameters.values)
             mapping = {
                 "top": "top_z", "bottom": "bottom_z", "stepdown": "stepdown",

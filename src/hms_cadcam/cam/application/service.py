@@ -13,7 +13,7 @@ from typing import Callable
 
 from hms_cadcam.cam.domain import (
     DEFAULT_TOOL_PROFILE_REGISTRY,
-    ArtifactStatus, CamChildNotFoundError, CamJob, CamJobId, CamNodeId,
+    ArtifactStatus, CamChildNotFoundError, CamValidationError, CamJob, CamJobId, CamNodeId,
     ContourParameters, DiagnosticCode, DiagnosticSeverity, DirtyReason, FacingBoundarySource,
     DrillGeometryInput, DrillDepthDefinition, DrillingStrategy, DrillValidationError,
     FacingParameters, FacingRegion,
@@ -31,10 +31,15 @@ from hms_cadcam.cam.domain import (
     ValidationDiagnostic, WcsFrame, WorkOffset,
     build_profile_from_preview, duplicate_tool_program_profile,
 )
+from hms_cadcam.cam.domain.dependency import DependencyEdge, DependencyKind
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot
+from hms_cadcam.cam.persistence.models import MaterialStateDependency
 from hms_cadcam.cam.toolpath import ToolpathArtifact, artifact_from_dict, artifact_to_dict
+from hms_cadcam.cam.toolpath.fingerprint import (
+    compute_material_removal_fingerprint, compute_toolpath_fingerprint,
+)
 from hms_cadcam.cam.toolpath.validation import ToolpathPublishResult, publish_toolpath
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.revision import (
@@ -53,8 +58,13 @@ from hms_cadcam.cam.application.contour import (
 )
 from hms_cadcam.cam.application.pocket import (
     PocketComputeResult, PocketGenerationError, PocketGenerator,
-    pocket_feed_independent_fingerprint, prepare_pocket_machining_geometry,
+    pocket_feed_independent_fingerprint, pocket_lead_independent_fingerprint,
+    prepare_pocket_machining_geometry,
 )
+from hms_cadcam.cam.application.rest_pocket import RestPocketGenerator, RestPocketInputs
+from hms_cadcam.cam.material_state import (MATERIAL_STATE_ENGINE_VERSION,
+    MaterialState, MaterialStateLoadStatus, MaterialStateStore, calculate_material_state,
+    material_state_setup_fingerprint)
 from hms_cadcam.cam.application.drilling import (
     DrillingComputeResult, DrillingGenerationError, DrillingGenerator,
 )
@@ -117,6 +127,9 @@ class CamApplicationService:
             OperationId,
             tuple[ContentFingerprint, ContentFingerprint, ToolpathArtifact],
         ] = OrderedDict()
+        self._rest_incremental_templates: OrderedDict[
+            OperationId, tuple[ContentFingerprint, RestPocketInputs]
+        ] = OrderedDict()
         self._lock = threading.RLock()
         self._snapshot = CamProjectSnapshot()
         self._persisted = CamProjectSnapshot()
@@ -124,6 +137,7 @@ class CamApplicationService:
         self._generation = 0
         self._simulation = SimulationRuntimeService()
         self._post = PostRuntimeService()
+        self._material_states = MaterialStateStore()
 
     @property
     def snapshot(self) -> CamProjectSnapshot:
@@ -143,6 +157,7 @@ class CamApplicationService:
             self._persisted = _clone_snapshot(snapshot)
             self._selection = CamSelection()
             self._pocket_incremental_templates.clear()
+            self._rest_incremental_templates.clear()
             self._calculation_timings.clear()
             self._generation += 1
             self._simulation.bind_project(self._generation, self._generation)
@@ -160,6 +175,11 @@ class CamApplicationService:
             self._pocket_incremental_templates = OrderedDict(
                 (operation_id, value)
                 for operation_id, value in self._pocket_incremental_templates.items()
+                if operation_id in operation_ids
+            )
+            self._rest_incremental_templates = OrderedDict(
+                (operation_id, value)
+                for operation_id, value in self._rest_incremental_templates.items()
                 if operation_id in operation_ids
             )
             candidate = replace(candidate, artifacts=tuple(
@@ -182,6 +202,7 @@ class CamApplicationService:
             selection = self._selection
             generation = self._generation
             incremental_templates = OrderedDict(self._pocket_incremental_templates)
+            rest_incremental_templates = OrderedDict(self._rest_incremental_templates)
             calculation_timings = dict(self._calculation_timings)
             try:
                 changed = command(self)
@@ -193,6 +214,7 @@ class CamApplicationService:
                 self._selection = selection
                 self._generation = generation
                 self._pocket_incremental_templates = incremental_templates
+                self._rest_incremental_templates = rest_incremental_templates
                 self._calculation_timings = calculation_timings
                 raise
             return _clone_snapshot(self._snapshot)
@@ -241,6 +263,7 @@ class CamApplicationService:
             self._persisted = empty
             self._selection = CamSelection()
             self._pocket_incremental_templates.clear()
+            self._rest_incremental_templates.clear()
             self._calculation_timings.clear()
             self._generation += 1
             self._simulation.clear()
@@ -374,6 +397,15 @@ class CamApplicationService:
             candidate = mutation(tree)
             if not isinstance(candidate, OperationTree):
                 raise TypeError("Operation tree mutation must return OperationTree")
+            previous = {item.operation_id: item for item in tree.operations}
+            current = {item.operation_id: item for item in candidate.operations}
+            for operation_id in sorted(previous.keys() & current.keys(), key=str):
+                if _material_removal_operation_authority(previous[operation_id]) != (
+                    _material_removal_operation_authority(current[operation_id])
+                ):
+                    candidate = candidate.mark_dependency_changed(
+                        DependencyKind.MATERIAL_STATE, str(operation_id)
+                    )
             job.update_operation_tree(setup_id, candidate)
         return self._mutate_job(job_id, change)
 
@@ -1518,6 +1550,12 @@ class CamApplicationService:
     ) -> PocketComputeResult:
         """Synchronously compute/publish Pocket with the shared stale-token contract."""
         with self._lock:
+            selected = _find_operation(self._snapshot, operation_id)
+            if selected.strategy_key == "rest_pocket_3axis":
+                return self.compute_rest_pocket(
+                    project_root, operation_id, geometry_resolver=geometry_resolver,
+                    cancellation=cancellation, progress=progress,
+                )
             before_compute = _clone_snapshot(self._snapshot)
             operation = _find_operation(self._snapshot, operation_id)
             setup = next(setup for job in self._snapshot.jobs for setup in job.setups
@@ -1787,6 +1825,346 @@ class CamApplicationService:
                                  diagnostics=(*current.diagnostics, diagnostic))
                 self._snapshot = _replace_operation(self._snapshot, failed)
                 return PocketComputeResult(failed, None, False, (diagnostic,))
+
+    def compute_rest_pocket(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        geometry_resolver: Callable[[GeometryReference], ResolvedPocketGeometry] | None = None,
+        cancellation: Callable[[], bool] | None = None,
+        progress: Callable[[CamCalculationProgress], None] | None = None,
+    ) -> PocketComputeResult:
+        """Compute Rest Pocket from the newest compatible published upstream artifact."""
+        with self._lock:
+            phases: list[PhaseTiming] = []
+            before = _clone_snapshot(self._snapshot)
+            operation = _find_operation(self._snapshot, operation_id)
+            setup = next(setup for job in self._snapshot.jobs for setup in job.setups if setup.setup_id == operation.setup_id)
+            assembly = next((item for item in self._snapshot.tool_assemblies if item.assembly_id == operation.tool_assembly.assembly_id), None)
+            tool = None if assembly is None else next((item for item in self._snapshot.tool_definitions if item.tool_id == assembly.tool_id), None)
+            machine_id = operation.machine_requirement.machine_id if operation.machine_requirement else None
+            machine = next((item for item in self._snapshot.machine_definitions if item.machine_id == machine_id), None)
+            generator = RestPocketGenerator()
+            try:
+                if geometry_resolver is None or not operation.geometry_inputs:
+                    raise PocketGenerationError(DiagnosticCode.POCKET_PROFILE_MISSING, "Rest Pocket requires a resolvable boundary.")
+                resolved = geometry_resolver(operation.geometry_inputs[0].reference)
+                setup_fp = material_state_setup_fingerprint(setup)
+                material_started_ns = monotonic_ns()
+                persisted = self.resolve_persisted_material_state(project_root, operation_id)
+                if persisted.status.value in {"RESOLVED", "NO_REST_MATERIAL"} and persisted.state is not None:
+                    parent = persisted.state
+                    producer = _find_operation(self._snapshot, persisted.producer_operation_id)
+                    phases.append(PhaseTiming(
+                        "material_state_load",
+                        monotonic_ns() - material_started_ns,
+                        "CACHE_HIT",
+                    ))
+                    if operation.artifact_state.status is ArtifactStatus.VALID:
+                        metadata = next(
+                            (
+                                item
+                                for item in self._snapshot.artifacts
+                                if item.operation_id == operation_id
+                            ),
+                            None,
+                        )
+                        if metadata is not None:
+                            artifact = self._artifact_store.load(project_root, metadata)
+                            phases.extend((
+                                PhaseTiming("rest_region_extraction", 0, "CACHE_HIT"),
+                                PhaseTiming("cut_generation", 0, "CACHE_HIT"),
+                                PhaseTiming("final_assembly", 0, "CACHE_HIT"),
+                                PhaseTiming("material_state_update", 0, "CACHE_HIT"),
+                            ))
+                            self._calculation_timings[operation_id] = CalculationTiming(
+                                str(operation_id), tuple(phases)
+                            )
+                            return PocketComputeResult(
+                                operation,
+                                artifact,
+                                True,
+                                no_rest_material=not artifact.events,
+                            )
+                else:
+                    producers = []
+                    for job in self._snapshot.jobs:
+                        for candidate_setup in job.setups:
+                            if candidate_setup.setup_id != setup.setup_id or candidate_setup.operation_tree is None:
+                                continue
+                            for candidate in candidate_setup.operation_tree.operations:
+                                if candidate.operation_id == operation_id:
+                                    break
+                                metadata = next((item for item in self._snapshot.artifacts if item.operation_id == candidate.operation_id), None)
+                                if metadata is not None:
+                                    artifact = self._artifact_store.load(project_root, metadata)
+                                    candidate_assembly = next((item for item in self._snapshot.tool_assemblies if item.assembly_id == candidate.tool_assembly.assembly_id), None)
+                                    candidate_tool = None
+                                    if (candidate_assembly is not None
+                                            and candidate.artifact_state.status is ArtifactStatus.VALID):
+                                        candidate_tool = next((item for item in self._snapshot.tool_definitions if item.tool_id == candidate_assembly.tool_id), None)
+                                    if candidate_tool is not None:
+                                        producers.append((candidate, artifact, candidate_tool))
+                    if not producers:
+                        raise PocketGenerationError(DiagnosticCode.UPSTREAM_INVALID, "No compatible upstream published toolpath exists.")
+                    if len(producers) > 1:
+                        raise PocketGenerationError(DiagnosticCode.UPSTREAM_INVALID, "Multiple compatible upstream material producers require explicit provenance.")
+                    producer, upstream_artifact, upstream_tool = producers[0]
+                    parent_result = calculate_material_state(
+                        stock=setup.stock, artifact=upstream_artifact, tool=upstream_tool,
+                        setup_fingerprint=setup_fp,
+                        cancellation=cancellation,
+                    )
+                    parent = parent_result.state
+                    self._material_states.write(project_root, parent)
+                    phases.append(PhaseTiming(
+                        "material_state_load",
+                        monotonic_ns() - material_started_ns,
+                        "CACHE_MISS",
+                    ))
+                dependency = MaterialStateDependency(
+                    operation_id, producer.operation_id, parent.fingerprint,
+                    parent.toolpath_fingerprint, setup_fp,
+                    ContentFingerprint.from_payload(setup.stock.to_dict()),
+                    parent.engine_version, parent.precision.to_dict(),
+                )
+                staged_dependency = replace(
+                    self._snapshot,
+                    material_state_dependencies=tuple(
+                        item
+                        for item in self._snapshot.material_state_dependencies
+                        if item.consumer_operation_id != operation_id
+                    ) + (dependency,),
+                )
+                current_setup = next(
+                    candidate
+                    for job in staged_dependency.jobs
+                    for candidate in job.setups
+                    if candidate.setup_id == setup.setup_id
+                )
+                edge = DependencyEdge.material_state(
+                    producer.operation_id, operation_id
+                )
+                if edge not in current_setup.operation_tree.dependency_graph.edges:
+                    updated_graph = (
+                        current_setup.operation_tree.dependency_graph.with_edge_added(edge)
+                    )
+                    updated_tree = OperationTree(
+                        current_setup.operation_tree.setup_id,
+                        current_setup.operation_tree.root_id,
+                        current_setup.operation_tree.nodes,
+                        current_setup.operation_tree.operations,
+                        updated_graph,
+                        current_setup.operation_tree.revision.next(),
+                    )
+                    updated_setup = replace(
+                        current_setup,
+                        operation_tree=updated_tree,
+                        revision=current_setup.revision.next(),
+                    )
+                    updated_jobs = tuple(
+                        CamJob(
+                            job.job_id,
+                            job.name,
+                            revision=job.revision,
+                            setups=tuple(
+                                updated_setup
+                                if candidate.setup_id == current_setup.setup_id
+                                else candidate
+                                for candidate in job.setups
+                            ),
+                            active_setup_id=job.active_setup_id,
+                        )
+                        if any(
+                            candidate.setup_id == current_setup.setup_id
+                            for candidate in job.setups
+                        )
+                        else job
+                        for job in staged_dependency.jobs
+                    )
+                    staged_dependency = replace(
+                        staged_dependency, jobs=updated_jobs
+                    )
+                self._snapshot = staged_dependency
+                # Adding the first MATERIAL_STATE edge advances the owning Setup
+                # revision.  Rest publication and optional Simulation capture must
+                # therefore use that current revision, not the pre-edge snapshot
+                # captured at method entry.
+                setup = next(
+                    candidate
+                    for job in self._snapshot.jobs
+                    for candidate in job.setups
+                    if candidate.setup_id == setup.setup_id
+                )
+                if cancellation is not None and cancellation():
+                    phases.append(PhaseTiming(
+                        "rest_region_extraction", 0, "CANCELLED"
+                    ))
+                    self._calculation_timings[operation_id] = CalculationTiming(
+                        str(operation_id), tuple(phases)
+                    )
+                    diagnostic = ValidationDiagnostic(
+                        DiagnosticSeverity.ERROR,
+                        DiagnosticCode.POCKET_GENERATION_FAILED,
+                        "Rest Pocket calculation cancelled",
+                    )
+                    return PocketComputeResult(
+                        _find_operation(self._snapshot, operation_id),
+                        None,
+                        False,
+                        (diagnostic,),
+                    )
+                region_started_ns = monotonic_ns()
+                rest_template = self._rest_incremental_templates.get(operation_id)
+                inputs = generator.resolve_inputs(
+                    operation, setup, assembly=assembly, tool=tool, machine=machine,
+                    resolved_geometry=resolved, parent_state=parent,
+                    cached_template=(
+                        rest_template[1] if rest_template is not None else None
+                    ),
+                )
+                lead_incremental = (
+                    rest_template is not None
+                    and rest_template[0]
+                    == pocket_lead_independent_fingerprint(inputs.pocket)
+                    and rest_template[1].pocket.strategy.lead_in_length
+                    != inputs.pocket.strategy.lead_in_length
+                )
+                phases.append(PhaseTiming(
+                    "rest_region_extraction",
+                    monotonic_ns() - region_started_ns,
+                    "CACHE_HIT" if lead_incremental else "CACHE_MISS",
+                ))
+                computing, token = generator.begin(inputs)
+                self._snapshot = _replace_operation(self._snapshot, computing.pocket.operation)
+                cut_started_ns = monotonic_ns()
+                candidate = (
+                    generator.regenerate_lead_only(computing)
+                    if lead_incremental
+                    else generator.generate(computing)
+                )
+                phases.append(PhaseTiming(
+                    "cut_generation",
+                    monotonic_ns() - cut_started_ns,
+                    "CACHE_HIT" if lead_incremental else "CACHE_MISS",
+                ))
+                if lead_incremental:
+                    phases.append(PhaseTiming("leads", 0, "CACHE_MISS"))
+                current = _find_operation(self._snapshot, operation_id)
+                published = publish_toolpath(current, candidate, token, computing.pocket.input_fingerprint)
+                if not published.accepted or published.artifact is None:
+                    self._snapshot = _replace_operation(self._snapshot, published.operation)
+                    return PocketComputeResult(published.operation, None, False)
+                final_started_ns = monotonic_ns()
+                metadata = self._artifact_store.publish(project_root, published.artifact)
+                phases.append(PhaseTiming(
+                    "final_assembly", monotonic_ns() - final_started_ns, "CACHE_MISS"
+                ))
+                update_started_ns = monotonic_ns()
+                successor = calculate_material_state(
+                    stock=setup.stock, artifact=published.artifact, tool=tool, parent=parent,
+                    setup_fingerprint=setup_fp,
+                    cancellation=cancellation,
+                )
+                self._material_states.write(project_root, successor.state)
+                phases.append(PhaseTiming(
+                    "material_state_update",
+                    monotonic_ns() - update_started_ns,
+                    "CACHE_MISS",
+                ))
+                staged = replace(self._snapshot,
+                    artifacts=tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id) + (metadata,))
+                self._snapshot = _replace_operation(staged, published.operation)
+                self._rest_incremental_templates[operation_id] = (
+                    pocket_lead_independent_fingerprint(inputs.pocket), inputs,
+                )
+                self._calculation_timings[operation_id] = CalculationTiming(
+                    str(operation_id), tuple(phases)
+                )
+                return PocketComputeResult(
+                    published.operation,
+                    published.artifact,
+                    True,
+                    no_rest_material=inputs.no_rest_material,
+                )
+            except (PocketGenerationError, ToolpathArtifactStoreError, OSError, CamValidationError) as error:
+                self._snapshot = before
+                diagnostic = error.diagnostic if isinstance(error, PocketGenerationError) else ValidationDiagnostic(DiagnosticSeverity.ERROR, DiagnosticCode.POCKET_GENERATION_FAILED, str(error))
+                return PocketComputeResult(operation, None, False, (diagnostic,))
+
+    def resolve_persisted_material_state(self, project_root: Path, operation_id: OperationId):
+        """Validate and resolve persisted Rest provenance without replaying toolpaths."""
+        from hms_cadcam.cam.application.rest_pocket import (
+            MaterialStateResolution, MaterialStateResolutionStatus,
+        )
+        with self._lock:
+            dependency = next((item for item in self._snapshot.material_state_dependencies
+                               if item.consumer_operation_id == operation_id), None)
+            if dependency is None:
+                return MaterialStateResolution(MaterialStateResolutionStatus.NO_COMPATIBLE_MATERIAL_STATE,
+                                               message="Persisted material-state dependency is missing")
+            try:
+                consumer = _find_operation(self._snapshot, operation_id)
+                producer = _find_operation(self._snapshot, dependency.producer_operation_id)
+                setup = next(value for job in self._snapshot.jobs for value in job.setups
+                             if value.setup_id == consumer.setup_id)
+            except (CamChildNotFoundError, StopIteration):
+                return MaterialStateResolution(MaterialStateResolutionStatus.CORRUPT,
+                                               message="Persisted dependency operation is missing")
+            if producer.setup_id != consumer.setup_id:
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message="Producer Setup no longer matches consumer")
+            if DirtyReason.UPSTREAM_CHANGED in consumer.artifact_state.dirty_reasons:
+                return MaterialStateResolution(
+                    MaterialStateResolutionStatus.STALE,
+                    message="Material-removal upstream authority changed",
+                )
+            setup_fp = material_state_setup_fingerprint(setup)
+            stock_fp = ContentFingerprint.from_payload(setup.stock.to_dict())
+            if dependency.setup_fingerprint != setup_fp or dependency.stock_fingerprint != stock_fp:
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message="Persisted Setup or Stock provenance changed")
+            if dependency.engine_version != MATERIAL_STATE_ENGINE_VERSION:
+                return MaterialStateResolution(MaterialStateResolutionStatus.UNSUPPORTED,
+                                               message="Persisted material-state engine is unsupported")
+            loaded = self._material_states.load(project_root, dependency.parent_state_fingerprint)
+            if loaded.status is MaterialStateLoadStatus.MISSING:
+                return MaterialStateResolution(MaterialStateResolutionStatus.NO_COMPATIBLE_MATERIAL_STATE,
+                                               message="Persisted parent material state is missing")
+            if loaded.status is MaterialStateLoadStatus.CORRUPT:
+                return MaterialStateResolution(MaterialStateResolutionStatus.CORRUPT,
+                                               message=loaded.message or "Persisted material state is corrupt")
+            if loaded.status is not MaterialStateLoadStatus.VALID or loaded.state is None:
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message=loaded.message or "Persisted material state is incompatible")
+            state = loaded.state
+            if (state.toolpath_fingerprint != dependency.producer_toolpath_fingerprint
+                    or state.setup_fingerprint != dependency.setup_fingerprint
+                    or state.stock_fingerprint != dependency.stock_fingerprint
+                    or state.engine_version != dependency.engine_version
+                    or state.precision.to_dict() != dependency.precision):
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message="Persisted material-state provenance mismatch")
+            metadata = next((item for item in self._snapshot.artifacts
+                             if item.operation_id == producer.operation_id), None)
+            if metadata is None:
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message="Producer toolpath metadata is missing")
+            try:
+                artifact = self._artifact_store.load(project_root, metadata)
+            except ToolpathArtifactStoreError:
+                return MaterialStateResolution(MaterialStateResolutionStatus.CORRUPT,
+                                               message="Producer toolpath artifact is corrupt")
+            if compute_material_removal_fingerprint(artifact) != dependency.producer_toolpath_fingerprint:
+                return MaterialStateResolution(MaterialStateResolutionStatus.STALE,
+                                               message="Producer semantic toolpath changed")
+            status = (
+                MaterialStateResolutionStatus.RESOLVED
+                if state.has_rest_material
+                else MaterialStateResolutionStatus.NO_REST_MATERIAL
+            )
+            return MaterialStateResolution(status, state, producer.operation_id)
 
     def _remember_pocket_incremental_template(
         self,
@@ -2511,6 +2889,30 @@ def _find_operation(snapshot: CamProjectSnapshot, operation_id: OperationId) -> 
                 if operation.operation_id == operation_id:
                     return operation
     raise CamChildNotFoundError(f"Operation does not exist: {operation_id}")
+
+
+def _material_removal_operation_authority(operation: Operation) -> tuple[object, ...]:
+    """Return operation inputs that may change its physical removal semantics."""
+    non_removal_parameters = {
+        "cutting_feed_rate",
+        "plunge_feed_rate",
+        "spindle_speed",
+    }
+    removal_parameters = tuple(
+        (key, value)
+        for key, value in operation.parameters.values
+        if key not in non_removal_parameters
+    )
+    return (
+        operation.enabled,
+        operation.parameters.strategy_key,
+        operation.parameters.strategy_version,
+        operation.parameters.schema_version,
+        removal_parameters,
+        operation.geometry_inputs,
+        operation.tool_assembly,
+        operation.machine_requirement,
+    )
 
 
 def _find_tool(

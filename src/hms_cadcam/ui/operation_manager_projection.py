@@ -52,6 +52,7 @@ _SUPPORTED_STRATEGIES = frozenset(
         "facing_2_5d",
         "contour_2d",
         "pocket_2_5d",
+        "rest_pocket_3axis",
         "parallel_finishing_3d",
         "z_level_finishing_3d",
         "drilling_v1",
@@ -67,6 +68,7 @@ _STRATEGY_SEARCH_ALIASES = {
     "facing_2_5d": "Facing 2.5D",
     "contour_2d": "Contour 2D",
     "pocket_2_5d": "Pocket 2.5D",
+    "rest_pocket_3axis": "Rest Pocket 3-Axis",
     "parallel_finishing_3d": "Parallel Finishing",
     "z_level_finishing_3d": "Z-Level Finishing",
     "drilling_v1": "Drilling",
@@ -715,6 +717,7 @@ class OperationManagerProjectionBuilder:
             in {
                 "contour_2d",
                 "pocket_2_5d",
+                "rest_pocket_3axis",
                 "parallel_finishing_3d",
                 "z_level_finishing_3d",
             }

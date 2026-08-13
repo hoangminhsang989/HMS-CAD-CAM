@@ -14,7 +14,7 @@ from hms_cadcam.cam.domain import (
 )
 from hms_cadcam.cam.persistence.codecs import decode_json, encode_json
 from hms_cadcam.cam.persistence.errors import CamPersistenceError, CamPersistencePayloadError
-from hms_cadcam.cam.persistence.models import CamProjectSnapshot, ToolpathArtifactMetadata
+from hms_cadcam.cam.persistence.models import CamProjectSnapshot, MaterialStateDependency, ToolpathArtifactMetadata
 
 
 def normalize_restart_snapshot(snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
@@ -32,7 +32,7 @@ def normalize_restart_snapshot(snapshot: CamProjectSnapshot) -> CamProjectSnapsh
                            setups=tuple(setups), active_setup_id=job.active_setup_id))
     return CamProjectSnapshot(tuple(jobs), snapshot.active_job_id, snapshot.tool_definitions,
         snapshot.holder_definitions, snapshot.tool_assemblies, snapshot.machine_definitions,
-        snapshot.artifacts)
+        snapshot.artifacts, snapshot.material_state_dependencies)
 
 
 def _normalize_operation(operation: Operation) -> Operation:
@@ -98,8 +98,11 @@ class CamSqliteRepository:
             machines = self._load_payloads(connection, "cam_machine_definitions", MachineDefinition.from_dict)
             artifacts = tuple(self._metadata_from_row(row) for row in
                 connection.execute("SELECT * FROM toolpath_artifacts ORDER BY operation_id"))
+            has_dependencies = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cam_material_state_dependencies'").fetchone() is not None
+            dependencies = tuple(MaterialStateDependency.from_dict(decode_json(row["payload_json"])) for row in
+                connection.execute("SELECT * FROM cam_material_state_dependencies ORDER BY consumer_operation_id")) if has_dependencies else ()
             return normalize_restart_snapshot(CamProjectSnapshot(tuple(jobs), active, tools, holders,
-                assemblies, machines, artifacts))
+                assemblies, machines, artifacts, dependencies))
         except sqlite3.Error as error:
             raise CamPersistenceError("CAM SQLite load failed") from error
         except CamPersistenceError:
@@ -115,7 +118,12 @@ class CamSqliteRepository:
     def replace_all(self, connection: sqlite3.Connection, snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
         """Replace editable CAM state and metadata in the caller's transaction."""
         normalized = normalize_restart_snapshot(snapshot)
-        for table in ("toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes",
+        connection.execute("""CREATE TABLE IF NOT EXISTS cam_material_state_dependencies (
+            consumer_operation_id TEXT PRIMARY KEY NOT NULL,
+            producer_operation_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )""")
+        for table in ("cam_material_state_dependencies", "toolpath_artifacts", "cam_dependencies", "cam_operations", "cam_nodes",
                       "cam_setups", "cam_jobs", "cam_project_state", "cam_tool_definitions",
                       "cam_holder_definitions", "cam_tool_assemblies", "cam_machine_definitions"):
             connection.execute(f"DELETE FROM {table}")
@@ -154,6 +162,9 @@ class CamSqliteRepository:
                 encode_json(metadata.input_fingerprint.to_dict()), metadata.size_bytes, metadata.schema_version,
                 encode_json(metadata.expected_operation_revision.to_dict()), metadata.computation_generation,
                 metadata.completion_status))
+        for dependency in normalized.material_state_dependencies:
+            connection.execute("INSERT INTO cam_material_state_dependencies VALUES(?,?,?)", (
+                str(dependency.consumer_operation_id), str(dependency.producer_operation_id), encode_json(dependency.to_dict())))
         return normalized
 
     @staticmethod

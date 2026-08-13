@@ -12,7 +12,10 @@ from hms_cadcam.cam.toolpath.events import (
     RapidMove, SpindleState, SpindleStateEvent, ToolContextEvent,
     ToolpathEvent, ToolpathEventKind,
 )
-from hms_cadcam.cam.toolpath.fingerprint import compute_toolpath_fingerprint, toolpath_content_payload
+from hms_cadcam.cam.toolpath.fingerprint import (
+    compute_material_removal_fingerprint, compute_toolpath_fingerprint,
+    material_removal_payload, toolpath_content_payload,
+)
 from hms_cadcam.cam.toolpath.geometry import (
     GEOMETRY_TOLERANCE, Bounds3, CoordinateSpace, Pose, arc_bounds, distance,
     same_pose, validate_arc,
@@ -34,6 +37,7 @@ __all__ = [
     "ToolpathDiagnostic", "ToolpathDiagnosticCode", "ToolpathEvent", "ToolpathEventKind",
     "ToolpathPublishResult", "ToolpathStatistics", "arc_bounds", "artifact_from_dict",
     "artifact_to_dict", "bounds_from_dict", "bounds_to_dict", "compute_toolpath_fingerprint",
+    "compute_material_removal_fingerprint", "material_removal_payload",
     "diagnostic_from_dict", "diagnostic_to_dict", "distance", "event_from_dict", "event_to_dict",
     "pose_from_dict", "pose_to_dict", "publish_toolpath", "same_pose", "statistics_from_dict",
     "statistics_to_dict", "toolpath_content_payload", "validate_arc", "validate_event_stream",

@@ -112,6 +112,7 @@ class PocketComputeResult:
     artifact: ToolpathArtifact | None
     accepted: bool
     diagnostics: tuple[ValidationDiagnostic, ...] = ()
+    no_rest_material: bool = False
 
 
 def pocket_feed_independent_fingerprint(inputs: PocketInputs) -> ContentFingerprint:
@@ -123,6 +124,31 @@ def pocket_feed_independent_fingerprint(inputs: PocketInputs) -> ContentFingerpr
     strategy.pop("plunge_feed_rate")
     return ContentFingerprint.from_payload({
         "format": "HMS_R251_POCKET_FEED_INDEPENDENT_INPUT",
+        "format_version": 1,
+        "operation_id": str(inputs.operation.operation_id),
+        "operation_enabled": inputs.operation.enabled,
+        "geometry_inputs": [item.to_dict() for item in inputs.operation.geometry_inputs],
+        "strategy": strategy,
+        "region": inputs.region.fingerprint.to_dict(),
+        "offset_loops": [loop.to_dict() for loop in inputs.offset_loops],
+        "depth_levels": list(inputs.depth_levels),
+        "setup_id": str(inputs.setup.setup_id),
+        "stock": inputs.setup.stock.to_dict(),
+        "wcs": inputs.setup.wcs.to_dict(),
+        "assembly": inputs.assembly.to_dict(),
+        "tool": inputs.tool.to_dict(),
+        "machine": inputs.machine.to_dict(),
+    })
+
+
+def pocket_lead_independent_fingerprint(inputs: PocketInputs) -> ContentFingerprint:
+    """Identify Pocket cutting geometry independently from Lead-In length."""
+    if not isinstance(inputs, PocketInputs):
+        raise TypeError("Pocket lead incremental input is invalid")
+    strategy = inputs.strategy.to_dict()
+    strategy.pop("lead_in_length")
+    return ContentFingerprint.from_payload({
+        "format": "HMS_R266_POCKET_LEAD_INDEPENDENT_INPUT",
         "format_version": 1,
         "operation_id": str(inputs.operation.operation_id),
         "operation_enabled": inputs.operation.enabled,
@@ -687,7 +713,10 @@ class PocketGenerator:
                     ) from error
         levels = pocket_depth_levels(strategy.top_z.value, strategy.final_depth.value,
                                      strategy.stepdown.value, strategy.tolerance.value)
-        event_estimate = len(levels) * sum(len(loop.segments) + 3 for loop in loops) + 4
+        lead_events = 1 if strategy.lead_in_length.value > 0.0 else 0
+        event_estimate = len(levels) * sum(
+            len(loop.segments) + 3 + lead_events for loop in loops
+        ) + 4
         if event_estimate > _MAX_EVENTS_ESTIMATE:
             raise PocketGenerationError(DiagnosticCode.POCKET_GENERATION_FAILED,
                                         "Pocket exceeds the safe toolpath event limit")
@@ -721,6 +750,13 @@ class PocketGenerator:
         return replace(inputs, operation=replace(inputs.operation, artifact_state=state)), token
 
     def generate(self, inputs: PocketInputs) -> ToolpathArtifact:
+        return self._assemble(inputs)
+
+    def regenerate_lead_only(self, inputs: PocketInputs) -> ToolpathArtifact:
+        """Reuse validated cut loops/depths while rebuilding Lead-In and assembly."""
+        return self._assemble(inputs)
+
+    def _assemble(self, inputs: PocketInputs) -> ToolpathArtifact:
         operation, strategy = inputs.operation, inputs.strategy
         token = operation.artifact_state.token
         if operation.artifact_state.status is not ArtifactStatus.COMPUTING or token is None:
@@ -745,7 +781,7 @@ class PocketGenerator:
         )
         try:
             axis = Vector3(0.0, 0.0, 1.0)
-            first = inputs.offset_loops[0].segments[0].start
+            first = _lead_start(inputs.offset_loops[0], strategy.lead_in_length.value)
             builder.set_initial_pose(Pose(Point3(first.x, first.y, strategy.clearance_height.value,
                                                   strategy.unit), axis))
             builder.set_initial_process_state(feed_mode=FeedMode.UNITS_PER_MINUTE)
@@ -754,13 +790,23 @@ class PocketGenerator:
             for depth_index, depth in enumerate(inputs.depth_levels):
                 for loop_index, loop in enumerate(inputs.offset_loops):
                     start = loop.segments[0].start
-                    clearance = Pose(Point3(start.x, start.y, strategy.clearance_height.value,
+                    lead_start = _lead_start(loop, strategy.lead_in_length.value)
+                    clearance = Pose(Point3(lead_start.x, lead_start.y, strategy.clearance_height.value,
                                             strategy.unit), axis)
                     _rapid_if_needed(builder, clearance, inputs.machine.capabilities.maximum_rapid,
                                      f"pocket.depth.{depth_index}.loop.{loop_index}.position")
-                    entry = Pose(Point3(start.x, start.y, depth, strategy.unit), axis)
+                    entry = Pose(Point3(lead_start.x, lead_start.y, depth, strategy.unit), axis)
                     builder.linear_to(entry, strategy.plunge_feed_rate, motion_class=MotionClass.LINK,
                                       provenance=f"pocket.depth.{depth_index}.loop.{loop_index}.plunge")
+                    if strategy.lead_in_length.value > 0.0:
+                        builder.linear_to(
+                            Pose(Point3(start.x, start.y, depth, strategy.unit), axis),
+                            strategy.cutting_feed_rate,
+                            motion_class=MotionClass.CUTTING,
+                            provenance=(
+                                f"pocket.depth.{depth_index}.loop.{loop_index}.lead_in"
+                            ),
+                        )
                     for segment_index, segment in enumerate(loop.segments):
                         end = Pose(Point3(segment.end.x, segment.end.y, depth, strategy.unit), axis)
                         provenance = (f"pocket.depth.{depth_index}.loop.{loop_index}."
@@ -881,3 +927,31 @@ def _rapid_if_needed(builder: ToolpathBuilder, end: Pose, rapid_rate, provenance
                          + (current.position.z - end.position.z) ** 2)
     if distance > 1.0e-8:
         builder.rapid_to(end, rapid_rate=rapid_rate, provenance=provenance)
+
+
+def _lead_start(loop: ContourLoop, length: float) -> Point3:
+    """Return a tangent point on the final LINE segment ending at loop start."""
+    start = loop.segments[0].start
+    if length <= 0.0:
+        return start
+    last = loop.segments[-1]
+    if last.kind is not ContourCurveKind.LINE or last.end != start:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_ENTRY_UNSAFE,
+            "Pocket Lead-In requires a terminal LINE segment",
+        )
+    dx = last.end.x - last.start.x
+    dy = last.end.y - last.start.y
+    available = math.hypot(dx, dy)
+    if length >= available:
+        raise PocketGenerationError(
+            DiagnosticCode.POCKET_ENTRY_UNSAFE,
+            "Pocket Lead-In must be shorter than the terminal segment",
+        )
+    ratio = length / available
+    return Point3(
+        start.x - dx * ratio,
+        start.y - dy * ratio,
+        start.z,
+        start.unit,
+    )
