@@ -1,0 +1,103 @@
+{
+  "format": "HMS_R268_PRODUCT_DEFINITION",
+  "format_version": 1,
+  "stage_identity": "REST_CONTOUR_AND_REST_FINISHING",
+  "title_vi": "Phay biên dạng và tinh phần dư",
+  "user_problem": "Các vùng vật liệu còn lại sau các nguyên công trước chưa thể được tiêu thụ bằng chiến lược contour/finishing có ràng buộc và truy xuất nguồn gốc.",
+  "production_behavior": "Tạo toolpath chỉ trong phần MaterialState còn lại của cùng setup/WCS, giữ biên dạng và vùng gia công xác định, rồi xuất qua Toolpath IR và Production Post hiện có.",
+  "inputs": [
+    "upstream_material_state",
+    "source_operation_and_toolpath_fingerprint",
+    "selected_contour_or_finishing_region",
+    "stock_and_setup_wcs",
+    "tool_assembly",
+    "tolerance_allowance_stepdown_and_linking_parameters"
+  ],
+  "outputs": [
+    "deterministic_toolpath_artifact",
+    "material_state_successor",
+    "dependency_edge_and_provenance",
+    "calculation_diagnostics",
+    "cache_record"
+  ],
+  "supported_scope": {
+    "stock": ["box"],
+    "axis": ["3_axis_fixed_setup_wcs"],
+    "consumers": ["rest_contour_3axis", "rest_finishing_3axis"],
+    "tools": ["end_mill", "ball_end_mill", "bull_nose_end_mill"],
+    "regions": ["deterministic_closed_planar_contour", "material_state_residual_regions"],
+    "workflow": ["calculate", "cancel", "publish", "reopen", "post_export"]
+  },
+  "unsupported_scope": [
+    "cylinder_from_model_or_custom_stock",
+    "4_axis_or_5_axis_motion",
+    "adaptive_or_trochoidal_roughing",
+    "holder_shank_fixture_collision_guarantee",
+    "physical_probing_or_cnc_control",
+    "level2_level3_machine_qualification",
+    "production_post_changes",
+    "automatic_full_simulation"
+  ],
+  "dependency_model": {
+    "edge_kind": "material_state",
+    "chain": "initial_stock -> upstream_toolpath -> material_state -> rest_consumer -> successor_state",
+    "selection": "automatic_same_setup_wcs_chain",
+    "independent_operations": "preserved_when_no_material_state_edge_exists",
+    "cycle_policy": "reject"
+  },
+  "cache_invalidation": {
+    "project_local": true,
+    "semantic_fingerprint_inputs": ["parent_state", "actual_semantic_toolpath", "tool_cutter_geometry", "stock", "setup_wcs", "precision", "algorithm_version"],
+    "cache_hit_requires": ["matching_fingerprint", "complete_atomic_publication", "valid_checksum"],
+    "invalidate_on": ["cutting_geometry", "tool_profile", "stock", "wcs", "precision", "algorithm_version", "unknown_relevant_mutation"],
+    "preserve_on": ["camera", "viewport_background", "feed_only_when_not_cutting_geometry"],
+    "corruption_policy": "fail_closed_and_recompute"
+  },
+  "persistence_reopen": {
+    "format_version_required": true,
+    "persist": ["operation_parameters", "dependency_edge", "artifact_provenance", "material_state", "cache_metadata"],
+    "reopen": "reuse only complete matching artifacts; otherwise deterministic recompute",
+    "atomic_publication": true
+  },
+  "performance_expectations": {
+    "accuracy_priority": "retain tolerance and deterministic geometry semantics",
+    "speed_priority": "reuse dependency-aware phases and project-local checkpoints",
+    "parallelism": "safe_bounded_only",
+    "foreground_rule": "background work yields to foreground CAM/Post/Export/UI and resumes from checkpoint"
+  },
+  "ui_minimum": {
+    "language": "vi_first",
+    "controls": ["select upstream operation", "select contour/region", "edit tolerance allowance linking", "calculate/cancel", "show status and provenance"],
+    "deferred": "visual redesign and readability polishing"
+  },
+  "test_analytic_fixtures": [
+    "box_stock_single_residual_band",
+    "multi_region_deterministic_order",
+    "no_rest_zero_motion_result",
+    "upstream_geometry_invalidation",
+    "feed_only_reuse",
+    "corrupt_cache_fail_closed",
+    "fresh_reopen_reuse",
+    "cancel_and_resume_checkpoint",
+    "toolpath_fingerprint_and_post_export_identity"
+  ],
+  "acceptance_markers": [
+    "REST_CONTOUR_FINISHING_ARTIFACT_DETERMINISTIC",
+    "MATERIAL_STATE_DEPENDENCY_PERSISTED",
+    "SCOPED_INVALIDATION_FAIL_CLOSED",
+    "FRESH_REOPEN_REUSE_VERIFIED",
+    "POST_EXPORT_PATH_PRESERVED",
+    "NO_PHYSICAL_QUALIFICATION_CLAIM"
+  ],
+  "explicit_non_goals": [
+    "reopen_or_restage_r266_materialstate_core",
+    "advanced_simulation_as_critical_path",
+    "turning_implementation",
+    "ui_polish",
+    "machine_ready_or_level2_level3"
+  ],
+  "integrity": {
+    "canonical_sha256": "54cfa2660e3dba1d3151ea9578bb070471ffef972d2325d3cd91c723be3edb5d",
+    "hash_scope": "UTF-8 canonical JSON with canonical_sha256 set to empty string"
+  }
+}

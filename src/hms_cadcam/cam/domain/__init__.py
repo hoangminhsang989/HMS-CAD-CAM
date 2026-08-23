@@ -45,6 +45,17 @@ from hms_cadcam.cam.domain.contour import (
     ProfileProvenance,
     ResolvedContourProfile,
 )
+from hms_cadcam.cam.domain.rest_contour import (
+    REST_CONTOUR_PARAMETER_FORMAT,
+    REST_CONTOUR_PARAMETER_SCHEMA_VERSION,
+    REST_CONTOUR_STRATEGY_KEY,
+    REST_CONTOUR_STRATEGY_VERSION,
+    RestContourDiagnosticCode,
+    RestContourLinkingPolicy,
+    RestContourParameters,
+    RestContourProfileSelection,
+    RestContourValidationError,
+)
 from hms_cadcam.cam.domain.facing import (
     FACING_STRATEGY_KEY,
     FACING_STRATEGY_VERSION,
@@ -319,6 +330,15 @@ __all__ = [
     "ContentFingerprint",
     "CONTOUR_STRATEGY_KEY",
     "CONTOUR_STRATEGY_VERSION",
+    "REST_CONTOUR_PARAMETER_FORMAT",
+    "REST_CONTOUR_PARAMETER_SCHEMA_VERSION",
+    "REST_CONTOUR_STRATEGY_KEY",
+    "REST_CONTOUR_STRATEGY_VERSION",
+    "RestContourDiagnosticCode",
+    "RestContourLinkingPolicy",
+    "RestContourParameters",
+    "RestContourProfileSelection",
+    "RestContourValidationError",
     "ContourBounds",
     "ContourCurveKind",
     "ContourCutDirection",

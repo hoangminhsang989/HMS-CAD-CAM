@@ -121,6 +121,15 @@ from hms_cadcam.cam.application.rest_pocket import (MaterialStateResolution,
     MaterialStateResolutionStatus, RestPocketGenerator, RestPocketInputs,
     material_state_status_vi, resolve_material_state)
 from hms_cadcam.cam.application.rest_region import RestRegion, extract_rest_regions, validate_rest_region
+from hms_cadcam.cam.application.rest_contour import (
+    RestContourFoundation,
+    RestContourFoundationInputs,
+    RestContourFoundationResult,
+    RestMaterialResolution,
+    RestMaterialResolutionStatus,
+    RestMaterialStateCandidate,
+    resolve_rest_material_state,
+)
 
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
@@ -163,4 +172,7 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "PocketInputs", "build_pocket_offset_loops", "pocket_depth_levels",
            "pocket_lead_independent_fingerprint",
            "prepare_pocket_machining_geometry", "MaterialStateResolution", "MaterialStateResolutionStatus", "RestPocketGenerator", "RestPocketInputs", "material_state_status_vi", "resolve_material_state", "RestRegion", "extract_rest_regions", "validate_rest_region", "resolve_box_facing_region",
+           "RestContourFoundation", "RestContourFoundationInputs", "RestContourFoundationResult",
+           "RestMaterialResolution", "RestMaterialResolutionStatus", "RestMaterialStateCandidate",
+           "resolve_rest_material_state",
            "resolve_profile_in_setup"]

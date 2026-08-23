@@ -81,6 +81,15 @@ class DiagnosticSeverity(StrEnum):
 
 
 class DiagnosticCode(StrEnum):
+    REST_CONTOUR_INVALID_PARAMETERS = "rest_contour.invalid_parameters"
+    REST_CONTOUR_PROFILE_INVALID = "rest_contour.profile_invalid"
+    REST_CONTOUR_MATERIAL_STATE_MISSING = "rest_contour.material_state_missing"
+    REST_CONTOUR_MATERIAL_STATE_STALE = "rest_contour.material_state_stale"
+    REST_CONTOUR_MATERIAL_STATE_AMBIGUOUS = "rest_contour.material_state_ambiguous"
+    REST_CONTOUR_MATERIAL_STATE_INVALID = "rest_contour.material_state_invalid"
+    REST_CONTOUR_TOOL_INELIGIBLE = "rest_contour.tool_ineligible"
+    REST_CONTOUR_MACHINE_INCOMPATIBLE = "rest_contour.machine_incompatible"
+    REST_CONTOUR_AUTOMATIC_UNRESOLVED = "rest_contour.automatic_unresolved"
     TREE_INVALID = "tree_invalid"
     GEOMETRY_UNRESOLVED = "geometry_unresolved"
     GEOMETRY_STALE = "geometry_stale"
