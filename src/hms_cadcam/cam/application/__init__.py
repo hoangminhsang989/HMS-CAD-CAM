@@ -128,6 +128,7 @@ from hms_cadcam.cam.application.rest_contour import (
     RestMaterialResolution,
     RestMaterialResolutionStatus,
     RestMaterialStateCandidate,
+    resolve_rest_contour_application_parameters,
     resolve_rest_material_state,
 )
 from hms_cadcam.cam.application.rest_contour_toolpath import (
@@ -141,7 +142,6 @@ from hms_cadcam.cam.application.rest_contour_toolpath import (
     prepare_rest_contour_phase_b,
     publish_rest_contour_phase_b,
 )
-
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
            "DRILLING_AUTOMATIC_POLICY_VERSION", "DRILLING_AUTOMATIC_USER_KEYS",
@@ -185,7 +185,7 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "prepare_pocket_machining_geometry", "MaterialStateResolution", "MaterialStateResolutionStatus", "RestPocketGenerator", "RestPocketInputs", "material_state_status_vi", "resolve_material_state", "RestRegion", "extract_rest_regions", "validate_rest_region", "resolve_box_facing_region",
            "RestContourFoundation", "RestContourFoundationInputs", "RestContourFoundationResult",
            "RestMaterialResolution", "RestMaterialResolutionStatus", "RestMaterialStateCandidate",
-           "resolve_rest_material_state",
+           "resolve_rest_material_state", "resolve_rest_contour_application_parameters",
            "RestContourPhaseBCandidate", "RestContourPhaseBExecutionContext",
            "RestContourPhaseBNoRestMaterial", "RestContourPhaseBPrepared",
            "RestContourPhaseBPublication", "RestContourPhaseBSuccessorProvenance",

@@ -102,6 +102,28 @@ _POCKET_FINAL_CACHE_MAX_EVENT_ESTIMATE = 5_000
 _POCKET_INCREMENTAL_TEMPLATE_MAX_EVENTS = 100_000
 
 
+@dataclass(frozen=True, slots=True)
+class _RestContourRehydratedResult:
+    """Internal semantic replay of a fully verified persisted completion."""
+
+    status: object
+    preparation: object
+    publication: object
+    successor_publication: object
+    candidate: None = None
+    diagnostic_code: None = None
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _RestContourRehydratedPreparation:
+    """Status-only replay preparation; it contains no R271 reservation."""
+
+    status: object
+    diagnostic_code: None = None
+    message: str = ""
+
+
 def _report_calculation_progress(
     callback: Callable[[CamCalculationProgress], None] | None,
     value: CamCalculationProgress,
@@ -130,6 +152,11 @@ class CamApplicationService:
         self._rest_incremental_templates: OrderedDict[
             OperationId, tuple[ContentFingerprint, RestPocketInputs]
         ] = OrderedDict()
+        # R272 keeps the sealed R271 reservation service-owned.  UI/project
+        # callers identify an Operation only; they never receive authority to
+        # mint or replay a Prepared object.
+        self._rest_contour_preparations: dict[OperationId, object] = {}
+        self._rest_contour_completed: dict[OperationId, object] = {}
         self._lock = threading.RLock()
         self._snapshot = CamProjectSnapshot()
         self._persisted = CamProjectSnapshot()
@@ -158,6 +185,8 @@ class CamApplicationService:
             self._selection = CamSelection()
             self._pocket_incremental_templates.clear()
             self._rest_incremental_templates.clear()
+            self._rest_contour_preparations.clear()
+            self._rest_contour_completed.clear()
             self._calculation_timings.clear()
             self._generation += 1
             self._simulation.bind_project(self._generation, self._generation)
@@ -169,9 +198,20 @@ class CamApplicationService:
             candidate = mutation(_clone_snapshot(self._snapshot))
             if not isinstance(candidate, CamProjectSnapshot):
                 raise TypeError("CAM mutation must return CamProjectSnapshot")
+            # Any aggregate mutation can affect Rest authority indirectly
+            # (profile, tool, machine, stock or graph).  A completed-result
+            # replay is valid only while this exact snapshot remains current.
+            self._rest_contour_completed.clear()
             operation_ids = {operation.operation_id for job in candidate.jobs
                              for setup in job.setups
                              for operation in setup.operation_tree.operations}
+            invalid_rest_completions = {
+                dependency.consumer_operation_id
+                for dependency in self._snapshot.material_state_dependencies
+                if dependency.successor_publication is not None
+                and _rest_contour_completion_signature(self._snapshot, dependency)
+                != _rest_contour_completion_signature(candidate, dependency)
+            }
             self._pocket_incremental_templates = OrderedDict(
                 (operation_id, value)
                 for operation_id, value in self._pocket_incremental_templates.items()
@@ -182,9 +222,23 @@ class CamApplicationService:
                 for operation_id, value in self._rest_incremental_templates.items()
                 if operation_id in operation_ids
             )
+            # A sealed Phase-B reservation is valid only for the exact
+            # aggregate that produced it.  Even an unrelated editable change
+            # must discard process-local authority rather than carrying it
+            # across a snapshot generation.
+            self._rest_contour_preparations.clear()
+            self._rest_contour_completed = {
+                operation_id: value
+                for operation_id, value in self._rest_contour_completed.items()
+                if operation_id in operation_ids
+            }
             candidate = replace(candidate, artifacts=tuple(
                 metadata for metadata in candidate.artifacts
                 if metadata.operation_id in operation_ids
+                and metadata.operation_id not in invalid_rest_completions
+            ), material_state_dependencies=tuple(
+                dependency for dependency in candidate.material_state_dependencies
+                if dependency.consumer_operation_id not in invalid_rest_completions
             ))
             self._snapshot = _clone_snapshot(candidate)
             self._simulation.invalidate_all()
@@ -252,6 +306,12 @@ class CamApplicationService:
         with self._lock:
             self._snapshot = _clone_snapshot(snapshot)
             self._persisted = _clone_snapshot(snapshot)
+            # Persisted source-geometry replacement bypasses ``apply()``.
+            # Process-local R271 reservations/results must never survive that
+            # aggregate replacement; any durable v2 record is revalidated
+            # against the new snapshot on its next use.
+            self._rest_contour_preparations.clear()
+            self._rest_contour_completed.clear()
             for operation_id in affected_operation_ids:
                 self._simulation.mark_stale(operation_id)
                 self._post.mark_stale(operation_id)
@@ -264,6 +324,8 @@ class CamApplicationService:
             self._selection = CamSelection()
             self._pocket_incremental_templates.clear()
             self._rest_incremental_templates.clear()
+            self._rest_contour_preparations.clear()
+            self._rest_contour_completed.clear()
             self._calculation_timings.clear()
             self._generation += 1
             self._simulation.clear()
@@ -2093,6 +2155,957 @@ class CamApplicationService:
                 diagnostic = error.diagnostic if isinstance(error, PocketGenerationError) else ValidationDiagnostic(DiagnosticSeverity.ERROR, DiagnosticCode.POCKET_GENERATION_FAILED, str(error))
                 return PocketComputeResult(operation, None, False, (diagnostic,))
 
+    def create_rest_contour_operation(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        parent_node_id: CamNodeId,
+        *,
+        operation_id: OperationId,
+        node_id: CamNodeId,
+        name: str,
+        parameters,
+        profile,
+        dependency_operation_id: OperationId,
+        tool_assembly_id: ToolAssemblyId,
+        machine_requirement=None,
+        profile_resolver=None,
+        quality_profile=None,
+        manual_overrides=None,
+    ) -> CamProjectSnapshot:
+        """Create Rest Contour through its registered aggregate factory.
+
+        The explicit producer ID becomes a typed DAG edge in the same snapshot
+        mutation.  No creation-order fallback or caller supplied MaterialState
+        is accepted.
+        """
+        from hms_cadcam.cam.domain.dependency import DependencyEdge
+        from hms_cadcam.cam.automatic_parameters import CamQualityProfile
+        from hms_cadcam.cam.application.rest_contour import (
+            resolve_rest_contour_application_parameters,
+            validate_rest_contour_machine_authority,
+        )
+        from hms_cadcam.cam.domain import (
+            MachineCompatibilityStatus,
+            MachineEvidence,
+            MachineRequirement,
+            OperationCapability,
+            ToolAssemblyEvidence,
+            ToolAssemblyStatus,
+            assess_machine_compatibility,
+            assess_tool_assembly,
+        )
+        from hms_cadcam.cam.operation_registry import default_rest_contour_operation_registry
+
+        with self._lock:
+            setup = _find_setup(self._snapshot, setup_id)
+            if _find_job_for_setup(self._snapshot, setup_id).job_id != job_id:
+                raise CamChildNotFoundError("Rest Contour setup does not belong to the selected job")
+            assembly = next((value for value in self._snapshot.tool_assemblies
+                             if value.assembly_id == tool_assembly_id), None)
+            if assembly is None:
+                raise CamChildNotFoundError("Rest Contour tool assembly does not exist")
+            tool = next((value for value in self._snapshot.tool_definitions
+                         if value.tool_id == assembly.tool_id), None)
+            if tool is None:
+                raise CamChildNotFoundError("Rest Contour tool definition does not exist")
+            holder = next((value for value in self._snapshot.holder_definitions
+                           if value.holder_id == assembly.holder_id), None)
+            assembly_status = assess_tool_assembly(
+                assembly,
+                ToolAssemblyEvidence(
+                    True,
+                    tool.revision,
+                    tool.content_fingerprint,
+                    tool.unit,
+                    assembly.holder_id is not None and holder is not None,
+                    holder.revision if holder is not None else None,
+                    holder.content_fingerprint if holder is not None else None,
+                    holder.unit if holder is not None else None,
+                ),
+            )
+            if assembly_status is not ToolAssemblyStatus.VALID:
+                raise CamValidationError(
+                    f"Rest Contour tool assembly is not current: {assembly_status.value}"
+                )
+            if not isinstance(machine_requirement, MachineRequirement):
+                raise CamValidationError("Rest Contour requires a current milling machine")
+            if OperationCapability.MILLING not in machine_requirement.required_capabilities:
+                raise CamValidationError("Rest Contour machine must require milling capability")
+            machine = next((value for value in self._snapshot.machine_definitions
+                            if value.machine_id == machine_requirement.machine_id), None)
+            machine_status = assess_machine_compatibility(
+                machine_requirement,
+                MachineEvidence(
+                    machine is not None,
+                    machine.revision if machine is not None else None,
+                    machine.content_fingerprint if machine is not None else None,
+                    machine.unit if machine is not None else None,
+                    machine.capabilities.operations if machine is not None else (),
+                ),
+            )
+            if machine_status is not MachineCompatibilityStatus.COMPATIBLE:
+                raise CamValidationError(
+                    f"Rest Contour machine authority is not current: {machine_status.value}"
+                )
+            producer = next((value for value in setup.operation_tree.operations
+                             if value.operation_id == dependency_operation_id), None)
+            if producer is None:
+                raise CamChildNotFoundError("Rest Contour material producer does not belong to the setup")
+            effective_parameters = resolve_rest_contour_application_parameters(
+                parameters,
+                profile,
+                tool,
+                assembly,
+                setup,
+                profile_resolver,
+                quality_profile=(CamQualityProfile.BALANCED
+                                 if quality_profile is None else quality_profile),
+                manual_overrides=manual_overrides,
+            )
+            validate_rest_contour_machine_authority(
+                effective_parameters, machine, machine_requirement,
+            )
+            operation = default_rest_contour_operation_registry().create(
+                operation_id=operation_id, node_id=node_id, setup_id=setup_id,
+                parameters=effective_parameters, profile=profile,
+                dependency_operation_id=dependency_operation_id,
+                tool_assembly=assembly, machine_requirement=machine_requirement,
+            )
+
+            def mutation(state: CamProjectSnapshot) -> CamProjectSnapshot:
+                current = _find_setup(state, setup_id)
+                tree = current.operation_tree.add_operation(parent_node_id, name, operation)
+                tree = OperationTree(
+                    tree.setup_id, tree.root_id, tree.nodes, tree.operations,
+                    tree.dependency_graph.with_edge_added(
+                        DependencyEdge.material_state(dependency_operation_id, operation_id)
+                    ), tree.revision.next(),
+                )
+                return _replace_setup(state, replace(current, operation_tree=tree))
+
+            return self.apply(mutation)
+
+    def _rest_contour_failure(self, diagnostic_code, message: str):
+        """Return an externally safe lifecycle failure for aggregate resolution.
+
+        Resolution failures are ordinary project-data failures.  They must not
+        leak a partially resolved authority (or an implementation exception)
+        to callers that decide whether a machining action is permitted.
+        """
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            RestContourLifecyclePreparation, RestContourLifecycleResult,
+            RestContourLifecycleStatus,
+        )
+
+        preparation = RestContourLifecyclePreparation(
+            RestContourLifecycleStatus.FAILURE,
+            diagnostic_code=diagnostic_code,
+            message=message,
+        )
+        return RestContourLifecycleResult(
+            RestContourLifecycleStatus.FAILURE,
+            preparation,
+            diagnostic_code=diagnostic_code,
+            message=message,
+        )
+
+    def prepare_rest_contour(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver,
+        cancellation: Callable[[], bool] | None = None,
+    ):
+        """Resolve current aggregate authority and reserve one sealed R271 plan."""
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            RestContourLifecycle, RestContourLifecycleStatus,
+        )
+        from hms_cadcam.cam.domain.rest_contour import RestContourValidationError
+
+        with self._lock:
+            try:
+                context = self._rest_contour_context(
+                    project_root, operation_id, profile_resolver, cancellation=cancellation,
+                )
+                result = RestContourLifecycle().prepare(context)
+            except RestContourValidationError as error:
+                result = self._rest_contour_failure(error.code, str(error)).preparation
+            except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError,
+                    OSError, RuntimeError, TypeError, ValueError) as error:
+                from hms_cadcam.cam.domain.rest_contour import RestContourDiagnosticCode
+
+                result = self._rest_contour_failure(
+                    RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                    f"Rest Contour aggregate authority is invalid: {error}",
+                ).preparation
+            if result.status is RestContourLifecycleStatus.PREPARED:
+                self._rest_contour_preparations[operation_id] = result
+            else:
+                self._rest_contour_preparations.pop(operation_id, None)
+            return result
+
+    def generate_rest_contour(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver,
+        cancellation: Callable[[], bool] | None = None,
+    ):
+        """Generate/publish Rest Contour from a fresh service-owned reservation.
+
+        R271 writes immutable artifact/state bytes first.  Only after their
+        exact readback does this method stage artifact metadata and the v2
+        successor record in the editable snapshot.  A later SQLite save is the
+        durable project authority; bytes without that record are ignored.
+        """
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            RestContourLifecycle, RestContourLifecycleStatus,
+        )
+
+        with self._lock:
+            # Same-process and fresh-reopen reuse share one verification path.
+            # A process-local cached SUCCESS is never authority by itself:
+            # current profile/geometry, DAG, tool, machine, artifact and v2
+            # completion fingerprints are all revalidated below.
+            existing = self._rehydrate_rest_contour_completion(
+                project_root,
+                operation_id,
+                profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+            if existing is not None:
+                return existing
+            before = _clone_snapshot(self._snapshot)
+            preparation = self.prepare_rest_contour(
+                project_root, operation_id, profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+            lifecycle = RestContourLifecycle()
+            try:
+                result = lifecycle.generate(
+                    preparation,
+                    project_root=project_root,
+                    publisher=self._publish_rest_contour_candidate,
+                )
+            except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError,
+                    OSError, TypeError, ValueError) as error:
+                self._snapshot = before
+                self._rest_contour_preparations.pop(operation_id, None)
+                from hms_cadcam.cam.domain.rest_contour import RestContourDiagnosticCode
+
+                return self._rest_contour_failure(
+                    RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                    f"Rest Contour generation authority is invalid: {error}",
+                )
+            if result.status is RestContourLifecycleStatus.SUCCESS:
+                self._rest_contour_preparations.pop(operation_id, None)
+                self._rest_contour_completed[operation_id] = result
+                self._post.mark_stale(operation_id)
+            elif result.status is RestContourLifecycleStatus.FAILURE:
+                self._snapshot = before
+                self._rest_contour_preparations.pop(operation_id, None)
+                self._rest_contour_completed.pop(operation_id, None)
+            return result
+
+    def _rest_contour_context(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        profile_resolver,
+        *,
+        cancellation: Callable[[], bool] | None,
+        replay_generation: int | None = None,
+    ):
+        """Build lifecycle context solely from the current snapshot and stores."""
+        from hms_cadcam.cam.application.rest_contour import (
+            RestContourFoundationInputs, RestMaterialStateCandidate,
+        )
+        from hms_cadcam.cam.application.rest_contour_lifecycle import RestContourLifecycleContext
+        from hms_cadcam.cam.domain import MachineEvidence, ToolAssemblyEvidence
+        from hms_cadcam.cam.domain.rest_contour import (
+            RestContourDiagnosticCode,
+            RestContourParameters,
+            RestContourProfileSelection,
+            RestContourValidationError,
+        )
+        from hms_cadcam.cam.material_state import material_state_setup_fingerprint
+        from hms_cadcam.cam.persistence.models import MaterialStateDependency
+
+        if not isinstance(project_root, Path):
+            raise TypeError("Rest Contour project root is invalid")
+        operation = _find_operation(self._snapshot, operation_id)
+        setup = _find_setup(self._snapshot, operation.setup_id)
+        if replay_generation is not None:
+            if type(replay_generation) is not int or replay_generation <= 0:
+                raise TypeError("Rest Contour replay generation is invalid")
+            replay_state = replace(
+                operation.artifact_state,
+                status=ArtifactStatus.DIRTY,
+                generation=replay_generation - 1,
+                token=None,
+                input_fingerprint=None,
+                artifact_fingerprint=None,
+                dirty_reasons=(DirtyReason.PARAMETERS_CHANGED,),
+                diagnostics=(),
+            )
+            operation = replace(operation, artifact_state=replay_state, diagnostics=())
+            setup = replace(
+                setup,
+                operation_tree=setup.operation_tree.replace_operation(operation),
+            )
+        parameters = RestContourParameters.from_operation_parameters(operation.parameters)
+        profiles = tuple(value for value in operation.geometry_inputs if value.role.value == "profile")
+        if len(operation.geometry_inputs) != 1 or len(profiles) != 1:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.PROFILE_INVALID,
+                "Rest Contour has no unique persisted profile",
+            )
+        resolved_profile = profile_resolver(profiles[0].reference)
+        if getattr(resolved_profile, "profile", None) is None:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.PROFILE_INVALID,
+                "Rest Contour persisted profile cannot be resolved",
+            )
+        profile = RestContourProfileSelection(resolved_profile.profile)
+        assembly = next((value for value in self._snapshot.tool_assemblies
+                         if value.assembly_id == operation.tool_assembly.assembly_id), None)
+        if assembly is None:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.TOOL_INELIGIBLE,
+                "Rest Contour tool assembly is missing",
+            )
+        try:
+            tool = _find_tool(self._snapshot, assembly.tool_id)
+        except CamChildNotFoundError as error:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.TOOL_INELIGIBLE,
+                "Rest Contour tool definition is missing",
+            ) from error
+        holder = next((value for value in self._snapshot.holder_definitions
+                       if value.holder_id == assembly.holder_id), None)
+        assembly_evidence = ToolAssemblyEvidence(
+            True, tool.revision, tool.content_fingerprint, tool.unit,
+            assembly.holder_id is not None and holder is not None,
+            holder.revision if holder is not None else None,
+            holder.content_fingerprint if holder is not None else None,
+            holder.unit if holder is not None else None,
+        )
+        requirement = operation.machine_requirement
+        if requirement is None:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.MACHINE_INCOMPATIBLE,
+                "Rest Contour machine requirement is missing",
+            )
+        machine = next((value for value in self._snapshot.machine_definitions
+                        if value.machine_id == requirement.machine_id), None)
+        if machine is None:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.MACHINE_INCOMPATIBLE,
+                "Rest Contour machine is missing",
+            )
+        machine_evidence = MachineEvidence(
+            True, machine.revision, machine.content_fingerprint, machine.unit,
+            machine.capabilities.operations,
+        )
+        edges = tuple(edge for edge in setup.operation_tree.dependency_graph.edges
+                      if edge.target_operation_id == operation_id and edge.kind.value == "material_state")
+        if len(edges) != 1:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.MATERIAL_STATE_MISSING
+                if not edges else RestContourDiagnosticCode.MATERIAL_STATE_AMBIGUOUS,
+                "Rest Contour material-state dependency is missing or ambiguous",
+            )
+        producer_id = edges[0].source_operation_id
+        producer = _find_operation(self._snapshot, producer_id)
+        metadata = next((value for value in self._snapshot.artifacts
+                         if value.operation_id == producer_id), None)
+        if metadata is None:
+            raise RestContourValidationError(
+                RestContourDiagnosticCode.MATERIAL_STATE_MISSING,
+                "Rest Contour producer artifact metadata is missing",
+            )
+        artifact = self._artifact_store.load(project_root, metadata)
+        # Feed/spindle-only edits make the operation artifact stale for direct
+        # NC reuse, but they do not change material removal. ``apply()`` keeps
+        # the downstream v2 dependency only when the producer's scoped
+        # material-removal authority is unchanged. Build a detached semantic
+        # projection for Phase A so the old exact artifact may still prove the
+        # downstream MaterialState without relabelling the editable operation.
+        producer_state = producer.artifact_state
+        if _is_feed_only_material_artifact(producer, artifact):
+            semantic_state = replace(
+                producer_state,
+                status=ArtifactStatus.VALID,
+                artifact_fingerprint=artifact.artifact_fingerprint,
+                dirty_reasons=(),
+                diagnostics=(),
+            )
+            producer = replace(
+                producer,
+                revision=artifact.operation_revision,
+                artifact_state=semantic_state,
+            )
+            setup = replace(
+                setup,
+                operation_tree=setup.operation_tree.replace_operation(producer),
+            )
+        # A predecessor published by a prior R272 Rest operation has an exact
+        # v2 pointer.  For a pre-R272 machining producer, calculate the state
+        # from that explicitly selected producer only; never scan states or
+        # choose a prior list item.
+        prior = next((value for value in self._snapshot.material_state_dependencies
+                      if value.consumer_operation_id == producer_id
+                      and getattr(value, "successor_publication", None) is not None), None)
+        if prior is not None:
+            _publication, _artifact, parent = self._load_rest_contour_completion(
+                project_root,
+                producer_id,
+                profile_resolver=profile_resolver,
+                cancellation=cancellation,
+                material_only=True,
+            )
+        else:
+            from hms_cadcam.cam.domain.rest_contour import REST_CONTOUR_STRATEGY_KEY
+
+            if producer.strategy_key == REST_CONTOUR_STRATEGY_KEY:
+                raise RestContourValidationError(
+                    RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                    "Rest Contour producer lacks a committed v2 COMPLETE record",
+                )
+            producer_assembly = next((value for value in self._snapshot.tool_assemblies
+                                      if value.assembly_id == producer.tool_assembly.assembly_id), None)
+            if producer_assembly is None:
+                raise RestContourValidationError(
+                    RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                    "Rest Contour producer tool assembly is missing",
+                )
+            try:
+                producer_tool = _find_tool(self._snapshot, producer_assembly.tool_id)
+            except CamChildNotFoundError as error:
+                raise RestContourValidationError(
+                    RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                    "Rest Contour producer tool definition is missing",
+                ) from error
+            from hms_cadcam.cam.domain import ToolReferenceStatus
+
+            if (
+                producer.tool_assembly.assess(producer_assembly) is not ToolReferenceStatus.VALID
+                or producer_assembly.expected_tool_revision != producer_tool.revision
+                or producer_assembly.expected_tool_fingerprint != producer_tool.content_fingerprint
+                or producer_assembly.expected_tool_unit is not producer_tool.unit
+            ):
+                raise RestContourValidationError(
+                    RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                    "Rest Contour producer tool or holder authority changed",
+                )
+            # A Phase-A reservation has no durable side effect.  The
+            # calculator creates a process-trusted immutable state; R271 can
+            # consume that exact object during this active generation.  A
+            # persisted trust origin is reconstructed only from an already
+            # committed v2 successor when a project is reopened.
+            parent = calculate_material_state(
+                stock=setup.stock, artifact=artifact, tool=producer_tool,
+                setup_fingerprint=material_state_setup_fingerprint(setup),
+            ).state
+        dependency = MaterialStateDependency(
+            operation_id, producer_id, parent.fingerprint, parent.toolpath_fingerprint,
+            material_state_setup_fingerprint(setup), parent.stock_fingerprint,
+            parent.engine_version, parent.precision.to_dict(),
+        )
+        candidate = RestMaterialStateCandidate(producer_id, parent, dependency, edges[0], artifact)
+        return RestContourLifecycleContext(
+            RestContourFoundationInputs(
+                setup, parameters, profile, (candidate,), setup.operation_tree.dependency_graph,
+                assembly, assembly_evidence, tool, machine, requirement, operation_id,
+            ), machine_evidence, profile_resolver, cancellation,
+        )
+
+    def _load_rest_contour_completion(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver,
+        cancellation,
+        material_only: bool = False,
+    ):
+        """Rehydrate one exact v2 COMPLETE record or fail before Phase A.
+
+        The database record is only a pointer.  Every cross-reference is
+        checked again against current aggregate facts and both durable bytes so
+        a self-sealed replacement record cannot become machining authority.
+        """
+        from hms_cadcam.cam.material_state import MaterialStateLoadStatus
+
+        operation = _find_operation(self._snapshot, operation_id)
+        setup = _find_setup(self._snapshot, operation.setup_id)
+        dependency = next((item for item in self._snapshot.material_state_dependencies
+                           if item.consumer_operation_id == operation_id), None)
+        if dependency is None or dependency.successor_publication is None:
+            raise CamValidationError("Rest Contour v2 completion record is missing")
+        material_edges = tuple(
+            item for item in setup.operation_tree.dependency_graph.edges
+            if item.target_operation_id == operation_id
+            and item.kind.value == "material_state"
+        )
+        if (
+            len(material_edges) != 1
+            or material_edges[0].source_operation_id != dependency.producer_operation_id
+        ):
+            raise CamValidationError(
+                "Rest Contour v2 producer differs from the authoritative material-state DAG"
+            )
+        publication = dependency.successor_publication
+        if (publication.consumer_operation_id != operation_id
+                or publication.parent_state_fingerprint != dependency.parent_state_fingerprint
+                or publication.setup_fingerprint != dependency.setup_fingerprint
+                or publication.stock_fingerprint != dependency.stock_fingerprint
+                or publication.engine_version != dependency.engine_version
+                or publication.precision != dependency.precision):
+            raise CamValidationError("Rest Contour v2 completion record is inconsistent")
+        expected_setup = material_state_setup_fingerprint(setup)
+        expected_stock = ContentFingerprint.from_payload(setup.stock.to_dict())
+        if publication.setup_fingerprint != expected_setup or publication.stock_fingerprint != expected_stock:
+            raise CamValidationError("Rest Contour v2 Setup or Stock provenance changed")
+        metadata = next((item for item in self._snapshot.artifacts
+                         if item.operation_id == operation_id), None)
+        state = operation.artifact_state
+        if metadata is None or (
+            metadata.artifact_id != publication.artifact_id
+            or metadata.artifact_fingerprint != publication.artifact_fingerprint
+            or metadata.input_fingerprint != publication.input_fingerprint
+            or metadata.completion_status.lower() != "complete"
+            or metadata.computation_generation != state.generation
+        ):
+            raise CamValidationError("Rest Contour v2 artifact metadata is inconsistent")
+        artifact = self._artifact_store.load(project_root, metadata)
+        exact_operation_state = (
+            state.status is ArtifactStatus.VALID
+            and state.token is None
+            and not state.dirty_reasons
+            and not state.diagnostics
+            and not operation.diagnostics
+            and state.input_fingerprint == publication.input_fingerprint
+            and state.artifact_fingerprint == publication.artifact_fingerprint
+            and metadata.expected_operation_revision == operation.revision
+        )
+        material_operation_state = (
+            material_only
+            and not state.diagnostics
+            and not operation.diagnostics
+            and _is_feed_only_material_artifact(operation, artifact)
+            and metadata.expected_operation_revision == artifact.operation_revision
+        )
+        if not (exact_operation_state or material_operation_state):
+            raise CamValidationError("Rest Contour operation artifact state is not authoritative")
+        if (artifact.artifact_id != publication.artifact_id
+                or artifact.source_operation_id != operation_id
+                or artifact.artifact_fingerprint != publication.artifact_fingerprint
+                or artifact.input_fingerprint != publication.input_fingerprint
+                or (
+                    artifact.operation_revision != operation.revision
+                    and not material_operation_state
+                )
+                or artifact.completion_status.value.lower() != "complete"
+                or compute_material_removal_fingerprint(artifact)
+                != publication.semantic_material_removal_fingerprint):
+            raise CamValidationError("Rest Contour v2 artifact content is inconsistent")
+        producer = _find_operation(self._snapshot, dependency.producer_operation_id)
+        if (
+            dependency.producer_operation_authority_fingerprint
+            != _material_removal_operation_fingerprint(producer)
+        ):
+            raise CamValidationError(
+                "Rest Contour producer material-removal operation authority changed"
+            )
+        parent_load = self._material_states.load(project_root, publication.parent_state_fingerprint)
+        successor_load = self._material_states.load(project_root, publication.successor_state_fingerprint)
+        if (successor_load.status is not MaterialStateLoadStatus.VALID
+                or successor_load.state is None):
+            raise CamValidationError("Rest Contour v2 material-state bytes are unavailable or corrupt")
+        if parent_load.status is MaterialStateLoadStatus.VALID and parent_load.state is not None:
+            parent = parent_load.state
+        else:
+            # The first Rest consumer may have calculated its predecessor from
+            # an ordinary producer.  That calculation is intentionally not a
+            # prepare-time durable write.  On reopen we can re-establish the
+            # same trusted calculated object from the exact producer artifact;
+            # a prior R272 producer, however, must resolve through its v2
+            # COMPLETE successor and cannot fall back to recalculation.
+            producer_dependency = next(
+                (item for item in self._snapshot.material_state_dependencies
+                 if item.consumer_operation_id == producer.operation_id), None,
+            )
+            if producer_dependency is not None and producer_dependency.successor_publication is not None:
+                _prior_evidence, _prior_artifact, parent = self._load_rest_contour_completion(
+                    project_root,
+                    producer.operation_id,
+                    profile_resolver=profile_resolver,
+                    cancellation=cancellation,
+                    material_only=True,
+                )
+            else:
+                from hms_cadcam.cam.domain.rest_contour import REST_CONTOUR_STRATEGY_KEY
+
+                if producer.strategy_key == REST_CONTOUR_STRATEGY_KEY:
+                    raise CamValidationError(
+                        "Rest Contour producer lacks a committed v2 COMPLETE record"
+                    )
+                producer_metadata = next(
+                    (item for item in self._snapshot.artifacts
+                     if item.operation_id == producer.operation_id), None,
+                )
+                if producer_metadata is None:
+                    raise CamValidationError("Rest Contour producer metadata is missing")
+                producer_artifact = self._artifact_store.load(project_root, producer_metadata)
+                producer_assembly = next(
+                    (item for item in self._snapshot.tool_assemblies
+                     if item.assembly_id == producer.tool_assembly.assembly_id), None,
+                )
+                if producer_assembly is None:
+                    raise CamValidationError("Rest Contour producer assembly is missing")
+                producer_tool = _find_tool(self._snapshot, producer_assembly.tool_id)
+                parent = calculate_material_state(
+                    stock=setup.stock,
+                    artifact=producer_artifact,
+                    tool=producer_tool,
+                    setup_fingerprint=expected_setup,
+                ).state
+        successor = successor_load.state
+        successor_assembly = next(
+            (item for item in self._snapshot.tool_assemblies
+             if item.assembly_id == operation.tool_assembly.assembly_id),
+            None,
+        )
+        if successor_assembly is None:
+            raise CamValidationError("Rest Contour successor tool assembly is missing")
+        successor_tool = _find_tool(self._snapshot, successor_assembly.tool_id)
+        recompute_was_cancelled = False
+
+        def recompute_cancellation() -> bool:
+            nonlocal recompute_was_cancelled
+            if not recompute_was_cancelled and cancellation is not None:
+                recompute_was_cancelled = bool(cancellation())
+            return recompute_was_cancelled
+
+        try:
+            recomputed_successor = calculate_material_state(
+                stock=setup.stock,
+                artifact=artifact,
+                tool=successor_tool,
+                setup_fingerprint=expected_setup,
+                parent=parent,
+                precision=successor.precision,
+                cancellation=(recompute_cancellation if cancellation is not None else None),
+            ).state
+        except CamValidationError as error:
+            if recompute_was_cancelled:
+                from hms_cadcam.cam.domain.rest_contour import (
+                    RestContourDiagnosticCode,
+                    RestContourValidationError,
+                )
+
+                raise RestContourValidationError(
+                    RestContourDiagnosticCode.CANCELLED,
+                    "Rest Contour successor verification was cancelled",
+                ) from error
+            raise
+        if (parent.fingerprint != publication.parent_state_fingerprint
+                or dependency.producer_toolpath_fingerprint != parent.toolpath_fingerprint
+                or parent.content_integrity_fingerprint != publication.parent_state_content_seal
+                or parent.setup_fingerprint != publication.setup_fingerprint
+                or parent.stock_fingerprint != publication.stock_fingerprint
+                or parent.engine_version != publication.engine_version
+                or parent.precision.to_dict() != publication.precision
+                or successor.fingerprint != publication.successor_state_fingerprint
+                or successor.content_integrity_fingerprint != publication.successor_state_content_seal
+                or successor.parent_fingerprint != parent.fingerprint
+                or successor.toolpath_fingerprint != publication.semantic_material_removal_fingerprint
+                or successor.setup_fingerprint != publication.setup_fingerprint
+                or successor.stock_fingerprint != publication.stock_fingerprint
+                or successor.engine_version != publication.engine_version
+                or successor.precision.to_dict() != publication.precision
+                # The state document and v2 row are both project-local mutable
+                # bytes. Recompute the heightfield from independently validated
+                # parent/tool/artifact authority so coherently resealing both
+                # files cannot promote altered grid bytes.
+                or recomputed_successor.fingerprint != successor.fingerprint
+                or recomputed_successor.content_integrity_fingerprint
+                != successor.content_integrity_fingerprint):
+            raise CamValidationError("Rest Contour v2 material-state provenance is inconsistent")
+        if material_only and material_operation_state:
+            from hms_cadcam.cam.application.rest_contour_lifecycle import (
+                RestContourLifecycle,
+                RestContourLifecycleStatus,
+            )
+            from hms_cadcam.cam.application.rest_contour_toolpath import (
+                generate_rest_contour_phase_b,
+            )
+            from hms_cadcam.cam.domain.rest_contour import (
+                RestContourDiagnosticCode,
+                RestContourValidationError,
+            )
+
+            current_context = self._rest_contour_context(
+                project_root,
+                operation_id,
+                profile_resolver,
+                cancellation=cancellation,
+            )
+            current_preparation = RestContourLifecycle().prepare(current_context)
+            if (
+                current_preparation.status is not RestContourLifecycleStatus.PREPARED
+                or current_preparation.prepared is None
+            ):
+                if (
+                    current_preparation.status is RestContourLifecycleStatus.FAILURE
+                    and current_preparation.diagnostic_code
+                    is RestContourDiagnosticCode.CANCELLED
+                ):
+                    raise RestContourValidationError(
+                        RestContourDiagnosticCode.CANCELLED,
+                        current_preparation.message,
+                    )
+                raise CamValidationError(
+                    "Rest Contour material-only replay cannot derive current removal semantics"
+                )
+            current_candidate = generate_rest_contour_phase_b(
+                current_preparation.prepared.phase_b_prepared,
+                cancellation=cancellation,
+            )
+            if (
+                compute_material_removal_fingerprint(current_candidate.artifact)
+                != publication.semantic_material_removal_fingerprint
+            ):
+                raise CamValidationError(
+                    "Rest Contour material-only replay removal semantics changed"
+                )
+            return publication, artifact, successor
+        if exact_operation_state:
+            from hms_cadcam.cam.application.rest_contour_lifecycle import (
+                RestContourLifecycle,
+                RestContourLifecycleStatus,
+            )
+            from hms_cadcam.cam.application.rest_contour_toolpath import (
+                generate_rest_contour_phase_b,
+            )
+            from hms_cadcam.cam.domain.rest_contour import (
+                RestContourDiagnosticCode,
+                RestContourValidationError,
+            )
+
+            replay_context = self._rest_contour_context(
+                project_root,
+                operation_id,
+                profile_resolver,
+                cancellation=cancellation,
+                replay_generation=artifact.computation_token.generation,
+            )
+            replay_preparation = RestContourLifecycle().prepare(replay_context)
+            if replay_preparation.status is not RestContourLifecycleStatus.PREPARED:
+                if (
+                    replay_preparation.status is RestContourLifecycleStatus.FAILURE
+                    and replay_preparation.diagnostic_code
+                    is RestContourDiagnosticCode.CANCELLED
+                ):
+                    raise RestContourValidationError(
+                        RestContourDiagnosticCode.CANCELLED,
+                        replay_preparation.message,
+                    )
+                raise CamValidationError(
+                    "Rest Contour replay output cannot be independently prepared"
+                )
+            replay_candidate = generate_rest_contour_phase_b(
+                replay_preparation.prepared.phase_b_prepared,
+                cancellation=cancellation,
+            )
+            if (
+                ContentFingerprint.from_payload(
+                    _rest_contour_artifact_output_payload(replay_candidate.artifact)
+                )
+                != ContentFingerprint.from_payload(
+                    _rest_contour_artifact_output_payload(artifact)
+                )
+            ):
+                raise CamValidationError(
+                    "Rest Contour persisted output differs from deterministic current output"
+                )
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            derive_rest_contour_input_fingerprint,
+        )
+        from hms_cadcam.cam.domain.rest_contour import RestContourValidationError
+
+        try:
+            current_context = self._rest_contour_context(
+                project_root,
+                operation_id,
+                profile_resolver,
+                cancellation=cancellation,
+            )
+            expected_input = derive_rest_contour_input_fingerprint(current_context)
+        except RestContourValidationError as error:
+            from hms_cadcam.cam.domain.rest_contour import RestContourDiagnosticCode
+
+            if error.code is RestContourDiagnosticCode.CANCELLED:
+                raise
+            raise CamValidationError(
+                "Rest Contour v2 current input authority cannot be derived"
+            ) from error
+        except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError,
+                OSError, RuntimeError, TypeError, ValueError) as error:
+            raise CamValidationError(
+                "Rest Contour v2 current input authority cannot be derived"
+            ) from error
+        if expected_input is None or publication.input_fingerprint != expected_input:
+            raise CamValidationError("Rest Contour v2 input fingerprint is not current")
+        return publication, artifact, successor
+
+    def _rehydrate_rest_contour_completion(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver,
+        cancellation,
+    ):
+        """Return a prior COMPLETE publication only after full v2 verification."""
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            RestContourLifecycleStatus,
+        )
+        from hms_cadcam.cam.application.rest_contour_toolpath import RestContourPhaseBPublication
+        from hms_cadcam.cam.domain.rest_contour import (
+            RestContourDiagnosticCode,
+            RestContourValidationError,
+        )
+
+        dependency = next((item for item in self._snapshot.material_state_dependencies
+                           if item.consumer_operation_id == operation_id), None)
+        if dependency is None:
+            return None
+        if dependency.successor_publication is None:
+            return self._rest_contour_failure(
+                RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                "Rest Contour existing dependency lacks a v2 COMPLETE record",
+            )
+        operation = _find_operation(self._snapshot, operation_id)
+        metadata = next(
+            (item for item in self._snapshot.artifacts
+             if item.operation_id == operation_id),
+            None,
+        )
+        if metadata is not None:
+            try:
+                prior_artifact = self._artifact_store.load(project_root, metadata)
+            except ToolpathArtifactStoreError:
+                prior_artifact = None
+            if (
+                prior_artifact is not None
+                and _is_feed_only_material_artifact(operation, prior_artifact)
+            ):
+                # The old v2 result remains eligible only as a downstream
+                # material-state producer. A direct request for this operation
+                # must run the current feed/spindle parameters and replace it.
+                return None
+        try:
+            evidence, artifact, successor = self._load_rest_contour_completion(
+                project_root,
+                operation_id,
+                profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+            operation = _find_operation(self._snapshot, operation_id)
+        except RestContourValidationError as error:
+            return self._rest_contour_failure(error.code, str(error))
+        except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError,
+                OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rest_contour_failure(
+                RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                f"Rest Contour v2 completion is invalid: {error}",
+            )
+        # This is a semantic replay result, deliberately not a R271 Prepared
+        # or Candidate.  It prevents duplicate generation after a fresh reopen
+        # while preserving the sole authority of the persisted COMPLETE record.
+        preparation = _RestContourRehydratedPreparation(RestContourLifecycleStatus.PREPARED)
+        return _RestContourRehydratedResult(
+            RestContourLifecycleStatus.SUCCESS,
+            preparation,
+            RestContourPhaseBPublication(operation, metadata := next(
+                item for item in self._snapshot.artifacts if item.operation_id == operation_id
+            ), artifact, successor),
+            evidence,
+        )
+
+    def _publish_rest_contour_candidate(self, candidate, phase_b_context, project_root: Path):
+        """Publish R271 bytes then atomically stage v2 metadata in this snapshot."""
+        from hms_cadcam.cam.application.rest_contour_toolpath import publish_rest_contour_phase_b
+        from hms_cadcam.cam.persistence.models import (
+            MaterialStateDependency, MaterialStateSuccessorPublication,
+        )
+
+        publication = publish_rest_contour_phase_b(
+            candidate, current_context=phase_b_context, project_root=project_root,
+            artifact_store=self._artifact_store, material_state_store=self._material_states,
+        )
+        parent = candidate.prepared.predecessor_state
+        successor = publication.successor_state
+        evidence = MaterialStateSuccessorPublication.create(
+            consumer_operation_id=publication.operation.operation_id,
+            artifact_id=publication.artifact.artifact_id,
+            artifact_fingerprint=publication.artifact.artifact_fingerprint,
+            input_fingerprint=publication.artifact.input_fingerprint,
+            semantic_material_removal_fingerprint=candidate.successor_provenance.toolpath_fingerprint,
+            parent_state_fingerprint=parent.fingerprint,
+            parent_state_content_seal=parent.content_integrity_fingerprint,
+            successor_state_fingerprint=successor.fingerprint,
+            successor_state_content_seal=successor.content_integrity_fingerprint,
+            setup_fingerprint=successor.setup_fingerprint,
+            stock_fingerprint=successor.stock_fingerprint,
+            engine_version=successor.engine_version,
+            precision=successor.precision.to_dict(),
+        )
+        dependency = MaterialStateDependency(
+            publication.operation.operation_id,
+            phase_b_context.phase_a_inputs.foundation.material.candidate.producer_operation_id,
+            parent.fingerprint, parent.toolpath_fingerprint, parent.setup_fingerprint,
+            parent.stock_fingerprint, parent.engine_version, parent.precision.to_dict(), evidence,
+            _material_removal_operation_fingerprint(
+                _find_operation(
+                    self._snapshot,
+                    phase_b_context.phase_a_inputs.foundation.material.candidate.producer_operation_id,
+                )
+            ),
+        )
+        staged = replace(
+            self._snapshot,
+            artifacts=tuple(value for value in self._snapshot.artifacts
+                            if value.operation_id != publication.operation.operation_id)
+            + (publication.artifact_metadata,),
+            material_state_dependencies=tuple(
+                value for value in self._snapshot.material_state_dependencies
+                if value.consumer_operation_id != publication.operation.operation_id
+            ) + (dependency,),
+        )
+        self._snapshot = _replace_operation(staged, publication.operation)
+        return publication
+
+    def restore_rest_contour_snapshot(self, snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
+        """Discard an uncommitted Rest publication after project persistence fails.
+
+        This intentionally does not alter ``_persisted``.  Artifact/state bytes
+        may remain as unreferenced files, but without SQLite metadata they are
+        not project authority and cannot be rediscovered by this path.
+        """
+        if not isinstance(snapshot, CamProjectSnapshot):
+            raise TypeError("Rest Contour rollback snapshot is invalid")
+        with self._lock:
+            self._snapshot = _clone_snapshot(snapshot)
+            self._rest_contour_preparations.clear()
+            self._rest_contour_completed.clear()
+            return _clone_snapshot(self._snapshot)
+
     def resolve_persisted_material_state(self, project_root: Path, operation_id: OperationId):
         """Validate and resolve persisted Rest provenance without replaying toolpaths."""
         from hms_cadcam.cam.application.rest_pocket import (
@@ -2840,6 +3853,66 @@ def _job(snapshot: CamProjectSnapshot, job_id: CamJobId) -> CamJob:
     raise CamChildNotFoundError(f"CAM job does not exist: {job_id}")
 
 
+def _rest_contour_completion_signature(
+    snapshot: CamProjectSnapshot,
+    dependency: MaterialStateDependency,
+) -> tuple[object, ...] | None:
+    """Return only the aggregate facts that authorize one v2 completion.
+
+    This intentionally excludes unrelated jobs/tools.  A mutation to any
+    consumed Rest input drops the completed record and its artifact metadata;
+    an unrelated project edit keeps the record available for exact v2 reuse.
+    """
+    try:
+        consumer = _find_operation(snapshot, dependency.consumer_operation_id)
+        producer = _find_operation(snapshot, dependency.producer_operation_id)
+        if consumer.setup_id != producer.setup_id:
+            return None
+        setup = _find_setup(snapshot, consumer.setup_id)
+        edge = tuple(
+            item for item in setup.operation_tree.dependency_graph.edges
+            if item.target_operation_id == consumer.operation_id
+            and item.kind.value == "material_state"
+        )
+        consumer_assembly = next(
+            (item for item in snapshot.tool_assemblies
+             if item.assembly_id == consumer.tool_assembly.assembly_id), None,
+        )
+        producer_assembly = next(
+            (item for item in snapshot.tool_assemblies
+             if item.assembly_id == producer.tool_assembly.assembly_id), None,
+        )
+        if consumer_assembly is None or producer_assembly is None:
+            return None
+        consumer_tool = _find_tool(snapshot, consumer_assembly.tool_id)
+        producer_tool = _find_tool(snapshot, producer_assembly.tool_id)
+        requirement = consumer.machine_requirement
+        machine = None if requirement is None else next(
+            (item for item in snapshot.machine_definitions
+             if item.machine_id == requirement.machine_id), None,
+        )
+        if machine is None:
+            return None
+        if not any(
+            item.operation_id == producer.operation_id
+            for item in snapshot.artifacts
+        ):
+            return None
+        holder = None if consumer_assembly.holder_id is None else next(
+            (item for item in snapshot.holder_definitions
+             if item.holder_id == consumer_assembly.holder_id), None,
+        )
+        return (
+            _material_removal_operation_authority(consumer),
+            _material_removal_operation_authority(producer),
+            setup.stock, setup.wcs, edge,
+            consumer_assembly, consumer_tool, holder, machine,
+            producer_assembly, producer_tool,
+        )
+    except (CamChildNotFoundError, StopIteration):
+        return None
+
+
 def _clone_snapshot(snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
     """Detach mutable aggregate roots at every public service boundary."""
     return replace(
@@ -2891,6 +3964,41 @@ def _find_operation(snapshot: CamProjectSnapshot, operation_id: OperationId) -> 
     raise CamChildNotFoundError(f"Operation does not exist: {operation_id}")
 
 
+def _find_setup(snapshot: CamProjectSnapshot, setup_id: SetupId) -> Setup:
+    """Resolve one Setup by stable identity; list position is never authority."""
+    for job in snapshot.jobs:
+        for setup in job.setups:
+            if setup.setup_id == setup_id:
+                return setup
+    raise CamChildNotFoundError(f"Setup does not exist: {setup_id}")
+
+
+def _find_job_for_setup(snapshot: CamProjectSnapshot, setup_id: SetupId) -> CamJob:
+    for job in snapshot.jobs:
+        if any(setup.setup_id == setup_id for setup in job.setups):
+            return job
+    raise CamChildNotFoundError(f"Setup does not exist: {setup_id}")
+
+
+def _replace_setup(snapshot: CamProjectSnapshot, changed: Setup) -> CamProjectSnapshot:
+    """Replace an owned Setup while preserving aggregate ownership and order."""
+    jobs: list[CamJob] = []
+    found = False
+    for job in snapshot.jobs:
+        setups = tuple(changed if setup.setup_id == changed.setup_id else setup for setup in job.setups)
+        if setups != job.setups:
+            found = True
+            jobs.append(CamJob(
+                job.job_id, job.name, revision=job.revision,
+                setups=setups, active_setup_id=job.active_setup_id,
+            ))
+        else:
+            jobs.append(job)
+    if not found:
+        raise CamChildNotFoundError(f"Setup does not exist: {changed.setup_id}")
+    return replace(snapshot, jobs=tuple(jobs))
+
+
 def _material_removal_operation_authority(operation: Operation) -> tuple[object, ...]:
     """Return operation inputs that may change its physical removal semantics."""
     non_removal_parameters = {
@@ -2912,6 +4020,74 @@ def _material_removal_operation_authority(operation: Operation) -> tuple[object,
         operation.geometry_inputs,
         operation.tool_assembly,
         operation.machine_requirement,
+    )
+
+
+def _material_removal_operation_fingerprint(operation: Operation) -> ContentFingerprint:
+    """Seal editable producer facts while excluding proven non-removal controls."""
+    if not isinstance(operation, Operation):
+        raise TypeError("Material-removal operation authority is invalid")
+    payload = operation.to_dict()
+    payload.pop("revision")
+    payload.pop("artifact_state")
+    payload.pop("diagnostics")
+    payload["parameters"] = dict(payload["parameters"])
+    payload["parameters"]["values"] = [
+        value for value in payload["parameters"]["values"]
+        if value["name"] not in {
+            "cutting_feed_rate", "plunge_feed_rate", "spindle_speed",
+        }
+    ]
+    return ContentFingerprint.from_payload({
+        "format": "HMS_CAM_MATERIAL_REMOVAL_OPERATION_AUTHORITY",
+        "format_version": 1,
+        "operation": payload,
+    })
+
+
+def _rest_contour_artifact_output_payload(artifact: ToolpathArtifact) -> dict[str, object]:
+    """Canonical full Rest output with only publication identities removed."""
+    if not isinstance(artifact, ToolpathArtifact):
+        raise TypeError("Rest Contour artifact output is invalid")
+    payload = artifact_to_dict(artifact)
+    payload.pop("artifact_id")
+    payload.pop("artifact_fingerprint")
+    payload.pop("created_at")
+    payload["computation_token"] = dict(payload["computation_token"])
+    payload["computation_token"]["value"] = "<replay-token>"
+    return payload
+
+
+def _is_feed_only_material_artifact(operation: Operation, artifact: ToolpathArtifact) -> bool:
+    """Recognize an old artifact retained solely for removal-state authority."""
+    state = operation.artifact_state
+    feed_only_names = {
+        "cutting_feed_rate", "plunge_feed_rate", "spindle_speed",
+    }
+    return (
+        state.status is ArtifactStatus.DIRTY
+        and state.token is None
+        and state.dirty_reasons == (DirtyReason.PARAMETERS_CHANGED,)
+        and state.input_fingerprint == artifact.input_fingerprint
+        and state.artifact_fingerprint is None
+        and state.generation == artifact.computation_token.generation
+        and artifact.source_operation_id == operation.operation_id
+        and artifact.operation_revision.value < operation.revision.value
+        # Generic producers have no strategy-specific historical decoder here.
+        # Preserve them only when their complete editable shape proves that no
+        # geometry or material-removal parameter exists to be hidden behind a
+        # forged PARAMETERS_CHANGED label. Producers with richer shapes fail
+        # closed until regenerated through their official strategy path.
+        and (
+            operation.strategy_key == "rest_contour_3axis"
+            or (
+                not operation.geometry_inputs
+                and all(
+                    name in feed_only_names
+                    for name, _value in operation.parameters.values
+                )
+            )
+        )
     )
 
 

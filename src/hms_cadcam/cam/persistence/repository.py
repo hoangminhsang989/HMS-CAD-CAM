@@ -15,6 +15,7 @@ from hms_cadcam.cam.domain import (
 from hms_cadcam.cam.persistence.codecs import decode_json, encode_json
 from hms_cadcam.cam.persistence.errors import CamPersistenceError, CamPersistencePayloadError
 from hms_cadcam.cam.persistence.models import CamProjectSnapshot, MaterialStateDependency, ToolpathArtifactMetadata
+from hms_cadcam.cam.operation_registry import default_rest_contour_operation_registry
 
 
 def normalize_restart_snapshot(snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
@@ -70,6 +71,7 @@ class CamSqliteRepository:
     def load_connection(self, connection: sqlite3.Connection) -> CamProjectSnapshot:
         """Load all-or-nothing from an already migrated project connection."""
         try:
+            operation_registry = default_rest_contour_operation_registry()
             state = connection.execute("SELECT active_job_id FROM cam_project_state WHERE singleton_id=1").fetchone()
             jobs: list[CamJob] = []
             for job_row in connection.execute("SELECT * FROM cam_jobs ORDER BY position"):
@@ -78,7 +80,7 @@ class CamSqliteRepository:
                     setup_id = SetupId.parse(setup_row["setup_id"])
                     nodes = tuple(CamNode.from_dict(decode_json(row["payload_json"])) for row in
                         connection.execute("SELECT payload_json FROM cam_nodes WHERE setup_id=? ORDER BY position", (str(setup_id),)))
-                    operations = tuple(_normalize_operation(Operation.from_dict(decode_json(row["payload_json"]))) for row in
+                    operations = tuple(_normalize_operation(operation_registry.decode(decode_json(row["payload_json"]))) for row in
                         connection.execute("SELECT payload_json FROM cam_operations WHERE setup_id=? ORDER BY position", (str(setup_id),)))
                     edges = tuple(DependencyEdge.from_dict(decode_json(row["payload_json"])) for row in
                         connection.execute("SELECT payload_json FROM cam_dependencies WHERE setup_id=? ORDER BY position", (str(setup_id),)))
@@ -99,8 +101,30 @@ class CamSqliteRepository:
             artifacts = tuple(self._metadata_from_row(row) for row in
                 connection.execute("SELECT * FROM toolpath_artifacts ORDER BY operation_id"))
             has_dependencies = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cam_material_state_dependencies'").fetchone() is not None
-            dependencies = tuple(MaterialStateDependency.from_dict(decode_json(row["payload_json"])) for row in
-                connection.execute("SELECT * FROM cam_material_state_dependencies ORDER BY consumer_operation_id")) if has_dependencies else ()
+            dependencies: tuple[MaterialStateDependency, ...] = ()
+            if has_dependencies:
+                loaded_dependencies: list[MaterialStateDependency] = []
+                for row in connection.execute(
+                    "SELECT consumer_operation_id, producer_operation_id, payload_json "
+                    "FROM cam_material_state_dependencies ORDER BY consumer_operation_id"
+                ):
+                    dependency = MaterialStateDependency.from_dict(
+                        decode_json(row["payload_json"])
+                    )
+                    if (
+                        row["consumer_operation_id"]
+                        != str(dependency.consumer_operation_id)
+                        or (
+                            dependency.successor_publication is not None
+                            and row["producer_operation_id"]
+                            != str(dependency.producer_operation_id)
+                        )
+                    ):
+                        raise CamPersistencePayloadError(
+                            "Material-state dependency row identity does not match its payload"
+                        )
+                    loaded_dependencies.append(dependency)
+                dependencies = tuple(loaded_dependencies)
             return normalize_restart_snapshot(CamProjectSnapshot(tuple(jobs), active, tools, holders,
                 assemblies, machines, artifacts, dependencies))
         except sqlite3.Error as error:

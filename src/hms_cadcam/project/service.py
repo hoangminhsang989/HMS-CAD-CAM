@@ -6,7 +6,7 @@ import logging
 import os
 import shutil
 from contextlib import nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from collections.abc import Callable
@@ -138,6 +138,16 @@ from hms_cadcam.cam.post.service import PostExecution
 
 logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
+
+
+@dataclass(frozen=True, slots=True)
+class RestContourPreparationSummary:
+    """Public, operation-scoped prepare outcome without R271 sealed bytes."""
+
+    operation_id: OperationId
+    status: object
+    diagnostic_code: object | None
+    message: str
 
 
 class ProjectService:
@@ -1271,6 +1281,101 @@ class ProjectService:
             self._remove_deleted_operation_simulations(session, before, changed)
             self._reconcile_nc_artifacts(session, changed)
         return changed
+
+    def create_rest_contour_operation(
+        self, job_id, setup_id: SetupId, parent_node_id, *, operation_id: OperationId,
+        node_id, name: str, parameters, profile, dependency_operation_id: OperationId,
+        tool_assembly_id, machine_requirement=None, profile_resolver=None, quality_profile=None,
+        manual_overrides=None, expected_generation: int | None = None,
+    ) -> CamProjectSnapshot:
+        """Create one registered Rest Contour through the project gateway."""
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Contour creation belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        changed = self._cam_application.create_rest_contour_operation(
+            job_id, setup_id, parent_node_id,
+            operation_id=operation_id, node_id=node_id, name=name,
+            parameters=parameters, profile=profile,
+            dependency_operation_id=dependency_operation_id,
+            tool_assembly_id=tool_assembly_id,
+            machine_requirement=machine_requirement,
+            profile_resolver=profile_resolver,
+            quality_profile=quality_profile,
+            manual_overrides=manual_overrides,
+        )
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+            self._mark_changed_operation_simulations(before, changed)
+            self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
+        return changed
+
+    def prepare_rest_contour(
+        self, operation_id: OperationId, *, profile_resolver,
+        cancellation: Callable[[], bool] | None = None,
+        expected_generation: int | None = None,
+    ):
+        """Prepare current Rest Contour authority without durable publication."""
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Contour preparation belongs to an inactive project generation")
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.prepare_rest_contour(
+                session.root_path, operation_id, profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+        return RestContourPreparationSummary(
+            operation_id, result.status, result.diagnostic_code, result.message,
+        )
+
+    def generate_rest_contour(
+        self, operation_id: OperationId, *, profile_resolver,
+        cancellation: Callable[[], bool] | None = None,
+        expected_generation: int | None = None, persist: bool = True,
+    ):
+        """Run Rest Contour and atomically save its v2 completion record."""
+        from hms_cadcam.cam.application.rest_contour_lifecycle import (
+            RestContourLifecycleStatus,
+        )
+
+        if type(persist) is not bool:
+            raise TypeError("Rest Contour persistence option must be boolean")
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Contour generation belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.generate_rest_contour(
+                session.root_path, operation_id, profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+        changed = self._cam_application.snapshot
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
+        # A semantic FAILURE or NO_REST result is not a persistence command.
+        # Preserve any unrelated pre-existing dirty project edits and the
+        # previous database snapshot; only a verified v2 SUCCESS may make the
+        # persist=True transition durable.
+        if result.status is not RestContourLifecycleStatus.SUCCESS:
+            return result
+        if not persist or (changed == before and not session.is_dirty):
+            return result
+        try:
+            self.save()
+        except Exception:
+            restored = self._cam_application.restore_rest_contour_snapshot(before)
+            session.cam_snapshot = restored
+            session.is_dirty = restored != session.persisted_cam_snapshot
+            raise
+        return result
 
     @property
     def cam_generation(self) -> int:

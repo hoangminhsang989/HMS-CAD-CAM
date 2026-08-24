@@ -8,9 +8,9 @@ performs no graph or database mutation.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from hms_cadcam.cam.application.contour import (
     ContourGenerationError,
@@ -33,6 +33,7 @@ from hms_cadcam.cam.automatic_parameters import (
     AutomaticParameterContract,
     AutomaticParameterMode,
     AutomaticParameterStatus,
+    CamQualityProfile,
 )
 from hms_cadcam.cam.domain import (
     ArtifactStatus,
@@ -46,6 +47,7 @@ from hms_cadcam.cam.domain import (
     MachineDefinition,
     MachineKind,
     MachineRequirement,
+    Length,
     OperationCapability,
     OperationFamily,
     OperationId,
@@ -262,6 +264,31 @@ def _material_error(resolution: RestMaterialResolution) -> RestContourDiagnostic
     }[resolution.status]
 
 
+def _validate_profile_authority(
+    parameters: RestContourParameters,
+    descriptor: ContourProfileDescriptor,
+    setup: Setup,
+) -> None:
+    """Require the same current Setup/profile authority at create and prepare."""
+    expected_kind = (
+        GeometryReferenceKind.FACE
+        if parameters.profile_source is ContourProfileSource.PLANAR_FACE_OUTER
+        else GeometryReferenceKind.SKETCH_OR_PROFILE
+    )
+    if (
+        descriptor.reference.source_id != setup.source_scope.primary_source_id
+        or descriptor.reference.kind is not expected_kind
+        or descriptor.provenance.source_kind is not parameters.profile_source
+        or descriptor.reference.expected_geometry_fingerprint
+        != descriptor.geometry_fingerprint
+        or descriptor.inner_loops
+    ):
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.PROFILE_INVALID,
+            "Rest Contour profile source scope, kind, identity or inner loops are invalid",
+        )
+
+
 def _profile(parameters: RestContourParameters, selection: RestContourProfileSelection, setup: Setup,
              resolver: Callable[[GeometryReference], ResolvedContourProfile]) -> tuple[ContourPath, ContourProfileDescriptor]:
     supplied = selection.descriptor
@@ -273,22 +300,19 @@ def _profile(parameters: RestContourParameters, selection: RestContourProfileSel
             or resolved.profile != supplied):
         raise RestContourValidationError(RestContourDiagnosticCode.PROFILE_INVALID, "Rest Contour persisted profile cannot be resolved exactly")
     descriptor = resolved.profile
-    expected_kind = GeometryReferenceKind.FACE if parameters.profile_source is ContourProfileSource.PLANAR_FACE_OUTER else GeometryReferenceKind.SKETCH_OR_PROFILE
-    if (
-        descriptor.reference.source_id != setup.source_scope.primary_source_id
-        or descriptor.reference.kind is not expected_kind
-        or descriptor.provenance.source_kind is not parameters.profile_source
-        or descriptor.reference.expected_geometry_fingerprint != descriptor.geometry_fingerprint
-        or descriptor.inner_loops
-    ):
-        raise RestContourValidationError(RestContourDiagnosticCode.PROFILE_INVALID, "Rest Contour profile scope, kind, identity or inner loops are invalid")
+    _validate_profile_authority(parameters, descriptor, setup)
     try:
         return resolve_profile_in_setup(descriptor, setup), descriptor
     except ContourGenerationError as error:
         raise RestContourValidationError(RestContourDiagnosticCode.PROFILE_INVALID, str(error)) from error
 
 
-def _machine(parameters: RestContourParameters, machine: MachineDefinition, requirement: MachineRequirement) -> None:
+def validate_rest_contour_machine_authority(
+    parameters: RestContourParameters,
+    machine: MachineDefinition,
+    requirement: MachineRequirement,
+) -> None:
+    """Validate the complete fixed three-axis MILL contract at app boundaries."""
     # MachineEvidence is intentionally constructed from the current immutable definition.
     from hms_cadcam.cam.domain import MachineEvidence
     current = MachineEvidence(True, machine.revision, machine.content_fingerprint, machine.unit, machine.capabilities.operations)
@@ -315,6 +339,9 @@ def _machine(parameters: RestContourParameters, machine: MachineDefinition, requ
         or tuple(node.axis_name for node in machine.kinematic_chain.nodes if node.axis_name is not None).count(machine.axes[2].name) != 1
         or set(node.axis_name for node in machine.kinematic_chain.nodes if node.axis_name is not None) != {axis.name for axis in machine.axes}
         or any(node.axis_name is not None and node.side is not KinematicSide.TOOL for node in machine.kinematic_chain.nodes)
+        or abs(machine.axes[0].direction.dot(machine.axes[1].direction)) > WCS_ORTHONORMAL_TOLERANCE
+        or abs(machine.axes[0].direction.dot(machine.axes[2].direction)) > WCS_ORTHONORMAL_TOLERANCE
+        or abs(machine.axes[1].direction.dot(machine.axes[2].direction)) > WCS_ORTHONORMAL_TOLERANCE
         or abs(machine.axes[0].direction.cross(machine.axes[1].direction).dot(machine.axes[2].direction)) <= WCS_ORTHONORMAL_TOLERANCE
         or assess_machine_compatibility(requirement, current).value != "compatible"
         or parameters.cutting_feed_rate.value > machine.capabilities.maximum_feed.value
@@ -422,6 +449,108 @@ def _automatic(parameters: RestContourParameters, profile: ContourPath, selectio
     except (TypeError, ValueError) as error:
         raise RestContourValidationError(RestContourDiagnosticCode.AUTOMATIC_UNRESOLVED, "Rest Contour lead placement is not geometrically feasible") from error
     return persisted
+
+
+def resolve_rest_contour_application_parameters(
+    parameters: RestContourParameters,
+    profile: RestContourProfileSelection,
+    tool: ToolDefinition,
+    assembly: ToolAssembly,
+    setup: Setup,
+    profile_resolver: Callable[[GeometryReference], ResolvedContourProfile],
+    *,
+    quality_profile: CamQualityProfile = CamQualityProfile.BALANCED,
+    manual_overrides: Mapping[str, object] | None = None,
+) -> RestContourParameters:
+    """Resolve and persist Rest Contour AUTO from authoritative live inputs.
+
+    This is the application creation boundary: callers provide intent, while
+    the effective stepdown/lead values and their provenance are always derived
+    from the current profile, cutter and assembly.  Explicit manual overrides
+    retain the shared Contour policy provenance and take precedence only for
+    the named values.
+    """
+    if not isinstance(parameters, RestContourParameters):
+        raise TypeError("Rest Contour parameters are invalid")
+    if not isinstance(profile, RestContourProfileSelection):
+        raise TypeError("Rest Contour profile is invalid")
+    if not isinstance(tool, ToolDefinition) or not isinstance(assembly, ToolAssembly):
+        raise TypeError("Rest Contour tooling is invalid")
+    if not isinstance(setup, Setup):
+        raise TypeError("Rest Contour setup is invalid")
+    if not callable(profile_resolver):
+        raise TypeError("Rest Contour profile resolver is invalid")
+    current = profile_resolver(profile.descriptor.reference)
+    if (
+        not isinstance(current, ResolvedContourProfile)
+        or current.status is not GeometryResolutionStatus.RESOLVED
+        or current.profile != profile.descriptor
+    ):
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.PROFILE_INVALID,
+            "Rest Contour creation profile is stale or unresolved",
+        )
+    _validate_profile_authority(parameters, profile.descriptor, setup)
+    try:
+        resolved_path = resolve_profile_in_setup(profile.descriptor, setup)
+    except ContourGenerationError as error:
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.PROFILE_INVALID,
+            "Rest Contour profile cannot be resolved for automatic parameters",
+        ) from error
+    geometry = tool.cutting_geometry
+    diameter = getattr(geometry, "diameter", None)
+    corner_radius = getattr(geometry, "corner_radius", None)
+    if diameter is None:
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.TOOL_INELIGIBLE,
+            "Rest Contour cutter geometry has no diameter",
+        )
+    depth_span = parameters.top_height.value - (
+        parameters.final_depth.value + parameters.axial_stock_allowance.value
+    )
+    context = RestContourAutomaticContext(
+        parameters.unit,
+        tool.family,
+        diameter.value,
+        None if corner_radius is None else corner_radius.value,
+        geometry.axial_cutting_length.value,
+        assembly.stickout.value,
+        depth_span,
+        parameters.tolerance.value,
+        parameters.side,
+        True,
+        resolved_path.loop,
+        profile.descriptor.outer_loop,
+        profile.descriptor.geometry_fingerprint.digest,
+        tool.content_fingerprint.digest,
+    )
+    try:
+        contract = resolve_rest_contour_automatic_contract(
+            context,
+            quality_profile=quality_profile,
+            manual_overrides=manual_overrides,
+        )
+        stepdown = contract.value("stepdown").effective_value
+        lead_in = contract.value("lead_in_length").effective_value
+        lead_out = contract.value("lead_out_length").effective_value
+    except (TypeError, ValueError) as error:
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.AUTOMATIC_UNRESOLVED,
+            "Rest Contour automatic intent cannot be resolved",
+        ) from error
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (stepdown, lead_in, lead_out)):
+        raise RestContourValidationError(
+            RestContourDiagnosticCode.AUTOMATIC_UNRESOLVED,
+            "Rest Contour automatic effective values are invalid",
+        )
+    return replace(
+        parameters,
+        stepdown=Length(float(stepdown), parameters.unit),
+        lead_in_length=Length(float(lead_in), parameters.unit),
+        lead_out_length=Length(float(lead_out), parameters.unit),
+        automatic_parameter_contract=contract.to_json(),
+    )
 
 
 def _current_material_state_is_valid(
@@ -586,7 +715,9 @@ class RestContourFoundation:
             raise RestContourValidationError(RestContourDiagnosticCode.TOOL_INELIGIBLE, "Rest Contour tool family is ineligible")
         # Establish machine/unit authority before comparing any untagged scalar
         # geometry or capacity values below.
-        _machine(inputs.parameters, inputs.machine, inputs.machine_requirement)
+        validate_rest_contour_machine_authority(
+            inputs.parameters, inputs.machine, inputs.machine_requirement,
+        )
         geometry = inputs.tool.cutting_geometry
         diameter = getattr(geometry, "diameter", None)
         depth_span = inputs.parameters.top_height.value - (inputs.parameters.final_depth.value + inputs.parameters.axial_stock_allowance.value)
