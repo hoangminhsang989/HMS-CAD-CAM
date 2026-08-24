@@ -38,6 +38,14 @@ class RestContourDiagnosticCode(StrEnum):
     TOOL_INELIGIBLE = "rest_contour.tool_ineligible"
     MACHINE_INCOMPATIBLE = "rest_contour.machine_incompatible"
     AUTOMATIC_UNRESOLVED = "rest_contour.automatic_unresolved"
+    RESIDUAL_UNSUPPORTED = "rest_contour.residual_unsupported"
+    RESIDUAL_INVALID = "rest_contour.residual_invalid"
+    PATH_OUTSIDE_AUTHORITY = "rest_contour.path_outside_authority"
+    ENTRY_UNSAFE = "rest_contour.entry_unsafe"
+    TOOLPATH_LIMIT_EXCEEDED = "rest_contour.toolpath_limit_exceeded"
+    SUCCESSOR_INVALID = "rest_contour.successor_invalid"
+    PUBLICATION_FAILED = "rest_contour.publication_failed"
+    CANCELLED = "rest_contour.cancelled"
 
 
 class RestContourValidationError(CamValidationError):

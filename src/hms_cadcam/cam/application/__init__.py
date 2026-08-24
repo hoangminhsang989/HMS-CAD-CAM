@@ -130,6 +130,17 @@ from hms_cadcam.cam.application.rest_contour import (
     RestMaterialStateCandidate,
     resolve_rest_material_state,
 )
+from hms_cadcam.cam.application.rest_contour_toolpath import (
+    RestContourPhaseBCandidate,
+    RestContourPhaseBExecutionContext,
+    RestContourPhaseBNoRestMaterial,
+    RestContourPhaseBPrepared,
+    RestContourPhaseBPublication,
+    RestContourPhaseBSuccessorProvenance,
+    generate_rest_contour_phase_b,
+    prepare_rest_contour_phase_b,
+    publish_rest_contour_phase_b,
+)
 
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
@@ -175,4 +186,9 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "RestContourFoundation", "RestContourFoundationInputs", "RestContourFoundationResult",
            "RestMaterialResolution", "RestMaterialResolutionStatus", "RestMaterialStateCandidate",
            "resolve_rest_material_state",
+           "RestContourPhaseBCandidate", "RestContourPhaseBExecutionContext",
+           "RestContourPhaseBNoRestMaterial", "RestContourPhaseBPrepared",
+           "RestContourPhaseBPublication", "RestContourPhaseBSuccessorProvenance",
+           "generate_rest_contour_phase_b", "prepare_rest_contour_phase_b",
+           "publish_rest_contour_phase_b",
            "resolve_profile_in_setup"]

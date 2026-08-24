@@ -120,11 +120,26 @@ def _trace(edges: set[tuple[tuple[int, int], tuple[int, int]]]) -> list[list[tup
     return loops
 
 
-def extract_rest_regions(state: MaterialState) -> tuple[RestRegion, ...]:
-    """Extract deterministic connected cell components and polygon boundaries."""
-    threshold = state.precision.residual_threshold
-    eligible = {(column, row) for row in range(state.height) for column in range(state.width)
-                if state.top_heights[row * state.width + column] > threshold}
+def extract_cell_mask_regions(
+    state: MaterialState, eligible_cells: Iterable[tuple[int, int]],
+) -> tuple[RestRegion, ...]:
+    """Extract deterministic 4-connected regions from ``(row, column)`` cells.
+
+    The explicit mask boundary is useful to CAM algorithms that have already
+    validated their material predicate.  Rejecting malformed cells is
+    intentional: silently clipping them would create a false machining region.
+    """
+    if not isinstance(state, MaterialState):
+        raise TypeError("Material state is invalid")
+    eligible: set[tuple[int, int]] = set()
+    for cell in eligible_cells:
+        if (not isinstance(cell, tuple) or len(cell) != 2
+                or type(cell[0]) is not int or type(cell[1]) is not int):
+            raise CamValidationError("Rest region cell is invalid")
+        row, column = cell
+        if not 0 <= row < state.height or not 0 <= column < state.width:
+            raise CamValidationError("Rest region cell is outside material state")
+        eligible.add((column, row))
     regions: list[RestRegion] = []
     while eligible:
         seed = min(eligible)
@@ -155,3 +170,13 @@ def extract_rest_regions(state: MaterialState) -> tuple[RestRegion, ...]:
             validate_rest_region(region)
             regions.append(region)
     return tuple(sorted(regions, key=lambda region: region.fingerprint.digest))
+
+
+def extract_rest_regions(state: MaterialState) -> tuple[RestRegion, ...]:
+    """Extract legacy residual regions with its byte/semantic predicate unchanged."""
+    threshold = state.precision.residual_threshold
+    return extract_cell_mask_regions(
+        state,
+        ((row, column) for row in range(state.height) for column in range(state.width)
+         if state.top_heights[row * state.width + column] > threshold),
+    )

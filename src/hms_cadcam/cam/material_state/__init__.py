@@ -6,6 +6,7 @@ stock and can be consumed by either foreground CAM or background Simulation.
 
 from .core import (
     MATERIAL_STATE_ENGINE_VERSION,
+    CutterEnvelope,
     MaterialRemovalResult,
     MaterialState,
     MaterialStateFingerprint,
@@ -19,6 +20,7 @@ from .persistence import MaterialStateLoad, MaterialStateLoadStatus, MaterialSta
 
 __all__ = [
     "MATERIAL_STATE_ENGINE_VERSION",
+    "CutterEnvelope",
     "MaterialRemovalResult",
     "MaterialState",
     "MaterialStateFingerprint",

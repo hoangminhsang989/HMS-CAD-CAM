@@ -143,11 +143,11 @@ def resolve_profile_in_setup(descriptor: ContourProfileDescriptor, setup: Setup)
     if _has_self_intersection(_sample_segments(segments)):
         raise ContourGenerationError(DiagnosticCode.CONTOUR_SELF_INTERSECTION,
                                      "Resolved profile bị tự giao.")
-    orientation = _orientation(segments)
+    orientation = contour_orientation(segments)
     loop = ContourLoop(segments, orientation)
     if loop.orientation is ContourOrientation.CLOCKWISE:
         loop = loop.reversed()
-    loop = _canonical_start(loop)
+    loop = canonical_contour_start(loop)
     fingerprint = ContentFingerprint.from_payload({
         "reference": descriptor.reference.to_dict(),
         "resolved_profile": descriptor.geometry_fingerprint.to_dict(),
@@ -198,7 +198,7 @@ def offset_contour(loop: ContourLoop, side: ContourSide, distance: float) -> Con
                 rebuilt.append(ContourSegment(segment.kind, start, end, segment.center, sweep))
         except CamInvariantError as error:
             raise ContourGenerationError(DiagnosticCode.CONTOUR_OFFSET_COLLAPSED, str(error)) from error
-    candidate = ContourLoop(tuple(rebuilt), _orientation(tuple(rebuilt)))
+    candidate = ContourLoop(tuple(rebuilt), contour_orientation(tuple(rebuilt)))
     sampled = _sample_loop(candidate)
     area = _polygon_area(sampled)
     if candidate.orientation is not ContourOrientation.COUNTERCLOCKWISE or area <= _TOLERANCE:
@@ -207,7 +207,7 @@ def offset_contour(loop: ContourLoop, side: ContourSide, distance: float) -> Con
     if _has_self_intersection(sampled):
         raise ContourGenerationError(DiagnosticCode.CONTOUR_OFFSET_FAILED,
                                      "Contour sau offset bị tự giao.")
-    return _canonical_start(candidate)
+    return canonical_contour_start(candidate)
 
 
 def prepare_contour_machining_geometry(
@@ -232,7 +232,7 @@ def prepare_contour_machining_geometry(
     offset = offset_contour(path.loop, parameters.side, offset_distance)
     desired = _desired_orientation(parameters.side, parameters.direction)
     if offset.orientation is not desired:
-        offset = _canonical_start(offset.reversed())
+        offset = canonical_contour_start(offset.reversed())
     return path, offset, _sample_loop(path.loop)
 
 
@@ -653,7 +653,7 @@ def _desired_orientation(side: ContourSide, direction: ContourCutDirection) -> C
     return ContourOrientation.COUNTERCLOCKWISE if ccw else ContourOrientation.CLOCKWISE
 
 
-def _canonical_start(loop: ContourLoop) -> ContourLoop:
+def canonical_contour_start(loop: ContourLoop) -> ContourLoop:
     """Split the lexicographically lowest segment at its midpoint for a smooth deterministic start."""
     candidates = [(_segment_midpoint(segment).x, _segment_midpoint(segment).y, index)
                   for index, segment in enumerate(loop.segments)]
@@ -777,12 +777,18 @@ def _directed_sweep(start: Point3, end: Point3, center: Point3, sign: int) -> fl
     return -((first - second) % math.tau)
 
 
-def _orientation(segments: tuple[ContourSegment, ...]) -> ContourOrientation:
+def contour_orientation(segments: tuple[ContourSegment, ...]) -> ContourOrientation:
     area = _polygon_area(_sample_segments(segments))
     if abs(area) <= _TOLERANCE:
         raise ContourGenerationError(DiagnosticCode.CONTOUR_OFFSET_COLLAPSED,
                                      "Contour có diện tích bằng zero.")
     return ContourOrientation.COUNTERCLOCKWISE if area > 0.0 else ContourOrientation.CLOCKWISE
+
+
+# Kept as private compatibility aliases for existing callers/tests.  New CAM
+# geometry must use the public names above so its canonical law is explicit.
+_canonical_start = canonical_contour_start
+_orientation = contour_orientation
 
 
 def _sample_loop(loop: ContourLoop) -> tuple[tuple[float, float], ...]:
