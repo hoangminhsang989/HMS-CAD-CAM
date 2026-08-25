@@ -18,14 +18,20 @@ from hms_cadcam.cam.application.rest_contour_geometry import (
     NoRestContourMaterial, RestContourGeometryInputs, RestContourGeometryResult,
     RestContourResidualPlan, plan_rest_contour_residual,
 )
+from hms_cadcam.cam.application.rest_machining_safety import (
+    cutter_engages_material_at,
+    horizontal_segment_is_clear,
+)
 from hms_cadcam.cam.domain import (
-    ArtifactStatus, BoxStock, ContentFingerprint, DependencyFingerprint,
+    ArtifactStatus, BoxStock, ContentFingerprint, DependencyFingerprint, DirtyReason,
     Operation, Point3, Setup, ToolpathArtifactId, Vector3,
 )
 from hms_cadcam.cam.domain.errors import CamValidationError
 from hms_cadcam.cam.domain.operation import ComputationToken
 from hms_cadcam.cam.domain.rest_contour import (
-    RestContourDiagnosticCode, RestContourValidationError,
+    RestContourDiagnosticCode,
+    RestContourParameters,
+    RestContourValidationError,
 )
 from hms_cadcam.cam.material_state import (
     MATERIAL_STATE_ENGINE_VERSION, CutterEnvelope, MaterialState, MaterialStateLoadStatus, MaterialStatePrecisionPolicy,
@@ -35,7 +41,11 @@ from hms_cadcam.cam.material_state import (
 from hms_cadcam.cam.material_state.core import MaterialStateVerificationOrigin
 from hms_cadcam.cam.persistence.artifact_store import ToolpathArtifactStore
 from hms_cadcam.cam.persistence.errors import ToolpathArtifactStoreError
-from hms_cadcam.cam.persistence.models import ToolpathArtifactMetadata
+from hms_cadcam.cam.persistence.models import (
+    MaterialStateDependency,
+    MaterialStateSuccessorPublication,
+    ToolpathArtifactMetadata,
+)
 from hms_cadcam.cam.toolpath import (
     FeedMode, MotionClass, Pose, SpindleState, ToolpathArtifact,
     ToolpathBuilder, compute_material_removal_fingerprint, publish_toolpath,
@@ -101,6 +111,32 @@ class RestContourPhaseBCandidate:
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_chain_fingerprint", _candidate_chain_fingerprint(self))
         object.__setattr__(self, "_factory_seal", object())
+
+
+class R272ValidatedSuccessorCertificate:
+    """Opaque process-local capability minted only by the R272 validator."""
+
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls):
+        raise TypeError("R272 successor certificates can only be minted by validation")
+
+    def __repr__(self) -> str:
+        return "<R272ValidatedSuccessorCertificate opaque>"
+
+    def __copy__(self):
+        raise TypeError("R272 successor certificates cannot be copied")
+
+    def __deepcopy__(self, memo):
+        del memo
+        raise TypeError("R272 successor certificates cannot be copied")
+
+    def __reduce__(self):
+        raise TypeError("R272 successor certificates cannot be serialized")
+
+    def __reduce_ex__(self, protocol):
+        del protocol
+        raise TypeError("R272 successor certificates cannot be serialized")
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +309,53 @@ def _canonical_plan_value(value: object) -> object:
     raise TypeError(f"Rest Contour plan contains unsupported authority type: {type(value)!r}")
 
 
+def _exact_authority_identity_graph(*values: object) -> tuple[object, ...]:
+    """Snapshot value plus identity for every non-scalar authority node."""
+    seen: dict[int, int] = {}
+
+    def encode(value: object) -> object:
+        if type(value) is float:
+            return ("float", value.hex())
+        if value is None or type(value) in {bool, int, str, bytes}:
+            return (type(value).__qualname__, value)
+        if isinstance(value, Enum):
+            return (type(value).__module__, type(value).__qualname__, value.value)
+        if isinstance(value, UUID):
+            return ("uuid", str(value))
+        identifier = id(value)
+        if identifier in seen:
+            return ("ref", seen[identifier])
+        ordinal = len(seen)
+        seen[identifier] = ordinal
+        identity = (type(value).__module__, type(value).__qualname__, identifier)
+        if is_dataclass(value) and not isinstance(value, type):
+            return (
+                "dataclass",
+                identity,
+                tuple((item.name, encode(getattr(value, item.name))) for item in fields(value)),
+            )
+        if isinstance(value, tuple):
+            return ("tuple", identity, tuple(encode(item) for item in value))
+        if isinstance(value, list):
+            return ("list", identity, tuple(encode(item) for item in value))
+        if isinstance(value, dict):
+            return (
+                "dict",
+                identity,
+                tuple(
+                    sorted(
+                        ((encode(key), encode(item)) for key, item in value.items()),
+                        key=repr,
+                    )
+                ),
+            )
+        if isinstance(value, (set, frozenset)):
+            return ("set", identity, tuple(sorted((encode(item) for item in value), key=repr)))
+        return ("object", identity)
+
+    return tuple(encode(value) for value in values)
+
+
 def _plan_authority_seal(plan: RestContourResidualPlan) -> ContentFingerprint:
     """Return a recursive exact-byte seal for the self-contained Phase-A plan."""
     if not isinstance(plan, RestContourResidualPlan):
@@ -442,75 +525,12 @@ def _span_components(plan: RestContourResidualPlan, spans: tuple[_CutSpan, ...])
 
 
 def _meaningful_at(state: MaterialState, envelope: CutterEnvelope, x: float, y: float, tip_z: float) -> bool:
-    for row in range(state.height):
-        center_y = (row + 0.5) * state.cell_size_y
-        for column in range(state.width):
-            radius = math.hypot((column + 0.5) * state.cell_size_x - x, center_y - y)
-            # The forbidden cutter footprint is an open disk.  Contact at its
-            # boundary is not an intersection, but even a 1e-10 penetration
-            # must remain forbidden; never shrink this disk by a tolerance.
-            if radius >= envelope.radius:
-                continue
-            if state.top_heights[row * state.width + column] > tip_z + envelope.surface_offset(radius) + state.precision.residual_threshold:
-                return True
-    return False
+    return cutter_engages_material_at(state, envelope, x, y, tip_z)
 
 
 def _line_is_clear(state: MaterialState, envelope: CutterEnvelope, start: Point3, end: Point3, tip_z: float) -> bool:
     """Exact cell-disk interval proof for a horizontal link; never sample points."""
-    # The endpoint predicate has a stricter authority than the later
-    # representation-only interval normalization.  A line whose exact endpoint
-    # is inside a meaningful open cutter footprint is material-engaging even if
-    # the independently rounded quadratic interval has collapsed at t=0 or
-    # t=1.  Check it before any ULP contraction; exact tangency remains legal
-    # because _meaningful_at uses the same strict open-disk CutterEnvelope law.
-    if (_meaningful_at(state, envelope, start.x, start.y, tip_z)
-            or _meaningful_at(state, envelope, end.x, end.y, tip_z)):
-        return False
-    dx, dy = end.x - start.x, end.y - start.y
-    length = math.hypot(dx, dy)
-    # A point proof is valid only for an exactly coincident move.  Positive
-    # sub-micrometre links must retain their analytic segment authority: their
-    # squared length can underflow a tolerance even while crossing material.
-    if length == 0.0:
-        return not _meaningful_at(state, envelope, start.x, start.y, tip_z)
-    direction_x, direction_y = dx / length, dy / length
-    for row in range(state.height):
-        center_y = (row + 0.5) * state.cell_size_y
-        for column in range(state.width):
-            maximum = envelope.maximum_removable_radius(target_tip_z=tip_z,
-                current_height=state.top_heights[row * state.width + column], threshold=state.precision.residual_threshold)
-            if maximum is None:
-                continue
-            center_x = (column + 0.5) * state.cell_size_x
-            offset_x, offset_y = center_x - start.x, center_y - start.y
-            projection = offset_x * direction_x + offset_y * direction_y
-            perpendicular = offset_x * direction_y - offset_y * direction_x
-            # Open-disk interval proof.  Do not subtract a tolerance from the
-            # radius or interval: a positive near-tangent penetration is still
-            # a material-engaging link and must fail closed.
-            # Keep this ratio-safe: squaring a legal subnormal cutter radius
-            # turns both terms into zero and incorrectly proves a positive
-            # segment clear. ``hypot`` above retained the chord scale.
-            if abs(perpendicular) >= maximum:
-                continue
-            ratio = perpendicular / maximum
-            half_distance = maximum * math.sqrt((1.0 - ratio) * (1.0 + ratio))
-            lower = max(0.0, (projection - half_distance) / length)
-            upper = min(1.0, (projection + half_distance) / length)
-            # ``lower``/``upper`` arise from separate floating-point paths.
-            # Normalize at a bounded 8-ULP representation envelope so an
-            # exact Phase-A tangency cannot become a fake ~1e-15 interval
-            # (the planner and this inverse proof each multiply/divide along
-            # the segment).  This is intentionally not a geometric tolerance
-            # and never subtracts from the cutter radius: a positive 1e-10
-            # penetration remains forbidden by the same open-disk predicate.
-            for _ in range(8):
-                lower = math.nextafter(lower, math.inf)
-                upper = math.nextafter(upper, -math.inf)
-            if lower < upper:
-                return False
-    return True
+    return horizontal_segment_is_clear(state, envelope, start, end, tip_z)
 
 
 def _gap_route(plan: RestContourResidualPlan, start: float, end: float) -> tuple[Point3, ...]:
@@ -877,6 +897,507 @@ prepare_rest_contour_phase_b, generate_rest_contour_phase_b, _validate_candidate
 del _install_phase_b_seal_boundary
 del _prepare_rest_contour_phase_b_unsealed, _generate_rest_contour_phase_b_unsealed
 del _validate_candidate_integrity
+
+
+def _r272_material_removal_operation_fingerprint(operation: Operation) -> ContentFingerprint:
+    """Seal every operation fact except the three frozen feed-only controls."""
+
+    if not isinstance(operation, Operation):
+        raise TypeError("R272 producer operation authority is invalid")
+    payload = operation.to_dict()
+    payload.pop("revision")
+    payload.pop("artifact_state")
+    payload.pop("diagnostics")
+    payload["parameters"] = dict(payload["parameters"])
+    payload["parameters"]["values"] = [
+        value
+        for value in payload["parameters"]["values"]
+        if value["name"] not in {
+            "cutting_feed_rate",
+            "plunge_feed_rate",
+            "spindle_speed",
+        }
+    ]
+    return ContentFingerprint.from_payload({
+        "format": "HMS_CAM_MATERIAL_REMOVAL_OPERATION_AUTHORITY",
+        "format_version": 1,
+        "operation": payload,
+    })
+
+
+def _r272_state_authority_payload(state: MaterialState) -> dict[str, object]:
+    """Return every durable machining-authority field of one state."""
+
+    if not isinstance(state, MaterialState):
+        raise TypeError("R272 successor state authority is invalid")
+    return state.to_dict()
+
+
+def _r272_feed_only_material_artifact(
+    operation: Operation,
+    artifact: ToolpathArtifact,
+) -> bool:
+    state = operation.artifact_state
+    return (
+        operation.strategy_key == "rest_contour_3axis"
+        and state.status is ArtifactStatus.DIRTY
+        and state.token is None
+        and state.dirty_reasons == (DirtyReason.PARAMETERS_CHANGED,)
+        and state.input_fingerprint == artifact.input_fingerprint
+        and state.artifact_fingerprint is None
+        and state.generation == artifact.computation_token.generation
+        and artifact.source_operation_id == operation.operation_id
+        and artifact.operation_revision.value < operation.revision.value
+    )
+
+
+def _install_r272_validated_successor_boundary():
+    """Install the non-persistable R272 validation capability registry."""
+
+    import secrets
+    import threading
+    import weakref
+
+    lock = threading.RLock()
+    records: dict[int, dict[str, object]] = {}
+
+    def remove(identifier: int, reference) -> None:
+        with lock:
+            record = records.get(identifier)
+            if record is not None and record["certificate"] is reference:
+                records.pop(identifier, None)
+
+    def validated_chain_current(record: dict[str, object]) -> bool:
+        """Recheck exact live R272 producer authority retained by a certificate."""
+        try:
+            candidate = record["validation_candidate"]
+            prepared = record["prepared"]
+            plan = record["plan"]
+            authority = record["plan_authority"]
+            tool = record["producer_tool"]
+            cutting_geometry = record["producer_cutting_geometry"]
+            assembly = record["producer_assembly"]
+            machine = record["producer_machine"]
+            return (
+                isinstance(candidate, RestContourPhaseBCandidate)
+                and candidate.prepared is prepared
+                and candidate.candidate_chain_fingerprint
+                    == record["candidate_seal"]
+                and _candidate_chain_fingerprint(candidate)
+                    == record["candidate_seal"]
+                and isinstance(prepared, RestContourPhaseBPrepared)
+                and prepared.plan is plan
+                and _prepared_fingerprint(prepared) == record["prepared_seal"]
+                and isinstance(plan, RestContourResidualPlan)
+                and plan.authority is authority
+                and _plan_authority_seal(plan) == record["plan_seal"]
+                and authority.tool is tool
+                and authority.tool_assembly is assembly
+                and authority.machine is machine
+                and tool.cutting_geometry is cutting_geometry
+                and tool.content_fingerprint == record["producer_tool_seal"]
+                and ContentFingerprint.from_payload(assembly.to_dict())
+                    == record["producer_assembly_seal"]
+                and machine.content_fingerprint == record["producer_machine_seal"]
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, CamValidationError):
+            return False
+
+    def mint(
+        *,
+        replay_context: RestContourPhaseBExecutionContext,
+        validation_candidate: RestContourPhaseBCandidate,
+        authoritative_setup: Setup,
+        authoritative_producer_operation: Operation,
+        exact_producer_artifact: ToolpathArtifact,
+        trusted_parent_state: MaterialState,
+        supplied_successor_state: MaterialState,
+        producer_completion: MaterialStateSuccessorPublication,
+        producer_dependency: MaterialStateDependency,
+        cancellation: Callable[[], bool] | None,
+    ) -> R272ValidatedSuccessorCertificate:
+        if (not isinstance(replay_context, RestContourPhaseBExecutionContext)
+                or not isinstance(validation_candidate, RestContourPhaseBCandidate)
+                or not isinstance(authoritative_setup, Setup)
+                or not isinstance(authoritative_producer_operation, Operation)
+                or not isinstance(exact_producer_artifact, ToolpathArtifact)
+                or not isinstance(trusted_parent_state, MaterialState)
+                or not isinstance(supplied_successor_state, MaterialState)
+                or not isinstance(producer_completion, MaterialStateSuccessorPublication)
+                or not isinstance(producer_dependency, MaterialStateDependency)
+                or (cancellation is not None and not callable(cancellation))):
+            raise TypeError("R272 successor validation inputs are invalid")
+        if replay_context.phase_a_inputs.cancellation is not cancellation:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                  "R272 validation cancellation authority differs from replay authority")
+        _cancelled(cancellation)
+        # This is the critical independent anchor: only a candidate registered
+        # by the closed R272 Phase-B boundary can reach certificate minting.
+        _validate_candidate(validation_candidate, rebuild=True)
+        prepared = validation_candidate.prepared
+        _fresh_prewrite(replay_context, prepared)
+        plan = prepared.plan
+        producer = authoritative_setup.operation_tree.get_operation(
+            authoritative_producer_operation.operation_id
+        )
+        producer_state = authoritative_producer_operation.artifact_state
+        exact_operation_state = (
+            producer_state.status is ArtifactStatus.VALID
+            and producer_state.token is None
+            and not producer_state.dirty_reasons
+            and producer_state.input_fingerprint == exact_producer_artifact.input_fingerprint
+            and producer_state.artifact_fingerprint
+                == exact_producer_artifact.artifact_fingerprint
+            and producer_state.generation
+                == exact_producer_artifact.computation_token.generation
+            and exact_producer_artifact.operation_revision
+                == authoritative_producer_operation.revision
+        )
+        feed_only_operation_state = _r272_feed_only_material_artifact(
+            authoritative_producer_operation,
+            exact_producer_artifact,
+        )
+        try:
+            current_parameters = RestContourParameters.from_operation_parameters(
+                authoritative_producer_operation.parameters
+            )
+            prepared_parameters = RestContourParameters.from_operation_parameters(
+                prepared.base_operation.parameters
+            )
+            parameters_are_removal_equivalent = (
+                current_parameters.to_operation_parameters().values
+                == prepared_parameters.to_operation_parameters().values
+            )
+            if feed_only_operation_state:
+                parameters_are_removal_equivalent = (
+                    _r272_material_removal_operation_fingerprint(
+                        authoritative_producer_operation
+                    ) == _r272_material_removal_operation_fingerprint(
+                        prepared.base_operation
+                    )
+                )
+        except (TypeError, ValueError, CamValidationError):
+            parameters_are_removal_equivalent = False
+        if (producer is not authoritative_producer_operation
+                or not authoritative_producer_operation.enabled
+                or not authoritative_setup.enabled
+                or not (exact_operation_state or feed_only_operation_state)
+                or not parameters_are_removal_equivalent
+                or prepared.setup.setup_id != authoritative_setup.setup_id
+                or prepared.setup.revision != authoritative_setup.revision
+                or prepared.setup.stock != authoritative_setup.stock
+                or prepared.setup.wcs != authoritative_setup.wcs
+                or prepared.setup.work_offset != authoritative_setup.work_offset
+                or plan.authority.consumer_operation_id
+                   != authoritative_producer_operation.operation_id
+                or _r272_material_removal_operation_fingerprint(
+                    authoritative_producer_operation
+                ) != _r272_material_removal_operation_fingerprint(prepared.base_operation)
+                or exact_producer_artifact != validation_candidate.artifact
+                or trusted_parent_state is not prepared.predecessor_state
+                or not trusted_parent_state.content_is_verified
+                or exact_producer_artifact.source_operation_id
+                   != authoritative_producer_operation.operation_id
+                or exact_producer_artifact.setup_id != authoritative_setup.setup_id
+                or exact_producer_artifact.wcs_fingerprint
+                   != ContentFingerprint.from_payload(authoritative_setup.wcs.to_dict())
+                or exact_producer_artifact.tool_assembly_id
+                   != plan.authority.tool_assembly.assembly_id
+                or exact_producer_artifact.tool_assembly_fingerprint
+                   != ContentFingerprint.from_payload(plan.authority.tool_assembly.to_dict())
+                or exact_producer_artifact.machine_id != plan.authority.machine.machine_id
+                or exact_producer_artifact.machine_fingerprint
+                   != plan.authority.machine.content_fingerprint
+                or compute_material_removal_fingerprint(exact_producer_artifact)
+                   != compute_material_removal_fingerprint(validation_candidate.artifact)):
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                  "R272 producer operation, artifact, tool, machine or Setup authority changed")
+        try:
+            completion_payload = producer_completion.to_dict()
+            completion_payload["status"] = producer_completion.status
+            completion_valid = (
+                MaterialStateSuccessorPublication.from_dict(completion_payload)
+                == producer_completion
+            )
+            dependency_valid = (
+                MaterialStateDependency.from_dict(producer_dependency.to_dict())
+                == producer_dependency
+            )
+        except (AttributeError, TypeError, ValueError, CamValidationError):
+            completion_valid = False
+            dependency_valid = False
+        parent_edges = tuple(
+            edge
+            for edge in authoritative_setup.operation_tree.dependency_graph.edges
+            if edge.kind.value == "material_state"
+            and edge.target_operation_id == authoritative_producer_operation.operation_id
+        )
+        expected_parent_edge = (
+            producer_dependency.producer_operation_id,
+            authoritative_producer_operation.operation_id,
+        )
+        upstream = authoritative_setup.operation_tree.get_operation(
+            producer_dependency.producer_operation_id
+        ) if dependency_valid else None
+        provenance_checks = {
+            "completion_self": completion_valid,
+            "dependency_self": dependency_valid,
+            "unique_parent_edge": len(parent_edges) == 1,
+            "parent_edge": len(parent_edges) == 1 and (
+                parent_edges[0].source_operation_id,
+                parent_edges[0].target_operation_id,
+            ) == expected_parent_edge,
+            "upstream_current": upstream is not None and upstream.enabled,
+            "dependency_consumer": producer_dependency.consumer_operation_id
+                == authoritative_producer_operation.operation_id,
+            "upstream_operation": upstream is not None and (
+                producer_dependency.producer_operation_authority_fingerprint
+                == _r272_material_removal_operation_fingerprint(upstream)
+            ),
+            "parent_fingerprint": producer_dependency.parent_state_fingerprint
+                == trusted_parent_state.fingerprint,
+            "parent_toolpath": producer_dependency.producer_toolpath_fingerprint
+                == trusted_parent_state.toolpath_fingerprint,
+            "parent_setup": producer_dependency.setup_fingerprint
+                == trusted_parent_state.setup_fingerprint,
+            "parent_stock": producer_dependency.stock_fingerprint
+                == trusted_parent_state.stock_fingerprint,
+            "parent_engine": producer_dependency.engine_version
+                == trusted_parent_state.engine_version,
+            "parent_precision": producer_dependency.precision
+                == trusted_parent_state.precision.to_dict(),
+            "publication_link": producer_dependency.successor_publication
+                == producer_completion,
+            "completion_consumer": producer_completion.consumer_operation_id
+                == authoritative_producer_operation.operation_id,
+            "completion_artifact_id": producer_completion.artifact_id
+                == exact_producer_artifact.artifact_id,
+            "completion_artifact": producer_completion.artifact_fingerprint
+                == exact_producer_artifact.artifact_fingerprint,
+            "completion_input": producer_completion.input_fingerprint
+                == exact_producer_artifact.input_fingerprint,
+            "completion_removal": producer_completion.semantic_material_removal_fingerprint
+                == compute_material_removal_fingerprint(exact_producer_artifact),
+            "completion_parent": producer_completion.parent_state_fingerprint
+                == trusted_parent_state.fingerprint,
+            "completion_parent_seal": producer_completion.parent_state_content_seal
+                == trusted_parent_state.content_integrity_fingerprint,
+        }
+        failed_provenance = tuple(
+            name for name, valid in provenance_checks.items() if not valid
+        )
+        if failed_provenance:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                  "R272 completion, dependency or predecessor authority changed: "
+                  + ", ".join(failed_provenance))
+        latched = False
+
+        def replay_cancellation() -> bool:
+            nonlocal latched
+            if cancellation is not None and cancellation():
+                latched = True
+            return latched
+
+        _cancelled(cancellation)
+        try:
+            replayed = calculate_material_state(
+                stock=authoritative_setup.stock,
+                artifact=exact_producer_artifact,
+                tool=plan.authority.tool,
+                parent=trusted_parent_state,
+                setup_fingerprint=material_state_setup_fingerprint(authoritative_setup),
+                precision=trusted_parent_state.precision,
+                cancellation=replay_cancellation if cancellation is not None else None,
+            ).state
+        except CamValidationError as error:
+            if latched:
+                _fail(RestContourDiagnosticCode.CANCELLED,
+                      "R272 successor authority replay was cancelled")
+            _fail(RestContourDiagnosticCode.SUCCESSOR_INVALID,
+                  f"R272 successor authority replay failed: {error}")
+        _cancelled(cancellation)
+        if (_r272_state_authority_payload(replayed)
+                != _r272_state_authority_payload(supplied_successor_state)
+                or _r272_state_authority_payload(replayed)
+                   != _r272_state_authority_payload(validation_candidate.successor_state)
+                or producer_completion.successor_state_fingerprint
+                   != supplied_successor_state.fingerprint
+                or producer_completion.successor_state_content_seal
+                   != supplied_successor_state.content_integrity_fingerprint
+                or producer_completion.setup_fingerprint
+                   != supplied_successor_state.setup_fingerprint
+                or producer_completion.stock_fingerprint
+                   != supplied_successor_state.stock_fingerprint
+                or producer_completion.engine_version != supplied_successor_state.engine_version
+                or producer_completion.precision != supplied_successor_state.precision.to_dict()):
+            _fail(RestContourDiagnosticCode.SUCCESSOR_INVALID,
+                  "R272 supplied successor differs from independent authoritative replay")
+        binding = ContentFingerprint.from_payload({
+            "format": "HMS_CAM_R272_VALIDATED_SUCCESSOR_BINDING",
+            "format_version": 1,
+            "producer_operation": str(authoritative_producer_operation.operation_id),
+            "producer_removal": _r272_material_removal_operation_fingerprint(
+                authoritative_producer_operation
+            ).to_dict(),
+            "producer_tool": plan.authority.tool.content_fingerprint.to_dict(),
+            "producer_assembly": ContentFingerprint.from_payload(
+                plan.authority.tool_assembly.to_dict()
+            ).to_dict(),
+            "machine": plan.authority.machine.content_fingerprint.to_dict(),
+            "setup": material_state_setup_fingerprint(authoritative_setup).to_dict(),
+            "wcs": ContentFingerprint.from_payload(authoritative_setup.wcs.to_dict()).to_dict(),
+            "parent": trusted_parent_state.fingerprint.to_dict(),
+            "parent_seal": trusted_parent_state.content_integrity_fingerprint.to_dict(),
+            "artifact": exact_producer_artifact.artifact_fingerprint.to_dict(),
+            "semantic_removal": compute_material_removal_fingerprint(
+                exact_producer_artifact
+            ).to_dict(),
+            "successor": supplied_successor_state.fingerprint.to_dict(),
+            "successor_seal": supplied_successor_state.content_integrity_fingerprint.to_dict(),
+            "engine": supplied_successor_state.engine_version,
+            "precision": supplied_successor_state.precision.to_dict(),
+            "completion": producer_completion.publication_fingerprint.to_dict(),
+            "dependency": ContentFingerprint.from_payload(
+                producer_dependency.to_dict()
+            ).to_dict(),
+        })
+        certificate = object.__new__(R272ValidatedSuccessorCertificate)
+        identifier = id(certificate)
+        reference = weakref.ref(
+            certificate,
+            lambda value: remove(identifier, value),
+        )
+        with lock:
+            records[identifier] = {
+                "certificate": reference,
+                "token": secrets.token_bytes(32),
+                "binding": binding,
+                "validation_candidate": validation_candidate,
+                "replay_context": replay_context,
+                "candidate_seal": _candidate_chain_fingerprint(validation_candidate),
+                "prepared": prepared,
+                "prepared_seal": _prepared_fingerprint(prepared),
+                "plan": plan,
+                "plan_seal": _plan_authority_seal(plan),
+                "plan_authority": plan.authority,
+                "producer_tool": plan.authority.tool,
+                "producer_cutting_geometry": plan.authority.tool.cutting_geometry,
+                "producer_tool_seal": plan.authority.tool.content_fingerprint,
+                "producer_assembly": plan.authority.tool_assembly,
+                "producer_assembly_seal": ContentFingerprint.from_payload(
+                    plan.authority.tool_assembly.to_dict()
+                ),
+                "producer_machine": plan.authority.machine,
+                "producer_machine_seal": plan.authority.machine.content_fingerprint,
+                "setup": authoritative_setup,
+                "setup_seal": ContentFingerprint.from_payload(authoritative_setup.to_dict()),
+                "operation": authoritative_producer_operation,
+                "operation_seal": ContentFingerprint.from_payload(
+                    authoritative_producer_operation.to_dict()
+                ),
+                "artifact": exact_producer_artifact,
+                "artifact_seal": ContentFingerprint.from_payload(
+                    artifact_to_dict(exact_producer_artifact)
+                ),
+                "parent": trusted_parent_state,
+                "parent_seal": trusted_parent_state.content_integrity_fingerprint,
+                "successor": supplied_successor_state,
+                "successor_seal": supplied_successor_state.content_integrity_fingerprint,
+                "completion": producer_completion,
+                "completion_seal": producer_completion.publication_fingerprint,
+                "dependency": producer_dependency,
+                "dependency_seal": ContentFingerprint.from_payload(
+                    producer_dependency.to_dict()
+                ),
+                "cancellation": cancellation,
+                "authority_identity_graph": _exact_authority_identity_graph(
+                    replay_context,
+                    validation_candidate,
+                    authoritative_setup,
+                    authoritative_producer_operation,
+                    exact_producer_artifact,
+                    trusted_parent_state,
+                    supplied_successor_state,
+                    producer_completion,
+                    producer_dependency,
+                    cancellation,
+                ),
+            }
+        return certificate
+
+    def require(
+        certificate: R272ValidatedSuccessorCertificate,
+        *,
+        setup: Setup,
+        producer_operation: Operation,
+        artifact: ToolpathArtifact,
+        parent_state: MaterialState,
+        successor_state: MaterialState,
+        completion: MaterialStateSuccessorPublication,
+        dependency: MaterialStateDependency,
+        cancellation: Callable[[], bool] | None,
+    ) -> ContentFingerprint:
+        if (not isinstance(certificate, R272ValidatedSuccessorCertificate)
+                or (cancellation is not None and not callable(cancellation))):
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                  "R272 successor validation certificate is absent or invalid")
+        with lock:
+            record = records.get(id(certificate))
+            valid = (
+                record is not None
+                and record["certificate"]() is certificate
+                and isinstance(record["token"], bytes)
+                and len(record["token"]) == 32
+                and record["authority_identity_graph"]
+                    == _exact_authority_identity_graph(
+                        record["replay_context"],
+                        record["validation_candidate"],
+                        setup,
+                        producer_operation,
+                        artifact,
+                        parent_state,
+                        successor_state,
+                        completion,
+                        dependency,
+                        cancellation,
+                    )
+                and validated_chain_current(record)
+                and record["setup"] is setup
+                and record["operation"] is producer_operation
+                and record["artifact"] is artifact
+                and record["parent"] is parent_state
+                and record["successor"] is successor_state
+                and record["completion"] is completion
+                and record["dependency"] is dependency
+                and record["cancellation"] is cancellation
+                and record["setup_seal"] == ContentFingerprint.from_payload(setup.to_dict())
+                and record["operation_seal"]
+                    == ContentFingerprint.from_payload(producer_operation.to_dict())
+                and record["artifact_seal"]
+                    == ContentFingerprint.from_payload(artifact_to_dict(artifact))
+                and record["parent_seal"] == parent_state.content_integrity_fingerprint
+                and parent_state.content_is_verified
+                and record["successor_seal"] == successor_state.content_integrity_fingerprint
+                and successor_state.content_is_verified
+                and record["completion_seal"] == completion.publication_fingerprint
+                and record["dependency_seal"]
+                    == ContentFingerprint.from_payload(dependency.to_dict())
+            )
+            binding = record["binding"] if valid else None
+        if binding is None:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                  "R272 successor validation certificate is stale or foreign")
+        _cancelled(cancellation)
+        return binding
+
+    return mint, require
+
+
+(
+    mint_r272_validated_successor_certificate,
+    require_r272_validated_successor_certificate,
+) = _install_r272_validated_successor_boundary()
+del _install_r272_validated_successor_boundary
 
 
 def publish_rest_contour_phase_b(candidate: RestContourPhaseBCandidate, *, current_context: RestContourPhaseBExecutionContext,

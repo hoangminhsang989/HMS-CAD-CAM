@@ -56,6 +56,16 @@ from hms_cadcam.cam.domain.rest_contour import (
     RestContourProfileSelection,
     RestContourValidationError,
 )
+from hms_cadcam.cam.domain.rest_finishing import (
+    REST_FINISHING_PARAMETER_FORMAT,
+    REST_FINISHING_PARAMETER_SCHEMA_VERSION,
+    REST_FINISHING_STRATEGY_KEY,
+    REST_FINISHING_STRATEGY_VERSION,
+    RestFinishingDiagnosticCode,
+    RestFinishingParameters,
+    RestFinishingProfileSelection,
+    RestFinishingValidationError,
+)
 from hms_cadcam.cam.domain.facing import (
     FACING_STRATEGY_KEY,
     FACING_STRATEGY_VERSION,
@@ -339,6 +349,14 @@ __all__ = [
     "RestContourParameters",
     "RestContourProfileSelection",
     "RestContourValidationError",
+    "REST_FINISHING_PARAMETER_FORMAT",
+    "REST_FINISHING_PARAMETER_SCHEMA_VERSION",
+    "REST_FINISHING_STRATEGY_KEY",
+    "REST_FINISHING_STRATEGY_VERSION",
+    "RestFinishingDiagnosticCode",
+    "RestFinishingParameters",
+    "RestFinishingProfileSelection",
+    "RestFinishingValidationError",
     "ContourBounds",
     "ContourCurveKind",
     "ContourCutDirection",

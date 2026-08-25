@@ -1,0 +1,381 @@
+{
+  "format": "HMS_R273_REST_FINISHING_3AXIS_CORE_PRODUCT_LAW_FREEZE",
+  "format_version": 2,
+  "revision": "R273_REST_FINISHING_3AXIS_CORE",
+  "parent_authority": {
+    "revision": "R268_REST_CONTOUR_AND_REST_FINISHING_PRODUCT_DEFINITION",
+    "document": "docs/R268_REST_CONTOUR_AND_REST_FINISHING_PRODUCT_DEFINITION.json",
+    "canonical_sha256": "54cfa2660e3dba1d3151ea9578bb070471ffef972d2325d3cd91c723be3edb5d"
+  },
+  "parent_candidate": {
+    "revision": "R272_REST_CONTOUR_APPLICATION_PROJECT_REGISTRY_WIRING",
+    "commit": "8f3b8d24dd5213866136fdd09feb12f317eac90b",
+    "tree": "4a438ee1e4f3952e45b1862cf712755b0a6f2425"
+  },
+  "strategy": {
+    "key": "rest_finishing_3axis",
+    "target_model": "CONSTANT_Z_PLANAR_TARGET_INSIDE_AUTHORITATIVE_CLOSED_PLANAR_CONTOUR",
+    "material_model": "CURRENT_AUTHORITATIVE_TOP_DOWN_HEIGHTFIELD_MATERIALSTATE",
+    "path_strategy": "DETERMINISTIC_X_AXIS_RASTER_BOUSTROPHEDON",
+    "axis_mode": "FIXED_3_AXIS_SETUP_WCS",
+    "stock_type": "BOX",
+    "auto_policy": "DISABLED_IN_R273",
+    "partial_access_policy": "FAIL_WHOLE_OPERATION"
+  },
+  "target_and_material_law": {
+    "nominal_target_z": "EXPLICIT_FINITE_Z_IN_CURRENT_SETUP_WCS",
+    "final_stock_allowance": "EXPLICIT_FINITE_NON_NEGATIVE_AXIAL_LENGTH",
+    "cut_z_equation": "CUT_Z = NOMINAL_TARGET_Z + FINAL_STOCK_ALLOWANCE",
+    "tolerance": "EXPLICIT_POSITIVE_FINITE_LENGTH_VALIDATED_THROUGH_EXISTING_CANONICAL_LENGTH_AND_PRECISION_POLICY",
+    "work_predicate": "CURRENT_HEIGHT > CUT_Z + TOLERANCE",
+    "cell_complete_predicate": "CURRENT_HEIGHT <= CUT_Z + TOLERANCE",
+    "material_below_target_predicate": "CURRENT_HEIGHT < NOMINAL_TARGET_Z - TOLERANCE",
+    "material_below_target_outcome": "MATERIAL_BELOW_TARGET",
+    "no_direct_heightfield_mutation": true,
+    "each_level_requires_actual_toolpath_replay": true
+  },
+  "geometry_scope": {
+    "supported": [
+      "ONE_AUTHORITATIVE_CLOSED_PLANAR_XY_CONTOUR",
+      "CONSTANT_Z_FINISHING_TARGET",
+      "SAME_SETUP_AND_WCS",
+      "BOX_STOCK",
+      "FIXED_3_AXIS_MILLING",
+      "TOP_DOWN_MATERIALSTATE_HEIGHTFIELD",
+      "DISCONNECTED_FINISHING_WORK_COMPONENTS"
+    ],
+    "unsupported": [
+      "ARBITRARY_CAD_SURFACE_FINISHING",
+      "ARBITRARY_TARGET_HEIGHTFIELDS",
+      "SIDEWALL_FINISHING",
+      "UNDERCUTS",
+      "THREE_PLUS_TWO_OR_FIVE_AXIS",
+      "HOLES_IN_FINISHING_TARGET_TOPOLOGY",
+      "AMBIGUOUS_TARGET_TOPOLOGY",
+      "SELF_INTERSECTING_TARGET_TOPOLOGY"
+    ],
+    "unsupported_policy": "TYPED_FAIL_CLOSED_WITHOUT_GEOMETRY_SIMPLIFICATION"
+  },
+  "tool_scope": {
+    "supported_combinations": [
+      "FLAT_END_MILL_WITH_CONSTANT_Z_PLANAR_TARGET"
+    ],
+    "unsupported_combinations": [
+      "BALL_END_MILL",
+      "BULL_NOSE_END_MILL",
+      "OTHER_TOOL_TARGET_COMBINATIONS"
+    ],
+    "accessibility_authority": "ACTUAL_CUTTER_ENVELOPE",
+    "required_validation": [
+      "TOOL_FAMILY",
+      "DIAMETER",
+      "AXIAL_CUTTING_LENGTH",
+      "HOLDER_AND_ASSEMBLY_CURRENTNESS",
+      "REACH_AND_CUTTING_CAPACITY",
+      "UNIT_COMPATIBILITY",
+      "FIXED_3_AXIS_MILL_MACHINE_COMPATIBILITY"
+    ],
+    "inaccessible_material_outcome": "UNREACHABLE_FINISHING_MATERIAL",
+    "inaccessible_material_policy": "FAIL_WHOLE_OPERATION_WITHOUT_PARTIAL_SUCCESSOR"
+  },
+  "manual_parameters": {
+    "stepover": {
+      "mode": "MANUAL_ONLY",
+      "requirements": [
+        "FINITE",
+        "GREATER_THAN_ZERO",
+        "LESS_THAN_OR_EQUAL_TO_EFFECTIVE_CUTTER_DIAMETER",
+        "EXISTING_CANONICAL_LENGTH_VALIDATION"
+      ],
+      "raster_anchoring": "DETERMINISTIC_FROM_AUTHORITATIVE_TARGET_PROFILE_COORDINATES",
+      "terminal_strip_policy": "INCLUDE_DETERMINISTIC_TERMINAL_RASTER_POSITION_WHEN_REQUIRED_FOR_ACCESSIBLE_BOUNDARY_COVERAGE"
+    },
+    "max_stepdown": {
+      "mode": "MANUAL_ONLY",
+      "requirements": [
+        "FINITE",
+        "GREATER_THAN_ZERO",
+        "WITHIN_SELECTED_TOOL_AND_ASSEMBLY_CUTTING_CAPACITY",
+        "WITHIN_EXISTING_MACHINE_AND_PROCESS_CONSTRAINTS"
+      ]
+    },
+    "automatic_parameters": "FORBIDDEN_IN_R273"
+  },
+  "multi_level_law": {
+    "hmax": "MAXIMUM_AUTHORITATIVE_CURRENT_HEIGHT_AMONG_CELLS_REQUIRING_FINISHING",
+    "level_equation": "L_i = max(CUT_Z, HMAX - i * MAX_STEPDOWN)",
+    "terminal_level": "CUT_Z",
+    "ordering": "STRICTLY_DESCENDING_TO_CUT_Z",
+    "deduplication": "EXISTING_CANONICAL_PRECISION_POLICY",
+    "per_level_requirements": [
+      "DERIVE_WORK_FROM_CURRENT_REPLAYED_MATERIALSTATE",
+      "DO_NOT_REUSE_STALE_PRECOMPUTED_WORK_REGIONS",
+      "CUT_ONLY_MATERIAL_EXCEEDING_CURRENT_LEVEL_UNDER_FROZEN_TOLERANCE_SEMANTICS",
+      "REPLAY_ACTUAL_TOOLPATH_IR_BEFORE_DERIVING_NEXT_PASS_STATE"
+    ],
+    "finishing_tolerance_scope": "FINAL_TARGET_COMPLETION_ONLY",
+    "intermediate_level_work_precision": "EXISTING_CANONICAL_NUMERIC_AND_GEOMETRIC_PRECISION_POLICY",
+    "intermediate_level_suppression_by_finishing_tolerance": false,
+    "hard_engagement_assertion": "CURRENT_REPLAYED_HEIGHT - LEVEL_Z <= MAX_STEPDOWN + CANONICAL_NUMERIC_EPSILON",
+    "hard_engagement_failure": "STEPDOWN_EXCEEDED_OR_EQUIVALENT_TYPED_FAIL_CLOSED",
+    "no_op_level_policy": "ALLOWED_ONLY_WHEN_EVERY_SUBSEQUENT_ENGAGEMENT_STILL_SATISFIES_THE_HARD_MAX_STEPDOWN_ASSERTION"
+  },
+  "region_and_ordering_law": {
+    "disconnected_components": "SUPPORTED",
+    "component_order": "CANONICAL_GEOMETRY_ORDER",
+    "recommended_order_key": [
+      "MIN_Y",
+      "MIN_X",
+      "MAX_Y",
+      "MAX_X",
+      "STABLE_GEOMETRY_FINGERPRINT"
+    ],
+    "set_or_dictionary_iteration_is_authority": false,
+    "bridge_positive_gaps": false,
+    "holes": "FAIL_CLOSED",
+    "self_intersection": "FAIL_CLOSED",
+    "ambiguous_topology": "FAIL_CLOSED"
+  },
+  "motion_safety_law": {
+    "raster_direction": "X_AXIS",
+    "raster_traversal": "BOUSTROPHEDON",
+    "cutting_containment": "ACTUAL_CUTTER_ENVELOPE_MUST_REMAIN_INSIDE_PERMITTED_MACHINING_REGION",
+    "entry": "EVERY_ENTRY_MUST_BE_ANALYTICALLY_PROVEN_SAFE",
+    "link": "EVERY_LINK_MUST_BE_ANALYTICALLY_PROVEN_SAFE",
+    "no_safe_entry_outcome": "ENTRY_UNSAFE",
+    "unsafe_link_outcome": "LINK_UNSAFE_OR_EXISTING_EQUIVALENT_TYPED_DIAGNOSTIC",
+    "canonical_orientation_evasion": "FORBIDDEN_UNLESS_EXISTING_AUTHORITATIVE_MOTION_POLICY_EXPLICITLY_PERMITS_TRANSFORMATION",
+    "partial_publication": false
+  },
+  "no_work_contract": {
+    "outcome": "NO_REST_FINISHING_MATERIAL",
+    "status_class": "TYPED_SUCCESS",
+    "validate_before_outcome": [
+      "TARGET_AND_PROFILE_AUTHORITY",
+      "CURRENT_MATERIALSTATE",
+      "DEPENDENCY_PROVENANCE",
+      "SELECTED_TOOL_AND_ASSEMBLY",
+      "MACHINE_AND_SETUP",
+      "TOLERANCE_AND_ALLOWANCE",
+      "SUPPORTED_TARGET_AND_TOOL_COMBINATION"
+    ],
+    "must_not_hide": [
+      "STALE",
+      "FOREIGN",
+      "TAMPERED",
+      "MATERIAL_BELOW_TARGET",
+      "UNREACHABLE_FINISHING_MATERIAL",
+      "UNSUPPORTED"
+    ],
+    "durable_outputs": []
+  },
+  "success_contract": {
+    "outputs": [
+      "DETERMINISTIC_TOOLPATH_IR",
+      "AUTHORITATIVE_IMMUTABLE_SUCCESSOR_MATERIALSTATE"
+    ],
+    "successor_source": "ACTUAL_TOOLPATH_REPLAY",
+    "preserved_authority": [
+      "PREDECESSOR_IDENTITY",
+      "OPERATION_IDENTITY",
+      "TOOL_IDENTITY",
+      "MACHINE_AND_SETUP_EVIDENCE",
+      "TARGET_GEOMETRY",
+      "FINAL_STOCK_ALLOWANCE",
+      "TOLERANCE",
+      "EXACT_CUTTING_GEOMETRY",
+      "CONTENT_SEAL_AND_CANONICAL_FINGERPRINT_RULES"
+    ],
+    "fingerprint_domains": {
+      "full_output": "FULL_TOOLPATH_ARTIFACT_FINGERPRINT",
+      "material_semantics": "SEMANTIC_MATERIAL_REMOVAL_FINGERPRINT"
+    },
+    "feed_speed_only_rule": "SEMANTIC_MATERIAL_REMOVAL_IDENTITY_IS_STABLE_WHEN_CUTTING_GEOMETRY_IS_IDENTICAL"
+  },
+  "trust_and_lifecycle_law": {
+    "arbitrary_deserialized_state_is_authority": false,
+    "caller_minted_prepared_or_candidate_is_authority": false,
+    "content_seal_and_checksum_validation_required": true,
+    "coherent_resealing_without_independent_replay_is_authority": false,
+    "process_local_prepared_candidate_seals_required": true,
+    "cancellation_points": [
+      "TARGET_AND_MATERIAL_VALIDATION",
+      "REGION_COMPUTATION",
+      "LEVEL_GENERATION",
+      "TOOLPATH_GENERATION",
+      "REPLAY",
+      "FINAL_CANDIDATE_VALIDATION_REPLAY",
+      "FINAL_PRE_SUCCESS_POLL",
+      "SUCCESSOR_CONSTRUCTION"
+    ],
+    "cancellation_or_failure_policy": "NO_PARTIAL_SUCCESS_AND_NO_DURABLE_SUCCESS",
+    "r273_terminal_boundary": "VALIDATED_IN_MEMORY_CANDIDATE"
+  },
+  "trust_authority_remediation": {
+    "authority_source": "PROCESS_SEALED_R272_VALIDATION_RESULT",
+    "caller_provided_content_fingerprint_is_authority": false,
+    "certificate": {
+      "concept": "R272_VALIDATED_SUCCESSOR_CERTIFICATE",
+      "scope": "PROCESS_LOCAL_ONLY",
+      "authority_lifetime": "EXPIRES_WITH_THE_PROCESS_LOCAL_VALIDATION_AUTHORITY_INSTANCE",
+      "persistable_as_authority": false,
+      "serializable_as_project_authority": false,
+      "reconstructable_from_hashes_alone": false,
+      "normal_caller_constructible": false,
+      "preferred_capability": "PRIVATE_PROCESS_LOCAL_REGISTRY_WITH_CRYPTOGRAPHICALLY_RANDOM_OPAQUE_TOKEN_OR_EQUIVALENTLY_STRONG_CAPABILITY",
+      "forbidden_capabilities": [
+        "PUBLIC_COPYABLE_DATACLASS",
+        "CALLER_COMPUTABLE_HASH_AS_SOLE_SEAL",
+        "DETERMINISTIC_SECRET",
+        "PROJECT_PERSISTED_TOKEN",
+        "ENVIRONMENT_OR_CONFIGURATION_CREDENTIAL"
+      ]
+    },
+    "only_authorized_minter": "R272_VALIDATION_AND_REPLAY_AUTHORITY_IN_CAM_APPLICATION_LAYER",
+    "r273_planner_or_generator_may_mint_from_OWN_CALLER_INPUTS": false,
+    "minter_inputs": [
+      "EXACT_CURRENT_R272_PRODUCER_OPERATION",
+      "EXACT_PRODUCER_TOOLPATH_ARTIFACT",
+      "TRUSTED_AUTHORITATIVE_PARENT_MATERIALSTATE",
+      "PRODUCER_TOOL_IDENTITY_AND_GEOMETRY",
+      "PRODUCER_HOLDER_AND_ASSEMBLY_AUTHORITY_WHERE_APPLICABLE",
+      "MACHINE_SETUP_AND_WCS_AUTHORITY",
+      "AUTHORITATIVE_PRODUCER_GEOMETRY_AND_PROFILE_INPUT",
+      "EXACT_MATERIAL_REMOVAL_PARAMETERS",
+      "PERSISTED_SUCCESSOR_CANDIDATE_WHEN_VALIDATING_A_PERSISTED_SUCCESSOR"
+    ],
+    "mint_preconditions": [
+      "VALIDATE_PRODUCER_OPERATION",
+      "VALIDATE_ARTIFACT_OWNERSHIP_AND_PROVENANCE",
+      "VALIDATE_PARENT_MATERIALSTATE",
+      "VALIDATE_PRODUCER_TOOL_AND_ASSEMBLY",
+      "VALIDATE_MACHINE_SETUP_AND_WCS",
+      "RECOMPUTE_MATERIAL_REMOVAL_SEMANTICS",
+      "REPLAY_EXACT_PRODUCER_TOOLPATH_FROM_VALIDATED_PARENT",
+      "DERIVE_EXPECTED_SUCCESSOR_MATERIALSTATE",
+      "COMPARE_EXPECTED_SUCCESSOR_WITH_SUPPLIED_CURRENT_SUCCESSOR"
+    ],
+    "certificate_bindings": [
+      "PRODUCER_OPERATION_IDENTITY",
+      "PRODUCER_MATERIAL_REMOVAL_SEMANTIC_IDENTITY",
+      "PRODUCER_TOOL_IDENTITY_AND_GEOMETRY",
+      "ASSEMBLY_IDENTITY_WHERE_RELEVANT",
+      "MACHINE_SETUP_AND_WCS_IDENTITY",
+      "PARENT_MATERIALSTATE_IDENTITY_AND_CONTENT_SEAL",
+      "EXACT_TOOLPATH_ARTIFACT_IDENTITY",
+      "TOOLPATH_SEMANTIC_MATERIAL_REMOVAL_IDENTITY",
+      "REPLAY_DERIVED_SUCCESSOR_MATERIALSTATE_IDENTITY",
+      "SUCCESSOR_CONTENT_SEAL",
+      "CANONICAL_PRECISION_AND_ENGINE_IDENTITY"
+    ],
+    "certificate_exact_binding_rule": "A_CERTIFICATE_FOR_ONE_STATE_OR_OPERATION_CANNOT_AUTHORIZE_ANOTHER_STATE_OR_OPERATION",
+    "r273_input_contract": "PROCESS_SEALED_R272_VALIDATION_RESULT_OR_INVOCATION_OF_THE_AUTHORIZED_R272_MINTER_WITH_ALL_REQUIRED_INDEPENDENT_INPUTS",
+    "persisted_successor": {
+      "trusted_persisted_origin_alone_is_authority": false,
+      "independent_replay_required": true,
+      "replay_unavailable_outcome": "FAIL_CLOSED",
+      "required_exact_comparisons": [
+        "GRID_GEOMETRY",
+        "COMPLETE_HEIGHTFIELD",
+        "STOCK_AND_MODEL_DIMENSIONS",
+        "VOLUME_AND_MATERIAL_METRICS",
+        "PARENT_IDENTITY",
+        "PRODUCER_OPERATION_IDENTITY",
+        "PRODUCER_ARTIFACT_IDENTITY",
+        "TOOLPATH_IDENTITY",
+        "SEMANTIC_MATERIAL_REMOVAL_FINGERPRINT",
+        "ENGINE_AND_PRECISION_IDENTITY",
+        "SETUP_AND_WCS_AUTHORITY",
+        "CONTENT_SEAL",
+        "COMPLETION_AND_AUTHORITY_SEALS"
+      ],
+      "coherently_resealed_successor_without_matching_independent_replay_is_authority": false
+    },
+    "feed_only_identity": {
+      "excluded_fields": [
+        "cutting_feed_rate",
+        "plunge_feed_rate",
+        "spindle_speed"
+      ],
+      "exclusion_condition": "CUTTING_GEOMETRY_IS_UNCHANGED",
+      "all_other_material_removal_fields_invalidate": true,
+      "explicit_non_feed_only_examples": [
+        "cut_depth",
+        "axial_depth_levels",
+        "stepover",
+        "cutter_or_tool_geometry",
+        "target_or_profile_geometry",
+        "allowance",
+        "toolpath_cutting_geometry",
+        "wcs_or_setup_geometry",
+        "material_removal_strategy_parameters"
+      ]
+    },
+    "caller_forgeable_witness_policy": "REMOVE_OR_RETAIN_AS_INFORMATIONAL_ONLY_WITHOUT_MACHINING_AUTHORITY",
+    "cancellation_capability": "THE_SAME_CALLER_CANCELLATION_CAPABILITY_MUST_PROPAGATE_THROUGH_THE_ENTIRE_R273_LIFECYCLE_AND_BE_POLLED_AFTER_FINAL_REPLAY_BEFORE_SUCCESS",
+    "r274_exclusions": [
+      "PROJECT_SERVICE_INTEGRATION",
+      "SQLITE_LIFECYCLE_ORCHESTRATION",
+      "OPERATION_REGISTRY_END_TO_END_WIRING",
+      "DURABLE_CERTIFICATE_STORAGE",
+      "DURABLE_R273_PUBLICATION",
+      "FRESH_REOPEN_WORKFLOW"
+    ]
+  },
+  "r274_boundary": {
+    "deferred": [
+      "OPERATION_REGISTRY",
+      "CAM_APPLICATION_SERVICE",
+      "PROJECT_SERVICE",
+      "SQLITE_PUBLICATION",
+      "FRESH_REOPEN_AND_REVALIDATION"
+    ],
+    "minimal_registration_exception": "ONLY_IF_STRICTLY_REQUIRED_FOR_R273_CORE_TESTS"
+  },
+  "explicit_non_goals": [
+    "UI_OR_EDITOR",
+    "OPEN_DESIGN_ACTIVITY",
+    "POST_OR_NC",
+    "PRODUCTION_SIMULATION",
+    "CNC_OR_PHYSICAL_QUALIFICATION",
+    "ARBITRARY_3D_SURFACE_FINISHING",
+    "BALL_OR_BULL_NOSE_FINISHING",
+    "SIDEWALLS",
+    "UNDERCUTS",
+    "AUTO_PARAMETERS",
+    "PARTIAL_PUBLICATION",
+    "R274_APPLICATION_PROJECT_PERSISTENCE_WIRING"
+  ],
+  "acceptance_tests": [
+    "PLANAR_MATERIAL_ABOVE_TARGET_PRODUCES_FINISHING_WORK",
+    "ALREADY_COMPLETE_TARGET_RETURNS_TYPED_NO_WORK",
+    "MATERIAL_BELOW_NOMINAL_TARGET_FAILS_CLOSED",
+    "ALLOWANCE_EQUATION_IS_EXACT",
+    "TOLERANCE_BOUNDARY_EQUALITY_IS_COMPLETE",
+    "RASTER_IS_DETERMINISTIC",
+    "TERMINAL_RASTER_COVERS_ACCESSIBLE_BOUNDARY_STRIP",
+    "DISCONNECTED_COMPONENT_ORDER_IS_CANONICAL",
+    "HOLES_ARE_REJECTED",
+    "SELF_INTERSECTION_IS_REJECTED",
+    "INACCESSIBLE_OR_OVERSIZED_TOOL_FAILS_WHOLE_OPERATION",
+    "BALL_END_MILL_IS_REJECTED",
+    "BULL_NOSE_END_MILL_IS_REJECTED",
+    "ENTRY_AND_LINK_SAFETY_IS_ENFORCED",
+    "MULTI_LEVEL_MAX_STEPDOWN_IS_EXACT",
+    "EVERY_PASS_DERIVES_FROM_REPLAYED_CURRENT_STATE",
+    "FEED_ONLY_SEMANTIC_FINGERPRINT_IS_STABLE",
+    "TARGET_ALLOWANCE_AND_TOOL_GEOMETRY_CHANGES_INVALIDATE",
+    "STALE_FOREIGN_AND_TAMPERED_MATERIALSTATE_ARE_REJECTED",
+    "CANCELLATION_LEAVES_NO_PARTIAL_SUCCESS",
+    "CALLER_CHANGED_CUT_DEPTH_WITH_RECOMPUTED_WITNESSES_IS_REJECTED",
+    "COHERENTLY_RESEALED_PERSISTED_SUCCESSOR_REPLAY_MISMATCH_IS_REJECTED",
+    "CANCELLATION_AT_FINAL_CANDIDATE_REPLAY_RETURNS_CANCELLED",
+    "FINISHING_TOLERANCE_CANNOT_CAUSE_ENGAGEMENT_ABOVE_MAX_STEPDOWN",
+    "TOOLPATH_IR_IS_DETERMINISTIC",
+    "SUCCESSOR_MATERIALSTATE_IS_DETERMINISTIC"
+  ],
+  "integrity": {
+    "canonical_sha256": "7abaeab93b4a53d652d94e7c0c27021c9a269ddc00968407fcece1fc4c2a8040",
+    "hash_scope": "UTF-8 canonical JSON with canonical_sha256 set to empty string"
+  }
+}

@@ -132,6 +132,7 @@ from hms_cadcam.cam.application.rest_contour import (
     resolve_rest_material_state,
 )
 from hms_cadcam.cam.application.rest_contour_toolpath import (
+    R272ValidatedSuccessorCertificate,
     RestContourPhaseBCandidate,
     RestContourPhaseBExecutionContext,
     RestContourPhaseBNoRestMaterial,
@@ -139,8 +140,17 @@ from hms_cadcam.cam.application.rest_contour_toolpath import (
     RestContourPhaseBPublication,
     RestContourPhaseBSuccessorProvenance,
     generate_rest_contour_phase_b,
+    mint_r272_validated_successor_certificate,
     prepare_rest_contour_phase_b,
     publish_rest_contour_phase_b,
+)
+from hms_cadcam.cam.application.rest_finishing_lifecycle import (
+    RestFinishingLifecycleContext,
+    RestFinishingLifecyclePreparation,
+    RestFinishingLifecycleResult,
+    RestFinishingLifecycleStatus,
+    generate_rest_finishing_3axis,
+    prepare_rest_finishing_3axis,
 )
 __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "DRILLING_AUTOMATIC_KEYS", "DRILLING_AUTOMATIC_POLICY_KEY",
@@ -186,9 +196,12 @@ __all__ = ["AUTOMATIC_PARAMETER_CONTRACT_KEY", "AutomaticParameterContract",
            "RestContourFoundation", "RestContourFoundationInputs", "RestContourFoundationResult",
            "RestMaterialResolution", "RestMaterialResolutionStatus", "RestMaterialStateCandidate",
            "resolve_rest_material_state", "resolve_rest_contour_application_parameters",
-           "RestContourPhaseBCandidate", "RestContourPhaseBExecutionContext",
+           "R272ValidatedSuccessorCertificate", "RestContourPhaseBCandidate", "RestContourPhaseBExecutionContext",
            "RestContourPhaseBNoRestMaterial", "RestContourPhaseBPrepared",
            "RestContourPhaseBPublication", "RestContourPhaseBSuccessorProvenance",
-           "generate_rest_contour_phase_b", "prepare_rest_contour_phase_b",
+           "generate_rest_contour_phase_b", "mint_r272_validated_successor_certificate", "prepare_rest_contour_phase_b",
            "publish_rest_contour_phase_b",
+           "RestFinishingLifecycleContext", "RestFinishingLifecyclePreparation",
+           "RestFinishingLifecycleResult", "RestFinishingLifecycleStatus",
+           "generate_rest_finishing_3axis", "prepare_rest_finishing_3axis",
            "resolve_profile_in_setup"]
