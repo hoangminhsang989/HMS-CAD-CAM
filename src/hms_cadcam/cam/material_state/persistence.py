@@ -13,7 +13,8 @@ from uuid import uuid4
 from hms_cadcam.cam.domain import ContentFingerprint
 from hms_cadcam.cam.domain.errors import CamValidationError
 from .core import (
-    MaterialState, MaterialStateStatus, material_state_from_persisted_bytes,
+    MaterialState, MaterialStateStatus, MaterialStateVerificationOrigin,
+    material_state_from_persisted_bytes,
 )
 
 
@@ -55,10 +56,54 @@ class MaterialStateStore:
         document["checksum_sha256"] = hashlib.sha256(unsigned).hexdigest()
         payload = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         target = root / f"{state.fingerprint.digest}.state.json"
+        if target.exists():
+            existing = target.read_bytes()
+            if existing == payload:
+                return target
+            try:
+                legacy = material_state_from_persisted_bytes(
+                    existing, state.fingerprint,
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError,
+                    TypeError, ValueError, CamValidationError):
+                legacy = None
+            if (
+                legacy is None
+                or legacy.verification_origin
+                   is not MaterialStateVerificationOrigin.VERIFIED_LEGACY_CHECKSUM
+                or legacy != state
+                or legacy.content_integrity_fingerprint
+                   != state.content_integrity_fingerprint
+            ):
+                raise OSError("Material-state fingerprint collision has different immutable bytes")
+            # A verified legacy-checksum representation may be normalized to
+            # the exact current canonical bytes.  Recheck the original bytes
+            # immediately before replace so a concurrent publisher cannot be
+            # overwritten.  This is the sole differing-byte exception; it
+            # grants no authority beyond the already verified semantic state.
+            temporary = root / f".{target.name}.{uuid4().hex}.tmp"
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+                if target.read_bytes() != existing:
+                    raise OSError("Material-state changed during legacy normalization")
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            if target.read_bytes() != payload:
+                raise OSError("Material-state legacy normalization readback mismatch")
+            return target
         temporary = root / f".{target.name}.{uuid4().hex}.tmp"
-        with temporary.open("xb") as stream:
-            stream.write(payload); stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                if target.read_bytes() != payload:
+                    raise OSError("Material-state fingerprint collision has different immutable bytes")
+        finally:
+            temporary.unlink(missing_ok=True)
         if target.read_bytes() != payload:
             raise OSError("Material-state readback mismatch")
         return target

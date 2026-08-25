@@ -55,6 +55,7 @@ from hms_cadcam.cam.toolpath import (
     LinearMove,
     MotionClass,
     ToolpathArtifact,
+    artifact_to_dict,
     compute_material_removal_fingerprint,
 )
 from hms_cadcam.project.service import ProjectService
@@ -1820,7 +1821,23 @@ def test_reopen_rejects_coherently_resealed_rest_artifact_output_tamper(
 
     root = session.root_path
     service.close_project()
-    changed_metadata = ToolpathArtifactStore().publish(root, changed_artifact)
+    forged_payload = json.dumps(
+        artifact_to_dict(changed_artifact),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    artifact_store = ToolpathArtifactStore()
+    original_metadata = result.publication.artifact_metadata
+    artifact_store.resolve_metadata_path(root, original_metadata).write_bytes(
+        forged_payload
+    )
+    changed_metadata = replace(
+        original_metadata,
+        checksum_sha256=hashlib.sha256(forged_payload).hexdigest(),
+        artifact_fingerprint=changed_artifact.artifact_fingerprint,
+        size_bytes=len(forged_payload),
+    )
     MaterialStateStore().write(root, changed_successor)
 
     with sqlite3.connect(root / "project.db") as connection:
@@ -1992,7 +2009,23 @@ def test_reopen_rejects_coherently_resealed_rest_signed_zero_event_tamper(
 
     root = session.root_path
     service.close_project()
-    changed_metadata = ToolpathArtifactStore().publish(root, changed_artifact)
+    forged_payload = json.dumps(
+        artifact_to_dict(changed_artifact),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    artifact_store = ToolpathArtifactStore()
+    original_metadata = result.publication.artifact_metadata
+    artifact_store.resolve_metadata_path(root, original_metadata).write_bytes(
+        forged_payload
+    )
+    changed_metadata = replace(
+        original_metadata,
+        checksum_sha256=hashlib.sha256(forged_payload).hexdigest(),
+        artifact_fingerprint=changed_artifact.artifact_fingerprint,
+        size_bytes=len(forged_payload),
+    )
     MaterialStateStore().write(root, changed_successor)
 
     with sqlite3.connect(root / "project.db") as connection:

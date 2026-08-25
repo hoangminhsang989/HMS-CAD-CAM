@@ -18,7 +18,8 @@ from hms_cadcam.cam.domain import (
     DrillGeometryInput, DrillDepthDefinition, DrillingStrategy, DrillValidationError,
     FacingParameters, FacingRegion,
     FixtureInstance, GeometryReference, Operation,
-    HolderDefinition, MachineDefinition, OperationId, OperationTree, Setup,
+    HolderDefinition, MachineDefinition, MachineRequirement, OperationId,
+    OperationTree, Setup,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
     ResolvedPocketGeometry, SetupId, StockDefinition, ToolAssembly,
     ToolAssemblyId,
@@ -62,6 +63,16 @@ from hms_cadcam.cam.application.pocket import (
     prepare_pocket_machining_geometry,
 )
 from hms_cadcam.cam.application.rest_pocket import RestPocketGenerator, RestPocketInputs
+from hms_cadcam.cam.application.rest_finishing_application import (
+    RestFinishingApplicationResult,
+)
+from hms_cadcam.cam.application.rest_finishing_lifecycle import (
+    RestFinishingLifecyclePreparation,
+)
+from hms_cadcam.cam.domain.rest_finishing import (
+    RestFinishingParameters,
+    RestFinishingProfileSelection,
+)
 from hms_cadcam.cam.material_state import (MATERIAL_STATE_ENGINE_VERSION,
     MaterialState, MaterialStateLoadStatus, MaterialStateStore, calculate_material_state,
     material_state_setup_fingerprint)
@@ -232,14 +243,29 @@ class CamApplicationService:
                 for operation_id, value in self._rest_contour_completed.items()
                 if operation_id in operation_ids
             }
+            retained_dependencies: list[MaterialStateDependency] = []
+            for dependency in candidate.material_state_dependencies:
+                if dependency.consumer_operation_id not in invalid_rest_completions:
+                    retained_dependencies.append(dependency)
+                    continue
+                try:
+                    consumer = _find_operation(
+                        candidate, dependency.consumer_operation_id,
+                    )
+                except CamChildNotFoundError:
+                    continue
+                if consumer.strategy_key == "rest_finishing_3axis":
+                    # R274 invalidation revokes only the completed output.
+                    # Its explicit R272 input edge/evidence remains necessary
+                    # for a later fail-closed regeneration.
+                    retained_dependencies.append(
+                        replace(dependency, successor_publication=None)
+                    )
             candidate = replace(candidate, artifacts=tuple(
                 metadata for metadata in candidate.artifacts
                 if metadata.operation_id in operation_ids
                 and metadata.operation_id not in invalid_rest_completions
-            ), material_state_dependencies=tuple(
-                dependency for dependency in candidate.material_state_dependencies
-                if dependency.consumer_operation_id not in invalid_rest_completions
-            ))
+            ), material_state_dependencies=tuple(retained_dependencies))
             self._snapshot = _clone_snapshot(candidate)
             self._simulation.invalidate_all()
             self._post.invalidate_all()
@@ -2286,6 +2312,456 @@ class CamApplicationService:
 
             return self.apply(mutation)
 
+    def create_rest_finishing_operation(
+        self, job_id: CamJobId, setup_id: SetupId, parent_node_id: CamNodeId, *,
+        operation_id: OperationId, node_id: CamNodeId, name: str,
+        parameters: RestFinishingParameters,
+        profile: RestFinishingProfileSelection,
+        dependency_operation_id: OperationId,
+        tool_assembly_id: ToolAssemblyId,
+        machine_requirement: MachineRequirement,
+    ) -> CamProjectSnapshot:
+        """Create a manual v1 Rest Finishing operation with one explicit edge."""
+        from hms_cadcam.cam.domain import MachineEvidence, ToolAssemblyEvidence
+        from hms_cadcam.cam.domain.rest_finishing import (
+            RestFinishingParameters, RestFinishingProfileSelection,
+        )
+        from hms_cadcam.cam.operation_registry import default_rest_contour_operation_registry
+
+        if not isinstance(parameters, RestFinishingParameters) or not isinstance(profile, RestFinishingProfileSelection):
+            raise CamValidationError("Rest Finishing creation parameters are invalid")
+        with self._lock:
+            setup = _find_setup(self._snapshot, setup_id)
+            if _find_job_for_setup(self._snapshot, setup_id).job_id != job_id:
+                raise CamChildNotFoundError("Rest Finishing setup does not belong to the selected job")
+            assembly = next((item for item in self._snapshot.tool_assemblies if item.assembly_id == tool_assembly_id), None)
+            if assembly is None:
+                raise CamChildNotFoundError("Rest Finishing tool assembly does not exist")
+            tool = _find_tool(self._snapshot, assembly.tool_id)
+            holder = next((item for item in self._snapshot.holder_definitions if item.holder_id == assembly.holder_id), None)
+            requirement = machine_requirement
+            machine = None if requirement is None else next((item for item in self._snapshot.machine_definitions if item.machine_id == requirement.machine_id), None)
+            # Construction accepts only current evidence; the domain factory
+            # then seals profile/unit/capability shape into the aggregate.
+            from hms_cadcam.cam.domain import assess_machine_compatibility, assess_tool_assembly, MachineCompatibilityStatus, ToolAssemblyStatus
+            if assess_tool_assembly(assembly, ToolAssemblyEvidence(True, tool.revision, tool.content_fingerprint, tool.unit,
+                    assembly.holder_id is not None and holder is not None,
+                    holder.revision if holder is not None else None,
+                    holder.content_fingerprint if holder is not None else None,
+                    holder.unit if holder is not None else None)) is not ToolAssemblyStatus.VALID:
+                raise CamValidationError("Rest Finishing tool assembly is not current")
+            if assess_machine_compatibility(requirement, MachineEvidence(machine is not None,
+                    machine.revision if machine is not None else None,
+                    machine.content_fingerprint if machine is not None else None,
+                    machine.unit if machine is not None else None,
+                    machine.capabilities.operations if machine is not None else ())) is not MachineCompatibilityStatus.COMPATIBLE:
+                raise CamValidationError("Rest Finishing machine authority is not current")
+            if not any(item.operation_id == dependency_operation_id for item in setup.operation_tree.operations):
+                raise CamChildNotFoundError("Rest Finishing material producer does not belong to the setup")
+            operation = default_rest_contour_operation_registry().create_rest_finishing(
+                operation_id=operation_id, node_id=node_id, setup_id=setup_id,
+                parameters=parameters, profile=profile,
+                dependency_operation_id=dependency_operation_id, tool_assembly=assembly,
+                machine_requirement=requirement,
+            )
+            producer_dependency = next(
+                (item for item in self._snapshot.material_state_dependencies
+                 if item.consumer_operation_id == dependency_operation_id), None,
+            )
+            producer_completion = (
+                None if producer_dependency is None
+                else producer_dependency.successor_publication
+            )
+            if producer_completion is None:
+                raise CamValidationError(
+                    "Rest Finishing requires a committed R272 material-state producer"
+                )
+            initial_dependency = MaterialStateDependency(
+                operation_id, dependency_operation_id,
+                producer_completion.successor_state_fingerprint,
+                producer_completion.semantic_material_removal_fingerprint,
+                producer_completion.setup_fingerprint,
+                producer_completion.stock_fingerprint,
+                producer_completion.engine_version, producer_completion.precision,
+                producer_operation_authority_fingerprint=_material_removal_operation_fingerprint(
+                    _find_operation(self._snapshot, dependency_operation_id)
+                ),
+            )
+            def mutation(state: CamProjectSnapshot) -> CamProjectSnapshot:
+                current = _find_setup(state, setup_id)
+                tree = current.operation_tree.add_operation(parent_node_id, name, operation)
+                tree = OperationTree(tree.setup_id, tree.root_id, tree.nodes, tree.operations,
+                    tree.dependency_graph.with_edge_added(DependencyEdge.material_state(dependency_operation_id, operation_id)),
+                    tree.revision.next())
+                changed = _replace_setup(state, replace(current, operation_tree=tree))
+                return replace(
+                    changed,
+                    material_state_dependencies=changed.material_state_dependencies
+                    + (initial_dependency,),
+                )
+            return self.apply(mutation)
+
+    def _rest_finishing_failure(self, code, message: str):
+        """Map aggregate/store failures to an application-safe typed result."""
+        from hms_cadcam.cam.application.rest_finishing_application import (
+            rest_finishing_application_failure,
+        )
+
+        return rest_finishing_application_failure(code, message)
+
+    def _rest_finishing_context(self, project_root: Path, operation_id: OperationId, profile_resolver, *, cancellation):
+        """Resolve R274 consumer authority and freshly reconstruct its R272 capability."""
+        from hms_cadcam.cam.application.rest_contour import RestMaterialStateCandidate
+        from hms_cadcam.cam.application.rest_contour_lifecycle import RestContourLifecycle, RestContourLifecycleStatus
+        from hms_cadcam.cam.application.rest_contour_toolpath import (
+            _project_r272_producer_authority_setup,
+            generate_rest_contour_phase_b,
+            mint_r272_validated_successor_certificate,
+        )
+        from hms_cadcam.cam.application.rest_finishing_lifecycle import RestFinishingLifecycleContext
+        from hms_cadcam.cam.domain import MachineEvidence, ToolAssemblyEvidence
+        from hms_cadcam.cam.domain.rest_finishing import RestFinishingDiagnosticCode, RestFinishingParameters, RestFinishingProfileSelection, RestFinishingValidationError
+
+        operation = _find_operation(self._snapshot, operation_id)
+        parameters = RestFinishingParameters.from_operation_parameters(operation.parameters)
+        profiles = tuple(item for item in operation.geometry_inputs if item.role.value == "profile")
+        if len(profiles) != 1:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.PROFILE_INVALID, "Rest Finishing has no unique persisted profile")
+        resolved = profile_resolver(profiles[0].reference)
+        if getattr(resolved, "profile", None) is None:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.PROFILE_INVALID, "Rest Finishing persisted profile cannot be resolved")
+        selection = RestFinishingProfileSelection(resolved.profile)
+        selection.validate_for(parameters)
+        setup = _find_setup(self._snapshot, operation.setup_id)
+        edges = tuple(edge for edge in setup.operation_tree.dependency_graph.edges if edge.target_operation_id == operation_id and edge.kind.value == "material_state")
+        if len(edges) != 1:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.MATERIAL_STATE_MISSING if not edges else RestFinishingDiagnosticCode.MATERIAL_STATE_AMBIGUOUS, "Rest Finishing material-state dependency is missing or ambiguous")
+        dependency = next((item for item in self._snapshot.material_state_dependencies if item.consumer_operation_id == operation_id), None)
+        if dependency is None or dependency.producer_operation_id != edges[0].source_operation_id:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID, "Rest Finishing dependency evidence is invalid")
+        state = operation.artifact_state
+        prior_completion = dependency.successor_publication
+        if prior_completion is None and state.status is ArtifactStatus.VALID:
+            raise RestFinishingValidationError(
+                RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID,
+                "Rest Finishing VALID operation lacks committed completion evidence",
+            )
+        if prior_completion is not None and state.status is ArtifactStatus.VALID:
+            metadata_values = tuple(
+                item for item in self._snapshot.artifacts
+                if item.operation_id == operation_id
+            )
+            if len(metadata_values) != 1:
+                raise RestFinishingValidationError(
+                    RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID,
+                    "Rest Finishing committed artifact metadata is missing or ambiguous",
+                )
+            metadata = metadata_values[0]
+            try:
+                prior_artifact = self._artifact_store.load(project_root, metadata)
+                prior_state_load = self._material_states.load(
+                    project_root, prior_completion.successor_state_fingerprint,
+                )
+            except (OSError, ToolpathArtifactStoreError, TypeError, ValueError) as error:
+                raise RestFinishingValidationError(
+                    RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID,
+                    f"Rest Finishing committed output bytes are invalid: {error}",
+                ) from error
+            prior_state = prior_state_load.state
+            if (
+                state.token is not None
+                or state.dirty_reasons
+                or state.diagnostics
+                or operation.diagnostics
+                or state.input_fingerprint != prior_completion.input_fingerprint
+                or state.artifact_fingerprint != prior_completion.artifact_fingerprint
+                or state.generation != metadata.computation_generation
+                or metadata.artifact_id != prior_completion.artifact_id
+                or metadata.artifact_fingerprint != prior_completion.artifact_fingerprint
+                or metadata.input_fingerprint != prior_completion.input_fingerprint
+                or metadata.expected_operation_revision != operation.revision
+                or metadata.completion_status.lower() != "complete"
+                or prior_artifact.source_operation_id != operation_id
+                or prior_artifact.operation_revision != operation.revision
+                or prior_artifact.artifact_fingerprint != prior_completion.artifact_fingerprint
+                or compute_material_removal_fingerprint(prior_artifact)
+                   != prior_completion.semantic_material_removal_fingerprint
+                or prior_state_load.status is not MaterialStateLoadStatus.VALID
+                or prior_state is None
+                or prior_state.fingerprint != prior_completion.successor_state_fingerprint
+                or prior_state.content_integrity_fingerprint
+                   != prior_completion.successor_state_content_seal
+                or prior_state.parent_fingerprint
+                   != prior_completion.parent_state_fingerprint
+                or prior_state.setup_fingerprint != prior_completion.setup_fingerprint
+                or prior_state.stock_fingerprint != prior_completion.stock_fingerprint
+                or prior_state.engine_version != prior_completion.engine_version
+                or prior_state.precision.to_dict() != prior_completion.precision
+            ):
+                raise RestFinishingValidationError(
+                    RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID,
+                    "Rest Finishing committed output authority is inconsistent",
+                )
+            # A reopen request regenerates through R273 rather than treating
+            # persisted output bytes as a process-local candidate.  Preserve
+            # generation while making a detached replay-only operation able to
+            # enter the normal begin/publish lifecycle.
+            operation = replace(
+                operation,
+                artifact_state=state.mark_dirty(DirtyReason.UPSTREAM_CHANGED),
+                diagnostics=(),
+            )
+            setup = replace(
+                setup,
+                operation_tree=setup.operation_tree.replace_operation(operation),
+            )
+        # A prior R274 successor is output evidence, never predecessor input.
+        # Strip it from the transient R273 material candidate; SUCCESS will
+        # attach a newly replayed successor publication atomically.
+        input_dependency = replace(dependency, successor_publication=None)
+        producer = _find_operation(self._snapshot, dependency.producer_operation_id)
+        producer_dependency = next((item for item in self._snapshot.material_state_dependencies if item.consumer_operation_id == producer.operation_id), None)
+        if producer_dependency is None or producer_dependency.successor_publication is None:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.MATERIAL_STATE_MISSING, "Rest Finishing requires a committed R272 producer")
+        # Rebuild, rather than deserialize, the opaque R272 certificate from a
+        # fresh deterministic R272 replay in this process.
+        publication, artifact, successor = self._load_rest_contour_completion(project_root, producer.operation_id, profile_resolver=profile_resolver, cancellation=cancellation)
+        producer_projection = _project_r272_producer_authority_setup(
+            setup, producer.operation_id,
+        )
+        producer_context = self._rest_contour_context(
+            project_root, producer.operation_id, profile_resolver,
+            cancellation=cancellation,
+            # A persisted R272 consumer is already VALID.  Reconstruct the
+            # exact historical reservation with its immutable generation so
+            # certificate minting can independently replay it without
+            # mutating current aggregate state.
+            replay_generation=artifact.computation_token.generation,
+            setup_override=producer_projection,
+        )
+        prepared = RestContourLifecycle().prepare(producer_context)
+        if prepared.status is not RestContourLifecycleStatus.PREPARED or prepared.prepared is None:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID, "R272 producer cannot be freshly prepared")
+        replay_candidate = generate_rest_contour_phase_b(prepared.prepared.phase_b_prepared, cancellation=cancellation)
+        certificate = mint_r272_validated_successor_certificate(
+            replay_context=prepared.prepared.phase_b_context, validation_candidate=replay_candidate,
+            authoritative_setup=setup,
+            authoritative_producer_operation=producer,
+            exact_producer_artifact=artifact, trusted_parent_state=replay_candidate.prepared.predecessor_state,
+            supplied_successor_state=successor, producer_completion=publication,
+            producer_dependency=producer_dependency, cancellation=cancellation,
+        )
+        assembly = next((item for item in self._snapshot.tool_assemblies if item.assembly_id == operation.tool_assembly.assembly_id), None)
+        if assembly is None:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.TOOL_INELIGIBLE, "Rest Finishing tool assembly is missing")
+        tool = _find_tool(self._snapshot, assembly.tool_id)
+        holder = next((item for item in self._snapshot.holder_definitions if item.holder_id == assembly.holder_id), None)
+        requirement = operation.machine_requirement
+        machine = None if requirement is None else next((item for item in self._snapshot.machine_definitions if item.machine_id == requirement.machine_id), None)
+        if requirement is None or machine is None:
+            raise RestFinishingValidationError(RestFinishingDiagnosticCode.MACHINE_INCOMPATIBLE, "Rest Finishing machine is missing")
+        return RestFinishingLifecycleContext(
+            setup, parameters, selection,
+            (RestMaterialStateCandidate(producer.operation_id, successor, input_dependency, edges[0], artifact),),
+            publication, producer_dependency, replay_candidate.prepared.predecessor_state, certificate,
+            setup.operation_tree.dependency_graph, assembly,
+            ToolAssemblyEvidence(True, tool.revision, tool.content_fingerprint, tool.unit,
+                assembly.holder_id is not None and holder is not None,
+                holder.revision if holder is not None else None,
+                holder.content_fingerprint if holder is not None else None,
+                holder.unit if holder is not None else None),
+            tool, machine, requirement,
+            MachineEvidence(True, machine.revision, machine.content_fingerprint, machine.unit, machine.capabilities.operations),
+            operation_id, profile_resolver, cancellation,
+        )
+
+    def prepare_rest_finishing(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile],
+        cancellation: Callable[[], bool] | None = None,
+    ) -> RestFinishingLifecyclePreparation | RestFinishingApplicationResult:
+        from hms_cadcam.cam.application.rest_finishing_lifecycle import prepare_rest_finishing_3axis
+        from hms_cadcam.cam.domain.rest_finishing import RestFinishingDiagnosticCode, RestFinishingValidationError
+        from hms_cadcam.cam.domain.rest_contour import (
+            RestContourDiagnosticCode,
+            RestContourValidationError,
+        )
+        with self._lock:
+            try:
+                return prepare_rest_finishing_3axis(self._rest_finishing_context(project_root, operation_id, profile_resolver, cancellation=cancellation))
+            except RestFinishingValidationError as error:
+                return self._rest_finishing_failure(error.code, str(error))
+            except RestContourValidationError as error:
+                code = (
+                    RestFinishingDiagnosticCode.CANCELLED
+                    if error.code is RestContourDiagnosticCode.CANCELLED
+                    else RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID
+                )
+                return self._rest_finishing_failure(code, str(error))
+            except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError, OSError, RuntimeError, TypeError, ValueError) as error:
+                return self._rest_finishing_failure(RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID, f"Rest Finishing aggregate authority is invalid: {error}")
+
+    def generate_rest_finishing(
+        self,
+        project_root: Path,
+        operation_id: OperationId,
+        *,
+        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile],
+        cancellation: Callable[[], bool] | None = None,
+    ) -> RestFinishingApplicationResult:
+        from hms_cadcam.cam.application.rest_finishing_application import (
+            RestFinishingApplicationStatus,
+            publish_rest_finishing_candidate,
+            rest_finishing_application_result,
+        )
+        from hms_cadcam.cam.application.rest_finishing_lifecycle import RestFinishingLifecycleStatus, generate_rest_finishing_3axis
+        from hms_cadcam.cam.domain.rest_finishing import RestFinishingDiagnosticCode, RestFinishingValidationError
+        from hms_cadcam.cam.persistence.models import MaterialStateDependency, MaterialStateSuccessorPublication
+        with self._lock:
+            before = _clone_snapshot(self._snapshot)
+            persisted_artifact = None
+            persisted_successor = None
+            persisted_operation = _find_operation(self._snapshot, operation_id)
+            persisted_dependency = next(
+                (
+                    item for item in self._snapshot.material_state_dependencies
+                    if item.consumer_operation_id == operation_id
+                ),
+                None,
+            )
+            if (
+                persisted_operation.artifact_state.status is ArtifactStatus.VALID
+                and persisted_dependency is not None
+                and persisted_dependency.successor_publication is not None
+            ):
+                persisted_metadata = tuple(
+                    item for item in self._snapshot.artifacts
+                    if item.operation_id == operation_id
+                )
+                if len(persisted_metadata) == 1:
+                    try:
+                        persisted_artifact = self._artifact_store.load(
+                            project_root, persisted_metadata[0],
+                        )
+                        persisted_load = self._material_states.load(
+                            project_root,
+                            persisted_dependency.successor_publication.successor_state_fingerprint,
+                        )
+                        if persisted_load.status is MaterialStateLoadStatus.VALID:
+                            persisted_successor = persisted_load.state
+                    except (OSError, ToolpathArtifactStoreError, TypeError, ValueError):
+                        # The prepare path below owns the typed failure mapping
+                        # for malformed persisted output evidence.
+                        persisted_artifact = None
+                        persisted_successor = None
+            preparation = self.prepare_rest_finishing(project_root, operation_id, profile_resolver=profile_resolver, cancellation=cancellation)
+            if preparation.status is not RestFinishingLifecycleStatus.PREPARED:
+                if preparation.status in {
+                    RestFinishingApplicationStatus.CANCELLED,
+                    RestFinishingApplicationStatus.FAILURE,
+                }:
+                    return preparation
+                return rest_finishing_application_result(
+                    generate_rest_finishing_3axis(preparation)
+                )
+            core_result = generate_rest_finishing_3axis(preparation)
+            if (
+                core_result.status is not RestFinishingLifecycleStatus.SUCCESS
+                or core_result.candidate is None
+            ):
+                return rest_finishing_application_result(core_result)
+            try:
+                if persisted_artifact is not None:
+                    artifact_matches = (
+                        ContentFingerprint.from_payload(
+                            _rest_finishing_artifact_output_payload(
+                                persisted_artifact
+                            )
+                        )
+                        == ContentFingerprint.from_payload(
+                            _rest_finishing_artifact_output_payload(
+                                core_result.candidate.artifact
+                            )
+                        )
+                    )
+                    successor_matches = (
+                        persisted_successor is not None
+                        and persisted_successor.to_dict()
+                            == core_result.candidate.successor_state.to_dict()
+                        and persisted_successor.content_integrity_fingerprint
+                            == core_result.candidate.successor_state.content_integrity_fingerprint
+                    )
+                    if not artifact_matches or not successor_matches:
+                        mismatch = (
+                            "artifact and successor"
+                            if not artifact_matches and not successor_matches
+                            else "artifact" if not artifact_matches else "successor"
+                        )
+                        raise RestFinishingValidationError(
+                            RestFinishingDiagnosticCode.MATERIAL_STATE_INVALID,
+                            "Rest Finishing persisted " + mismatch
+                            + " differs from fresh deterministic replay",
+                        )
+                publication = publish_rest_finishing_candidate(core_result.candidate, project_root=project_root, artifact_store=self._artifact_store, material_state_store=self._material_states, cancellation=cancellation)
+                candidate = core_result.candidate
+                evidence = MaterialStateSuccessorPublication.create(
+                    consumer_operation_id=operation_id, artifact_id=publication.artifact.artifact_id,
+                    artifact_fingerprint=publication.artifact.artifact_fingerprint,
+                    input_fingerprint=publication.artifact.input_fingerprint,
+                    semantic_material_removal_fingerprint=candidate.semantic_material_removal_fingerprint,
+                    parent_state_fingerprint=candidate.successor_provenance.parent_fingerprint,
+                    parent_state_content_seal=candidate.successor_provenance.parent_content_integrity_fingerprint,
+                    successor_state_fingerprint=publication.successor_state.fingerprint,
+                    successor_state_content_seal=publication.successor_state.content_integrity_fingerprint,
+                    setup_fingerprint=publication.successor_state.setup_fingerprint,
+                    stock_fingerprint=publication.successor_state.stock_fingerprint,
+                    engine_version=publication.successor_state.engine_version,
+                    precision=publication.successor_state.precision.to_dict(),
+                )
+                input_dependency = candidate.prepared.plan.material_candidate.dependency
+                staged_dependency = replace(
+                    input_dependency,
+                    successor_publication=evidence,
+                    # An uncompleted dependency persists as legacy v1 and
+                    # intentionally carries no completion-authority field.
+                    # Upgrade to v2 only here, from the exact producer that
+                    # the fresh R272 replay above just proved current.
+                    producer_operation_authority_fingerprint=(
+                        _material_removal_operation_fingerprint(
+                            _find_operation(
+                                self._snapshot,
+                                input_dependency.producer_operation_id,
+                            )
+                        )
+                    ),
+                )
+                staged = replace(self._snapshot,
+                    artifacts=tuple(item for item in self._snapshot.artifacts if item.operation_id != operation_id) + (publication.artifact_metadata,),
+                    material_state_dependencies=tuple(item for item in self._snapshot.material_state_dependencies if item.consumer_operation_id != operation_id) + (staged_dependency,))
+                self._snapshot = _replace_operation(staged, publication.operation)
+                self._post.mark_stale(operation_id)
+                return rest_finishing_application_result(
+                    core_result,
+                    publication=publication,
+                )
+            except RestFinishingValidationError as error:
+                self._snapshot = before
+                return self._rest_finishing_failure(error.code, str(error))
+            except (CamValidationError, CamChildNotFoundError, ToolpathArtifactStoreError, OSError, RuntimeError, TypeError, ValueError) as error:
+                self._snapshot = before
+                return self._rest_finishing_failure(RestFinishingDiagnosticCode.SUCCESSOR_INVALID, f"Rest Finishing generation authority is invalid: {error}")
+
+    def restore_rest_finishing_snapshot(self, snapshot: CamProjectSnapshot) -> CamProjectSnapshot:
+        """Discard uncommitted R274 SQLite staging; file orphans remain inert."""
+        if not isinstance(snapshot, CamProjectSnapshot):
+            raise TypeError("Rest Finishing rollback snapshot is invalid")
+        with self._lock:
+            self._snapshot = _clone_snapshot(snapshot)
+            return _clone_snapshot(self._snapshot)
+
     def _rest_contour_failure(self, diagnostic_code, message: str):
         """Return an externally safe lifecycle failure for aggregate resolution.
 
@@ -2418,6 +2894,7 @@ class CamApplicationService:
         *,
         cancellation: Callable[[], bool] | None,
         replay_generation: int | None = None,
+        setup_override=None,
     ):
         """Build lifecycle context solely from the current snapshot and stores."""
         from hms_cadcam.cam.application.rest_contour import (
@@ -2438,6 +2915,11 @@ class CamApplicationService:
             raise TypeError("Rest Contour project root is invalid")
         operation = _find_operation(self._snapshot, operation_id)
         setup = _find_setup(self._snapshot, operation.setup_id)
+        if setup_override is not None:
+            if not isinstance(setup_override, Setup) or setup_override.setup_id != setup.setup_id:
+                raise TypeError("Rest Contour projected Setup is invalid")
+            setup = setup_override
+            operation = setup.operation_tree.get_operation(operation_id)
         if replay_generation is not None:
             if type(replay_generation) is not int or replay_generation <= 0:
                 raise TypeError("Rest Contour replay generation is invalid")
@@ -4055,6 +4537,26 @@ def _rest_contour_artifact_output_payload(artifact: ToolpathArtifact) -> dict[st
     payload.pop("created_at")
     payload["computation_token"] = dict(payload["computation_token"])
     payload["computation_token"]["value"] = "<replay-token>"
+    return payload
+
+
+def _rest_finishing_artifact_output_payload(
+    artifact: ToolpathArtifact,
+) -> dict[str, object]:
+    """Canonical R274 machining output without publication lifecycle IDs."""
+    payload = _rest_contour_artifact_output_payload(artifact)
+    payload.pop("operation_revision")
+    payload.pop("input_fingerprint")
+    payload["computation_token"]["generation"] = "<replay-generation>"
+    payload["events"] = [
+        {
+            **event,
+            # Event UUIDs are publication identities minted per generation;
+            # their position and every machining field remain authoritative.
+            "event_id": f"<replay-event-{index}>",
+        }
+        for index, event in enumerate(payload["events"])
+    ]
     return payload
 
 

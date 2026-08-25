@@ -86,14 +86,28 @@ from hms_cadcam.cam.application import (
     CamApplicationService, DrillingComputeResult, FacingComputeResult, PocketComputeResult,
     BoringComputeResult, ReamingComputeResult, TappingComputeResult,
 )
+from hms_cadcam.cam.application.rest_finishing_application import (
+    RestFinishingApplicationResult,
+    RestFinishingApplicationStatus,
+    RestFinishingPreparationStatus,
+)
+from hms_cadcam.cam.application.rest_finishing_lifecycle import (
+    RestFinishingLifecycleStatus,
+)
 from hms_cadcam.cam.persistence import CamProjectSnapshot, CamSqliteRepository, ToolpathArtifactStore
 from hms_cadcam.cam.cam3d.persistence import Cam3DProjectConfig
 from hms_cadcam.cam.cam3d.parallel import ParallelFinishingComputeResult
 from hms_cadcam.cam.cam3d.zlevel import ZLevelFinishingComputeResult
 from hms_cadcam.cam.domain import (
-    DrillDepthDefinition, DrillGeometryInput, GeometryReference, Operation, OperationId,
+    CamJobId, CamNodeId, DrillDepthDefinition, DrillGeometryInput,
+    GeometryReference, MachineRequirement, Operation, OperationId,
     ResolvedContourProfile, ResolvedDrillingGeometry, ResolvedMachiningGeometry,
-    ResolvedPocketGeometry,
+    ResolvedPocketGeometry, ToolAssemblyId,
+)
+from hms_cadcam.cam.domain.rest_finishing import (
+    RestFinishingDiagnosticCode,
+    RestFinishingParameters,
+    RestFinishingProfileSelection,
 )
 from hms_cadcam.cam.application.contour import ContourComputeResult
 from hms_cadcam.cam.optimization import CamCalculationProgress
@@ -140,6 +154,52 @@ logger = logging.getLogger(__name__)
 _CLEANUP_MINIMUM_AGE = timedelta(days=1)
 
 
+def _cam_snapshot_authority_payload(
+    snapshot: CamProjectSnapshot,
+) -> dict[str, object]:
+    """Canonical exact CAM aggregate payload for post-commit reconciliation."""
+    if not isinstance(snapshot, CamProjectSnapshot):
+        raise TypeError("CAM reconciliation snapshot is invalid")
+    return {
+        "format": "HMS_CAM_PROJECT_SNAPSHOT_AUTHORITY",
+        "format_version": 1,
+        "jobs": [item.to_dict() for item in snapshot.jobs],
+        "active_job_id": (
+            None if snapshot.active_job_id is None else str(snapshot.active_job_id)
+        ),
+        "tools": [item.to_dict() for item in snapshot.tool_definitions],
+        "holders": [item.to_dict() for item in snapshot.holder_definitions],
+        "assemblies": [item.to_dict() for item in snapshot.tool_assemblies],
+        "machines": [item.to_dict() for item in snapshot.machine_definitions],
+        "artifacts": [
+            {
+                "artifact_id": str(item.artifact_id),
+                "operation_id": str(item.operation_id),
+                "relative_path": item.relative_path,
+                "checksum_sha256": item.checksum_sha256,
+                "artifact_fingerprint": item.artifact_fingerprint.to_dict(),
+                "input_fingerprint": item.input_fingerprint.to_dict(),
+                "size_bytes": item.size_bytes,
+                "schema_version": item.schema_version,
+                "expected_operation_revision": item.expected_operation_revision.to_dict(),
+                "computation_generation": item.computation_generation,
+                "completion_status": item.completion_status,
+            }
+            for item in sorted(
+                snapshot.artifacts,
+                key=lambda candidate: str(candidate.operation_id),
+            )
+        ],
+        "material_state_dependencies": [
+            item.to_dict()
+            for item in sorted(
+                snapshot.material_state_dependencies,
+                key=lambda candidate: str(candidate.consumer_operation_id),
+            )
+        ],
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class RestContourPreparationSummary:
     """Public, operation-scoped prepare outcome without R271 sealed bytes."""
@@ -147,6 +207,16 @@ class RestContourPreparationSummary:
     operation_id: OperationId
     status: object
     diagnostic_code: object | None
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class RestFinishingPreparationSummary:
+    """Public R274 prepare outcome without exposing sealed R273 bytes."""
+
+    operation_id: OperationId
+    status: RestFinishingPreparationStatus
+    diagnostic_code: RestFinishingDiagnosticCode | None
     message: str
 
 
@@ -1005,15 +1075,37 @@ class ProjectService:
         target = self._recovery.restore_replaced(assessment)
         return self.open_project(target)
 
-    def save(self) -> ProjectSession:
+    def save(
+        self,
+        *,
+        before_transaction: Callable[[], None] | None = None,
+    ) -> ProjectSession:
         """Persist the current project."""
         with self._background_foreground("project_save"):
             current = self._require_current()
             self._require_writable(current)
             self.flush_simulation_cache()
             current.cam_snapshot = self._cam_application.snapshot
-            session = self._saver.save(current)
-            self._cam_application.mark_persisted(session.cam_snapshot)
+            session = (
+                self._saver.save(current)
+                if before_transaction is None
+                else self._saver.save(
+                    current,
+                    before_transaction=before_transaction,
+                )
+            )
+            try:
+                self._cam_application.mark_persisted(session.cam_snapshot)
+            except Exception:
+                # ProjectSaver returns only after the SQLite transaction has
+                # committed and rebound the session to its persisted snapshot.
+                # Reconcile process-local bookkeeping from those exact bytes;
+                # a post-commit exception cannot retroactively cancel success.
+                logger.warning(
+                    "CAM post-commit bookkeeping failed; reloading durable snapshot",
+                    exc_info=True,
+                )
+                self._cam_application.load(session.cam_snapshot)
             return session
 
     @property
@@ -1372,6 +1464,153 @@ class ProjectService:
             self.save()
         except Exception:
             restored = self._cam_application.restore_rest_contour_snapshot(before)
+            session.cam_snapshot = restored
+            session.is_dirty = restored != session.persisted_cam_snapshot
+            raise
+        return result
+
+    def create_rest_finishing_operation(
+        self, job_id: CamJobId, setup_id: SetupId, parent_node_id: CamNodeId, *,
+        operation_id: OperationId, node_id: CamNodeId, name: str,
+        parameters: RestFinishingParameters,
+        profile: RestFinishingProfileSelection,
+        dependency_operation_id: OperationId,
+        tool_assembly_id: ToolAssemblyId,
+        machine_requirement: MachineRequirement,
+        expected_generation: int | None = None,
+    ) -> CamProjectSnapshot:
+        """Create one Rest Finishing operation only through the project gateway."""
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Finishing creation belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        changed = self._cam_application.create_rest_finishing_operation(
+            job_id, setup_id, parent_node_id, operation_id=operation_id, node_id=node_id,
+            name=name, parameters=parameters, profile=profile,
+            dependency_operation_id=dependency_operation_id,
+            tool_assembly_id=tool_assembly_id, machine_requirement=machine_requirement,
+        )
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+            self._mark_changed_operation_simulations(before, changed)
+            self._remove_deleted_operation_simulations(session, before, changed)
+            self._reconcile_nc_artifacts(session, changed)
+        return changed
+
+    def prepare_rest_finishing(
+        self, operation_id: OperationId, *,
+        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile],
+        cancellation: Callable[[], bool] | None = None,
+        expected_generation: int | None = None,
+    ) -> RestFinishingPreparationSummary:
+        """Resolve current R274 authority without artifact/state/SQLite writes."""
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Finishing preparation belongs to an inactive project generation")
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.prepare_rest_finishing(
+                session.root_path, operation_id, profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+        status = {
+            RestFinishingLifecycleStatus.PREPARED: RestFinishingPreparationStatus.PREPARED,
+            RestFinishingLifecycleStatus.NO_REST_FINISHING_MATERIAL: RestFinishingPreparationStatus.NO_WORK,
+            RestFinishingApplicationStatus.CANCELLED: RestFinishingPreparationStatus.CANCELLED,
+            RestFinishingApplicationStatus.FAILURE: RestFinishingPreparationStatus.FAILURE,
+        }.get(result.status)
+        if status is None:
+            raise RuntimeError("Rest Finishing preparation returned an unknown status")
+        return RestFinishingPreparationSummary(
+            operation_id, status, result.diagnostic_code, result.message,
+        )
+
+    def generate_rest_finishing(
+        self, operation_id: OperationId, *,
+        profile_resolver: Callable[[GeometryReference], ResolvedContourProfile],
+        cancellation: Callable[[], bool] | None = None,
+        expected_generation: int | None = None, persist: bool = True,
+    ) -> RestFinishingApplicationResult:
+        """Generate R274 files first, then make their metadata SQLite-authoritative."""
+        if type(persist) is not bool:
+            raise TypeError("Rest Finishing persistence option must be boolean")
+        session = self._require_current()
+        self._require_writable(session)
+        if expected_generation is not None and expected_generation != self._cam_application.generation:
+            raise RuntimeError("Rest Finishing generation belongs to an inactive project generation")
+        before = self._cam_application.snapshot
+        with self._background_foreground("toolpath_calculation"):
+            result = self._cam_application.generate_rest_finishing(
+                session.root_path, operation_id, profile_resolver=profile_resolver,
+                cancellation=cancellation,
+            )
+        changed = self._cam_application.snapshot
+        session.cam_snapshot = changed
+        if changed != before:
+            session.is_dirty = True
+            self._simulation_runs.mark_stale(operation_id)
+            self._nc_export_service.mark_operation_stale(operation_id)
+        # No-work is a semantic outcome and deliberately produces no durable
+        # artifact/state/metadata.  Only a R273 SUCCESS may reach SQLite save.
+        if result.status is not RestFinishingApplicationStatus.SUCCESS:
+            return result
+        if not persist or (changed == before and not session.is_dirty):
+            return result
+        from hms_cadcam.cam.domain.rest_finishing import (
+            RestFinishingDiagnosticCode,
+            RestFinishingValidationError,
+        )
+
+        def final_cancellation_poll() -> None:
+            if cancellation is not None and cancellation():
+                raise RestFinishingValidationError(
+                    RestFinishingDiagnosticCode.CANCELLED,
+                    "Rest Finishing was cancelled before SQLite commit",
+                )
+
+        try:
+            self.save(before_transaction=final_cancellation_poll)
+        except RestFinishingValidationError as error:
+            restored = self._cam_application.restore_rest_finishing_snapshot(before)
+            session.cam_snapshot = restored
+            session.is_dirty = restored != session.persisted_cam_snapshot
+            return self._cam_application._rest_finishing_failure(
+                error.code,
+                str(error),
+            )
+        except Exception:
+            # The SQLite transaction is the point of no return.  A later
+            # in-process bookkeeping exception must not relabel an already
+            # committed Rest Finishing publication as rolled back.  Re-read
+            # the durable aggregate and reconcile only when it is exactly the
+            # snapshot whose commit was requested; otherwise preserve the
+            # ordinary fail-closed rollback path and original exception.
+            durable = None
+            try:
+                durable = CamSqliteRepository().load(
+                    session.root_path / DATABASE_FILENAME
+                )
+            except Exception:
+                durable = None
+            if (
+                durable is not None
+                and ContentFingerprint.from_payload(
+                    _cam_snapshot_authority_payload(durable)
+                )
+                == ContentFingerprint.from_payload(
+                    _cam_snapshot_authority_payload(
+                        changed
+                    )
+                )
+            ):
+                self._cam_application.load(durable)
+                session.cam_snapshot = durable
+                session.persisted_cam_snapshot = durable
+                session.is_dirty = False
+                return result
+            restored = self._cam_application.restore_rest_finishing_snapshot(before)
             session.cam_snapshot = restored
             session.is_dirty = restored != session.persisted_cam_snapshot
             raise

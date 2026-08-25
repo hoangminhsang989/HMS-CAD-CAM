@@ -42,15 +42,33 @@ class ToolpathArtifactStore:
                                  separators=(",", ":"), sort_keys=True).encode("utf-8")
             if len(payload) > MAX_TOOLPATH_ARTIFACT_BYTES:
                 raise ToolpathArtifactStoreError("Toolpath artifact exceeds size policy")
-            temporary = root / f".staging-{uuid4().hex}.tmp"
-            try:
-                with temporary.open("xb") as stream:
-                    stream.write(payload)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.replace(target)
-            finally:
-                temporary.unlink(missing_ok=True)
+            # Artifact identifiers are content-derived application authority.
+            # A second publisher may prove the exact same immutable bytes, but
+            # it must never replace a pre-existing different object.
+            if target.exists():
+                existing = target.read_bytes()
+                if existing != payload:
+                    raise ToolpathArtifactStoreError(
+                        "Artifact ID collision has different immutable bytes"
+                    )
+            else:
+                temporary = root / f".staging-{uuid4().hex}.tmp"
+                try:
+                    with temporary.open("xb") as stream:
+                        stream.write(payload)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    # Another writer can win only with the same bytes.  Do
+                    # not use replace(), which would overwrite its authority.
+                    try:
+                        os.link(temporary, target)
+                    except FileExistsError:
+                        if target.read_bytes() != payload:
+                            raise ToolpathArtifactStoreError(
+                                "Artifact ID collision has different immutable bytes"
+                            )
+                finally:
+                    temporary.unlink(missing_ok=True)
             digest = hashlib.sha256(payload).hexdigest()
             if artifact.artifact_fingerprint is None:
                 raise ToolpathArtifactStoreError("Artifact content fingerprint is missing")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Callable
 from uuid import uuid4
 
 from hms_cadcam.project.constants import (
@@ -67,10 +68,17 @@ class ProjectSaver:
             lathe_persistence or LatheProjectPersistenceService()
         )
 
-    def save(self, session: ProjectSession) -> ProjectSession:
+    def save(
+        self,
+        session: ProjectSession,
+        *,
+        before_transaction: Callable[[], None] | None = None,
+    ) -> ProjectSession:
         """Validate and atomically save the current manifest."""
         if session.read_only:
             raise ProjectError("Read-only project cannot be saved")
+        if before_transaction is not None and not callable(before_transaction):
+            raise TypeError("Project pre-transaction callback must be callable")
         self._nc_artifact_store.flush(
             session.root_path, session.manifest.project_id
         )
@@ -78,6 +86,11 @@ class ProjectSaver:
         self._validator.validate_manifest(manifest)
         database_path = session.root_path / DATABASE_FILENAME
         self._database.validate(database_path)
+        if before_transaction is not None:
+            # This is the final application-controlled checkpoint immediately
+            # before SQLite obtains the write transaction.  Once it returns,
+            # a successful commit is authoritative and is not relabelled.
+            before_transaction()
         with self._cad_state_store.transaction(database_path) as connection:
             self._cad_state_store.replace_all(
                 connection,

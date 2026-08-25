@@ -395,6 +395,28 @@ def test_failed_save_keeps_pending_cam_dirty_and_database_unchanged(tmp_path, mo
     assert CamSqliteRepository().load(session.root_path / "project.db").is_empty
 
 
+def test_project_save_final_callback_runs_immediately_before_sqlite_transaction(
+    tmp_path,
+) -> None:
+    service = ProjectService.create_default(tmp_path / "config")
+    session = service.new_project(tmp_path, "Pre-transaction cancellation")
+    snapshot, _ = _snapshot()
+    service.stage_cam_snapshot(snapshot)
+    observed: list[CamProjectSnapshot] = []
+
+    def stop_before_transaction() -> None:
+        observed.append(
+            CamSqliteRepository().load(session.root_path / "project.db")
+        )
+        raise RuntimeError("cancel immediately before SQLite transaction")
+
+    with pytest.raises(RuntimeError, match="immediately before SQLite"):
+        service.save(before_transaction=stop_before_transaction)
+    assert observed == [CamProjectSnapshot()]
+    assert CamSqliteRepository().load(session.root_path / "project.db").is_empty
+    assert session.is_dirty and service.cam_snapshot == snapshot
+
+
 def test_failed_cam_open_keeps_current_project_and_cam_snapshot(tmp_path):
     service = ProjectService.create_default(tmp_path / "config")
     original = service.new_project(tmp_path, "Original CAM")

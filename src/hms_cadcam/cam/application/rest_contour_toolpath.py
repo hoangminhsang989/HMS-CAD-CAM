@@ -24,7 +24,7 @@ from hms_cadcam.cam.application.rest_machining_safety import (
 )
 from hms_cadcam.cam.domain import (
     ArtifactStatus, BoxStock, ContentFingerprint, DependencyFingerprint, DirtyReason,
-    Operation, Point3, Setup, ToolpathArtifactId, Vector3,
+    Operation, OperationTree, Point3, Setup, ToolpathArtifactId, Vector3,
 )
 from hms_cadcam.cam.domain.errors import CamValidationError
 from hms_cadcam.cam.domain.operation import ComputationToken
@@ -951,6 +951,76 @@ def _r272_feed_only_material_artifact(
     )
 
 
+def _project_r272_producer_authority_setup(
+    setup: Setup,
+    producer_operation_id,
+) -> Setup:
+    """Close persisted R272 replay over the producer's exact ancestry only.
+
+    This is deliberately private and accepts no caller-provided pruning list.
+    Starting at ``producer_operation_id`` it follows only incoming
+    MATERIAL_STATE edges, requiring at most one at every level.  The resulting
+    operation tree retains every selected operation, its operation node, and
+    all required group ancestors; outgoing/downstream consumers are excluded.
+    Non-tree Setup authority remains untouched through ``replace``.
+    """
+    if not isinstance(setup, Setup):
+        raise TypeError("R272 projected Setup is invalid")
+    tree = setup.operation_tree
+    producer = tree.get_operation(producer_operation_id)
+    keep = {producer.operation_id}
+    current = producer.operation_id
+    while True:
+        incoming = tuple(
+            edge for edge in tree.dependency_graph.edges
+            if edge.kind.value == "material_state"
+            and edge.target_operation_id == current
+        )
+        if len(incoming) > 1:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                  "R272 producer authority has multiple incoming material-state edges")
+        if not incoming:
+            break
+        source = incoming[0].source_operation_id
+        if source is None or source in keep:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                  "R272 producer authority has an invalid material-state ancestor")
+        # get_operation is also the foreign-source check: a malformed edge can
+        # never silently be pruned into an apparently valid replay authority.
+        tree.get_operation(source)
+        keep.add(source)
+        current = source
+    node_ids = {tree.root_id}
+    by_node = {node.node_id: node for node in tree.nodes}
+    for operation in tree.operations:
+        if operation.operation_id not in keep:
+            continue
+        node = by_node[operation.node_id]
+        while True:
+            node_ids.add(node.node_id)
+            if node.parent_id is None:
+                break
+            node = by_node[node.parent_id]
+    nodes = tuple(
+        replace(node, child_ids=tuple(child for child in node.child_ids if child in node_ids))
+        for node in tree.nodes if node.node_id in node_ids
+    )
+    operations = tuple(item for item in tree.operations if item.operation_id in keep)
+    edges = tuple(
+        edge for edge in tree.dependency_graph.edges
+        if edge.target_operation_id in keep
+        and (edge.source_operation_id is None or edge.source_operation_id in keep)
+    )
+    projected = OperationTree(
+        tree.setup_id, tree.root_id, nodes, operations,
+        type(tree.dependency_graph)(
+            tuple(item.operation_id for item in operations), edges
+        ),
+        tree.revision,
+    )
+    return replace(setup, operation_tree=projected)
+
+
 def _install_r272_validated_successor_boundary():
     """Install the non-persistable R272 validation capability registry."""
 
@@ -1027,6 +1097,20 @@ def _install_r272_validated_successor_boundary():
                 or not isinstance(producer_dependency, MaterialStateDependency)
                 or (cancellation is not None and not callable(cancellation))):
             raise TypeError("R272 successor validation inputs are invalid")
+        # The minter accepts the current full Setup and owns the only canonical
+        # pruning step.  Callers cannot supply a hand-picked operation subset
+        # that omits a producer ancestor or hides an ambiguous incoming edge.
+        full_authoritative_setup = authoritative_setup
+        try:
+            authoritative_setup = _project_r272_producer_authority_setup(
+                full_authoritative_setup,
+                authoritative_producer_operation.operation_id,
+            )
+        except (AttributeError, TypeError, ValueError, CamValidationError) as error:
+            _fail(
+                RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
+                f"R272 producer authority projection is invalid: {error}",
+            )
         if replay_context.phase_a_inputs.cancellation is not cancellation:
             _fail(RestContourDiagnosticCode.MATERIAL_STATE_INVALID,
                   "R272 validation cancellation authority differs from replay authority")
@@ -1078,40 +1162,40 @@ def _install_r272_validated_successor_boundary():
                 )
         except (TypeError, ValueError, CamValidationError):
             parameters_are_removal_equivalent = False
-        if (producer is not authoritative_producer_operation
-                or not authoritative_producer_operation.enabled
-                or not authoritative_setup.enabled
-                or not (exact_operation_state or feed_only_operation_state)
-                or not parameters_are_removal_equivalent
-                or prepared.setup.setup_id != authoritative_setup.setup_id
-                or prepared.setup.revision != authoritative_setup.revision
-                or prepared.setup.stock != authoritative_setup.stock
-                or prepared.setup.wcs != authoritative_setup.wcs
-                or prepared.setup.work_offset != authoritative_setup.work_offset
-                or plan.authority.consumer_operation_id
-                   != authoritative_producer_operation.operation_id
-                or _r272_material_removal_operation_fingerprint(
-                    authoritative_producer_operation
-                ) != _r272_material_removal_operation_fingerprint(prepared.base_operation)
-                or exact_producer_artifact != validation_candidate.artifact
-                or trusted_parent_state is not prepared.predecessor_state
-                or not trusted_parent_state.content_is_verified
-                or exact_producer_artifact.source_operation_id
-                   != authoritative_producer_operation.operation_id
-                or exact_producer_artifact.setup_id != authoritative_setup.setup_id
-                or exact_producer_artifact.wcs_fingerprint
-                   != ContentFingerprint.from_payload(authoritative_setup.wcs.to_dict())
-                or exact_producer_artifact.tool_assembly_id
-                   != plan.authority.tool_assembly.assembly_id
-                or exact_producer_artifact.tool_assembly_fingerprint
-                   != ContentFingerprint.from_payload(plan.authority.tool_assembly.to_dict())
-                or exact_producer_artifact.machine_id != plan.authority.machine.machine_id
-                or exact_producer_artifact.machine_fingerprint
-                   != plan.authority.machine.content_fingerprint
-                or compute_material_removal_fingerprint(exact_producer_artifact)
-                   != compute_material_removal_fingerprint(validation_candidate.artifact)):
+        authority_checks = {
+            "producer_identity": producer is authoritative_producer_operation,
+            "producer_enabled": authoritative_producer_operation.enabled,
+            "setup_enabled": authoritative_setup.enabled,
+            "operation_state": exact_operation_state or feed_only_operation_state,
+            "parameters": parameters_are_removal_equivalent,
+            "prepared_setup_id": prepared.setup.setup_id == authoritative_setup.setup_id,
+            "prepared_setup_revision": prepared.setup.revision == authoritative_setup.revision,
+            "prepared_stock": prepared.setup.stock == authoritative_setup.stock,
+            "prepared_wcs": prepared.setup.wcs == authoritative_setup.wcs,
+            "prepared_offset": prepared.setup.work_offset == authoritative_setup.work_offset,
+            "plan_consumer": plan.authority.consumer_operation_id == authoritative_producer_operation.operation_id,
+            "producer_removal": _r272_material_removal_operation_fingerprint(authoritative_producer_operation) == _r272_material_removal_operation_fingerprint(prepared.base_operation),
+            # A historical VALID operation must mint a fresh token for its
+            # virtual replay, so full dataclass equality would compare a
+            # deliberately new computation token.  The persisted exact
+            # artifact remains individually sealed below; replay proves its
+            # source identity and material-removal semantics independently.
+            "replay_producer": validation_candidate.artifact.source_operation_id == exact_producer_artifact.source_operation_id,
+            "parent_identity": trusted_parent_state is prepared.predecessor_state,
+            "parent_verified": trusted_parent_state.content_is_verified,
+            "artifact_producer": exact_producer_artifact.source_operation_id == authoritative_producer_operation.operation_id,
+            "artifact_setup": exact_producer_artifact.setup_id == authoritative_setup.setup_id,
+            "artifact_wcs": exact_producer_artifact.wcs_fingerprint == ContentFingerprint.from_payload(authoritative_setup.wcs.to_dict()),
+            "artifact_assembly": exact_producer_artifact.tool_assembly_id == plan.authority.tool_assembly.assembly_id,
+            "artifact_assembly_fingerprint": exact_producer_artifact.tool_assembly_fingerprint == ContentFingerprint.from_payload(plan.authority.tool_assembly.to_dict()),
+            "artifact_machine": exact_producer_artifact.machine_id == plan.authority.machine.machine_id,
+            "artifact_machine_fingerprint": exact_producer_artifact.machine_fingerprint == plan.authority.machine.content_fingerprint,
+            "semantic_replay": compute_material_removal_fingerprint(exact_producer_artifact) == compute_material_removal_fingerprint(validation_candidate.artifact),
+        }
+        if not all(authority_checks.values()):
+            failed_authority = ", ".join(name for name, value in authority_checks.items() if not value)
             _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
-                  "R272 producer operation, artifact, tool, machine or Setup authority changed")
+                  "R272 producer operation, artifact, tool, machine or Setup authority changed: " + failed_authority)
         try:
             completion_payload = producer_completion.to_dict()
             completion_payload["status"] = producer_completion.status
@@ -1291,6 +1375,8 @@ def _install_r272_validated_successor_boundary():
                 "producer_machine_seal": plan.authority.machine.content_fingerprint,
                 "setup": authoritative_setup,
                 "setup_seal": ContentFingerprint.from_payload(authoritative_setup.to_dict()),
+                "full_setup": full_authoritative_setup,
+                "full_setup_seal": ContentFingerprint.from_payload(full_authoritative_setup.to_dict()),
                 "operation": authoritative_producer_operation,
                 "operation_seal": ContentFingerprint.from_payload(
                     authoritative_producer_operation.to_dict()
@@ -1313,7 +1399,7 @@ def _install_r272_validated_successor_boundary():
                 "authority_identity_graph": _exact_authority_identity_graph(
                     replay_context,
                     validation_candidate,
-                    authoritative_setup,
+                    full_authoritative_setup,
                     authoritative_producer_operation,
                     exact_producer_artifact,
                     trusted_parent_state,
@@ -1341,6 +1427,13 @@ def _install_r272_validated_successor_boundary():
                 or (cancellation is not None and not callable(cancellation))):
             _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
                   "R272 successor validation certificate is absent or invalid")
+        try:
+            projected_setup = _project_r272_producer_authority_setup(
+                setup, producer_operation.operation_id,
+            )
+        except (AttributeError, TypeError, ValueError, CamValidationError) as error:
+            _fail(RestContourDiagnosticCode.MATERIAL_STATE_STALE,
+                  f"R272 successor projection is invalid: {error}")
         with lock:
             record = records.get(id(certificate))
             valid = (
@@ -1362,15 +1455,18 @@ def _install_r272_validated_successor_boundary():
                         cancellation,
                     )
                 and validated_chain_current(record)
-                and record["setup"] is setup
-                and record["operation"] is producer_operation
+                and record["full_setup"] is setup
+                and setup.operation_tree.get_operation(
+                    producer_operation.operation_id
+                ) is producer_operation
                 and record["artifact"] is artifact
                 and record["parent"] is parent_state
                 and record["successor"] is successor_state
                 and record["completion"] is completion
                 and record["dependency"] is dependency
                 and record["cancellation"] is cancellation
-                and record["setup_seal"] == ContentFingerprint.from_payload(setup.to_dict())
+                and record["full_setup_seal"] == ContentFingerprint.from_payload(setup.to_dict())
+                and record["setup_seal"] == ContentFingerprint.from_payload(projected_setup.to_dict())
                 and record["operation_seal"]
                     == ContentFingerprint.from_payload(producer_operation.to_dict())
                 and record["artifact_seal"]
