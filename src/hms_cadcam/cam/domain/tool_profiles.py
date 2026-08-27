@@ -1651,11 +1651,41 @@ DRILLING_TOOL_PROFILE_SCHEMA = ToolStrategyProfileSchema(
 )
 
 
+REST_CONTOUR_TOOL_PROFILE_SCHEMA = ToolStrategyProfileSchema(
+    "rest_contour_3axis",
+    "Biên dạng dư",
+    1,
+    ("end_mill", "ball_end_mill", "bull_nose_end_mill"),
+    (
+        _number("stepdown", "stepdown", "Bước xuống tối đa", "mm", minimum=1.0e-6),
+        _number("tolerance", "tolerance", "Dung sai", "mm", minimum=1.0e-6, advanced=True),
+        _number("radial_stock_allowance", "radial_stock_allowance", "Lượng dư thành", "mm", minimum=0.0, advanced=True),
+        _number("axial_stock_allowance", "axial_stock_allowance", "Lượng dư đáy", "mm", minimum=0.0, advanced=True),
+    ),
+)
+
+
+REST_FINISHING_TOOL_PROFILE_SCHEMA = ToolStrategyProfileSchema(
+    "rest_finishing_3axis",
+    "Tinh phần dư",
+    1,
+    ("end_mill",),
+    (
+        _number("stepover", "stepover", "Bước ngang thủ công", "mm", minimum=1.0e-6),
+        _number("max_stepdown", "max_stepdown", "Bước xuống tối đa thủ công", "mm", minimum=1.0e-6),
+        _number("tolerance", "tolerance", "Dung sai", "mm", minimum=1.0e-6, advanced=True),
+        _number("final_stock_allowance", "final_stock_allowance", "Lượng dư cuối", "mm", minimum=0.0, advanced=True),
+    ),
+)
+
+
 DEFAULT_TOOL_PROFILE_REGISTRY = ToolProfileSchemaRegistry(
     (
         Z_LEVEL_TOOL_PROFILE_SCHEMA,
         PARALLEL_TOOL_PROFILE_SCHEMA,
         DRILLING_TOOL_PROFILE_SCHEMA,
+        REST_CONTOUR_TOOL_PROFILE_SCHEMA,
+        REST_FINISHING_TOOL_PROFILE_SCHEMA,
     )
 )
 DEFAULT_TOOL_PROFILE_RESOLVER = ToolProfileResolver(
@@ -1671,6 +1701,8 @@ __all__ = [
     "EffectiveValueMode",
     "EffectiveValueValidation",
     "PARALLEL_TOOL_PROFILE_SCHEMA",
+    "REST_CONTOUR_TOOL_PROFILE_SCHEMA",
+    "REST_FINISHING_TOOL_PROFILE_SCHEMA",
     "ProfilePrimitive",
     "ToolCommonDefaults",
     "ToolProfileCompatibility",

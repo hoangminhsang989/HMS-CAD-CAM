@@ -61,6 +61,8 @@ OPERATION_DISPLAY_NAMES = MappingProxyType(
         "Reaming": "Doa lỗ",
         "Boring": "Khoét lỗ",
         "Parallel Finishing": "Gia công tinh song song",
+        "Rest Contour": "Phay biên dạng phần dư",
+        "Rest Finishing": "Gia công tinh phần dư",
     }
 )
 
@@ -78,6 +80,8 @@ _OPERATION_STRATEGY_DISPLAY_NAMES = MappingProxyType(
         "pocket_2_5d_9a5_3": OPERATION_DISPLAY_NAMES["Pocket 2.5D"],
         "rest_pocket_3axis": "Phay hốc phần dư 3 trục",
         "rest_pocket_3axis_r266": "Phay hốc phần dư 3 trục",
+        "rest_contour_3axis": OPERATION_DISPLAY_NAMES["Rest Contour"],
+        "rest_finishing_3axis": OPERATION_DISPLAY_NAMES["Rest Finishing"],
         "drilling_v1": OPERATION_DISPLAY_NAMES["Drilling"],
         "drilling_v1_9a6": OPERATION_DISPLAY_NAMES["Drilling"],
         "tapping_v1": OPERATION_DISPLAY_NAMES["Tapping"],

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from hms_cadcam.ui.localized_dialogs import QMessageBox
+from hms_cadcam.ui.design_system import TOOLPATH_SEMANTIC_COLORS
 from hms_cadcam.ui.function_editor.fields import FunctionEditorFieldWidget
 from hms_cadcam.ui.function_editor.model import (
     FunctionEditorAction,
@@ -564,6 +566,13 @@ class FunctionEditorPage(QWidget):
         self._disclosure_compact = False
         self._responsive_grid_columns = 1
         self._content_layout_signature: tuple[object, ...] | None = None
+        self._rest_splitter: QSplitter | None = None
+        self._rest_primary_layout: QVBoxLayout | None = None
+        self._rest_secondary_layout: QVBoxLayout | None = None
+        self._rest_status_panel: QFrame | None = None
+        self._rest_status_title: QLabel | None = None
+        self._rest_status_detail: QLabel | None = None
+        self._rest_toolpath_legend: QFrame | None = None
         self._density_metrics = CAM_POPUP_DENSITY.metrics_for(QSize(1600, 900))
         self._user_state = (
             state_store.load(self.schema)
@@ -676,6 +685,11 @@ class FunctionEditorPage(QWidget):
         self.help_panel.setVisible(self._user_state.help_visible)
         self.diagnostic_view = FunctionEditorDiagnosticView()
         self.diagnostic_view.focus_requested.connect(self.focus_field)
+        if self.schema.editor_id in {
+            "rest_contour_3axis_production_r275",
+            "rest_finishing_3axis_production_r275",
+        }:
+            self._build_rest_status_and_legend()
         self.scroll_area.setWidget(self.content)
         self._root.addWidget(self.scroll_area, 1)
         from hms_cadcam.ui.function_editor.parallel_widgets import (
@@ -696,8 +710,100 @@ class FunctionEditorPage(QWidget):
 
     def set_calculation_active(self, active: bool) -> None:
         """Expose a non-modal worker state without changing draft values."""
-        self.calculation_progress.set_active(active)
+        if self.schema.editor_id in {
+            "rest_contour_3axis_production_r275",
+            "rest_finishing_3axis_production_r275",
+        }:
+            self.calculation_progress.set_indeterminate(
+                active, phase="Đang tạo Rest toolpath"
+            )
+            if active:
+                self.set_rest_result(
+                    "GENERATING",
+                    "Backend đang tạo toolpath; không có phần trăm hoặc ETA giả. Hủy vẫn khả dụng.",
+                )
+        else:
+            self.calculation_progress.set_active(active)
         self.footer.set_calculation_active(active, self.state)
+
+    def _build_rest_status_and_legend(self) -> None:
+        status = QFrame()
+        status.setObjectName("RestMachiningStatusPanel")
+        status_layout = QVBoxLayout(status)
+        status_layout.setContentsMargins(7, 5, 7, 5)
+        status_layout.setSpacing(2)
+        title = QLabel()
+        title.setObjectName("RestMachiningStatusTitle")
+        detail = QLabel()
+        detail.setObjectName("RestMachiningStatusDetail")
+        detail.setWordWrap(True)
+        status_layout.addWidget(title)
+        status_layout.addWidget(detail)
+        self._rest_status_panel = status
+        self._rest_status_title = title
+        self._rest_status_detail = detail
+
+        legend = QFrame()
+        legend.setObjectName("RestMachiningToolpathLegend")
+        legend_layout = QHBoxLayout(legend)
+        legend_layout.setContentsMargins(7, 4, 7, 4)
+        legend_layout.setSpacing(7)
+        legend_title = QLabel("TOOLPATH")
+        legend_title.setObjectName("RestMachiningToolpathLegendTitle")
+        legend_layout.addWidget(legend_title)
+        for semantic, label, object_name in (
+            ("cutting", "CUTTING", "ToolpathCuttingSwatch"),
+            ("rapid", "RAPID", "ToolpathRapidSwatch"),
+            ("link", "LEAD-IN", "ToolpathLeadInSwatch"),
+            ("retract", "LEAD-OUT", "ToolpathLeadOutSwatch"),
+        ):
+            swatch = QLabel()
+            swatch.setObjectName(object_name)
+            swatch.setFixedSize(18, 10)
+            swatch.setStyleSheet(
+                "background-color: "
+                f"{TOOLPATH_SEMANTIC_COLORS[semantic]}; "
+                "border: 1px solid #334155;"
+            )
+            legend_layout.addWidget(swatch)
+            legend_layout.addWidget(QLabel(label))
+        legend_layout.addStretch(1)
+        self._rest_toolpath_legend = legend
+        self.set_rest_result(
+            "READY",
+            "Editor sẵn sàng; backend vẫn là authority cho validation, generation và publication.",
+        )
+
+    def set_rest_result(
+        self, status: str, message: str, is_error: bool = False
+    ) -> None:
+        """Render one typed Rest lifecycle result without replacing editor context."""
+        panel = self._rest_status_panel
+        title = self._rest_status_title
+        detail = self._rest_status_detail
+        if panel is None or title is None or detail is None:
+            return
+        normalized = status.strip().upper() or "UNKNOWN"
+        if is_error or normalized in {"FAILED", "INVALID", "UNSUPPORTED"}:
+            background, border, foreground = "#fff0f0", "#c84a45", "#8b2522"
+        elif normalized == "GENERATING":
+            background, border, foreground = "#fff7e2", "#d39a15", "#76520a"
+        elif normalized in {"NO_WORK", "CANCELLED"}:
+            background, border, foreground = "#eef5fa", "#7094ad", "#294e69"
+        else:
+            background, border, foreground = "#edf8f1", "#4c9b6c", "#205d39"
+        panel.setStyleSheet(
+            "QFrame#RestMachiningStatusPanel {"
+            f"background-color: {background}; border: 1px solid {border};"
+            "} "
+            "QLabel#RestMachiningStatusTitle {"
+            f"color: {foreground}; font-weight: 700; border: none;"
+            "} "
+            "QLabel#RestMachiningStatusDetail { border: none; }"
+        )
+        title.setText(normalized)
+        detail.setText(message)
+        panel.setVisible(True)
 
     def _illustration_expanded_changed(self, expanded: bool) -> None:
         if (
@@ -934,6 +1040,57 @@ class FunctionEditorPage(QWidget):
         for row in range(previous_rows):
             self.content_layout.setRowStretch(row, 0)
             self.content_layout.setRowMinimumHeight(row, 0)
+
+        if self.schema.editor_id in {
+            "rest_contour_3axis_production_r275",
+            "rest_finishing_3axis_production_r275",
+        }:
+            splitter = self._rest_splitter
+            if splitter is None:
+                splitter = QSplitter(Qt.Orientation.Horizontal, self.content)
+                self._rest_splitter = splitter
+                splitter.setObjectName("RestMachiningFunctionEditorSplitter")
+                splitter.setChildrenCollapsible(False)
+                left = QWidget(splitter)
+                left.setObjectName("RestMachiningPrimaryPane")
+                right = QWidget(splitter)
+                right.setObjectName("RestMachiningSecondaryPane")
+                left.setMinimumWidth(260)
+                right.setMinimumWidth(260)
+                self._rest_primary_layout = QVBoxLayout(left)
+                self._rest_secondary_layout = QVBoxLayout(right)
+                splitter.setStretchFactor(0, 3)
+                splitter.setStretchFactor(1, 2)
+                splitter.setSizes((600, 400))
+            assert self._rest_primary_layout is not None
+            assert self._rest_secondary_layout is not None
+            left_layout = self._rest_primary_layout
+            right_layout = self._rest_secondary_layout
+            for layout in (left_layout, right_layout):
+                while layout.count():
+                    layout.takeAt(0)
+            if self._rest_status_panel is not None:
+                right_layout.addWidget(self._rest_status_panel)
+            for section_id in section_order:
+                target = (
+                    left_layout
+                    if section_id in {"operation", "basic_parameters"}
+                    else right_layout
+                )
+                target.addWidget(self._section_widgets[section_id])
+            if self._rest_toolpath_legend is not None:
+                right_layout.addWidget(self._rest_toolpath_legend)
+            left_layout.addStretch(1)
+            right_layout.addStretch(1)
+            splitter.setVisible(True)
+            self.content_layout.addWidget(splitter, 0, 0, 1, 2)
+            self.content_layout.addWidget(self.help_panel, 1, 0, 1, 2)
+            self.content_layout.addWidget(self.diagnostic_view, 2, 0, 1, 2)
+            self.content_layout.setRowStretch(3, 1)
+            self.content_layout.setColumnStretch(0, 1)
+            self.content_layout.setColumnStretch(1, 1)
+            QTimer.singleShot(0, self, self._sync_content_overflow)
+            return
 
         columns = self._responsive_grid_columns
         basic_with_illustration = (
@@ -1185,6 +1342,22 @@ class FunctionEditorPage(QWidget):
 
     def _render_state(self) -> None:
         diagnostics = self.state.diagnostics
+        if self._rest_status_title is not None:
+            first_error = next(
+                (
+                    item
+                    for item in diagnostics
+                    if item.severity is FunctionEditorDiagnosticSeverity.ERROR
+                ),
+                None,
+            )
+            if first_error is not None:
+                self.set_rest_result("INVALID", first_error.message, True)
+            elif self._rest_status_title.text() == "INVALID":
+                self.set_rest_result(
+                    "READY",
+                    "Editor sẵn sàng; backend vẫn là authority cho validation, generation và publication.",
+                )
         for field_id, widget in self._field_widgets.items():
             diagnostic = next(
                 (item for item in diagnostics if item.field_id == field_id), None

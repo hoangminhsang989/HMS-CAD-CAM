@@ -148,4 +148,25 @@ __all__ = [
     "z_level_draft_derived_values",
     "z_level_safety_presentation",
     "z_level_validation_diagnostics",
+    "RestMachiningDependencyPresentation",
+    "RestMachiningEditorContext",
+    "RestMachiningOperationUpdate",
+    "build_rest_machining_schema",
+    "prepare_rest_machining_update",
+    "rest_machining_applied_values",
+    "rest_machining_validation_diagnostics",
+    "rest_creation_candidate_presentation",
+    "rest_result_presentation",
 ]
+
+from hms_cadcam.ui.function_editor.strategies.rest_machining import (
+    RestMachiningDependencyPresentation,
+    RestMachiningEditorContext,
+    RestMachiningOperationUpdate,
+    build_rest_machining_schema,
+    prepare_rest_machining_update,
+    rest_machining_applied_values,
+    rest_machining_validation_diagnostics,
+    rest_creation_candidate_presentation,
+    rest_result_presentation,
+)

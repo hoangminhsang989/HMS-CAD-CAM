@@ -156,7 +156,16 @@ from hms_cadcam.ui.function_editor.strategies import (
     z_level_applied_values,
     z_level_draft_derived_values,
     z_level_validation_diagnostics,
+    RestMachiningDependencyPresentation,
+    RestMachiningEditorContext,
+    build_rest_machining_schema,
+    prepare_rest_machining_update,
+    rest_machining_applied_values,
+    rest_machining_validation_diagnostics,
+    rest_result_presentation,
 )
+from hms_cadcam.cam.domain.rest_contour import REST_CONTOUR_STRATEGY_KEY
+from hms_cadcam.cam.domain.rest_finishing import REST_FINISHING_STRATEGY_KEY
 from hms_cadcam.cam.cam3d import (
     Cam3DCalculationRequest,
     Cam3DGeometryService,
@@ -228,6 +237,7 @@ class CamWorkspace(QWidget):
     selection_identity_changed = Signal(object)
     parallel_progress_changed = Signal(object)
     parallel_calculation_active = Signal(bool)
+    rest_result_changed = Signal(str, str, bool)
     operation_created = Signal(str)
 
     def __init__(self, service: ProjectService,
@@ -537,6 +547,8 @@ class CamWorkspace(QWidget):
             geometry_bounds_provider=self._parallel_geometry_bounds_provider,
             drilling_pick_provider=self._drilling_pick_provider,
             drilling_resolver=self._drilling_resolver,
+            profile_pick_provider=self._contour_pick_provider,
+            profile_resolver=self._profile_resolver,
         )
         session = OperationCreationSession.start(
             project_id=project.manifest.project_id,
@@ -683,6 +695,13 @@ class CamWorkspace(QWidget):
             if not self._production_z_level_editor_enabled:
                 return None
             return self._z_level_production_session(
+                job.job_id, setup, node_id, node.name, operation
+            )
+        if operation.strategy_key in {
+            REST_CONTOUR_STRATEGY_KEY,
+            REST_FINISHING_STRATEGY_KEY,
+        }:
+            return self._rest_machining_production_session(
                 job.job_id, setup, node_id, node.name, operation
             )
         if operation.strategy_key == "contour_2d":
@@ -1865,6 +1884,285 @@ class CamWorkspace(QWidget):
             self.message.emit(
                 "Đang hủy tính toán Gia công tinh theo cao độ Z…"
             )
+
+    def _rest_dependency_presentation(
+        self, setup: Setup, operation: Operation
+    ) -> RestMachiningDependencyPresentation:
+        """Project one typed DAG edge without becoming MaterialState authority."""
+        edges = tuple(
+            edge
+            for edge in setup.operation_tree.dependency_graph.edges
+            if edge.target_operation_id == operation.operation_id
+            and edge.kind.value == "material_state"
+        )
+        if len(edges) != 1:
+            return RestMachiningDependencyPresentation(
+                "—",
+                "Không có nguồn duy nhất",
+                "INVALID",
+                "Material State dependency bị thiếu hoặc mơ hồ.",
+            )
+        producer_id = edges[0].source_operation_id
+        producer = next(
+            (
+                value
+                for value in setup.operation_tree.operations
+                if value.operation_id == producer_id
+            ),
+            None,
+        )
+        producer_node = next(
+            (
+                value
+                for value in setup.operation_tree.nodes
+                if value.operation_id == producer_id
+            ),
+            None,
+        )
+        producer_name = producer_node.name if producer_node is not None else "Nguồn đã bị xóa"
+        if producer is None:
+            return RestMachiningDependencyPresentation(
+                producer_id, producer_name, "INVALID", "Operation nguồn không còn tồn tại."
+            )
+        dependencies = self._service.cam_snapshot.material_state_dependencies
+        has_persisted_dependency = any(
+            value.consumer_operation_id == operation.operation_id
+            for value in dependencies
+        )
+        if has_persisted_dependency:
+            resolution = self._service.resolve_persisted_material_state(
+                operation.operation_id
+            )
+            status = str(getattr(resolution.status, "value", resolution.status)).upper()
+            current = status == MaterialStateResolutionStatus.RESOLVED.value.upper()
+            return RestMachiningDependencyPresentation(
+                producer_id,
+                producer_name,
+                "CURRENT" if current else "STALE",
+                resolution.message or status,
+            )
+        current = (
+            producer.artifact_state.status is ArtifactStatus.VALID
+            and not producer.artifact_state.dirty_reasons
+        )
+        return RestMachiningDependencyPresentation(
+            producer_id,
+            producer_name,
+            "CURRENT" if current else "STALE",
+            (
+                "Graph edge hiện hành; backend sẽ tạo dependency evidence khi prepare."
+                if current
+                else "Artifact nguồn chưa CURRENT; Generate sẽ bị chặn an toàn."
+            ),
+        )
+
+    def _rest_machining_production_session(
+        self,
+        job_id: CamJobId,
+        setup: Setup,
+        node_id: CamNodeId,
+        operation_name: str,
+        operation: Operation,
+    ) -> FunctionEditorProductionSession | None:
+        """Build one Rest session over persisted operation/service authority."""
+        if self._generation is None:
+            return None
+        snapshot = self._service.cam_snapshot
+        context = RestMachiningEditorContext(
+            operation_name,
+            operation,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            self._rest_dependency_presentation(setup, operation),
+        )
+        schema = build_rest_machining_schema(context)
+        applied = rest_machining_applied_values(context)
+        project = self._service.current_project
+        if project is None:
+            return None
+        return FunctionEditorProductionSession(
+            selection_key=("operation", str(node_id)),
+            schema=schema,
+            applied_values=tuple(
+                (field.field_id, applied[field.field_id]) for field in schema.fields
+            ),
+            project_key=str(project.manifest.project_id),
+            operation_key=str(operation.operation_id),
+            generation=self._generation,
+            apply_callback=lambda values: self._apply_rest_machining_production(
+                job_id, setup.setup_id, node_id, context, values
+            ),
+            validation_callback=lambda values: self._validate_rest_machining_production(
+                schema, setup.setup_id, context, values
+            ),
+            preview_callback=lambda request: self._preview_rest_machining_production(
+                schema, setup.setup_id, context, request
+            ),
+            calculate_callback=lambda values: self._start_rest_machining_production(
+                context, values
+            ),
+            calculate_task_callback=lambda values: self._start_rest_machining_production(
+                context, values
+            ),
+        )
+
+    def _rest_context_is_current(
+        self, setup_id: SetupId, context: RestMachiningEditorContext
+    ) -> bool:
+        if self._generation is None or self._generation != self._service.cam_generation:
+            return False
+        try:
+            setup = next(
+                value
+                for job in self._service.cam_snapshot.jobs
+                for value in job.setups
+                if value.setup_id == setup_id
+            )
+            current = setup.operation_tree.get_operation(context.operation.operation_id)
+        except (KeyError, RuntimeError, StopIteration, ValueError):
+            return False
+        return current == context.operation
+
+    def _validate_rest_machining_production(
+        self,
+        schema,
+        setup_id: SetupId,
+        context: RestMachiningEditorContext,
+        values: Mapping[str, PresentationValue],
+    ) -> tuple[FunctionEditorDiagnostic, ...]:
+        if not self._rest_context_is_current(setup_id, context):
+            return (
+                FunctionEditorDiagnostic(
+                    "rest.ui.stale_editor",
+                    "Operation hoặc project generation đã thay đổi; hãy mở lại editor.",
+                    FunctionEditorDiagnosticSeverity.ERROR,
+                    "operation_name",
+                    "operation",
+                ),
+            )
+        if context.dependency.status != "CURRENT":
+            return (
+                FunctionEditorDiagnostic(
+                    "rest.ui.stale_dependency",
+                    context.dependency.detail,
+                    FunctionEditorDiagnosticSeverity.ERROR,
+                    "material_state_status",
+                    "dependency",
+                ),
+            )
+        return rest_machining_validation_diagnostics(schema, context, values)
+
+    def _preview_rest_machining_production(
+        self,
+        schema,
+        setup_id: SetupId,
+        context: RestMachiningEditorContext,
+        request: FunctionEditorPreviewRequest,
+    ) -> str:
+        """Present only a verified current Rest artifact, never draft geometry."""
+        if (
+            request.operation_key != str(context.operation.operation_id)
+            or request.generation != self._generation
+        ):
+            raise RuntimeError("Preview request đã stale.")
+        values = dict(request.values)
+        diagnostics = self._validate_rest_machining_production(
+            schema, setup_id, context, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_rest_machining_update(context, values)
+        if update.operation != context.operation:
+            return "Bản xem trước chưa khả dụng · hãy Áp dụng và Tính toán bản nháp."
+        operation = context.operation
+        if (
+            operation.artifact_state.status is not ArtifactStatus.VALID
+            or operation.artifact_state.dirty_reasons
+        ):
+            return "Bản xem trước chưa khả dụng · operation chưa có toolpath hợp lệ."
+        artifact = self._service.load_toolpath_artifact(operation.operation_id)
+        if artifact is None:
+            return "Bản xem trước chưa khả dụng · không tìm thấy toolpath đã xác minh."
+        if (
+            artifact.source_operation_id != operation.operation_id
+            or artifact.operation_revision != operation.revision
+        ):
+            raise RuntimeError("Toolpath preview không khớp operation hiện hành.")
+        if self._toolpath_display is None:
+            return "Bản xem trước toolpath đã xác minh; viewport chưa khả dụng."
+        displayed = self._toolpath_display(artifact)
+        if displayed is False:
+            return "Bản xem trước toolpath đã xác minh; viewport từ chối hiển thị."
+        self.editor.show_toolpath_metadata(ToolpathPresentation.from_artifact(artifact))
+        self._displayed_operation_id = operation.operation_id
+        self._toolpath_visibility[operation.operation_id] = True
+        return "Bản xem trước toolpath đã xác minh và đang hiển thị."
+
+    def _apply_rest_machining_production(
+        self,
+        job_id: CamJobId,
+        setup_id: SetupId,
+        node_id: CamNodeId,
+        context: RestMachiningEditorContext,
+        values: Mapping[str, PresentationValue],
+    ) -> bool:
+        schema = build_rest_machining_schema(context)
+        diagnostics = self._validate_rest_machining_production(
+            schema, setup_id, context, values
+        )
+        if diagnostics:
+            raise RuntimeError(diagnostics[0].message)
+        update = prepare_rest_machining_update(context, values)
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn hiện hành.")
+        self._service.execute_cam_command(
+            lambda app: app.update_tree(
+                job_id,
+                setup_id,
+                lambda tree: tree.rename_node(
+                    node_id, update.operation_name
+                ).replace_operation(update.operation),
+            ),
+            expected_generation=self._generation,
+        )
+        self.message.emit("Đã áp dụng Rest operation; chưa tự tạo toolpath.")
+        QTimer.singleShot(0, self.projection_changed.emit)
+        return True
+
+    def _start_rest_machining_production(
+        self,
+        context: RestMachiningEditorContext,
+        _values: Mapping[str, PresentationValue],
+    ) -> str:
+        if self._generation is None:
+            raise RuntimeError("Project generation không còn hiện hành.")
+        if self._profile_resolver is None:
+            raise RuntimeError("Rest profile resolver chưa sẵn sàng.")
+        setup_id = context.operation.setup_id
+        if not self._rest_context_is_current(setup_id, context):
+            raise RuntimeError("Rest editor đã stale; hãy mở lại trước khi Generate.")
+        if context.dependency.status != "CURRENT":
+            raise RuntimeError(context.dependency.detail)
+        generation = self._generation
+        operation_id = context.operation.operation_id
+        resolver = self._profile_resolver
+        if context.is_finishing:
+            calculate = lambda cancelled, _progress: self._service.generate_rest_finishing(
+                operation_id,
+                profile_resolver=resolver,
+                cancellation=cancelled,
+                expected_generation=generation,
+            )
+            strategy = "rest_finishing"
+        else:
+            calculate = lambda cancelled, _progress: self._service.generate_rest_contour(
+                operation_id,
+                profile_resolver=resolver,
+                cancellation=cancelled,
+                expected_generation=generation,
+            )
+            strategy = "rest_contour"
+        return self._start_cam_calculation(operation_id, strategy, calculate)
 
     def _show_parallel_safety_details(self, context: ParallelEditorContext) -> None:
         from hms_cadcam.ui.function_editor.parallel_widgets import (
@@ -3819,10 +4117,18 @@ class CamWorkspace(QWidget):
         self._cam_calculation_generation = generation
         self._cam_calculation_operation_id = operation_id
         self._cam_calculation_strategy = strategy
-        task.signals.progress.connect(self._cam_calculation_progress)
-        task.signals.completed.connect(self._cam_calculation_completed)
-        task.signals.failed.connect(self._cam_calculation_failed)
-        task.signals.finished.connect(self._cam_calculation_finished)
+        task.signals.progress.connect(
+            lambda value, owned=task: self._cam_calculation_progress(owned, value)
+        )
+        task.signals.completed.connect(
+            lambda result, owned=task: self._cam_calculation_completed(owned, result)
+        )
+        task.signals.failed.connect(
+            lambda error, owned=task: self._cam_calculation_failed(owned, error)
+        )
+        task.signals.finished.connect(
+            lambda owned=task: self._cam_calculation_finished(owned)
+        )
         self.parallel_calculation_active.emit(True)
         self.parallel_progress_changed.emit(CamCalculationProgress(
             operation_id.value.hex, strategy, "geometry",
@@ -3831,13 +4137,61 @@ class CamWorkspace(QWidget):
         QThreadPool.globalInstance().start(task)
         return "Đã bắt đầu tính đường chạy dao"
 
-    def _cam_calculation_progress(self, value: CamCalculationProgress) -> None:
-        if self._cam_calculation_task is not None:
-            self.parallel_progress_changed.emit(value)
+    def _cam_calculation_progress(
+        self, task: CamCalculationTask, value: CamCalculationProgress
+    ) -> None:
+        if task is not self._cam_calculation_task:
+            return
+        self.parallel_progress_changed.emit(value)
 
-    def _cam_calculation_completed(self, result: object) -> None:
+    def _cam_calculation_completed(
+        self, task: CamCalculationTask, result: object
+    ) -> None:
+        if task is not self._cam_calculation_task:
+            return
         operation_id = self._cam_calculation_operation_id
         if operation_id is None or self._cam_calculation_generation != self._generation:
+            return
+        if self._cam_calculation_strategy in {"rest_contour", "rest_finishing"}:
+            status, message, is_error = rest_result_presentation(
+                getattr(result, "status", "FAILURE"),
+                getattr(result, "diagnostic_code", None),
+                getattr(result, "message", ""),
+            )
+            publication = getattr(result, "publication", None)
+            artifact = getattr(publication, "artifact", None)
+            published_operation = getattr(publication, "operation", None)
+            if status == "SUCCESS" and artifact is not None:
+                if (
+                    published_operation is None
+                    or published_operation.operation_id != operation_id
+                ):
+                    self._error("Kết quả Rest không khớp nguyên công đang tính.")
+                    return
+                selected = self._selected_operation()
+                if (
+                    selected is not None
+                    and selected.operation_id == operation_id
+                    and self._toolpath_display is not None
+                ):
+                    displayed = self._toolpath_display(artifact)
+                    if displayed is not False:
+                        self.editor.show_toolpath_metadata(
+                            ToolpathPresentation.from_artifact(artifact)
+                        )
+                        self._displayed_operation_id = operation_id
+                        self._toolpath_visibility[operation_id] = True
+            if is_error:
+                self._error(message)
+            else:
+                self.message.emit(f"{status} · {message}")
+            QTimer.singleShot(0, self.projection_changed.emit)
+            QTimer.singleShot(
+                0,
+                lambda value=status, detail=message, failed=is_error: (
+                    self.rest_result_changed.emit(value, detail, failed)
+                ),
+            )
             return
         if not isinstance(result, (FacingComputeResult, ContourComputeResult, PocketComputeResult)):
             self._error("Tác vụ CAM trả về kết quả không hợp lệ.")
@@ -3868,10 +4222,19 @@ class CamWorkspace(QWidget):
         self.message.emit("Đường chạy dao đã tính toán và công bố hợp lệ.")
         QTimer.singleShot(0, self.projection_changed.emit)
 
-    def _cam_calculation_failed(self, error: object) -> None:
-        self._error(str(error) or "Tính đường chạy dao thất bại an toàn.")
+    def _cam_calculation_failed(
+        self, task: CamCalculationTask, error: object
+    ) -> None:
+        if task is not self._cam_calculation_task:
+            return
+        message = str(error) or "Tính đường chạy dao thất bại an toàn."
+        self._error(message)
+        if self._cam_calculation_strategy in {"rest_contour", "rest_finishing"}:
+            self.rest_result_changed.emit("FAILED", message, True)
 
-    def _cam_calculation_finished(self) -> None:
+    def _cam_calculation_finished(self, task: CamCalculationTask) -> None:
+        if task is not self._cam_calculation_task:
+            return
         self._cam_calculation_task = None
         self._cam_calculation_generation = None
         self._cam_calculation_operation_id = None
@@ -5750,9 +6113,23 @@ class CamWorkspace(QWidget):
         if operation is None or operation.strategy_key not in {
             "facing_2_5d", "contour_2d", "drilling_v1", "pocket_2_5d", REST_POCKET_STRATEGY_KEY,
             "tapping_v1", "reaming_v1", "boring_v1", "parallel_finishing_3d",
-            "z_level_finishing_3d",
+            "z_level_finishing_3d", REST_CONTOUR_STRATEGY_KEY,
+            REST_FINISHING_STRATEGY_KEY,
         }:
             self._error("Operation đã chọn không hỗ trợ Generate.")
+            return
+        if operation.strategy_key in {
+            REST_CONTOUR_STRATEGY_KEY,
+            REST_FINISHING_STRATEGY_KEY,
+        }:
+            session = self.production_function_editor_session()
+            if session is None:
+                self._error("Trình chỉnh sửa gia công phần dư không khả dụng.")
+                return
+            try:
+                session.calculate_task_callback(session.applied_mapping())
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self._error(str(error))
             return
         if operation.strategy_key == "parallel_finishing_3d":
             session = self.production_function_editor_session()

@@ -283,7 +283,7 @@ def test_internal_token_auditor_uses_production_enum_catalog_and_strict_allowlis
     )
 
 
-def test_ten_operation_display_names_are_localized_without_changing_ids() -> None:
+def test_twelve_operation_display_names_are_localized_without_changing_ids() -> None:
     expected = {
         "Facing 2.5D": "Phay mặt 2.5D",
         "Planar Face Facing": "Phay các mặt phẳng",
@@ -295,6 +295,8 @@ def test_ten_operation_display_names_are_localized_without_changing_ids() -> Non
         "Boring": "Khoét lỗ",
         "Parallel Finishing": "Gia công tinh song song",
         "Z-Level Finishing": "Gia công tinh theo cao độ Z",
+        "Rest Contour": "Phay biên dạng phần dư",
+        "Rest Finishing": "Gia công tinh phần dư",
     }
     assert dict(OPERATION_DISPLAY_NAMES) == expected
     assert {
@@ -316,6 +318,8 @@ def test_ten_operation_display_names_are_localized_without_changing_ids() -> Non
         "tapping_v1": "Taro",
         "reaming_v1": "Doa lỗ",
         "boring_v1": "Khoét lỗ",
+        "rest_contour_3axis": "Phay biên dạng phần dư",
+        "rest_finishing_3axis": "Gia công tinh phần dư",
     }
     assert {
         strategy: operation_type_display_name(strategy)
@@ -331,6 +335,8 @@ def test_ten_operation_display_names_are_localized_without_changing_ids() -> Non
         "tapping_v1",
         "reaming_v1",
         "boring_v1",
+        "rest_contour_3axis",
+        "rest_finishing_3axis",
     )
 
 
@@ -544,7 +550,7 @@ def test_runtime_rendered_audit_covers_dynamic_names_and_preserves_only_technica
         for item in result.entries
         if item.source == "operation_display_name"
     )
-    assert len(operation_entries) == 10
+    assert len(operation_entries) == 12
     assert {item.text for item in operation_entries} == set(
         OPERATION_DISPLAY_NAMES.values()
     )

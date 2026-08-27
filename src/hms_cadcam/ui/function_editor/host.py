@@ -463,6 +463,13 @@ class FunctionEditorHost(QWidget):
         if self._active_page is not None:
             self._active_page.set_calculation_active(active)
 
+    def set_rest_result(
+        self, status: str, message: str, is_error: bool = False
+    ) -> None:
+        """Forward one typed Rest lifecycle result to the active production page."""
+        if self._active_page is not None:
+            self._active_page.set_rest_result(status, message, is_error)
+
     def update_calculation_progress(self, value: object) -> None:
         """Forward one project-scoped worker report to the active page."""
         if self._active_page is not None:

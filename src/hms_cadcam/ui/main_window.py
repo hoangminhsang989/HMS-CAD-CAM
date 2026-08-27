@@ -618,6 +618,9 @@ class MainWindow(QMainWindow):
         self.cam_workspace.parallel_calculation_active.connect(
             self.function_editor_host.set_calculation_active
         )
+        self.cam_workspace.rest_result_changed.connect(
+            self.function_editor_host.set_rest_result
+        )
         self.function_editor_host.calculation_cancel_requested.connect(
             self.cam_workspace.cancel_parallel_calculation
         )

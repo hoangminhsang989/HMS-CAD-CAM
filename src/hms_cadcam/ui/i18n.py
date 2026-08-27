@@ -303,6 +303,12 @@ class TranslationService(QObject):
         return self.translate_key(key).format(*args, **kwargs)
 
     def _resolve(self, key: str, *, typed: bool) -> str:
+        if self._language is UiLanguage.KO_KR and key in R275_KO_FALLBACK_KEYS:
+            vietnamese = self._catalogs.get(UiLanguage.VI_VN)
+            translated = "" if vietnamese is None else vietnamese.entries.get(key, "")
+            if translated.strip():
+                self._record(key, "VI_VN_FALLBACK")
+                return translated
         selected = self._catalogs.get(self._language)
         if selected is not None:
             translated = selected.entries.get(key, "")
@@ -1507,6 +1513,77 @@ DISPLAY_SOURCE_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+# R275 introduces Vietnamese-first production terminology under semantic keys.
+# English has been reviewed here. Korean catalog entries intentionally contain
+# the approved Vietnamese fallback text: the resolver records that fallback
+# instead of treating the R4 layout-stress Korean text as translation authority.
+R275_UI_TRANSLATIONS: tuple[tuple[str, str, str], ...] = (
+    ("r275.rest.operation", "Nguyên công", "Operation"),
+    ("r275.rest.operation_name", "Tên nguyên công", "Operation name"),
+    ("r275.rest.strategy", "Chiến lược", "Strategy"),
+    ("r275.rest.parameter_mode", "Chế độ tham số", "Parameter mode"),
+    (
+        "r275.rest.material_state_dependency",
+        "Material State dependency",
+        "Material State dependency",
+    ),
+    ("r275.rest.material_state_source", "Nguồn Material State", "Material State source"),
+    ("r275.rest.dependency_status", "Trạng thái dependency", "Dependency status"),
+    ("r275.rest.dependency_details", "Chi tiết dependency", "Dependency details"),
+    ("r275.rest.tool_and_assembly", "Dao và cụm dao", "Tool and assembly"),
+    ("r275.rest.eligible_tool_assembly", "Tool Assembly hợp lệ", "Eligible Tool Assembly"),
+    ("r275.rest.tool_details", "Chi tiết dao", "Tool details"),
+    ("r275.rest.support_limits", "Giới hạn hỗ trợ", "Support limits"),
+    ("r275.rest.section.basic_primary", "Basic · Tham số chính", "Basic · Primary parameters"),
+    (
+        "r275.rest.section.advanced_safety_process",
+        "Advanced · An toàn và công nghệ",
+        "Advanced · Safety and process",
+    ),
+    (
+        "r275.rest.section.basic_constant_z_planar",
+        "Basic · Constant-Z planar",
+        "Basic · Constant-Z planar",
+    ),
+    (
+        "r275.rest.section.advanced_safety_feeds",
+        "Advanced · An toàn và tốc độ",
+        "Advanced · Safety and feeds",
+    ),
+    ("r275.rest.nominal_target_z", "Target Z danh nghĩa", "Nominal target Z"),
+    ("r275.rest.final_stock_allowance", "Lượng dư cuối", "Final stock allowance"),
+    ("r275.rest.tolerance", "Dung sai", "Tolerance"),
+    ("r275.rest.manual_stepover", "Bước ngang thủ công", "Manual stepover"),
+    (
+        "r275.rest.manual_max_stepdown",
+        "Bước xuống tối đa thủ công",
+        "Manual maximum stepdown",
+    ),
+    ("r275.rest.raster_direction", "Hướng raster", "Raster direction"),
+    (
+        "r275.rest.manual_only_auto_unsupported",
+        "MANUAL ONLY · AUTO không được hỗ trợ",
+        "MANUAL ONLY · AUTO is not supported",
+    ),
+    (
+        "r275.rest.finishing_law",
+        "MANUAL ONLY · Flat End Mill only · Constant-Z planar · X raster",
+        "MANUAL ONLY · Flat End Mill only · Constant-Z planar · X raster",
+    ),
+    (
+        "r275.rest.dependency_candidate_detail",
+        "Chưa được xác minh hiện hành; ProjectService sẽ kiểm tra lại khi Finish.",
+        "Not yet validated as current; ProjectService will revalidate on Finish.",
+    ),
+    (
+        "r275.rest.no_work",
+        "Không còn vật liệu Rest cần gia công.",
+        "No remaining Rest material requires machining.",
+    ),
+)
+R275_KO_FALLBACK_KEYS = frozenset(key for key, _vietnamese, _english in R275_UI_TRANSLATIONS)
+
+
 STAGE18A_TRANCHE4_UI_TRANSLATIONS: tuple[tuple[str, str, str, str], ...] = (
     ("stage18a.tranche4.title", "Quản lý phát hành sản xuất", "Production release governance", "생산 릴리스 관리"),
     ("stage18a.tranche4.job", "Mã công việc", "Job", "작업"),
@@ -1715,6 +1792,10 @@ def build_default_catalogs() -> Mapping[UiLanguage, TranslationCatalog]:
         vi_entries.setdefault(vietnamese, vietnamese)
         en_entries[vietnamese] = english
         ko_entries[vietnamese] = korean
+    for key, vietnamese, english in R275_UI_TRANSLATIONS:
+        vi_entries[key] = vietnamese
+        en_entries[key] = english
+        ko_entries[key] = vietnamese
     for source, vietnamese, english, korean in DISPLAY_SOURCE_TRANSLATIONS:
         vi_entries[source] = vietnamese
         en_entries[source] = english
@@ -1935,6 +2016,8 @@ __all__ = [
     "TECHNICAL_GLOSSARY",
     "UiLanguage",
     "VIETNAMESE_SOURCE_TRANSLATIONS",
+    "R275_UI_TRANSLATIONS",
+    "R275_KO_FALLBACK_KEYS",
     "apply_application_font",
     "apply_widget_font_tree",
     "build_default_catalogs",

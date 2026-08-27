@@ -85,6 +85,14 @@ from hms_cadcam.ui.function_editor.strategies.zlevel import (
     z_level_draft_derived_values,
     z_level_validation_diagnostics,
 )
+from hms_cadcam.ui.function_editor.strategies.rest_machining import (
+    RestMachiningEditorContext,
+    build_rest_machining_schema,
+    prepare_rest_machining_update,
+    rest_machining_applied_values,
+    rest_machining_validation_diagnostics,
+    rest_creation_candidate_presentation,
+)
 from hms_cadcam.ui.operation_creation_wizard import (
     FinishBindingClaim,
     FinishBindingCompletion,
@@ -144,6 +152,8 @@ class Stage16AOperationCreationAdapter:
         drilling_pick_provider: Callable[[Vector3], HoleSource] | None = None,
         drilling_resolver: Callable[[DrillGeometryInput, DrillDepthDefinition], object]
         | None = None,
+        profile_pick_provider: Callable[[], object] | None = None,
+        profile_resolver: Callable[[object], object] | None = None,
     ) -> None:
         self._service = service
         self._strategies = Stage16AStrategyRegistry()
@@ -151,6 +161,8 @@ class Stage16AOperationCreationAdapter:
         self._geometry_bounds_provider = geometry_bounds_provider
         self._drilling_pick_provider = drilling_pick_provider
         self._drilling_resolver = drilling_resolver
+        self._profile_pick_provider = profile_pick_provider
+        self._profile_resolver = profile_resolver
 
     def strategy_choices(self) -> tuple[OperationStrategyChoice, ...]:
         return self._strategies.choices()
@@ -237,7 +249,236 @@ class Stage16AOperationCreationAdapter:
             return self._z_level_binding(session, claim_finish, complete_finish)
         if session.strategy_id == "drilling_v1":
             return self._drilling_binding(session, claim_finish, complete_finish)
+        if session.strategy_id in {"rest_contour_3axis", "rest_finishing_3axis"}:
+            return self._rest_binding(session, claim_finish, complete_finish)
         raise ValueError("Strategy chưa được Stage16A hỗ trợ.")
+
+    def _rest_binding(
+        self,
+        session: OperationCreationSession,
+        claim_finish: FinishBindingClaim,
+        complete_finish: FinishBindingCompletion,
+    ) -> OperationCreationEditorBinding:
+        """Bind Rest creation through the same R172 wizard lease."""
+        from hms_cadcam.cam.domain import (
+            ArtifactStatus,
+            FeedRate,
+            FeedUnit,
+            GeometryReference,
+            GeometryReferenceKind,
+            Length,
+            MachineRequirement,
+            OperationId,
+            SpindleSpeed,
+        )
+        from hms_cadcam.cam.domain.contour import (
+            ContourCutDirection,
+            ContourProfileSource,
+            ContourSide,
+        )
+        from hms_cadcam.cam.domain.rest_contour import (
+            RestContourParameters,
+            RestContourProfileSelection,
+        )
+        from hms_cadcam.cam.domain.rest_finishing import (
+            RestFinishingParameters,
+            RestFinishingProfileSelection,
+        )
+        from hms_cadcam.cam.operation_registry import (
+            default_rest_contour_operation_registry,
+        )
+
+        if self._profile_pick_provider is None or self._profile_resolver is None:
+            raise RuntimeError("Bộ chọn và resolver profile Rest chưa sẵn sàng.")
+        job, setup, _parent = self._current_context(session)
+        reference = self._profile_pick_provider()
+        if not isinstance(reference, GeometryReference) or reference.kind not in {
+            GeometryReferenceKind.FACE,
+            GeometryReferenceKind.SKETCH_OR_PROFILE,
+        }:
+            raise ValueError("Rest yêu cầu planar FACE hoặc closed WIRE.")
+        resolved = self._profile_resolver(reference)
+        descriptor = getattr(resolved, "profile", None)
+        if descriptor is None:
+            raise ValueError(getattr(resolved, "message", None) or "Profile Rest không resolve được.")
+        snapshot = self._service.cam_snapshot
+        assembly = self._assembly(snapshot.tool_assemblies, session)
+        machine = self._machine(snapshot.machine_definitions, setup, OperationCapability.MILLING)
+        requirement = MachineRequirement(
+            machine.machine_id,
+            machine.revision,
+            machine.content_fingerprint,
+            machine.unit,
+            (OperationCapability.MILLING,),
+        )
+        producer_rows = []
+        for operation in setup.operation_tree.operations:
+            if operation.artifact_state.status is not ArtifactStatus.VALID:
+                continue
+            if operation.artifact_state.dirty_reasons:
+                continue
+            if session.strategy_id == "rest_finishing_3axis":
+                if operation.strategy_key != "rest_contour_3axis":
+                    continue
+                dependency = next(
+                    (
+                        value
+                        for value in snapshot.material_state_dependencies
+                        if value.consumer_operation_id == operation.operation_id
+                        and value.successor_publication is not None
+                    ),
+                    None,
+                )
+                completion = (
+                    None if dependency is None else dependency.successor_publication
+                )
+                if (
+                    completion is None
+                    or completion.consumer_operation_id != operation.operation_id
+                    or operation.artifact_state.artifact_fingerprint
+                    != completion.artifact_fingerprint
+                ):
+                    continue
+            node = next(
+                (value for value in setup.operation_tree.nodes if value.operation_id == operation.operation_id),
+                None,
+            )
+            producer_rows.append((operation, node.name if node is not None else str(operation.operation_id)))
+        if not producer_rows:
+            raise RuntimeError("Không có Material State producer candidate phù hợp.")
+        producer_rows.sort(key=lambda item: (item[1].casefold(), str(item[0].operation_id)))
+        producer, producer_name = producer_rows[0]
+        unit = setup.wcs.origin.unit
+        feed_unit = FeedUnit.MM_PER_MINUTE if unit is LengthUnit.MM else FeedUnit.INCH_PER_MINUTE
+        top = descriptor.bounds.maximum.z
+        source = (
+            ContourProfileSource.PLANAR_FACE_OUTER
+            if reference.kind is GeometryReferenceKind.FACE
+            else ContourProfileSource.CLOSED_WIRE
+        )
+        if session.strategy_id == "rest_finishing_3axis":
+            parameters = RestFinishingParameters(
+                unit,
+                source,
+                Length(descriptor.plane_origin.z, unit),
+                Length(0.0, unit),
+                Length(0.01, unit),
+                Length(0.5, unit),
+                Length(1.0, unit),
+                Length(top + 5.0, unit),
+                Length(top + 2.0, unit),
+                FeedRate(300.0, feed_unit),
+                FeedRate(80.0, feed_unit),
+                SpindleSpeed(1000.0),
+            )
+            profile = RestFinishingProfileSelection(descriptor)
+            operation = default_rest_contour_operation_registry().create_rest_finishing(
+                operation_id=OperationId.new(), node_id=CamNodeId.new(), setup_id=setup.setup_id,
+                parameters=parameters, profile=profile,
+                dependency_operation_id=producer.operation_id,
+                tool_assembly=assembly, machine_requirement=requirement,
+            )
+            operation_name = "Rest Finishing"
+        else:
+            parameters = RestContourParameters(
+                unit,
+                source,
+                ContourSide.INSIDE,
+                Length(top, unit),
+                Length(top - 1.0, unit),
+                Length(1.0, unit),
+                Length(0.0, unit),
+                Length(0.0, unit),
+                Length(top + 5.0, unit),
+                Length(top + 2.0, unit),
+                FeedRate(300.0, feed_unit),
+                FeedRate(80.0, feed_unit),
+                SpindleSpeed(1000.0),
+                ContourCutDirection.CLIMB,
+                Length(0.01, unit),
+                Length(1.0, unit),
+                Length(1.0, unit),
+            )
+            profile = RestContourProfileSelection(descriptor)
+            operation = default_rest_contour_operation_registry().create(
+                operation_id=OperationId.new(), node_id=CamNodeId.new(), setup_id=setup.setup_id,
+                parameters=parameters, profile=profile,
+                dependency_operation_id=producer.operation_id,
+                tool_assembly=assembly, machine_requirement=requirement,
+            )
+            operation_name = "Rest Contour"
+        dependency_choices = tuple(
+            (str(value.operation_id), f"{name} · {value.operation_id}")
+            for value, name in producer_rows
+        )
+        context = RestMachiningEditorContext(
+            operation_name,
+            operation,
+            snapshot.tool_assemblies,
+            snapshot.tool_definitions,
+            rest_creation_candidate_presentation(
+                producer.operation_id, producer_name
+            ),
+            dependency_choices,
+        )
+        schema = build_rest_machining_schema(context)
+        binding_identity = _OperationCreationBindingIdentity.from_session(session)
+
+        def validate(values: Mapping[str, PresentationValue]) -> tuple[FunctionEditorDiagnostic, ...]:
+            return rest_machining_validation_diagnostics(schema, context, values)
+
+        def finish(values: Mapping[str, PresentationValue]) -> Operation:
+            success = False
+            try:
+                current_session = claim_finish()
+                self._require_current_binding(binding_identity, current_session)
+                update = prepare_rest_machining_update(context, values)
+                if update.assembly.assembly_id != current_session.tool_assembly_id:
+                    raise RuntimeError("Tool selection đã thay đổi ngoài wizard lease.")
+                dependency_id = OperationId.parse(
+                    str(values.get("material_state_source", producer.operation_id))
+                )
+                if session.strategy_id == "rest_finishing_3axis":
+                    current_parameters = RestFinishingParameters.from_operation_parameters(update.operation.parameters)
+                    self._service.create_rest_finishing_operation(
+                        job.job_id, setup.setup_id, current_session.parent_node_id,
+                        operation_id=update.operation.operation_id,
+                        node_id=update.operation.node_id,
+                        name=update.operation_name,
+                        parameters=current_parameters,
+                        profile=profile,
+                        dependency_operation_id=dependency_id,
+                        tool_assembly_id=update.assembly.assembly_id,
+                        machine_requirement=requirement,
+                        expected_generation=current_session.project_generation,
+                    )
+                else:
+                    current_parameters = RestContourParameters.from_operation_parameters(update.operation.parameters)
+                    self._service.create_rest_contour_operation(
+                        job.job_id, setup.setup_id, current_session.parent_node_id,
+                        operation_id=update.operation.operation_id,
+                        node_id=update.operation.node_id,
+                        name=update.operation_name,
+                        parameters=current_parameters,
+                        profile=profile,
+                        dependency_operation_id=dependency_id,
+                        tool_assembly_id=update.assembly.assembly_id,
+                        machine_requirement=requirement,
+                        profile_resolver=self._profile_resolver,
+                        expected_generation=current_session.project_generation,
+                    )
+                success = True
+                return update.operation
+            finally:
+                complete_finish(success)
+
+        binding = OperationCreationEditorBinding(
+            schema,
+            _schema_values(schema, rest_machining_applied_values(context)),
+            validate,
+            finish,
+        )
+        return self._resolved_editor_binding(session, binding, snapshot)
 
     def open_tool_management(
         self, session: OperationCreationSession, parent: QWidget

@@ -94,6 +94,20 @@ class ParallelCalculationProgressWidget(QWidget):
                 "Hạng mục: 0 / 0 · Đang chuẩn bị ảnh chụp trạng thái đã áp dụng bất biến"
             )
 
+    def set_indeterminate(self, active: bool, *, phase: str = "Đang tạo đường chạy dao") -> None:
+        """Show a truthful busy state when a backend exposes no percentage."""
+        self.setVisible(active)
+        self.cancel_button.setEnabled(active)
+        if active:
+            self.phase.setText(f"Giai đoạn: {phase}")
+            self.percentage.setText("Đang xử lý · không có phần trăm backend")
+            self.progress.setRange(0, 0)
+            self.progress.setTextVisible(False)
+            self.detail.setText("Giữ nguyên ngữ cảnh operation, dao và Material State")
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setTextVisible(True)
+
     def update_progress(
         self, value: ParallelProgress | ZLevelProgress | CamCalculationProgress
     ) -> None:

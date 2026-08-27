@@ -285,6 +285,12 @@ class Stage16AStrategyRegistry:
         "drilling_v1": "Khoan các lỗ đã chọn bằng chu trình khoan hiện có.",
         "parallel_finishing_3d": "Gia công tinh bề mặt theo các đường chạy song song.",
         "z_level_finishing_3d": "Gia công tinh theo từng cao độ Z.",
+        "rest_contour_3axis": (
+            "Gia công phần vật liệu còn lại theo biên dạng và Material State đã chọn."
+        ),
+        "rest_finishing_3axis": (
+            "Gia công tinh phần dư thủ công bằng dao phay ngón đáy phẳng."
+        ),
     }
 
     def choices(self) -> tuple[OperationStrategyChoice, ...]:
