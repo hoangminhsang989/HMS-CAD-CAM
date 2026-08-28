@@ -327,6 +327,15 @@ _DEFAULT_STRATEGIES = (
     "facing_2_5d", "contour_2d", "pocket_2_5d", "drilling_v1", "tapping_v1", "reaming_v1", "boring_v1",
 )
 
+# Representability is deliberately separate from advertised support.  Generic
+# Post definitions keep the frozen defaults above; only an explicit machine
+# contract may advertise the two Rest strategy keys.
+_KNOWN_STRATEGIES = (
+    *_DEFAULT_STRATEGIES,
+    "rest_contour_3axis",
+    "rest_finishing_3axis",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PostProcessorCapabilities:
@@ -371,7 +380,7 @@ class PostProcessorCapabilities:
         object.__setattr__(self, "supported_operation_strategies", _tuple_text(self.supported_operation_strategies, "supported strategies"))
         if LengthUnit.UNKNOWN in self.supported_units or FeedMode.INVERSE_TIME in self.supported_feed_modes:
             raise CamUnitError("Post capabilities cannot advertise UNKNOWN or inverse-time units")
-        if any(strategy not in _DEFAULT_STRATEGIES for strategy in self.supported_operation_strategies):
+        if any(strategy not in _KNOWN_STRATEGIES for strategy in self.supported_operation_strategies):
             raise CamValidationError("Post capabilities contain an unsupported strategy key")
         if not isinstance(self.work_offset_supported, bool) or not isinstance(self.tool_activation_supported, bool) or not isinstance(self.tapping_synchronization, bool):
             raise CamValidationError("Post capability flags are invalid")

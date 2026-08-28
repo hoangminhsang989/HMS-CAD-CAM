@@ -101,10 +101,16 @@ class NCAssemblyExportSourceSnapshot:
 
     @property
     def fingerprint(self) -> DependencyFingerprint:
+        from hms_cadcam.cam.post.assembly_service import (
+            build_assembly_input_fingerprint,
+        )
+
         return DependencyFingerprint.from_payload(
             {
                 "project_generation": self.project_generation,
-                "assembly_request": self.post_request.input_fingerprint.to_dict(),
+                "assembly_request": build_assembly_input_fingerprint(
+                    self.post_request
+                ).to_dict(),
                 "assembly_result_id": str(self.assembly_result.result_id),
                 "assembly_result_fingerprint": self.assembly_result.result_fingerprint.to_dict(),
             }
@@ -532,17 +538,26 @@ class NCExportService:
         request: NCAssemblyExportRequest,
         snapshot: NCAssemblyExportSourceSnapshot,
     ) -> tuple[str, bytes]:
+        from hms_cadcam.cam.post.assembly_service import (
+            build_assembly_input_fingerprint,
+        )
+        from hms_cadcam.cam.post.assembly_validation import validate_assembly_plan
+
         result = snapshot.assembly_result
         source_request = snapshot.post_request
         profile = source_request.post_definition.production_profile
+        current_input = build_assembly_input_fingerprint(source_request)
+        plan_diagnostics = validate_assembly_plan(
+            result.plan, source_request.post_definition
+        )
         if (
             request.project_id != result.project_id
             or request.assembly_result_id != result.result_id
             or result.status is not ProgramAssemblyStatus.PUBLISHED
             or result.canonical_text is None
             or profile is None
-            or result.plan.post_definition_fingerprint != source_request.post_definition.fingerprint
-            or result.plan.production_profile_fingerprint != profile.fingerprint
+            or result.input_fingerprint != current_input
+            or bool(plan_diagnostics)
         ):
             raise _NCExportPreflightError(
                 NCExportDiagnosticCode.POST_INVALID, "export.assembly_not_published"

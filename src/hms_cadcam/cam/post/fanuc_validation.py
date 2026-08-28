@@ -52,15 +52,14 @@ def work_offset_code(program: NCProgramIR, profile: ProductionControllerProfile)
 
 
 def validate_fanuc_program(program: NCProgramIR, definition: PostProcessorDefinition) -> tuple[PostDiagnostic, ...]:
+    # Import locally because the adapter module also imports this validator.
+    from hms_cadcam.cam.post.fanuc_robodrill_21i import (
+        has_canonical_robodrill_contract,
+    )
+
     diagnostics: list[PostDiagnostic] = []
     profile = definition.production_profile
-    if (
-        profile is None
-        or profile.profile_key != "robodrill_fanuc_21i_worknc_expanded_v1"
-        or profile.profile_version != 1
-        or profile.adapter_key != "fanuc_robodrill_21i_worknc_v1"
-        or profile.adapter_version != 1
-    ):
+    if profile is None or not has_canonical_robodrill_contract(definition):
         return (_diag(PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.profile_missing"),)
     context = program.production_context
     if context is None:
@@ -93,6 +92,11 @@ def validate_fanuc_program(program: NCProgramIR, definition: PostProcessorDefini
             diagnostics.append(_diag(PostDiagnosticCode.UNSUPPORTED_MOTION, "post.fanuc.legacy_compensation_strategy_unsupported"))
         if context.tool_binding.diameter_offset is None:
             diagnostics.append(_diag(PostDiagnosticCode.TOOL_MISSING, "post.fanuc.diameter_offset_missing"))
+    if program.strategy_key in {"rest_contour_3axis", "rest_finishing_3axis"}:
+        if profile.cutter_compensation_policy is not CutterCompensationPolicy.DISABLED:
+            diagnostics.append(_diag(PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.rest_cutter_compensation_must_be_disabled"))
+        if context.use_legacy_cutter_compensation:
+            diagnostics.append(_diag(PostDiagnosticCode.UNSUPPORTED_MOTION, "post.fanuc.rest_cutter_compensation_unsupported"))
     if profile.dwell_policy is DwellPolicy.UNSUPPORTED and any(isinstance(record, DwellRecord) for record in program.records):
         diagnostics.append(_diag(PostDiagnosticCode.UNSUPPORTED_CYCLE, "post.fanuc.dwell_unsupported"))
     active_feed: FeedMode | None = None

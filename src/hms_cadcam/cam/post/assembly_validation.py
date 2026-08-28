@@ -17,8 +17,9 @@ from hms_cadcam.cam.post.assembly_model import (
     ProgramAssemblyRequest,
 )
 from hms_cadcam.cam.post.fanuc_robodrill_21i import (
-    ADAPTER_KEY,
+    ADAPTER_KEY_V2,
     FanucRobodrill21iAdapter,
+    has_canonical_robodrill_contract,
 )
 from hms_cadcam.cam.post.fanuc_validation import validate_fanuc_program
 from hms_cadcam.cam.post.lowering import validate_post_source
@@ -42,6 +43,7 @@ _SUPPORTED = {
     "reaming_v1",
     "boring_v1",
 }
+_REST_SUPPORTED = {"rest_contour_3axis", "rest_finishing_3axis"}
 _DRILLING = {"drilling_v1", "reaming_v1", "boring_v1", "tapping_v1"}
 
 
@@ -101,12 +103,8 @@ def validate_assembly_request(
             )
         )
     profile = request.post_definition.production_profile
-    if (
-        profile is None
-        or request.post_definition.adapter_key != ADAPTER_KEY
-        or request.post_definition.adapter_version != 1
-        or profile.adapter_key != ADAPTER_KEY
-        or profile.profile_key != "robodrill_fanuc_21i_worknc_expanded_v1"
+    if profile is None or not has_canonical_robodrill_contract(
+        request.post_definition
     ):
         diagnostics.append(
             _diag(
@@ -282,7 +280,10 @@ def validate_assembly_request(
                     **identity,
                 )
             )
-        elif operation.strategy_key not in _SUPPORTED:
+        elif operation.strategy_key not in _SUPPORTED and not (
+            request.post_definition.adapter_key == ADAPTER_KEY_V2
+            and operation.strategy_key in _REST_SUPPORTED
+        ):
             diagnostics.append(
                 _diag(
                     ProgramAssemblyDiagnosticCode.UNSUPPORTED_OPERATION,
@@ -301,6 +302,17 @@ def validate_assembly_request(
                 _diag(
                     ProgramAssemblyDiagnosticCode.COMPENSATION_INVALID,
                     "assembly.compensation_invalid",
+                    **identity,
+                )
+            )
+        if operation.strategy_key in _REST_SUPPORTED and (
+            item.cutter_compensation_policy is not CutterCompensationPolicy.DISABLED
+            or item.program_context.use_legacy_cutter_compensation
+        ):
+            diagnostics.append(
+                _diag(
+                    ProgramAssemblyDiagnosticCode.COMPENSATION_INVALID,
+                    "assembly.rest_compensation_must_be_disabled",
                     **identity,
                 )
             )
@@ -375,9 +387,11 @@ def validate_assembly_plan(
     profile = definition.production_profile
     if (
         profile is None
+        or not has_canonical_robodrill_contract(definition)
         or plan.post_definition_id != definition.definition_id
         or plan.post_definition_fingerprint != definition.fingerprint
         or plan.production_profile_id != profile.profile_id
+        or plan.production_profile_version != profile.profile_version
         or plan.production_profile_fingerprint != profile.fingerprint
         or plan.adapter_key != definition.adapter_key
         or plan.adapter_version != definition.adapter_version

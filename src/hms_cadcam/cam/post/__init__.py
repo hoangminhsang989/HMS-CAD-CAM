@@ -16,8 +16,14 @@ from hms_cadcam.cam.post.profile import (
 )
 from hms_cadcam.cam.post.fanuc_robodrill_21i import (
     ADAPTER_KEY as FANUC_ROBODRILL_21I_ADAPTER_KEY,
+    ADAPTER_KEY_V2 as FANUC_ROBODRILL_21I_ADAPTER_KEY_V2,
     PROFILE_KEY as FANUC_ROBODRILL_21I_PROFILE_KEY,
-    FanucRobodrill21iAdapter, robodrill_21i_definition, robodrill_21i_profile,
+    PROFILE_KEY_V2 as FANUC_ROBODRILL_21I_PROFILE_KEY_V2,
+    FanucRobodrill21iAdapter,
+    robodrill_21i_definition,
+    robodrill_21i_definition_v2,
+    robodrill_21i_profile,
+    robodrill_21i_profile_v2,
 )
 from hms_cadcam.cam.post.export_model import (
     ExportOverwritePolicy,

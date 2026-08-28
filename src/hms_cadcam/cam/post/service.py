@@ -131,7 +131,10 @@ class PostRuntimeService:
         if adapter is None:
             if request.post_definition.adapter_key == "canonical_dummy":
                 adapter = CanonicalDummyAdapter()
-            elif request.post_definition.adapter_key == "fanuc_robodrill_21i_worknc_v1":
+            elif request.post_definition.adapter_key in {
+                "fanuc_robodrill_21i_worknc_v1",
+                "fanuc_robodrill_21i_worknc_v2",
+            }:
                 from hms_cadcam.cam.post.fanuc_robodrill_21i import FanucRobodrill21iAdapter
                 adapter = FanucRobodrill21iAdapter(request.post_definition)
             else:

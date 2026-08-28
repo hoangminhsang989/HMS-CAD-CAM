@@ -252,6 +252,8 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
         "reaming_v1": OperationCapability.DRILLING,
         "boring_v1": OperationCapability.DRILLING,
         "parallel_finishing_3d": OperationCapability.MILLING,
+        "rest_contour_3axis": OperationCapability.MILLING,
+        "rest_finishing_3axis": OperationCapability.MILLING,
     }[source.operation.strategy_key]
     if required_capability not in capabilities.supported_operation_capabilities:
         raise CamValidationError("Operation capability is unsupported by post definition")
@@ -278,13 +280,22 @@ def lower_toolpath(request: PostRequest, source: PostSourceSnapshot, *, policy: 
                 raise CamValidationError("Machine tapping mode is unsupported")
     events = source.artifact.events
     records = [ProgramBeginRecord(0, (("format", "hms_post_neutral_v1"), ("strategy_key", source.operation.strategy_key), ("strategy_version", str(source.operation.strategy_version))))]
-    records.extend((UnitsRecord(1, source.artifact.unit), CoordinateModeRecord(2, CoordinateMode.ABSOLUTE), PlaneRecord(3, Plane.XY), WorkOffsetRecord(4, source.setup.work_offset), ToolActivationRecord(5, source.assembly.assembly_id, source.assembly.content_fingerprint, source.tool.tool_id if source.tool else None, source.holder.holder_id if source.holder else None)))
+    records.extend((UnitsRecord(1, source.artifact.unit), CoordinateModeRecord(2, CoordinateMode.ABSOLUTE), PlaneRecord(3, Plane.XY), WorkOffsetRecord(4, source.setup.work_offset)))
+    rest_strategy = source.operation.strategy_key in {
+        "rest_contour_3axis",
+        "rest_finishing_3axis",
+    }
+    if not rest_strategy:
+        # Preserve the exact legacy IR shape for every v1 strategy.
+        records.append(ToolActivationRecord(5, source.assembly.assembly_id, source.assembly.content_fingerprint, source.tool.tool_id if source.tool else None, source.holder.holder_id if source.holder else None))
     active_feed: FeedMode | None = None
     for event_index, event in enumerate(events):
         sequence = len(records)
         if isinstance(event, ToolContextEvent):
             if event.tool_assembly_id != source.assembly.assembly_id:
                 raise CamValidationError("Tool context changed within one operation")
+            if rest_strategy:
+                records.append(ToolActivationRecord(sequence, source.assembly.assembly_id, source.assembly.content_fingerprint, source.tool.tool_id if source.tool else None, source.holder.holder_id if source.holder else None))
         elif isinstance(event, FeedModeEvent):
             if event.mode is FeedMode.INVERSE_TIME:
                 raise CamValidationError("Inverse-time feed is unsupported")

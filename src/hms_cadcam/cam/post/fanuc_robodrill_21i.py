@@ -25,6 +25,11 @@ PROFILE_KEY = "robodrill_fanuc_21i_worknc_expanded_v1"
 ADAPTER_KEY = "fanuc_robodrill_21i_worknc_v1"
 _PROFILE_ID = ProductionControllerProfileId(UUID("b23d9d1b-70ef-54b8-8ef4-207d21000001"))
 _DEFINITION_ID = PostProcessorDefinitionId(UUID("e32c2440-0494-5e85-879d-207d21000001"))
+PROFILE_KEY_V2 = "robodrill_fanuc_21i_worknc_expanded_v2"
+ADAPTER_KEY_V2 = "fanuc_robodrill_21i_worknc_v2"
+_PROFILE_ID_V2 = ProductionControllerProfileId(UUID("b23d9d1b-70ef-54b8-8ef4-207d21000002"))
+_DEFINITION_ID_V2 = PostProcessorDefinitionId(UUID("e32c2440-0494-5e85-879d-207d21000002"))
+_REST_STRATEGIES = ("rest_contour_3axis", "rest_finishing_3axis")
 
 
 def robodrill_21i_profile() -> ProductionControllerProfile:
@@ -98,17 +103,116 @@ def robodrill_21i_definition() -> PostProcessorDefinition:
     )
 
 
-def _has_canonical_contract(definition: PostProcessorDefinition) -> bool:
-    expected = robodrill_21i_definition()
+def robodrill_21i_profile_v2() -> ProductionControllerProfile:
+    """Return the explicit Rest-capable v2 contract without changing v1."""
+    v1 = robodrill_21i_profile()
+    return ProductionControllerProfile(
+        profile_id=_PROFILE_ID_V2,
+        profile_key=PROFILE_KEY_V2,
+        profile_version=2,
+        adapter_key=ADAPTER_KEY_V2,
+        adapter_version=2,
+        controller_family=v1.controller_family,
+        controller_model=v1.controller_model,
+        machine_family=v1.machine_family,
+        machine_type=v1.machine_type,
+        axes=v1.axes,
+        supported_units=v1.supported_units,
+        supported_planes=v1.supported_planes,
+        coordinate_mode=v1.coordinate_mode,
+        supported_feed_modes=v1.supported_feed_modes,
+        supported_spindle_directions=v1.supported_spindle_directions,
+        minimum_rpm=v1.minimum_rpm,
+        maximum_rpm=v1.maximum_rpm,
+        feed_limits=v1.feed_limits,
+        arc_policy=v1.arc_policy,
+        work_offset_mapping=v1.work_offset_mapping,
+        tool_activation_policy=v1.tool_activation_policy,
+        cutter_compensation_policy=CutterCompensationPolicy.DISABLED,
+        spindle_mapping=v1.spindle_mapping,
+        coolant_mapping=v1.coolant_mapping,
+        dwell_policy=v1.dwell_policy,
+        program_number_policy=v1.program_number_policy,
+        block_number_policy=v1.block_number_policy,
+        numeric_format=v1.numeric_format,
+        comment_prefix=v1.comment_prefix,
+        comment_suffix=v1.comment_suffix,
+        maximum_comment_length=v1.maximum_comment_length,
+        newline=v1.newline,
+        encoding=v1.encoding,
+        maximum_line_length=v1.maximum_line_length,
+        maximum_program_size=v1.maximum_program_size,
+        allowed_extensions=v1.allowed_extensions,
+        supported_operation_strategies=(*v1.supported_operation_strategies, *_REST_STRATEGIES),
+        safe_start_records=v1.safe_start_records,
+        safe_end_records=v1.safe_end_records,
+        display_name="FANUC ROBODRILL 21i / WorkNC expanded v2 (Rest)",
+    )
+
+
+def robodrill_21i_definition_v2() -> PostProcessorDefinition:
+    """Return the exact v2 definition selected explicitly by R277 callers."""
+    profile = robodrill_21i_profile_v2()
+    v1 = robodrill_21i_definition()
+    return PostProcessorDefinition(
+        _DEFINITION_ID_V2,
+        2,
+        ADAPTER_KEY_V2,
+        2,
+        PostProcessorCapabilities(
+            supported_machine_kinds=v1.capabilities.supported_machine_kinds,
+            supported_axes=v1.capabilities.supported_axes,
+            supported_units=v1.capabilities.supported_units,
+            supported_feed_modes=v1.capabilities.supported_feed_modes,
+            supported_spindle_directions=v1.capabilities.supported_spindle_directions,
+            supported_coolant_modes=v1.capabilities.supported_coolant_modes,
+            supported_arc_planes=v1.capabilities.supported_arc_planes,
+            arc_center_formats=v1.capabilities.arc_center_formats,
+            supported_operation_strategies=(*v1.capabilities.supported_operation_strategies, *_REST_STRATEGIES),
+            supported_operation_capabilities=v1.capabilities.supported_operation_capabilities,
+            work_offset_supported=v1.capabilities.work_offset_supported,
+            tool_activation_supported=v1.capabilities.tool_activation_supported,
+            tapping_synchronization=v1.capabilities.tapping_synchronization,
+            tapping_modes=v1.capabilities.tapping_modes,
+            minimum_rpm=v1.capabilities.minimum_rpm,
+            maximum_rpm=v1.capabilities.maximum_rpm,
+            maximum_feed=v1.capabilities.maximum_feed,
+        ),
+        numeric_precision=v1.numeric_precision,
+        newline=profile.newline,
+        encoding=profile.encoding,
+        maximum_line_length=profile.maximum_line_length,
+        maximum_program_size=profile.maximum_program_size,
+        allow_comments=v1.allow_comments,
+        comment_prefix=v1.comment_prefix,
+        display_name=profile.display_name,
+        production_profile=profile,
+    )
+
+
+def has_canonical_robodrill_contract(definition: PostProcessorDefinition) -> bool:
+    """Return whether *definition* is one exact canonical v1/v2 contract."""
+    if definition.adapter_key == ADAPTER_KEY:
+        expected = robodrill_21i_definition()
+    elif definition.adapter_key == ADAPTER_KEY_V2:
+        expected = robodrill_21i_definition_v2()
+    else:
+        return False
     profile = definition.production_profile
     expected_profile = expected.production_profile
     return (
-        definition.adapter_key == ADAPTER_KEY
-        and definition.adapter_version == 1
+        definition.definition_id == expected.definition_id
+        and definition.definition_version == expected.definition_version
+        and definition.adapter_key == expected.adapter_key
+        and definition.adapter_version == expected.adapter_version
         and definition.fingerprint == expected.fingerprint
         and profile is not None
         and expected_profile is not None
         and profile.profile_id == expected_profile.profile_id
+        and profile.profile_key == expected_profile.profile_key
+        and profile.profile_version == expected_profile.profile_version
+        and profile.adapter_key == expected_profile.adapter_key
+        and profile.adapter_version == expected_profile.adapter_version
         and profile.fingerprint == expected_profile.fingerprint
     )
 
@@ -296,14 +400,14 @@ class FanucRobodrill21iAdapter:
 
     def validate_request(self, request: PostRequest) -> tuple[PostDiagnostic, ...]:
         diagnostics = list(validate_request(request, request.post_definition))
-        if not _has_canonical_contract(request.post_definition):
+        if not has_canonical_robodrill_contract(request.post_definition):
             diagnostics.append(PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.definition_mismatch"))
         if request.program_context is None:
             diagnostics.append(PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.context_missing"))
         return tuple(diagnostics)
 
     def validate_program_ir(self, program: NCProgramIR) -> tuple[PostDiagnostic, ...]:
-        contract_diagnostics = () if _has_canonical_contract(self._definition) else (
+        contract_diagnostics = () if has_canonical_robodrill_contract(self._definition) else (
             PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.definition_mismatch"),
         )
         diagnostics = (*contract_diagnostics, *validate_program_ir(program), *validate_fanuc_program(program, self._definition))
@@ -313,7 +417,7 @@ class FanucRobodrill21iAdapter:
         return program
 
     def format_program(self, program: NCProgramIR, definition: PostProcessorDefinition) -> str:
-        if not _has_canonical_contract(definition):
+        if not has_canonical_robodrill_contract(definition):
             raise ValueError("post.fanuc.definition_mismatch")
         diagnostics = validate_fanuc_program(program, definition)
         if diagnostics:
@@ -357,7 +461,7 @@ class FanucRobodrill21iAdapter:
         self, plan: ProgramAssemblyPlan, definition: PostProcessorDefinition
     ) -> str:
         """Format one complete explicit-order multi-operation production program."""
-        if not _has_canonical_contract(definition):
+        if not has_canonical_robodrill_contract(definition):
             raise ValueError("post.fanuc.definition_mismatch")
         profile = definition.production_profile
         assert profile is not None
@@ -365,8 +469,9 @@ class FanucRobodrill21iAdapter:
             plan.post_definition_id != definition.definition_id
             or plan.post_definition_fingerprint != definition.fingerprint
             or plan.production_profile_id != profile.profile_id
+            or plan.production_profile_version != profile.profile_version
             or plan.production_profile_fingerprint != profile.fingerprint
-            or plan.adapter_key != ADAPTER_KEY
+            or plan.adapter_key != definition.adapter_key
             or plan.adapter_version != definition.adapter_version
         ):
             raise ValueError("assembly.profile_mismatch")
@@ -377,7 +482,7 @@ class FanucRobodrill21iAdapter:
         return profile.newline.join(lines) + profile.newline
 
     def validate_output(self, text: str, program: NCProgramIR, definition: PostProcessorDefinition) -> tuple[PostDiagnostic, ...]:
-        if not _has_canonical_contract(definition):
+        if not has_canonical_robodrill_contract(definition):
             return (PostDiagnostic(DiagnosticSeverity.ERROR, PostDiagnosticCode.INVALID_REQUEST, "post.fanuc.definition_mismatch"),)
         diagnostics = list(validate_fanuc_output(text, program, definition))
         try:
